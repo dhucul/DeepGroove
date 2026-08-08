@@ -42,6 +42,10 @@ public sealed class OverviewBar : FrameworkElement
             Dispatcher.BeginInvoke(InvalidateVisual);
     }
 
+    // whole-file geometry cache — rebuilt only on resize or when the peaks change
+    private StreamGeometry? _cachedGeo;
+    private (double W, double H, int Version, object? Doc) _cacheKey;
+
     protected override void OnRender(DrawingContext dc)
     {
         double w = ActualWidth, h = ActualHeight;
@@ -49,37 +53,45 @@ public sealed class OverviewBar : FrameworkElement
         var vm = Document;
         if (vm == null || vm.Doc.Length == 0 || w < 2) return;
 
-        double sppFull = vm.Doc.Length / w;
         double mid = h / 2;
-        double amp = h * 0.44;
-        int channels = vm.Doc.ChannelCount;
 
-        var geo = new StreamGeometry();
-        using (var g = geo.Open())
+        var key = (w, h, vm.PeaksVersion, (object?)vm.Doc);
+        if (_cachedGeo == null || key != _cacheKey)
         {
-            var top = new Point[(int)w];
-            var bot = new Point[(int)w];
-            for (int x = 0; x < (int)w; x++)
+            _cacheKey = key;
+            double sppFull = vm.Doc.Length / w;
+            double amp = h * 0.44;
+            int channels = vm.Doc.ChannelCount;
+
+            var geo = new StreamGeometry();
+            using (var g = geo.Open())
             {
-                int s0 = (int)(x * sppFull);
-                int s1 = Math.Max(s0 + 1, (int)((x + 1) * sppFull));
-                float mn = 0, mx = 0;
-                for (int c = 0; c < channels; c++)
+                var top = new Point[(int)w];
+                var bot = new Point[(int)w];
+                for (int x = 0; x < (int)w; x++)
                 {
-                    vm.Peaks.Query(c, s0, s1, out float cmn, out float cmx, out _);
-                    mn = Math.Min(mn, cmn);
-                    mx = Math.Max(mx, cmx);
+                    int s0 = (int)(x * sppFull);
+                    int s1 = Math.Max(s0 + 1, (int)((x + 1) * sppFull));
+                    float mn = 0, mx = 0;
+                    for (int c = 0; c < channels; c++)
+                    {
+                        vm.Peaks.Query(c, s0, s1, out float cmn, out float cmx, out _);
+                        mn = Math.Min(mn, cmn);
+                        mx = Math.Max(mx, cmx);
+                    }
+                    top[x] = new Point(x, mid - Math.Clamp(mx, -1, 1) * amp);
+                    bot[x] = new Point(x, mid - Math.Clamp(mn, -1, 1) * amp);
                 }
-                top[x] = new Point(x, mid - Math.Clamp(mx, -1, 1) * amp);
-                bot[x] = new Point(x, mid - Math.Clamp(mn, -1, 1) * amp);
+                g.BeginFigure(top[0], true, true);
+                for (int x = 1; x < top.Length; x++) g.LineTo(top[x], false, false);
+                for (int x = bot.Length - 1; x >= 0; x--) g.LineTo(bot[x], false, false);
             }
-            g.BeginFigure(top[0], true, true);
-            for (int x = 1; x < top.Length; x++) g.LineTo(top[x], false, false);
-            for (int x = bot.Length - 1; x >= 0; x--) g.LineTo(bot[x], false, false);
+            geo.Freeze();
+            _cachedGeo = geo;
         }
-        geo.Freeze();
+
         dc.PushOpacity(0.75);
-        dc.DrawGeometry(WaveTheme.WavePeak, null, geo);
+        dc.DrawGeometry(WaveTheme.WavePeak, null, _cachedGeo);
         dc.Pop();
         dc.DrawLine(WaveTheme.CenterLine, new Point(0, mid), new Point(w, mid));
 

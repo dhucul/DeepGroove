@@ -25,6 +25,13 @@ WaveLab-style audio editor for Windows. C# / WPF / .NET 10 (`net10.0-windows`), 
 - Generic dialogs: `ParamDialog` (combo + sliders), `InfoDialog`, `TextPromptDialog` — reuse these instead of new one-off windows.
 - Export uses `AudioExporter` (custom WAV codec or MediaFoundationEncoder; FLAC only if the MFT exists — check `FlacAvailable`).
 
+## Threading model (responsiveness)
+
+- File open/save, peak rebuilds, offline processing and exports all run on Task.Run; the UI thread never does O(file) work. Background code always operates on **snapshot channel-array refs** captured up front (splices replace arrays, never mutate them) — follow this pattern for any new heavy op.
+- `PeakStore.Rebuild` builds into fresh lists and swaps atomically; `DocumentViewModel.ScheduleRebuild` coalesces edit bursts. Waveform may show stale peaks for a beat after an edit — by design.
+- `WaveformView`/`OverviewBar` cache their peak geometries keyed on (view, size, ampZoom, peaksVersion); playhead/cursor/selection/markers are overlays. Don't put per-frame-changing state back into the geometry key.
+- Saves are version-checked: `MarkSaved` only fires if `EditVersion` didn't change while writing.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

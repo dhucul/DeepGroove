@@ -210,14 +210,22 @@ public sealed class MainViewModel : ObservableObject
 
     // ── file ─────────────────────────────────────────────────────
 
-    public void OpenFiles(IEnumerable<string> paths)
+    public async void OpenFiles(IEnumerable<string> paths)
     {
-        foreach (var path in paths)
+        foreach (var path in paths.ToList())
         {
+            Mouse.OverrideCursor = Cursors.Wait;
             try
             {
-                var doc = AudioImporter.Load(path);
-                AddDocument(doc);
+                // decode AND build the peak pyramid off the UI thread — the tab appears fully drawn
+                var (doc, peaks) = await Task.Run(() =>
+                {
+                    var loaded = AudioImporter.Load(path);
+                    var store = new PeakStore();
+                    store.Rebuild(loaded);
+                    return (loaded, store);
+                });
+                AddDocument(doc, peaks);
                 AppSettings.Instance.AddRecentFile(path);
                 AppSettings.Instance.LastOpenFolder = Path.GetDirectoryName(path);
                 SyncRecentFiles();
@@ -226,6 +234,10 @@ public sealed class MainViewModel : ObservableObject
             {
                 MessageBox.Show($"Could not open {Path.GetFileName(path)}:\n{ex.Message}", "Open failed",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
             }
         }
     }
@@ -247,23 +259,44 @@ public sealed class MainViewModel : ObservableObject
         if (dlg.ShowDialog() == true) OpenFiles(dlg.FileNames);
     }
 
-    public void AddDocument(AudioDocument doc)
+    public void AddDocument(AudioDocument doc, PeakStore? prebuiltPeaks = null)
     {
-        var vm = new DocumentViewModel(doc);
+        var vm = new DocumentViewModel(doc, prebuiltPeaks);
         Documents.Add(vm);
         ActiveDocument = vm;
     }
 
-    private void Save()
+    /// <summary>Point-in-time copy sharing the current channel arrays (splices never mutate old arrays).</summary>
+    private static AudioDocument SnapshotDoc(AudioDocument doc)
+    {
+        var refs = new float[doc.ChannelCount][];
+        for (int c = 0; c < doc.ChannelCount; c++) refs[c] = doc.Channels[c];
+        return new AudioDocument(refs, doc.SampleRate, doc.SourceBitDepth)
+        {
+            Title = doc.Title,
+            FilePath = doc.FilePath,
+        };
+    }
+
+    private async void Save()
     {
         if (_active == null) return;
         if (_active.Doc.FilePath == null) { SaveAs(); return; }
+        var d = _active;
+        var doc = d.Doc;
+        int version = doc.EditVersion;
+        var snapshot = SnapshotDoc(doc);
+        string path = doc.FilePath!;
+        int depth = doc.SourceBitDepth;
         try
         {
-            WavCodec.Save(_active.Doc, _active.Doc.FilePath, _active.Doc.SourceBitDepth);
-            _active.Doc.MarkSaved();
-            _active.NotifySaved();
-            AutosaveService.Remove(_active.Doc.SessionId);
+            await Task.Run(() => WavCodec.Save(snapshot, path, depth, dither: depth == 16));
+            if (doc.EditVersion == version) // only mark clean if nothing changed while writing
+            {
+                doc.MarkSaved();
+                d.NotifySaved();
+                AutosaveService.Remove(doc.SessionId);
+            }
         }
         catch (Exception ex)
         {
@@ -271,27 +304,34 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void SaveAs()
+    private async void SaveAs()
     {
         if (_active == null) return;
+        var d = _active;
+        var doc = d.Doc;
         var dlg = new SaveFileDialog
         {
             Filter = "WAV — 32-bit float|*.wav|WAV — 24-bit|*.wav|WAV — 16-bit (dithered)|*.wav",
-            FilterIndex = _active.Doc.SourceBitDepth switch { 24 => 2, 16 => 3, _ => 1 },
-            FileName = Path.GetFileNameWithoutExtension(_active.Doc.Title),
+            FilterIndex = doc.SourceBitDepth switch { 24 => 2, 16 => 3, _ => 1 },
+            FileName = Path.GetFileNameWithoutExtension(doc.Title),
             DefaultExt = ".wav",
         };
         if (dlg.ShowDialog() != true) return;
         int depth = dlg.FilterIndex switch { 2 => 24, 3 => 16, _ => 32 };
+        int version = doc.EditVersion;
+        var snapshot = SnapshotDoc(doc);
         try
         {
-            WavCodec.Save(_active.Doc, dlg.FileName, depth, dither: depth == 16);
-            _active.Doc.FilePath = dlg.FileName;
-            _active.Doc.Title = Path.GetFileName(dlg.FileName);
-            _active.Doc.SourceBitDepth = depth;
-            _active.Doc.MarkSaved();
-            _active.NotifySaved();
-            AutosaveService.Remove(_active.Doc.SessionId);
+            await Task.Run(() => WavCodec.Save(snapshot, dlg.FileName, depth, dither: depth == 16));
+            doc.FilePath = dlg.FileName;
+            doc.Title = Path.GetFileName(dlg.FileName);
+            doc.SourceBitDepth = depth;
+            if (doc.EditVersion == version)
+            {
+                doc.MarkSaved();
+                AutosaveService.Remove(doc.SessionId);
+            }
+            d.NotifySaved();
             AppSettings.Instance.AddRecentFile(dlg.FileName);
             SyncRecentFiles();
             Raise(nameof(WindowTitle));
@@ -543,17 +583,7 @@ public sealed class MainViewModel : ObservableObject
         if (dirty.Count == 0) { Raise(nameof(StatusAutosave)); return; }
 
         // snapshot channel-array references (splicing replaces arrays, so refs are point-in-time consistent)
-        var snapshots = dirty.Select(d =>
-        {
-            var refs = new float[d.Doc.ChannelCount][];
-            for (int c = 0; c < d.Doc.ChannelCount; c++) refs[c] = d.Doc.Channels[c];
-            var snap = new AudioDocument(refs, d.Doc.SampleRate, d.Doc.SourceBitDepth)
-            {
-                Title = d.Doc.Title,
-                FilePath = d.Doc.FilePath,
-            };
-            return (snap, d.Doc.SessionId);
-        }).ToList();
+        var snapshots = dirty.Select(d => (snap: SnapshotDoc(d.Doc), d.Doc.SessionId)).ToList();
 
         foreach (var d in dirty) _autosavedVersions[d.Doc.SessionId] = d.Doc.EditVersion;
         _lastAutosave = DateTime.Now;

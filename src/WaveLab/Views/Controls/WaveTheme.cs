@@ -21,6 +21,7 @@ public static class WaveTheme
     public static readonly Brush WaveRmsSel = Freeze(new SolidColorBrush(Color.FromArgb(0xD0, 0xAE, 0xF5, 0xEA)));
 
     public static readonly Brush SelectionFill = Freeze(new SolidColorBrush(Color.FromArgb(0x14, 0x3F, 0xD6, 0xC2)));
+    public static readonly Brush SelectionOverlay = Freeze(new SolidColorBrush(Color.FromArgb(0x2E, 0x3F, 0xD6, 0xC2)));
     public static readonly Pen SelectionEdge = FreezePen(new Pen(new SolidColorBrush(Color.FromArgb(0xC0, 0x3F, 0xD6, 0xC2)), 1));
     public static readonly Pen CenterLine = FreezePen(new Pen(new SolidColorBrush(Color.FromArgb(0x38, 0xE7, 0xEA, 0xEE)), 1));
     public static readonly Pen GridLine = FreezePen(new Pen(new SolidColorBrush(Color.FromArgb(0x0A, 0xFF, 0xFF, 0xFF)), 1));

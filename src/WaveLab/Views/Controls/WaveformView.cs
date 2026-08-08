@@ -7,8 +7,9 @@ using WaveLab.ViewModels;
 namespace WaveLab.Views.Controls;
 
 /// <summary>
-/// The main waveform editor surface: multi-channel min/max/RMS rendering, selection,
-/// cursor, playhead, wheel zoom centered on the mouse, and drag selection.
+/// The main waveform editor surface. The expensive per-pixel peak geometry is cached and
+/// only rebuilt when the view actually changes (scroll/zoom/edit) — playhead, cursor,
+/// selection and markers are cheap overlays, so playback and dragging stay fluid.
 /// </summary>
 public sealed class WaveformView : FrameworkElement
 {
@@ -24,6 +25,13 @@ public sealed class WaveformView : FrameworkElement
 
     private bool _dragging;
     private int _dragAnchor;
+
+    // geometry cache — rebuilt only when this key changes
+    private readonly record struct CacheKey(double ViewStart, double Spp, double W, double H, double AmpZoom,
+        int PeaksVersion, int Channels, object? Doc);
+    private CacheKey _cacheKey;
+    private StreamGeometry[] _peakGeos = [];
+    private StreamGeometry[] _rmsGeos = [];
 
     public WaveformView()
     {
@@ -67,23 +75,13 @@ public sealed class WaveformView : FrameworkElement
         double viewStart = vm.ViewStart;
         double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
-        // selection band
-        double selX0 = -1, selX1 = -1;
-        if (vm.HasSelection)
-        {
-            selX0 = (vm.SelStart - viewStart) / spp;
-            selX1 = (vm.SelEnd - viewStart) / spp;
-            if (selX1 > 0 && selX0 < w)
-                dc.DrawRectangle(WaveTheme.SelectionFill, null,
-                    new Rect(Math.Max(0, selX0), 0, Math.Min(w, selX1) - Math.Max(0, selX0), h));
-        }
+        EnsureGeometryCache(vm, w, h, channels, chH, spp, viewStart);
 
         for (int c = 0; c < channels; c++)
         {
             double mid = c * chH + chH / 2;
             double amp = chH * 0.46 * vm.AmpZoom;
 
-            // clip to the channel lane so amplitude zoom can't bleed into the neighbour
             dc.PushClip(new RectangleGeometry(new Rect(0, c * chH, w, chH)));
 
             foreach (double frac in (double[])[0.25, 0.5, 0.75])
@@ -92,16 +90,11 @@ public sealed class WaveformView : FrameworkElement
                 dc.DrawLine(WaveTheme.GridLine, new Point(0, mid + amp * frac), new Point(w, mid + amp * frac));
             }
 
-            var peakGeo = new StreamGeometry();
-            var rmsGeo = new StreamGeometry();
-            var peakGeoSel = new StreamGeometry();
-            var rmsGeoSel = new StreamGeometry();
-            BuildChannelGeometry(vm, c, w, mid, amp, spp, viewStart, selX0, selX1, peakGeo, rmsGeo, peakGeoSel, rmsGeoSel);
-            peakGeo.Freeze(); rmsGeo.Freeze(); peakGeoSel.Freeze(); rmsGeoSel.Freeze();
-            dc.DrawGeometry(WaveTheme.WavePeak, null, peakGeo);
-            dc.DrawGeometry(WaveTheme.WaveRms, null, rmsGeo);
-            dc.DrawGeometry(WaveTheme.WavePeakSel, null, peakGeoSel);
-            dc.DrawGeometry(WaveTheme.WaveRmsSel, null, rmsGeoSel);
+            if (c < _peakGeos.Length)
+            {
+                dc.DrawGeometry(WaveTheme.WavePeak, null, _peakGeos[c]);
+                dc.DrawGeometry(WaveTheme.WaveRms, null, _rmsGeos[c]);
+            }
 
             dc.DrawLine(WaveTheme.CenterLine, new Point(0, mid), new Point(w, mid));
 
@@ -115,9 +108,14 @@ public sealed class WaveformView : FrameworkElement
                 dc.DrawLine(WaveTheme.ChannelDivider, new Point(0, c * chH), new Point(w, c * chH));
         }
 
-        // selection edges
+        // selection overlay (tint + edges — no geometry rebuild needed while dragging)
         if (vm.HasSelection)
         {
+            double selX0 = (vm.SelStart - viewStart) / spp;
+            double selX1 = (vm.SelEnd - viewStart) / spp;
+            if (selX1 > 0 && selX0 < w)
+                dc.DrawRectangle(WaveTheme.SelectionOverlay, null,
+                    new Rect(Math.Max(0, selX0), 0, Math.Min(w, selX1) - Math.Max(0, selX0), h));
             if (selX0 >= 0 && selX0 <= w) dc.DrawLine(WaveTheme.SelectionEdge, new Point(selX0, 0), new Point(selX0, h));
             if (selX1 >= 0 && selX1 <= w) dc.DrawLine(WaveTheme.SelectionEdge, new Point(selX1, 0), new Point(selX1, h));
         }
@@ -152,64 +150,56 @@ public sealed class WaveformView : FrameworkElement
         }
     }
 
-    private static void BuildChannelGeometry(DocumentViewModel vm, int channel, double w, double mid, double amp,
-        double spp, double viewStart, double selX0, double selX1,
-        StreamGeometry peakGeo, StreamGeometry rmsGeo, StreamGeometry peakGeoSel, StreamGeometry rmsGeoSel)
+    private void EnsureGeometryCache(DocumentViewModel vm, double w, double h, int channels, double chH,
+        double spp, double viewStart)
     {
+        var key = new CacheKey(viewStart, spp, w, h, vm.AmpZoom, vm.PeaksVersion, channels, vm.Doc);
+        if (key == _cacheKey && _peakGeos.Length == channels) return;
+        _cacheKey = key;
+
+        _peakGeos = new StreamGeometry[channels];
+        _rmsGeos = new StreamGeometry[channels];
         int width = (int)w;
         var peakTop = new Point[width];
         var peakBot = new Point[width];
         var rmsTop = new Point[width];
         var rmsBot = new Point[width];
 
-        for (int x = 0; x < width; x++)
+        for (int c = 0; c < channels; c++)
         {
-            int s0 = (int)(viewStart + x * spp);
-            int s1 = Math.Max(s0 + 1, (int)(viewStart + (x + 1) * spp));
-            vm.Peaks.Query(channel, s0, s1, out float mn, out float mx, out float rms);
-            peakTop[x] = new Point(x, mid - Math.Clamp(mx, -1, 1) * amp);
-            peakBot[x] = new Point(x, mid - Math.Clamp(mn, -1, 1) * amp);
-            float r = Math.Min(rms, Math.Max(Math.Abs(mn), Math.Abs(mx)));
-            rmsTop[x] = new Point(x, mid - r * amp);
-            rmsBot[x] = new Point(x, mid + r * amp);
-        }
+            double mid = c * chH + chH / 2;
+            double amp = chH * 0.46 * vm.AmpZoom;
 
-        EmitBand(peakGeo, peakGeoSel, peakTop, peakBot, selX0, selX1);
-        EmitBand(rmsGeo, rmsGeoSel, rmsTop, rmsBot, selX0, selX1);
+            for (int x = 0; x < width; x++)
+            {
+                int s0 = (int)(viewStart + x * spp);
+                int s1 = Math.Max(s0 + 1, (int)(viewStart + (x + 1) * spp));
+                vm.Peaks.Query(c, s0, s1, out float mn, out float mx, out float rms);
+                peakTop[x] = new Point(x, mid - Math.Clamp(mx, -1, 1) * amp);
+                peakBot[x] = new Point(x, mid - Math.Clamp(mn, -1, 1) * amp);
+                float r = Math.Min(rms, Math.Max(Math.Abs(mn), Math.Abs(mx)));
+                rmsTop[x] = new Point(x, mid - r * amp);
+                rmsBot[x] = new Point(x, mid + r * amp);
+            }
+
+            _peakGeos[c] = BuildBand(peakTop, peakBot);
+            _rmsGeos[c] = BuildBand(rmsTop, rmsBot);
+        }
     }
 
-    private static void EmitBand(StreamGeometry normal, StreamGeometry selected, Point[] top, Point[] bot, double selX0, double selX1)
+    private static StreamGeometry BuildBand(Point[] top, Point[] bot)
     {
-        void Emit(StreamGeometry geo, int from, int to)
-        {
-            if (to <= from) return;
-            using var g = geo.Open();
-            g.BeginFigure(top[from], true, true);
-            for (int x = from + 1; x < to; x++) g.LineTo(top[x], false, false);
-            for (int x = to - 1; x >= from; x--) g.LineTo(bot[x], false, false);
-        }
-
+        var geo = new StreamGeometry();
         int n = top.Length;
-        if (selX1 <= 0 || selX0 >= n || selX0 >= selX1) { Emit(normal, 0, n); return; }
-        int a = Math.Clamp((int)selX0, 0, n);
-        int b = Math.Clamp((int)selX1 + 1, 0, n);
-        // three figures can't share one StreamGeometry Open(); draw outside segments into a single geometry via two figures
-        using (var g = normal.Open())
+        if (n > 1)
         {
-            if (a > 0)
-            {
-                g.BeginFigure(top[0], true, true);
-                for (int x = 1; x < a; x++) g.LineTo(top[x], false, false);
-                for (int x = a - 1; x >= 0; x--) g.LineTo(bot[x], false, false);
-            }
-            if (b < n)
-            {
-                g.BeginFigure(top[b], true, true);
-                for (int x = b + 1; x < n; x++) g.LineTo(top[x], false, false);
-                for (int x = n - 1; x >= b; x--) g.LineTo(bot[x], false, false);
-            }
+            using var g = geo.Open();
+            g.BeginFigure(top[0], true, true);
+            for (int x = 1; x < n; x++) g.LineTo(top[x], false, false);
+            for (int x = n - 1; x >= 0; x--) g.LineTo(bot[x], false, false);
         }
-        Emit(selected, a, b);
+        geo.Freeze();
+        return geo;
     }
 
     // ── interaction ──────────────────────────────────────────────

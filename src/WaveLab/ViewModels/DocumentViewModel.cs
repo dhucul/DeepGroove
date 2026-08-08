@@ -16,10 +16,14 @@ public sealed class DocumentViewModel : ObservableObject
     private int _playhead;
     private int _markersVersion;
 
-    public DocumentViewModel(AudioDocument doc)
+    private bool _rebuildRunning;
+    private bool _rebuildQueued;
+
+    public DocumentViewModel(AudioDocument doc, PeakStore? prebuiltPeaks = null)
     {
         Doc = doc;
-        Peaks.Rebuild(doc);
+        Peaks = prebuiltPeaks ?? new PeakStore();
+        if (prebuiltPeaks == null) ScheduleRebuild();
         doc.Changed += OnDocChanged;
         var (markers, regions) = MarkerStore.Load(doc.FilePath);
         foreach (var m in markers) Markers.Add(m);
@@ -28,8 +32,29 @@ public sealed class DocumentViewModel : ObservableObject
     }
 
     public AudioDocument Doc { get; }
-    public PeakStore Peaks { get; } = new();
+    public PeakStore Peaks { get; }
     public int PeaksVersion => Peaks.Version;
+
+    /// <summary>Rebuild the peak pyramid off the UI thread; coalesces bursts of edits.</summary>
+    private async void ScheduleRebuild()
+    {
+        if (_rebuildRunning) { _rebuildQueued = true; return; }
+        _rebuildRunning = true;
+        try
+        {
+            do
+            {
+                _rebuildQueued = false;
+                var snapshot = Doc.Channels.ToArray(); // stable refs — splices never mutate old arrays
+                await Task.Run(() => Peaks.Rebuild(Doc, snapshot));
+                Raise(nameof(PeaksVersion));
+            } while (_rebuildQueued);
+        }
+        finally
+        {
+            _rebuildRunning = false;
+        }
+    }
 
     public string Title => Doc.Title + (Doc.Dirty ? " •" : "");
     public bool IsDirty => Doc.Dirty;
@@ -126,7 +151,12 @@ public sealed class DocumentViewModel : ObservableObject
     {
         _markersVersion++;
         Raise(nameof(MarkersVersion));
-        MarkerStore.Save(Doc.FilePath, Markers, Regions);
+        var path = Doc.FilePath;
+        if (path == null) return;
+        // snapshot for the background write so UI mutations can't tear the serialization
+        var markers = Markers.Select(m => new Marker { Name = m.Name, Position = m.Position }).ToList();
+        var regions = Regions.Select(r => new NamedRegion { Name = r.Name, Start = r.Start, End = r.End }).ToList();
+        Task.Run(() => MarkerStore.Save(path, markers, regions));
     }
 
     public void AddMarker(int position, string? name = null)
@@ -249,13 +279,12 @@ public sealed class DocumentViewModel : ObservableObject
             if (changed) NotifyMarkersChanged();
         }
 
-        Peaks.Rebuild(Doc);
+        ScheduleRebuild();
         Cursor = Math.Clamp(_cursor, 0, Math.Max(0, Doc.Length - 1));
         PlayheadSample = Math.Clamp(_playhead, 0, Math.Max(0, Doc.Length - 1));
         if (HasSelection && (_selStart > Doc.Length || _selEnd > Doc.Length))
             ClearSelection();
         ClampView();
-        Raise(nameof(PeaksVersion));
         Raise(nameof(Title));
         Raise(nameof(IsDirty));
         RaiseSelection();

@@ -19,6 +19,8 @@ public sealed class NamedRegion
 /// <summary>Sidecar persistence for markers/regions: &lt;audiofile&gt;.wlmeta.json.</summary>
 public static class MarkerStore
 {
+    private static readonly object WriteLock = new();
+
     private sealed class Meta
     {
         public List<Marker> Markers { get; set; } = [];
@@ -47,12 +49,15 @@ public static class MarkerStore
         {
             var meta = new Meta { Markers = [.. markers], Regions = [.. regions] };
             string path = SidecarPath(audioPath);
-            if (meta.Markers.Count == 0 && meta.Regions.Count == 0)
+            lock (WriteLock)
             {
-                if (File.Exists(path)) File.Delete(path);
-                return;
+                if (meta.Markers.Count == 0 && meta.Regions.Count == 0)
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                    return;
+                }
+                File.WriteAllText(path, JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true }));
             }
-            File.WriteAllText(path, JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
     }

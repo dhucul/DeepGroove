@@ -1,15 +1,5 @@
-# Visual Studio
-.vs/
-*.user
-*.suo
-
-# Build output
 bin/
 obj/
-[Pp]ublish/
-
-# Installer output
+.vs/
+*.user
 installer/Output/
-
-# WaveLab runtime artifacts
-*.wlmeta.json
