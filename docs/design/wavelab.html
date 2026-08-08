@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WaveLab — mockup</title>
+<style>
+  @font-face { font-family:'Inter'; src:url('fonts/inter-latin-400-normal.woff2') format('woff2'); font-weight:400; }
+  @font-face { font-family:'Inter'; src:url('fonts/inter-latin-500-normal.woff2') format('woff2'); font-weight:500; }
+  @font-face { font-family:'Inter'; src:url('fonts/inter-latin-600-normal.woff2') format('woff2'); font-weight:600; }
+  @font-face { font-family:'Inter'; src:url('fonts/inter-latin-700-normal.woff2') format('woff2'); font-weight:700; }
+  @font-face { font-family:'JetBrains Mono'; src:url('fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2'); font-weight:400; }
+  @font-face { font-family:'JetBrains Mono'; src:url('fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2'); font-weight:500; }
+  @font-face { font-family:'JetBrains Mono'; src:url('fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2'); font-weight:700; }
+
+  :root {
+    --bg:        #0d0f12;
+    --panel:     #14171b;
+    --panel-2:   #191d22;
+    --panel-3:   #1f242a;
+    --line:      #262c33;
+    --line-soft: #1d2228;
+    --text:      #e7eaee;
+    --muted:     #9aa1a9;
+    --faint:     #5d646d;
+    --accent:    #3fd6c2;
+    --accent-dim:#2ba393;
+    --amber:     #ffb454;
+    --red:       #ff5c5c;
+    --green:     #3fd07a;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; user-select:none; }
+  html,body { background:#000; }
+  body { font-family:'Inter',sans-serif; color:var(--text); -webkit-font-smoothing:antialiased; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+
+  .window {
+    width:1680px; height:1010px; background:var(--bg);
+    display:flex; flex-direction:column; overflow:hidden;
+    border:1px solid #2c333b; border-radius:10px;
+    box-shadow:0 40px 90px rgba(0,0,0,.7);
+  }
+
+  /* ── title bar ─────────────────────────────── */
+  .titlebar {
+    height:40px; display:flex; align-items:center; flex-shrink:0;
+    background:linear-gradient(#181c21,#14171b); border-bottom:1px solid var(--line-soft);
+    padding-left:14px;
+  }
+  .appmark { display:flex; align-items:center; gap:9px; }
+  .appmark svg { display:block; }
+  .wordmark { font-weight:700; font-size:13.5px; letter-spacing:.14em; }
+  .wordmark span { color:var(--accent); }
+  .doc-title { margin-left:22px; font-size:12.5px; color:var(--muted); font-weight:500; }
+  .doc-title b { color:var(--text); font-weight:600; }
+  .win-btns { margin-left:auto; display:flex; height:100%; }
+  .win-btn { width:46px; display:flex; align-items:center; justify-content:center; color:var(--muted); }
+  .win-btn.close:hover { background:#e81123; }
+
+  /* ── menu bar ──────────────────────────────── */
+  .menubar {
+    height:31px; display:flex; align-items:center; gap:2px; flex-shrink:0;
+    background:var(--panel); border-bottom:1px solid var(--line-soft); padding:0 8px;
+    font-size:12.5px; color:#c6cbd1;
+  }
+  .menubar span { padding:5px 10px; border-radius:5px; }
+  .menubar span.hot { background:var(--panel-3); color:var(--text); }
+
+  /* ── transport / toolbar ───────────────────── */
+  .transport {
+    height:62px; display:flex; align-items:center; flex-shrink:0; gap:14px;
+    background:linear-gradient(#171b20,#14171b); border-bottom:1px solid var(--line);
+    padding:0 14px;
+  }
+  .tgroup { display:flex; align-items:center; gap:6px; }
+  .tbtn {
+    width:38px; height:38px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+    background:var(--panel-3); border:1px solid var(--line);
+  }
+  .tbtn.small { width:32px; height:32px; border-radius:7px; }
+  .tbtn.play { width:46px; background:linear-gradient(#22434000,#22434000), linear-gradient(#1e3d39,#16302d); border-color:#2e5a54; box-shadow:0 0 18px rgba(63,214,194,.25), inset 0 1px 0 rgba(255,255,255,.05); }
+  .tbtn.rec  { border-color:#5a2e2e; background:linear-gradient(#3d1e1e,#301616); }
+  .sep { width:1px; height:34px; background:var(--line); }
+
+  .timebox {
+    display:flex; flex-direction:column; justify-content:center; gap:1px;
+    background:#0b0d0f; border:1px solid var(--line); border-radius:9px;
+    padding:6px 16px 5px; min-width:238px;
+    box-shadow:inset 0 2px 8px rgba(0,0,0,.55);
+  }
+  .timebox .tc { font-family:'JetBrains Mono'; font-size:24px; font-weight:500; color:var(--accent); letter-spacing:.03em; line-height:1; text-shadow:0 0 14px rgba(63,214,194,.35); }
+  .timebox .tc .frac { color:var(--accent-dim); }
+  .timebox .lbl { font-size:9px; letter-spacing:.18em; color:var(--faint); font-weight:600; }
+
+  .selbox { display:flex; gap:18px; background:var(--panel-2); border:1px solid var(--line-soft); border-radius:9px; padding:7px 16px; }
+  .selcol { display:flex; flex-direction:column; gap:2px; }
+  .selcol .k { font-size:9px; letter-spacing:.16em; color:var(--faint); font-weight:600; }
+  .selcol .v { font-family:'JetBrains Mono'; font-size:13px; color:#cdd3d9; }
+
+  .fmtbadge {
+    margin-left:auto; display:flex; align-items:center; gap:8px;
+    background:var(--panel-2); border:1px solid var(--line-soft); border-radius:9px; padding:8px 14px;
+    font-size:11.5px; color:var(--muted); font-weight:500;
+  }
+  .fmtbadge .dot { width:4px; height:4px; border-radius:2px; background:var(--faint); }
+  .fmtbadge b { color:var(--accent); font-weight:600; }
+
+  .zoomer { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
+  .zoombar { width:110px; height:4px; border-radius:2px; background:var(--panel-3); position:relative; }
+  .zoombar::before { content:''; position:absolute; left:0; top:0; bottom:0; width:62%; border-radius:2px; background:linear-gradient(90deg,var(--accent-dim),var(--accent)); }
+  .zoombar::after { content:''; position:absolute; left:calc(62% - 5px); top:-4px; width:10px; height:12px; border-radius:3px; background:#dfe4e9; }
+
+  /* ── file tabs ─────────────────────────────── */
+  .tabs { height:36px; display:flex; align-items:flex-end; gap:4px; padding:0 10px; background:var(--panel); border-bottom:1px solid var(--line); flex-shrink:0; }
+  .tab {
+    height:30px; display:flex; align-items:center; gap:8px; padding:0 14px;
+    border-radius:8px 8px 0 0; font-size:12px; color:var(--muted);
+    background:var(--panel-2); border:1px solid var(--line-soft); border-bottom:none;
+  }
+  .tab.active { background:var(--panel-3); color:var(--text); font-weight:500; border-color:var(--line); position:relative; }
+  .tab.active::after { content:''; position:absolute; left:0; right:0; top:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent); }
+  .tab .x { color:var(--faint); font-size:13px; margin-left:2px; }
+  .tab .mod { width:6px; height:6px; border-radius:3px; background:var(--amber); }
+
+  /* ── main area ─────────────────────────────── */
+  .main { flex:1; display:flex; min-height:0; }
+  .editor { flex:1; display:flex; flex-direction:column; min-width:0; border-right:1px solid var(--line); }
+
+  .overview { height:64px; position:relative; background:#101317; border-bottom:1px solid var(--line-soft); }
+  .overview canvas, .ruler canvas, .waves canvas, .an-body canvas { position:absolute; inset:0; width:100%; height:100%; }
+  .viewport {
+    position:absolute; top:2px; bottom:2px; left:38%; width:26%;
+    background:rgba(63,214,194,.07); border:1px solid rgba(63,214,194,.45); border-radius:3px;
+  }
+
+  .ruler { height:26px; background:var(--panel); border-bottom:1px solid var(--line-soft); position:relative; }
+
+
+  .waves { flex:1; position:relative; background:#0f1114; min-height:0; }
+
+  .chlabel {
+    position:absolute; left:10px; font-size:10px; font-weight:700; letter-spacing:.1em; color:var(--faint);
+    background:rgba(15,17,20,.7); padding:2px 7px; border-radius:4px; border:1px solid var(--line-soft);
+  }
+  .dbscale { position:absolute; right:6px; font-family:'JetBrains Mono'; font-size:9px; color:#4a5058; text-align:right; }
+
+  .playhead { position:absolute; top:0; bottom:0; left:57%; width:1px; background:var(--amber); box-shadow:0 0 8px rgba(255,180,84,.8); z-index:5; }
+  .playhead::before { content:''; position:absolute; top:0; left:-5px; border:6px solid transparent; border-top:7px solid var(--amber); }
+
+  /* selection handles drawn by canvas; brackets: */
+  .selhandle { position:absolute; top:0; bottom:0; width:1px; background:rgba(63,214,194,.7); z-index:4; }
+
+  /* ── analysis pane ─────────────────────────── */
+  .analysis { height:252px; flex-shrink:0; border-top:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; }
+  .an-tabs { height:34px; display:flex; align-items:center; padding:0 10px; gap:2px; border-bottom:1px solid var(--line-soft); }
+  .an-tab { padding:6px 14px; font-size:11.5px; color:var(--muted); border-radius:6px; font-weight:500; }
+  .an-tab.active { color:var(--accent); background:rgba(63,214,194,.08); }
+  .an-right { margin-left:auto; display:flex; gap:14px; font-size:10.5px; color:var(--faint); align-items:center; }
+  .an-right .mono { color:var(--muted); }
+  .an-body { flex:1; position:relative; }
+
+
+  /* ── master section ────────────────────────── */
+  .master { width:308px; flex-shrink:0; display:flex; flex-direction:column; background:var(--panel); }
+  .m-head {
+    height:38px; display:flex; align-items:center; gap:8px; padding:0 14px;
+    border-bottom:1px solid var(--line); font-size:10.5px; font-weight:700; letter-spacing:.18em; color:var(--muted);
+  }
+  .m-head .led { width:7px; height:7px; border-radius:4px; background:var(--accent); box-shadow:0 0 8px rgba(63,214,194,.8); }
+  .m-body { flex:1; display:flex; flex-direction:column; padding:12px; gap:10px; min-height:0; }
+
+  .fxslot { background:var(--panel-2); border:1px solid var(--line-soft); border-radius:10px; padding:10px 12px; }
+  .fxslot .row { display:flex; align-items:center; gap:9px; }
+  .fxslot .num { font-family:'JetBrains Mono'; font-size:10px; color:var(--faint); }
+  .fxslot .name { font-size:12.5px; font-weight:600; }
+  .fxslot .st { margin-left:auto; }
+  .toggle { width:30px; height:16px; border-radius:9px; background:#173832; border:1px solid #2e5a54; position:relative; }
+  .toggle::after { content:''; position:absolute; right:2px; top:2px; width:11px; height:11px; border-radius:6px; background:var(--accent); box-shadow:0 0 6px rgba(63,214,194,.7); }
+  .toggle.off { background:var(--panel-3); border-color:var(--line); }
+  .toggle.off::after { left:2px; right:auto; background:var(--faint); box-shadow:none; }
+  .fxslot canvas { display:block; margin-top:8px; border-radius:6px; }
+  .fxslot.add { border-style:dashed; color:var(--faint); font-size:12px; display:flex; align-items:center; justify-content:center; padding:12px; background:transparent; }
+
+  .meterpanel { flex:1; background:var(--panel-2); border:1px solid var(--line-soft); border-radius:10px; padding:12px; display:flex; gap:12px; min-height:0; }
+  .meters { display:flex; gap:7px; align-items:stretch; }
+  .meter { width:17px; border-radius:4px; background:#0b0d0f; border:1px solid var(--line-soft); position:relative; overflow:hidden; }
+  .meter .fill { position:absolute; left:0; right:0; bottom:0; background:linear-gradient(to top,#2ba377 0%,#3fd07a 55%,#c8d84e 78%,#ffb454 90%,#ff5c5c 100%); }
+  .meter .hold { position:absolute; left:0; right:0; height:2px; background:#fff; opacity:.85; }
+  .meter .rms  { position:absolute; left:3px; right:3px; bottom:0; background:rgba(231,234,238,.16); border-radius:2px 2px 0 0; }
+  .mscale { display:flex; flex-direction:column; justify-content:space-between; font-family:'JetBrains Mono'; font-size:8.5px; color:#4a5058; padding:1px 0; text-align:right; width:20px; }
+  .mlabels { display:flex; gap:7px; margin-top:5px; }
+  .mlabels div { width:17px; text-align:center; font-size:9px; color:var(--faint); font-weight:600; }
+
+  .loudness { flex:1; display:flex; flex-direction:column; gap:7px; }
+  .lrow { display:flex; align-items:baseline; justify-content:space-between; }
+  .lrow .k { font-size:9.5px; letter-spacing:.1em; color:var(--faint); font-weight:600; }
+  .lrow .v { font-family:'JetBrains Mono'; font-size:14px; color:#dfe4e9; }
+  .lrow .v small { font-size:9px; color:var(--faint); margin-left:3px; }
+  .lrow.big .v { font-size:19px; color:var(--accent); font-weight:500; }
+  .lsep { height:1px; background:var(--line-soft); margin:2px 0; }
+  .tp-ok { color:var(--green) !important; }
+
+  .renderbtn {
+    height:40px; border-radius:10px; display:flex; align-items:center; justify-content:center; gap:9px;
+    background:linear-gradient(#20504a,#173a36); border:1px solid #2e5a54;
+    font-size:13px; font-weight:600; color:#c8f5ee; letter-spacing:.02em;
+    box-shadow:0 0 20px rgba(63,214,194,.15), inset 0 1px 0 rgba(255,255,255,.06);
+  }
+
+  /* ── status bar ────────────────────────────── */
+  .status {
+    height:27px; display:flex; align-items:center; gap:22px; padding:0 14px; flex-shrink:0;
+    background:var(--panel); border-top:1px solid var(--line); font-size:11px; color:var(--faint);
+  }
+  .status .mono { font-size:10.5px; color:var(--muted); }
+  .status .grow { flex:1; }
+  .status .eng { display:flex; align-items:center; gap:6px; }
+  .status .eng .led { width:6px; height:6px; border-radius:3px; background:var(--green); box-shadow:0 0 6px rgba(63,208,122,.8); }
+
+  /* ── record dialog ─────────────────────────── */
+  .scrim { position:absolute; inset:0; background:rgba(5,6,8,.6); backdrop-filter:blur(3px); z-index:50; display:none; align-items:center; justify-content:center; }
+  body.record .scrim { display:flex; }
+  .recdlg { width:560px; background:var(--panel-2); border:1px solid #313841; border-radius:14px; box-shadow:0 30px 80px rgba(0,0,0,.8); overflow:hidden; }
+  .recdlg .head { display:flex; align-items:center; gap:10px; padding:16px 20px; border-bottom:1px solid var(--line-soft); font-weight:600; font-size:14px; }
+  .recdlg .head .rdot { width:10px; height:10px; border-radius:5px; background:var(--red); box-shadow:0 0 10px rgba(255,92,92,.9); }
+  .recdlg .body { padding:18px 20px; display:flex; flex-direction:column; gap:14px; }
+  .field { display:flex; flex-direction:column; gap:6px; }
+  .field .k { font-size:10px; letter-spacing:.14em; color:var(--faint); font-weight:700; }
+  .field .box { height:36px; background:var(--panel); border:1px solid var(--line); border-radius:8px; display:flex; align-items:center; padding:0 12px; font-size:12.5px; color:#cdd3d9; }
+  .field .box .chev { margin-left:auto; color:var(--faint); }
+  .frow { display:flex; gap:12px; }
+  .frow .field { flex:1; }
+  .recmeter { height:14px; border-radius:7px; background:#0b0d0f; border:1px solid var(--line-soft); position:relative; overflow:hidden; }
+  .recmeter .fill { position:absolute; left:0; top:0; bottom:0; width:64%; background:linear-gradient(90deg,#2ba377,#3fd07a 70%,#c8d84e 88%,#ffb454); }
+  .rectc { font-family:'JetBrains Mono'; font-size:30px; color:var(--red); text-align:center; padding:4px 0 2px; text-shadow:0 0 16px rgba(255,92,92,.4); }
+  .recdlg .foot { display:flex; gap:10px; padding:16px 20px; border-top:1px solid var(--line-soft); }
+  .btn { flex:1; height:38px; border-radius:9px; display:flex; align-items:center; justify-content:center; gap:8px; font-size:13px; font-weight:600; background:var(--panel-3); border:1px solid var(--line); color:var(--muted); }
+  .btn.primary { background:linear-gradient(#5c2222,#471717); border-color:#7a3030; color:#ffd9d9; box-shadow:0 0 20px rgba(255,92,92,.2); }
+</style>
+</head>
+<body>
+<div class="window" id="win">
+
+  <div class="titlebar">
+    <div class="appmark">
+      <svg width="20" height="20" viewBox="0 0 20 20"><rect width="20" height="20" rx="5" fill="#173a36"/><path d="M3 10h1.6l1.2-4 1.6 8 1.6-11 1.6 13 1.6-9 1.2 3H17" stroke="#3fd6c2" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="wordmark">WAVE<span>LAB</span></div>
+    </div>
+    <div class="doc-title"><b>kick_master_v3.wav</b> — 48.0 kHz · 32-bit float · Stereo · 3:42.108</div>
+    <div class="win-btns">
+      <div class="win-btn"><svg width="10" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor"/></svg></div>
+      <div class="win-btn"><svg width="10" height="10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor"/></svg></div>
+      <div class="win-btn close"><svg width="10" height="10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor"/></svg></div>
+    </div>
+  </div>
+
+  <div class="menubar">
+    <span>File</span><span>Edit</span><span class="hot">View</span><span>Transport</span><span>Process</span><span>Analyze</span><span>Master</span><span>Options</span><span>Help</span>
+  </div>
+
+  <div class="transport">
+    <div class="tgroup">
+      <div class="tbtn small"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1v9M3.5 6.5L7 10l3.5-3.5M2 13h10" stroke="#cfd4da" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="tbtn small"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 5.5V2h8l2 2v8H2V8" stroke="#cfd4da" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M4.5 8.5h5v3.5h-5z M4.5 2v2.5h4" stroke="#cfd4da" stroke-width="1.1" fill="none"/></svg></div>
+    </div>
+    <div class="sep"></div>
+    <div class="tgroup">
+      <div class="tbtn"><svg width="15" height="12" viewBox="0 0 15 12"><path d="M1.5 1v10M13 1L5 6l8 5z" stroke="#cfd4da" stroke-width="1.4" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="tbtn play"><svg width="15" height="16" viewBox="0 0 15 16"><path d="M2 1.5l11.5 6.5L2 14.5z" fill="#3fd6c2"/></svg></div>
+      <div class="tbtn"><svg width="12" height="12"><rect x="0.5" y="0.5" width="11" height="11" rx="1.5" fill="#cfd4da"/></svg></div>
+      <div class="tbtn rec"><svg width="14" height="14"><circle cx="7" cy="7" r="6" fill="#ff5c5c"/></svg></div>
+      <div class="tbtn"><svg width="16" height="14" viewBox="0 0 16 14"><path d="M3 7a5 4.5 0 1 1 1.5 3.2M3 7V3.5M3 7h3.5" stroke="#cfd4da" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg></div>
+    </div>
+    <div class="sep"></div>
+    <div class="timebox">
+      <div class="lbl">POSITION</div>
+      <div class="tc">00:01:24<span class="frac">.352</span></div>
+    </div>
+    <div class="selbox">
+      <div class="selcol"><div class="k">SEL IN</div><div class="v">00:01:07.240</div></div>
+      <div class="selcol"><div class="k">SEL OUT</div><div class="v">00:01:29.600</div></div>
+      <div class="selcol"><div class="k">LENGTH</div><div class="v">00:00:22.360</div></div>
+    </div>
+    <div class="fmtbadge"><b>48.0 kHz</b><div class="dot"></div>32-bit float<div class="dot"></div>Stereo</div>
+    <div class="zoomer">
+      <svg width="13" height="13" viewBox="0 0 13 13"><circle cx="5.5" cy="5.5" r="4.5" stroke="#9aa1a9" fill="none" stroke-width="1.3"/><path d="M9 9l3 3M3.5 5.5h4" stroke="#9aa1a9" stroke-width="1.3" stroke-linecap="round"/></svg>
+      <div class="zoombar"></div>
+      <svg width="13" height="13" viewBox="0 0 13 13"><circle cx="5.5" cy="5.5" r="4.5" stroke="#9aa1a9" fill="none" stroke-width="1.3"/><path d="M9 9l3 3M3.5 5.5h4M5.5 3.5v4" stroke="#9aa1a9" stroke-width="1.3" stroke-linecap="round"/></svg>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active"><div class="mod"></div>kick_master_v3.wav<span class="x">×</span></div>
+    <div class="tab">ambient_pad.flac<span class="x">×</span></div>
+    <div class="tab">voiceover_take2.mp3<span class="x">×</span></div>
+  </div>
+
+  <div class="main">
+    <div class="editor">
+      <div class="overview">
+        <canvas id="ov" ></canvas>
+        <div class="viewport"></div>
+      </div>
+      <div class="ruler"><canvas id="ruler"></canvas></div>
+      <div class="waves" id="waves">
+        <canvas id="wv"></canvas>
+        <div class="playhead"></div>
+      </div>
+      <div class="analysis">
+        <div class="an-tabs">
+          <div class="an-tab active">Spectrum</div>
+          <div class="an-tab">Spectrogram</div>
+          <div class="an-tab">Loudness History</div>
+          <div class="an-tab">Phase</div>
+          <div class="an-right">
+            <span>FFT <span class="mono">4096</span></span>
+            <span>Window <span class="mono">Hann</span></span>
+            <span>Avg <span class="mono">3</span></span>
+          </div>
+        </div>
+        <div class="an-body"><canvas id="spec"></canvas></div>
+      </div>
+    </div>
+
+    <div class="master">
+      <div class="m-head"><div class="led"></div>MASTER SECTION</div>
+      <div class="m-body">
+        <div class="fxslot">
+          <div class="row"><div class="num">01</div><div class="name">Studio EQ</div><div class="st"><div class="toggle"></div></div></div>
+          <canvas id="eq" width="256" height="52" style="width:256px;height:52px;"></canvas>
+        </div>
+        <div class="fxslot">
+          <div class="row"><div class="num">02</div><div class="name">Precision Limiter</div><div class="st"><div class="toggle"></div></div></div>
+          <div class="row" style="margin-top:8px; gap:14px;">
+            <div class="selcol"><div class="k">THRESH</div><div class="v" style="font-size:11.5px;">−4.2 dB</div></div>
+            <div class="selcol"><div class="k">CEILING</div><div class="v" style="font-size:11.5px;">−1.0 dBTP</div></div>
+            <div class="selcol"><div class="k">GR</div><div class="v" style="font-size:11.5px;color:var(--amber);">−2.8 dB</div></div>
+          </div>
+        </div>
+        <div class="fxslot add">＋&nbsp; Add Effect</div>
+
+        <div class="meterpanel">
+          <div style="display:flex; flex-direction:column;">
+            <div class="meters" style="flex:1;">
+              <div class="mscale"><span>0</span><span>-6</span><span>-12</span><span>-18</span><span>-24</span><span>-36</span><span>-48</span><span>-60</span></div>
+              <div class="meter"><div class="fill" style="height:72%"></div><div class="rms" style="height:54%"></div><div class="hold" style="bottom:87%"></div></div>
+              <div class="meter"><div class="fill" style="height:68%"></div><div class="rms" style="height:51%"></div><div class="hold" style="bottom:84%"></div></div>
+            </div>
+            <div class="mlabels"><div style="width:20px"></div><div>L</div><div>R</div></div>
+          </div>
+          <div class="loudness">
+            <div class="lrow big"><div class="k">LUFS&nbsp;INT</div><div class="v">−13.8</div></div>
+            <div class="lsep"></div>
+            <div class="lrow"><div class="k">MOMENTARY</div><div class="v">−12.4<small>LUFS</small></div></div>
+            <div class="lrow"><div class="k">SHORT-TERM</div><div class="v">−13.1<small>LUFS</small></div></div>
+            <div class="lrow"><div class="k">RANGE</div><div class="v">6.2<small>LU</small></div></div>
+            <div class="lsep"></div>
+            <div class="lrow"><div class="k">TRUE PEAK</div><div class="v tp-ok">−0.9<small>dBTP</small></div></div>
+            <div class="lrow"><div class="k">PEAK L / R</div><div class="v" style="font-size:11px;">−1.2&nbsp;/&nbsp;−1.6</div></div>
+          </div>
+        </div>
+
+        <div class="renderbtn">
+          <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1v8M3.5 6L7 9.5 10.5 6M2 12.5h10" stroke="#c8f5ee" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Render to File
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="status">
+    <span class="eng"><span class="led"></span>WASAPI Shared · 48.0 kHz · 12 ms</span>
+    <span class="mono">10,663,584 samples</span>
+    <span class="mono">Sel 22.360 s · 1,073,280 smp</span>
+    <span>Peaks cached</span>
+    <span class="grow"></span>
+    <span class="mono">Zoom 1:512</span>
+    <span class="mono">CPU 3%</span>
+    <span class="mono">RAM 412 MB</span>
+  </div>
+
+  <div class="scrim">
+    <div class="recdlg">
+      <div class="head"><div class="rdot"></div>Record Audio</div>
+      <div class="body">
+        <div class="field"><div class="k">INPUT DEVICE</div><div class="box">Focusrite Scarlett 2i2 — Inputs 1+2 (WASAPI)<span class="chev">▾</span></div></div>
+        <div class="frow">
+          <div class="field"><div class="k">SAMPLE RATE</div><div class="box">48 000 Hz<span class="chev">▾</span></div></div>
+          <div class="field"><div class="k">BIT DEPTH</div><div class="box">32-bit float<span class="chev">▾</span></div></div>
+          <div class="field"><div class="k">CHANNELS</div><div class="box">Stereo<span class="chev">▾</span></div></div>
+        </div>
+        <div class="field"><div class="k">INPUT LEVEL</div>
+          <div class="recmeter"><div class="fill"></div></div>
+          <div class="recmeter" style="margin-top:4px;"><div class="fill" style="width:58%"></div></div>
+        </div>
+        <div class="rectc">00:00:00.000</div>
+      </div>
+      <div class="foot">
+        <div class="btn">Cancel</div>
+        <div class="btn"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="none" stroke="#9aa1a9" stroke-width="1.4"/><circle cx="6" cy="6" r="2" fill="#9aa1a9"/></svg>Monitor</div>
+        <div class="btn primary"><svg width="12" height="12"><circle cx="6" cy="6" r="5.5" fill="#ff5c5c"/></svg>Start Recording</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+
+function setup(c){
+  const dpr = 2;
+  const r = c.parentElement.getBoundingClientRect();
+  c.width = r.width*dpr; c.height = r.height*dpr;
+  const g = c.getContext('2d'); g.scale(dpr,dpr);
+  return [g, r.width, r.height];
+}
+
+/* synth signal: music-like envelope with kick transients */
+function makeSignal(n, seed, kickRate){
+  const rnd = mulberry32(seed);
+  const env = new Float32Array(n), rms = new Float32Array(n);
+  let phrase = 0;
+  for(let i=0;i<n;i++){
+    const t=i/n;
+    phrase = 0.55 + 0.35*Math.sin(t*Math.PI*2*2.3+seed) * Math.sin(t*Math.PI*2*0.7);
+    let v = phrase*(0.45+0.3*rnd());
+    // kick transients
+    const beat=(t*kickRate)%1;
+    if(beat<0.045) v = Math.min(1, v + (1-beat/0.045)*0.55);
+    // occasional quiet gap
+    if(Math.sin(t*Math.PI*2*1.13+seed*2)>0.93) v*=0.25;
+    env[i]=Math.min(1,v);
+    rms[i]=env[i]*(0.32+0.26*rnd());
+  }
+  return {env,rms};
+}
+
+/* ── overview ── */
+(function(){
+  const [g,w,h]=setup(document.getElementById('ov'));
+  const {env}=makeSignal(Math.floor(w), 7, 90);
+  g.fillStyle='#101317'; g.fillRect(0,0,w,h);
+  const mid=h/2;
+  for(let x=0;x<w;x++){
+    const a=env[x]*(h*0.44);
+    const grad=g.createLinearGradient(0,mid-a,0,mid+a);
+    grad.addColorStop(0,'#2a8d81'); grad.addColorStop(.5,'#3fd6c2'); grad.addColorStop(1,'#2a8d81');
+    g.fillStyle=grad; g.globalAlpha=0.75;
+    g.fillRect(x,mid-a,1,a*2);
+  }
+  g.globalAlpha=1; g.strokeStyle='rgba(231,234,238,.12)';
+  g.beginPath(); g.moveTo(0,mid); g.lineTo(w,mid); g.stroke();
+})();
+
+/* ── ruler ── */
+(function(){
+  const [g,w,h]=setup(document.getElementById('ruler'));
+  g.fillStyle='#14171b'; g.fillRect(0,0,w,h);
+  g.font='9.5px JetBrains Mono'; g.fillStyle='#6a717a'; g.strokeStyle='#3a414a';
+  const t0=67.0, spanSec=48.0, pxPerSec=w/spanSec;
+  for(let s=Math.ceil(t0); s<t0+spanSec; s++){
+    const x=(s-t0)*pxPerSec;
+    const major = s%5===0;
+    g.beginPath(); g.moveTo(x,h); g.lineTo(x,major?h-11:h-6); g.stroke();
+    if(major){
+      const m=Math.floor(s/60), sec=s%60;
+      g.fillText(`${m}:${String(sec).padStart(2,'0')}`, x+4, h-12);
+    }
+  }
+})();
+
+/* ── main stereo waveform ── */
+(function(){
+  const el=document.getElementById('waves');
+  const [g,w,h]=setup(document.getElementById('wv'));
+  g.fillStyle='#0f1114'; g.fillRect(0,0,w,h);
+  const chH=h/2;
+  const selA=0.42*w, selB=0.68*w;
+  const sigs=[makeSignal(Math.floor(w),11,7.4), makeSignal(Math.floor(w),23,7.4)];
+
+  // channel divider
+  g.strokeStyle='#1d2228'; g.beginPath(); g.moveTo(0,chH); g.lineTo(w,chH); g.stroke();
+
+  sigs.forEach((sig,ch)=>{
+    const mid=ch*chH+chH/2;
+    // db gridlines at ±50%, ±25%
+    g.strokeStyle='rgba(255,255,255,.030)';
+    [0.25,0.5,0.75].forEach(f=>{
+      g.beginPath(); g.moveTo(0,mid-chH*0.5*f); g.lineTo(w,mid-chH*0.5*f); g.stroke();
+      g.beginPath(); g.moveTo(0,mid+chH*0.5*f); g.lineTo(w,mid+chH*0.5*f); g.stroke();
+    });
+    for(let x=0;x<w;x++){
+      const a=sig.env[x]*(chH*0.46), r=sig.rms[x]*(chH*0.46);
+      const inSel = x>=selA&&x<=selB;
+      // peak body
+      g.fillStyle= inSel? '#57e6d2' : '#31a998';
+      g.globalAlpha= inSel? 0.95:0.8;
+      g.fillRect(x,mid-a,1,a*2);
+      // rms core
+      g.fillStyle= inSel? '#aef5ea' : '#57cfc0';
+      g.globalAlpha= inSel? 0.9:0.65;
+      g.fillRect(x,mid-r,1,r*2);
+    }
+    g.globalAlpha=1;
+    // center line
+    g.strokeStyle='rgba(231,234,238,.22)';
+    g.beginPath(); g.moveTo(0,mid); g.lineTo(w,mid); g.stroke();
+  });
+
+  // selection overlay
+  g.fillStyle='rgba(63,214,194,.07)'; g.fillRect(selA,0,selB-selA,h);
+  g.strokeStyle='rgba(63,214,194,.75)';
+  [selA,selB].forEach(x=>{ g.beginPath(); g.moveTo(x,0); g.lineTo(x,h); g.stroke(); });
+
+  // channel labels + db scales via DOM
+  ['L','R'].forEach((c,i)=>{
+    const lab=document.createElement('div'); lab.className='chlabel'; lab.textContent=c;
+    lab.style.top=(i*50+2.5)+'%'; el.appendChild(lab);
+    const sc=document.createElement('div'); sc.className='dbscale';
+    sc.style.top=(i*50+3)+'%'; sc.innerHTML='0&nbsp;dB<br>−6<br>−∞<br>−6<br>0&nbsp;dB';
+    sc.style.height='44%'; sc.style.display='flex'; sc.style.flexDirection='column'; sc.style.justifyContent='space-between';
+    el.appendChild(sc);
+  });
+})();
+
+/* ── spectrum ── */
+(function(){
+  const [g,w,h]=setup(document.getElementById('spec'));
+  g.fillStyle='#111419'; g.fillRect(0,0,w,h);
+  const rnd=mulberry32(42);
+  const fmin=20,fmax=20000;
+  const fx=f=> (Math.log10(f/fmin)/Math.log10(fmax/fmin))*w;
+  // grid
+  g.font='9px JetBrains Mono'; g.fillStyle='#4a5058'; g.strokeStyle='rgba(255,255,255,.045)';
+  [[31.5,'31'],[63,'63'],[125,'125'],[250,'250'],[500,'500'],[1000,'1k'],[2000,'2k'],[4000,'4k'],[8000,'8k'],[16000,'16k']].forEach(([f,l])=>{
+    const x=fx(f); g.beginPath(); g.moveTo(x,0); g.lineTo(x,h); g.stroke(); g.fillText(l,x+3,h-6);
+  });
+  [-12,-24,-36,-48,-60,-72].forEach(db=>{
+    const y=(-db/84)*h; g.beginPath(); g.moveTo(0,y); g.lineTo(w,y); g.stroke(); g.fillText(db,w-24,y-3);
+  });
+  // spectrum curve: pink slope + peaks at 55Hz(kick), 210, 1.2k, 4k presence + hf rolloff
+  const pts=[];
+  for(let x=0;x<=w;x+=2){
+    const f=fmin*Math.pow(fmax/fmin,x/w);
+    let db=-14-10*Math.log10(f/50);
+    db += 11*Math.exp(-Math.pow(Math.log2(f/55),2)*2.2);
+    db += 4*Math.exp(-Math.pow(Math.log2(f/210),2)*3);
+    db += 5*Math.exp(-Math.pow(Math.log2(f/1200),2)*2.6);
+    db += 3.5*Math.exp(-Math.pow(Math.log2(f/4200),2)*2.2);
+    if(f>9000) db -= (f-9000)/1400;
+    db += (rnd()-0.5)*3.2;
+    pts.push([x,Math.min(h,(-Math.max(-84,db)/84)*h)]);
+  }
+  // filled area
+  const grad=g.createLinearGradient(0,0,0,h);
+  grad.addColorStop(0,'rgba(63,214,194,.55)');
+  grad.addColorStop(.6,'rgba(63,214,194,.16)');
+  grad.addColorStop(1,'rgba(63,214,194,.03)');
+  g.beginPath(); g.moveTo(0,h);
+  pts.forEach(p=>g.lineTo(p[0],p[1]));
+  g.lineTo(w,h); g.closePath();
+  g.fillStyle=grad; g.fill();
+  g.beginPath(); pts.forEach((p,i)=> i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]));
+  g.strokeStyle='#3fd6c2'; g.lineWidth=1.6; g.stroke();
+  // peak hold
+  g.beginPath(); pts.forEach((p,i)=>{ const y=p[1]-8-rnd()*4; i?g.lineTo(p[0],y):g.moveTo(p[0],y);});
+  g.strokeStyle='rgba(255,180,84,.5)'; g.lineWidth=1; g.stroke();
+})();
+
+/* ── EQ thumb ── */
+(function(){
+  const c=document.getElementById('eq'); const g=c.getContext('2d');
+  const w=256,h=52; c.width=w*2; c.height=h*2; g.scale(2,2);
+  g.fillStyle='#101317'; g.fillRect(0,0,w,h);
+  g.strokeStyle='rgba(255,255,255,.05)';
+  [0.25,0.5,0.75].forEach(f=>{g.beginPath();g.moveTo(w*f,0);g.lineTo(w*f,h);g.stroke();});
+  g.beginPath();g.moveTo(0,h/2);g.lineTo(w,h/2);g.stroke();
+  g.beginPath();
+  for(let x=0;x<=w;x++){
+    const t=x/w;
+    let y = 6*Math.exp(-Math.pow((t-0.18)/0.09,2))      // low shelf-ish bump
+          - 7*Math.exp(-Math.pow((t-0.47)/0.07,2))      // mid cut
+          + 5*Math.exp(-Math.pow((t-0.8)/0.1,2));       // high boost
+    y = h/2 - y*2.1;
+    x?g.lineTo(x,y):g.moveTo(x,y);
+  }
+  g.strokeStyle='#3fd6c2'; g.lineWidth=1.8; g.stroke();
+  [[0.18,'+'],[0.47,'−'],[0.8,'+']].forEach(([t])=>{});
+  // nodes
+  [[0.18,6],[0.47,-7],[0.8,5]].forEach(([t,v])=>{
+    g.beginPath(); g.arc(w*t, h/2 - v*2.1, 3, 0, 7);
+    g.fillStyle='#0d0f12'; g.fill();
+    g.strokeStyle='#3fd6c2'; g.lineWidth=1.5; g.stroke();
+  });
+})();
+
+if(location.search.includes('record')) document.body.classList.add('record');
+</script>
+</body>
+</html>
