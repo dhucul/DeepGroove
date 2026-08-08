@@ -18,6 +18,7 @@ public sealed class DocumentViewModel : ObservableObject
 
     private bool _rebuildRunning;
     private bool _rebuildQueued;
+    private Task _markerSaveChain = Task.CompletedTask;
 
     public DocumentViewModel(AudioDocument doc, PeakStore? prebuiltPeaks = null)
     {
@@ -45,9 +46,16 @@ public sealed class DocumentViewModel : ObservableObject
             do
             {
                 _rebuildQueued = false;
-                var snapshot = Doc.Channels.ToArray(); // stable refs — splices never mutate old arrays
-                await Task.Run(() => Peaks.Rebuild(Doc, snapshot));
-                Raise(nameof(PeaksVersion));
+                try
+                {
+                    var snapshot = Doc.Channels.ToArray(); // stable refs — splices never mutate old arrays
+                    await Task.Run(() => Peaks.Rebuild(Doc, snapshot));
+                    Raise(nameof(PeaksVersion));
+                }
+                catch
+                {
+                    // best-effort: keep the stale pyramid; the next edit schedules another attempt
+                }
             } while (_rebuildQueued);
         }
         finally
@@ -153,10 +161,13 @@ public sealed class DocumentViewModel : ObservableObject
         Raise(nameof(MarkersVersion));
         var path = Doc.FilePath;
         if (path == null) return;
-        // snapshot for the background write so UI mutations can't tear the serialization
+        // snapshot for the background write so UI mutations can't tear the serialization,
+        // and chain writes so they always land in order (latest state wins)
         var markers = Markers.Select(m => new Marker { Name = m.Name, Position = m.Position }).ToList();
         var regions = Regions.Select(r => new NamedRegion { Name = r.Name, Start = r.Start, End = r.End }).ToList();
-        Task.Run(() => MarkerStore.Save(path, markers, regions));
+        _markerSaveChain = _markerSaveChain.ContinueWith(
+            _ => MarkerStore.Save(path, markers, regions),
+            CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
     }
 
     public void AddMarker(int position, string? name = null)

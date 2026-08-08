@@ -23,6 +23,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly DispatcherTimer _autosaveTimer;
     private DateTime? _lastAutosave;
     private readonly Dictionary<Guid, int> _autosavedVersions = [];
+    private readonly HashSet<Guid> _savesInFlight = [];
     private readonly Process _process = Process.GetCurrentProcess();
     private TimeSpan _cpuPrev;
     private DateTime _cpuPrevAt = DateTime.UtcNow;
@@ -284,6 +285,7 @@ public sealed class MainViewModel : ObservableObject
         if (_active.Doc.FilePath == null) { SaveAs(); return; }
         var d = _active;
         var doc = d.Doc;
+        if (!_savesInFlight.Add(doc.SessionId)) return; // a save for this document is already writing
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
         string path = doc.FilePath!;
@@ -302,6 +304,10 @@ public sealed class MainViewModel : ObservableObject
         {
             MessageBox.Show(ex.Message, "Save failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+        finally
+        {
+            _savesInFlight.Remove(doc.SessionId);
+        }
     }
 
     private async void SaveAs()
@@ -317,6 +323,7 @@ public sealed class MainViewModel : ObservableObject
             DefaultExt = ".wav",
         };
         if (dlg.ShowDialog() != true) return;
+        if (!_savesInFlight.Add(doc.SessionId)) return; // a save for this document is already writing
         int depth = dlg.FilterIndex switch { 2 => 24, 3 => 16, _ => 32 };
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
@@ -339,6 +346,10 @@ public sealed class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Save failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _savesInFlight.Remove(doc.SessionId);
         }
     }
 
@@ -585,14 +596,24 @@ public sealed class MainViewModel : ObservableObject
         // snapshot channel-array references (splicing replaces arrays, so refs are point-in-time consistent)
         var snapshots = dirty.Select(d => (snap: SnapshotDoc(d.Doc), d.Doc.SessionId)).ToList();
 
-        foreach (var d in dirty) _autosavedVersions[d.Doc.SessionId] = d.Doc.EditVersion;
+        var versions = dirty.Select(d => (Id: d.Doc.SessionId, Version: d.Doc.EditVersion)).ToList();
         _lastAutosave = DateTime.Now;
-        Task.Run(() => AutosaveService.RunNow(snapshots.Select(s2 => (s2.snap, s2.SessionId))));
+        Task.Run(() =>
+        {
+            int saved = AutosaveService.RunNow(snapshots.Select(s2 => (s2.snap, s2.SessionId)));
+            // only record versions as autosaved if the whole batch made it to disk —
+            // a failed write retries on the next tick instead of silently going stale
+            if (saved == versions.Count)
+                Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    foreach (var (id, version) in versions) _autosavedVersions[id] = version;
+                });
+        });
         Raise(nameof(StatusAutosave));
     }
 
     /// <summary>Called once from the window after load: crash recovery, session restore, command-line files.</summary>
-    public void StartupLoad(string[] args)
+    public async void StartupLoad(string[] args)
     {
         var recoverable = AutosaveService.GetRecoverable();
         if (recoverable.Count > 0)
@@ -606,10 +627,16 @@ public sealed class MainViewModel : ObservableObject
                 {
                     try
                     {
-                        var doc = WavCodec.Load(entry.AutosaveFile);
+                        var (doc, peaks) = await Task.Run(() =>
+                        {
+                            var loaded = WavCodec.Load(entry.AutosaveFile);
+                            var store = new PeakStore();
+                            store.Rebuild(loaded);
+                            return (loaded, store);
+                        });
                         doc.FilePath = entry.OriginalPath;
                         doc.Title = entry.Title.Replace(" •", "") + " (recovered)";
-                        AddDocument(doc);
+                        AddDocument(doc, peaks);
                         Documents[^1].NotifySaved();
                     }
                     catch { }
