@@ -111,7 +111,13 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         _allowClose = true;
-        Close();
+        // Even when every awaited shutdown task is already complete, this
+        // continuation can still be running inside WPF's original Closing
+        // event. Calling Close re-entrantly from that event throws and brings
+        // down the process. Queue the approved close so the cancelled event
+        // can unwind before WPF starts the final close pass.
+        _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            new Action(Close));
     }
 
     // ── window placement ─────────────────────────────────────────
