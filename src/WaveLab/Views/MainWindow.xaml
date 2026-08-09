@@ -211,6 +211,11 @@
                     <MenuItem Header="Refresh Spectrogram" Click="OnRefreshSpectrogram"/>
                 </MenuItem>
                 <MenuItem Header="_Master">
+                    <MenuItem Header="Analyze &amp; Tune Vinyl Cleanup…" Click="OnAnalyzeVinylCleanup"
+                              IsEnabled="{Binding HasDocument}"/>
+                    <MenuItem Header="Analyze &amp; Tune Clean Transfer…" Click="OnAnalyzeCleanTransfer"
+                              IsEnabled="{Binding HasDocument}"/>
+                    <Separator/>
                     <MenuItem Header="Apply Chain to Selection / File" Command="{Binding ApplyChainCommand}"/>
                     <MenuItem Header="Render to New Tab" Command="{Binding RenderCommand}"/>
                 </MenuItem>
@@ -499,6 +504,7 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <ComboBox Height="30" ItemsSource="{Binding Master.PresetNames}"
                                       SelectedItem="{Binding Master.SelectedPreset}" ToolTip="Load a chain preset"/>
@@ -512,6 +518,11 @@
                                 <Path Data="M3,7 A5,4.5 0 1 1 4.5,10.2 M3,7 L3,3.5 M3,7 L6.5,7" Stroke="#9AA1A9"
                                       StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                             </Button>
+                            <Button x:Name="analyzeCleanupBtn" Grid.Column="3" Style="{StaticResource ToolButton}"
+                                    Width="30" Height="30" Margin="6,0,0,0" Content="✦" FontSize="13"
+                                    Foreground="{StaticResource Accent}" Click="OnAnalyzeCleanupMenu"
+                                    IsEnabled="{Binding HasDocument}"
+                                    ToolTip="Analyze this file and tune Vinyl Cleanup or Clean Transfer"/>
                         </Grid>
                         <TextBlock Text="{Binding Master.RackStatusText}" Margin="14,5,12,0" FontSize="9.5"
                                    Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>

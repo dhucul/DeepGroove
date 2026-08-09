@@ -4,6 +4,8 @@ VisualStudioVersion = 18.0.00000.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "WaveLab", "src\WaveLab\WaveLab.csproj", "{7A3C2F1E-9B4D-4E8A-A1C6-5D2E8F0B3A91}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "WaveLab.Tests", "tests\WaveLab.Tests\WaveLab.Tests.csproj", "{0B66821A-0DD6-493A-AC5B-2882843CC34F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -14,6 +16,10 @@ Global
 		{7A3C2F1E-9B4D-4E8A-A1C6-5D2E8F0B3A91}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7A3C2F1E-9B4D-4E8A-A1C6-5D2E8F0B3A91}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7A3C2F1E-9B4D-4E8A-A1C6-5D2E8F0B3A91}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0B66821A-0DD6-493A-AC5B-2882843CC34F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0B66821A-0DD6-493A-AC5B-2882843CC34F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0B66821A-0DD6-493A-AC5B-2882843CC34F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0B66821A-0DD6-493A-AC5B-2882843CC34F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -200,6 +200,43 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(name)) _vm.Master.SavePresetAs(name);
     }
 
+    private void OnAnalyzeVinylCleanup(object sender, RoutedEventArgs e) =>
+        ShowCleanupAnalysis(CleanupProfile.VinylCleanup);
+
+    private void OnAnalyzeCleanTransfer(object sender, RoutedEventArgs e) =>
+        ShowCleanupAnalysis(CleanupProfile.CleanTransfer);
+
+    private void OnAnalyzeCleanupMenu(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu();
+        var vinyl = new MenuItem { Header = "Analyze & Tune Vinyl Cleanup…" };
+        vinyl.Click += (_, _) => ShowCleanupAnalysis(CleanupProfile.VinylCleanup);
+        menu.Items.Add(vinyl);
+        var clean = new MenuItem { Header = "Analyze & Tune Clean Transfer…" };
+        clean.Click += (_, _) => ShowCleanupAnalysis(CleanupProfile.CleanTransfer);
+        menu.Items.Add(clean);
+        menu.PlacementTarget = analyzeCleanupBtn;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void ShowCleanupAnalysis(CleanupProfile profile)
+    {
+        var document = Doc;
+        if (document == null || document.Doc.Length == 0) return;
+
+        var dialog = new CleanupAnalysisDialog(document, _vm, profile) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.ResultPreset == null) return;
+        try
+        {
+            _vm.Master.ApplyAnalyzedPreset(dialog.ResultPreset);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Analyze & Tune", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private void OnAddEffect(object sender, RoutedEventArgs e)
     {
         var menu = new ContextMenu();
@@ -775,6 +812,8 @@ public partial class MainWindow : Window
             new("Detect Pitch (Tuner)", null, () => OnTuner(this, new RoutedEventArgs())),
             new("Detect Tempo (BPM)", null, () => OnBpm(this, new RoutedEventArgs())),
             new("Audio Statistics…", null, () => _vm.StatisticsCommand.Execute(null)),
+            new("Analyze & Tune Vinyl Cleanup…", null, () => ShowCleanupAnalysis(CleanupProfile.VinylCleanup)),
+            new("Analyze & Tune Clean Transfer…", null, () => ShowCleanupAnalysis(CleanupProfile.CleanTransfer)),
             new("Apply Chain to Selection / File", null, () => _vm.ApplyChainCommand.Execute(null)),
             new("Render to New Tab", null, () => _vm.RenderCommand.Execute(null)),
             new("Batch Converter…", null, () => OnBatchConvert(this, new RoutedEventArgs())),

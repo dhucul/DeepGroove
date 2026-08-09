@@ -7,7 +7,7 @@ public sealed class LimiterEffect : EffectBase
 {
     private static readonly EffectParam[] P =
     [
-        new("thresh", "THRESH", -24, 0, 0, EffectParam.Db),
+        new("thresh", "THRESH", -24, 0, -4.2, EffectParam.Db),
         new("ceiling", "CEILING", -12, 0, -1, v => $"{v:0.0} dBTP"),
     ];
 

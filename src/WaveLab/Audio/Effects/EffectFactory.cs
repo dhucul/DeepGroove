@@ -109,40 +109,64 @@ public static class EffectFactory
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
+    /// <summary>
+    /// Build a fresh in-memory copy of a factory preset. Analysis workflows use this
+    /// same source of truth without reading or overwriting a user's saved presets.
+    /// </summary>
+    public static ChainPreset CreateFactoryPreset(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        List<EffectState> effects = name switch
+        {
+            "Default" => [State("eq"), State("limiter")],
+            "Podcast Voice" =>
+                [State("hpf", ("cutoff", 80.0)), State("gate", ("thresh", -55.0)),
+                 State("eq", ("low", 1.0), ("mid", 1.5), ("high", 2.0)),
+                 State("compressor", ("thresh", -20.0), ("ratio", 3.0), ("makeup", 4.0)),
+                 State("limiter", ("ceiling", -1.0))],
+            "Master Bus" =>
+                [State("eq"), State("compressor", ("thresh", -14.0), ("ratio", 1.8),
+                     ("attack", 30.0), ("release", 250.0)),
+                 State("limiter", ("thresh", -3.0), ("ceiling", -1.0))],
+            "Vocal Space" =>
+                [State("eq", ("high", 1.5)), State("reverb", ("size", 0.55), ("mix", 0.18)),
+                 State("limiter")],
+            "Vinyl Cleanup" =>
+                [State("hpf", ("cutoff", 28.0), ("q", 0.707)),
+                 State("dehum", ("frequency", 60.0), ("harmonics", 6.0), ("q", 40.0), ("amount", 0.75)),
+                 State("denoise", ("threshold", -62.0), ("reduction", 8.0), ("hiss", 6.0), ("release", 350.0)),
+                 State("eq", ("low", 0.5), ("mid", 0.5), ("high", 1.0)),
+                 State("limiter", ("thresh", -1.5), ("ceiling", -1.0))],
+            "Mono Record Presence" =>
+                [State("mono-stereo", ("amount", 0.38), ("delay", 11.0), ("bass", 160.0), ("safety", 0.9)),
+                 State("stereo-width", ("width", 1.15), ("monoBass", 140.0), ("safety", 1.0)),
+                 State("eq", ("low", 0.5), ("mid", 0.8), ("high", 1.2)),
+                 State("compressor", ("thresh", -16.0), ("ratio", 1.6), ("attack", 30.0), ("release", 280.0)),
+                 State("limiter", ("thresh", -1.0), ("ceiling", -1.0))],
+            "Clean Transfer" =>
+                [State("channel-balance"),
+                 State("dehum", ("amount", 0.65)),
+                 State("denoise", ("threshold", -64.0), ("reduction", 6.0), ("hiss", 5.0), ("release", 400.0)),
+                 State("normalizer", ("target", -20.0), ("maxBoost", 3.0), ("maxCut", 6.0),
+                     ("gate", -58.0), ("response", 2500.0)),
+                 State("trim"), State("limiter", ("ceiling", -1.0))],
+            _ => throw new ArgumentException($"Unknown factory preset '{name}'.", nameof(name)),
+        };
+        return new ChainPreset { Name = name, Effects = effects };
+    }
+
     public static void EnsureFactoryPresets()
     {
         try
         {
             Directory.CreateDirectory(AppSettings.PresetsDir);
-            WriteIfMissing("Default", [State("eq"), State("limiter")]);
-            WriteIfMissing("Podcast Voice",
-                [State("hpf", ("cutoff", 80.0)), State("gate", ("thresh", -55.0)),
-                 State("eq", ("low", 1.0), ("mid", 1.5), ("high", 2.0)),
-                 State("compressor", ("thresh", -20.0), ("ratio", 3.0), ("makeup", 4.0)),
-                 State("limiter", ("ceiling", -1.0))]);
-            WriteIfMissing("Master Bus",
-                [State("eq"), State("compressor", ("thresh", -14.0), ("ratio", 1.8), ("attack", 30.0), ("release", 250.0)),
-                 State("limiter", ("thresh", -3.0), ("ceiling", -1.0))]);
-            WriteIfMissing("Vocal Space",
-                [State("eq", ("high", 1.5)), State("reverb", ("size", 0.55), ("mix", 0.18)), State("limiter")]);
-            WriteIfMissing("Vinyl Cleanup",
-                [State("hpf", ("cutoff", 28.0), ("q", 0.707)),
-                 State("dehum", ("frequency", 60.0), ("harmonics", 6.0), ("q", 40.0), ("amount", 0.75)),
-                 State("denoise", ("threshold", -62.0), ("reduction", 8.0), ("hiss", 6.0), ("release", 350.0)),
-                 State("eq", ("low", 0.5), ("mid", 0.5), ("high", 1.0)),
-                 State("limiter", ("thresh", -1.5), ("ceiling", -1.0))]);
-            WriteIfMissing("Mono Record Presence",
-                [State("mono-stereo", ("amount", 0.38), ("delay", 11.0), ("bass", 160.0), ("safety", 0.9)),
-                 State("stereo-width", ("width", 1.15), ("monoBass", 140.0), ("safety", 1.0)),
-                 State("eq", ("low", 0.5), ("mid", 0.8), ("high", 1.2)),
-                 State("compressor", ("thresh", -16.0), ("ratio", 1.6), ("attack", 30.0), ("release", 280.0)),
-                 State("limiter", ("thresh", -1.0), ("ceiling", -1.0))]);
-            WriteIfMissing("Clean Transfer",
-                [State("channel-balance"),
-                 State("dehum", ("amount", 0.65)),
-                 State("denoise", ("threshold", -64.0), ("reduction", 6.0), ("hiss", 5.0), ("release", 400.0)),
-                 State("normalizer", ("target", -20.0), ("maxBoost", 3.0), ("maxCut", 6.0), ("gate", -58.0), ("response", 2500.0)),
-                 State("trim"), State("limiter", ("ceiling", -1.0))]);
+            foreach (string name in (string[])
+                     ["Default", "Podcast Voice", "Master Bus", "Vocal Space", "Vinyl Cleanup",
+                      "Mono Record Presence", "Clean Transfer"])
+            {
+                ChainPreset preset = CreateFactoryPreset(name);
+                WriteIfMissing(preset.Name, preset.Effects);
+            }
         }
         catch { }
     }

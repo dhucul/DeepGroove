@@ -107,14 +107,15 @@ public sealed class MasterSection : ISampleProvider
         }
     }
 
-    public void MoveEffect(IAudioEffect fx, int delta)
+    public bool MoveEffect(IAudioEffect fx, int delta)
     {
         lock (_chainLock)
         {
             int i = _chain.IndexOf(fx);
             int j = i + delta;
-            if (i < 0 || j < 0 || j >= _chain.Count) return;
+            if (i < 0 || j < 0 || j >= _chain.Count) return false;
             (_chain[i], _chain[j]) = (_chain[j], _chain[i]);
+            return true;
         }
     }
 

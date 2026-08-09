@@ -1,0 +1,392 @@
+<div id="wavelab-vinyl-tuner">
+  <style>
+    #wavelab-vinyl-tuner {
+      font-family: "Segoe UI", Inter, sans-serif;
+      color: #dfe4e9;
+      width: 100%;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    #wavelab-vinyl-tuner * { box-sizing: border-box; }
+    #wavelab-vinyl-tuner .wl-window {
+      width: min(920px, 100%);
+      margin: 0 auto;
+      background: #181d22;
+      border: 1px solid #37414b;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 22px 70px rgba(0,0,0,.55);
+    }
+    #wavelab-vinyl-tuner .wl-titlebar {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 14px 17px;
+      background: #191e23;
+      border-bottom: 1px solid #2b323a;
+    }
+    #wavelab-vinyl-tuner .wl-mark {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      flex: 0 0 auto;
+      border-radius: 8px;
+      color: #3fd6c2;
+      background: #173a36;
+      border: 1px solid #2e5a54;
+      font-size: 17px;
+    }
+    #wavelab-vinyl-tuner .wl-titlecopy { min-width: 0; flex: 1; }
+    #wavelab-vinyl-tuner .wl-title {
+      font-size: 15px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #wavelab-vinyl-tuner .wl-subtitle {
+      margin-top: 2px;
+      color: #8d969f;
+      font-size: 11px;
+    }
+    #wavelab-vinyl-tuner .wl-close {
+      border: 0;
+      background: transparent;
+      color: #8d969f;
+      font: inherit;
+      font-size: 18px;
+      padding: 5px 8px;
+      cursor: pointer;
+    }
+    #wavelab-vinyl-tuner .wl-source {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 12px 17px;
+      border-bottom: 1px solid #252c33;
+      background: #15191e;
+    }
+    #wavelab-vinyl-tuner .wl-label {
+      color: #727b84;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    #wavelab-vinyl-tuner .wl-source-name {
+      margin-top: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    #wavelab-vinyl-tuner .wl-complete {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: #8ee3ae;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    #wavelab-vinyl-tuner .wl-complete::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #53d38a;
+      box-shadow: 0 0 8px rgba(83,211,138,.55);
+    }
+    #wavelab-vinyl-tuner .wl-body { padding: 14px 17px 16px; }
+    #wavelab-vinyl-tuner .wl-findings {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0,1fr));
+      gap: 8px;
+      margin-top: 7px;
+      margin-bottom: 15px;
+    }
+    #wavelab-vinyl-tuner .wl-finding {
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid #293139;
+      border-radius: 8px;
+      background: #13171b;
+    }
+    #wavelab-vinyl-tuner .wl-finding-value {
+      margin-top: 5px;
+      color: #e6ebef;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    #wavelab-vinyl-tuner .wl-finding-note {
+      margin-top: 3px;
+      color: #7f8992;
+      font-size: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #wavelab-vinyl-tuner .wl-section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 7px;
+    }
+    #wavelab-vinyl-tuner .wl-section-title {
+      font-size: 12px;
+      font-weight: 600;
+    }
+    #wavelab-vinyl-tuner .wl-section-note {
+      color: #7f8992;
+      font-size: 10px;
+      text-align: right;
+    }
+    #wavelab-vinyl-tuner .wl-recommendations {
+      border-top: 1px solid #293139;
+    }
+    #wavelab-vinyl-tuner .wl-rec {
+      display: grid;
+      grid-template-columns: 22px minmax(120px,.7fr) minmax(165px,1fr) minmax(190px,1.4fr) 74px;
+      gap: 10px;
+      align-items: center;
+      min-height: 54px;
+      padding: 8px 4px;
+      border-bottom: 1px solid #293139;
+    }
+    #wavelab-vinyl-tuner .wl-rec input {
+      accent-color: #3fd6c2;
+      width: 15px;
+      height: 15px;
+    }
+    #wavelab-vinyl-tuner .wl-fx-name {
+      font-size: 11px;
+      font-weight: 600;
+    }
+    #wavelab-vinyl-tuner .wl-evidence {
+      color: #929ba4;
+      font-size: 10px;
+    }
+    #wavelab-vinyl-tuner .wl-settings {
+      color: #c8cfd5;
+      font-family: Consolas, monospace;
+      font-size: 10px;
+    }
+    #wavelab-vinyl-tuner .wl-settings .wl-old {
+      color: #69737c;
+      text-decoration: line-through;
+      margin-right: 5px;
+    }
+    #wavelab-vinyl-tuner .wl-settings .wl-arrow { color: #55716e; margin-right: 5px; }
+    #wavelab-vinyl-tuner .wl-confidence { text-align: right; }
+    #wavelab-vinyl-tuner .wl-confidence strong {
+      display: block;
+      color: #3fd6c2;
+      font: 600 10px Consolas, monospace;
+    }
+    #wavelab-vinyl-tuner .wl-confidence span { color: #707a83; font-size: 9px; }
+    #wavelab-vinyl-tuner .wl-safety {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      color: #8d969f;
+      font-size: 10px;
+    }
+    #wavelab-vinyl-tuner .wl-safety b { color: #8ee3ae; font-weight: 600; }
+    #wavelab-vinyl-tuner .wl-footer {
+      display: grid;
+      grid-template-columns: minmax(0,1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 17px;
+      background: #15191e;
+      border-top: 1px solid #2b323a;
+    }
+    #wavelab-vinyl-tuner .wl-preview-state {
+      color: #8d969f;
+      font-size: 10px;
+      min-width: 0;
+    }
+    #wavelab-vinyl-tuner .wl-preview-state strong { color: #3fd6c2; font-weight: 600; }
+    #wavelab-vinyl-tuner .wl-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 7px;
+    }
+    #wavelab-vinyl-tuner .wl-action {
+      min-height: 34px;
+      padding: 7px 12px;
+      border: 1px solid #343d46;
+      border-radius: 7px;
+      background: #20262d;
+      color: #cfd6dc;
+      font: 600 11px "Segoe UI", sans-serif;
+      cursor: pointer;
+    }
+    #wavelab-vinyl-tuner .wl-action:hover { border-color: #4a5b63; }
+    #wavelab-vinyl-tuner .wl-action.wl-primary {
+      background: #1b4842;
+      border-color: #34756b;
+      color: #d7f8f3;
+    }
+    #wavelab-vinyl-tuner .wl-action[aria-pressed="true"] {
+      background: #173a35;
+      border-color: #3d8176;
+      color: #d7f8f3;
+    }
+    #wavelab-vinyl-tuner .wl-rec:has(input:not(:checked)) { opacity: .42; }
+    @media (max-width: 720px) {
+      #wavelab-vinyl-tuner .wl-findings { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      #wavelab-vinyl-tuner .wl-rec {
+        grid-template-columns: 22px minmax(100px,.7fr) minmax(150px,1.2fr) 66px;
+      }
+      #wavelab-vinyl-tuner .wl-evidence { display: none; }
+    }
+    @media (max-width: 480px) {
+      #wavelab-vinyl-tuner { padding: 0; }
+      #wavelab-vinyl-tuner .wl-window { border-radius: 10px; }
+      #wavelab-vinyl-tuner .wl-source { grid-template-columns: 1fr; gap: 7px; }
+      #wavelab-vinyl-tuner .wl-findings { grid-template-columns: 1fr 1fr; }
+      #wavelab-vinyl-tuner .wl-finding-value { white-space: normal; font-size: 11px; }
+      #wavelab-vinyl-tuner .wl-rec {
+        grid-template-columns: 20px minmax(90px,1fr) 58px;
+        gap: 7px;
+      }
+      #wavelab-vinyl-tuner .wl-settings {
+        grid-column: 2 / 4;
+        padding-bottom: 3px;
+      }
+      #wavelab-vinyl-tuner .wl-confidence { grid-column: 3; grid-row: 1; }
+      #wavelab-vinyl-tuner .wl-footer { grid-template-columns: 1fr; }
+      #wavelab-vinyl-tuner .wl-actions { justify-content: stretch; }
+      #wavelab-vinyl-tuner .wl-action { flex: 1 1 44%; }
+      #wavelab-vinyl-tuner .wl-section-head { display: block; }
+      #wavelab-vinyl-tuner .wl-section-note { text-align: left; margin-top: 3px; }
+    }
+  </style>
+
+  <section class="wl-window" aria-label="Vinyl Cleanup Analyze and Tune dialog">
+    <header class="wl-titlebar">
+      <div class="wl-mark" aria-hidden="true">✦</div>
+      <div class="wl-titlecopy">
+        <div class="wl-title">Vinyl Cleanup · Analyze &amp; Tune</div>
+        <div class="wl-subtitle">Evidence-based rack settings · source audio remains untouched</div>
+      </div>
+      <button class="wl-close" type="button" aria-label="Close">×</button>
+    </header>
+
+    <div class="wl-source">
+      <div>
+        <div class="wl-label">Analyzed source</div>
+        <div class="wl-source-name">Entire recording · 23:47 · 44.1 kHz stereo</div>
+      </div>
+      <div class="wl-complete">Analysis complete · 18 representative passages</div>
+    </div>
+
+    <main class="wl-body">
+      <div class="wl-label">What the analyzer found</div>
+      <div class="wl-findings">
+        <div class="wl-finding">
+          <div class="wl-label">Low-frequency rumble</div>
+          <div class="wl-finding-value">Strong below 31 Hz</div>
+          <div class="wl-finding-note">Stable across both channels</div>
+        </div>
+        <div class="wl-finding">
+          <div class="wl-label">Mains hum</div>
+          <div class="wl-finding-value">60.0 Hz + 4 harmonics</div>
+          <div class="wl-finding-note">Persistent tonal peaks</div>
+        </div>
+        <div class="wl-finding">
+          <div class="wl-label">Surface noise floor</div>
+          <div class="wl-finding-value">−57.4 dBFS</div>
+          <div class="wl-finding-note">Quietest clean lead-in</div>
+        </div>
+        <div class="wl-finding">
+          <div class="wl-label">High-frequency hiss</div>
+          <div class="wl-finding-value">Above 6.2 kHz</div>
+          <div class="wl-finding-note">Moderate, broadband</div>
+        </div>
+      </div>
+
+      <div class="wl-section-head">
+        <div class="wl-section-title">Recommended Vinyl Cleanup settings</div>
+        <div class="wl-section-note">Uncheck any processor you want to leave unchanged</div>
+      </div>
+      <div class="wl-recommendations">
+        <label class="wl-rec">
+          <input type="checkbox" checked aria-label="Apply high-pass recommendation">
+          <span class="wl-fx-name">High-Pass Filter</span>
+          <span class="wl-evidence">Rumble falls into program noise by 31 Hz</span>
+          <span class="wl-settings"><span class="wl-old">28 Hz</span><span class="wl-arrow">→</span>32 Hz · Q 0.71</span>
+          <span class="wl-confidence"><strong>94%</strong><span>confidence</span></span>
+        </label>
+        <label class="wl-rec">
+          <input type="checkbox" checked aria-label="Apply hum recommendation">
+          <span class="wl-fx-name">Hum Removal</span>
+          <span class="wl-evidence">60 Hz family stays above nearby spectral floor</span>
+          <span class="wl-settings"><span class="wl-old">6 × Q40 · 75%</span><span class="wl-arrow">→</span>4 × Q44 · 62%</span>
+          <span class="wl-confidence"><strong>91%</strong><span>confidence</span></span>
+        </label>
+        <label class="wl-rec">
+          <input type="checkbox" checked aria-label="Apply noise recommendation">
+          <span class="wl-fx-name">Noise Reduction</span>
+          <span class="wl-evidence">Noise estimate verified in 3 quiet passages</span>
+          <span class="wl-settings"><span class="wl-old">−62 / 8 dB</span><span class="wl-arrow">→</span>−57 / 7 dB</span>
+          <span class="wl-confidence"><strong>87%</strong><span>confidence</span></span>
+        </label>
+        <label class="wl-rec">
+          <input type="checkbox" checked aria-label="Apply hiss recommendation">
+          <span class="wl-fx-name">Hiss Control</span>
+          <span class="wl-evidence">Persistent excess energy begins near 6.2 kHz</span>
+          <span class="wl-settings"><span class="wl-old">6 dB @ 5.5k</span><span class="wl-arrow">→</span>5 dB @ 6.2k</span>
+          <span class="wl-confidence"><strong>82%</strong><span>confidence</span></span>
+        </label>
+        <label class="wl-rec">
+          <input type="checkbox" checked aria-label="Apply limiter recommendation">
+          <span class="wl-fx-name">Precision Limiter</span>
+          <span class="wl-evidence">Preserves 1 dBTP ceiling with light peak control</span>
+          <span class="wl-settings"><span class="wl-old">−1.5 dB</span><span class="wl-arrow">→</span>−2.1 dB · −1.0 dBTP</span>
+          <span class="wl-confidence"><strong>89%</strong><span>confidence</span></span>
+        </label>
+      </div>
+
+      <div class="wl-safety"><b>✓ Conservative limits applied</b><span>Settings are based on quiet and musical passages, with transient and stereo checks.</span></div>
+    </main>
+
+    <footer class="wl-footer">
+      <div class="wl-preview-state" aria-live="polite">Audition path: <strong>Recommended settings</strong> · 12-second loop</div>
+      <div class="wl-actions">
+        <button class="wl-action" type="button" data-action="reanalyze">Re-analyze</button>
+        <button class="wl-action" type="button" data-action="preview" aria-pressed="true">▶ A/B Preview</button>
+        <button class="wl-action wl-primary" type="button" data-action="apply">Apply to Rack</button>
+      </div>
+    </footer>
+  </section>
+
+  <script>
+    (() => {
+      const root = document.getElementById('wavelab-vinyl-tuner');
+      const preview = root.querySelector('[data-action="preview"]');
+      const apply = root.querySelector('[data-action="apply"]');
+      const reanalyze = root.querySelector('[data-action="reanalyze"]');
+      const status = root.querySelector('.wl-preview-state');
+      preview.addEventListener('click', () => {
+        const recommended = preview.getAttribute('aria-pressed') !== 'true';
+        preview.setAttribute('aria-pressed', String(recommended));
+        status.innerHTML = `Audition path: <strong>${recommended ? 'Recommended settings' : 'Original source'}</strong> · 12-second loop`;
+      });
+      apply.addEventListener('click', () => {
+        const count = root.querySelectorAll('.wl-rec input:checked').length;
+        status.innerHTML = `<strong>${count} recommendations applied to the rack</strong> · source audio unchanged`;
+      });
+      reanalyze.addEventListener('click', () => {
+        status.innerHTML = 'Analysis refreshed · <strong>recommendations are current</strong>';
+      });
+    })();
+  </script>
+</div>

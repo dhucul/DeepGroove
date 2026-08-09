@@ -95,6 +95,7 @@ public sealed class MasterSectionViewModel : ObservableObject
     {
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         var effect = _master.AddEffect(typeId);
+        MarkChainCustom();
         SyncFromMaster();
         RackStatusText = $"{effect.DisplayName} added to the rack.";
         NotifyTopologyChanged(expandedMonoBefore);
@@ -102,8 +103,10 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     private void MoveEffect(EffectViewModel vm, int delta)
     {
-        _master.MoveEffect(vm.Effect, delta);
+        if (!_master.MoveEffect(vm.Effect, delta)) return;
+        MarkChainCustom();
         SyncFromMaster();
+        RackStatusText = "Effects reordered · custom chain.";
     }
 
     private void RemoveEffect(EffectViewModel vm)
@@ -112,6 +115,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         if (_master.RemoveEffect(vm.Effect))
         {
+            MarkChainCustom();
             SyncFromMaster();
             RackStatusText = $"{name} removed — processing stopped.";
             NotifyTopologyChanged(expandedMonoBefore);
@@ -122,6 +126,7 @@ public sealed class MasterSectionViewModel : ObservableObject
     {
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         if (!_master.SetEffectEnabled(vm.Effect, enabled)) return;
+        MarkChainCustom();
         RackStatusText = enabled
             ? $"{vm.DisplayName} enabled."
             : $"{vm.DisplayName} bypassed.";
@@ -146,16 +151,51 @@ public sealed class MasterSectionViewModel : ObservableObject
             ProcessingTopologyChanged?.Invoke();
     }
 
+    private void OnEffectChanged(EffectViewModel _)
+    {
+        MarkChainCustom();
+        RackStatusText = "Rack parameters changed · custom chain.";
+    }
+
+    private void MarkChainCustom()
+    {
+        if (_selectedPreset == null) return;
+        _applyingPreset = true;
+        SelectedPreset = null;
+        _applyingPreset = false;
+    }
+
     public void SyncFromMaster()
     {
         Effects.Clear();
         int n = 1;
         foreach (var fx in _master.ChainSnapshot)
         {
-            var vm = new EffectViewModel(fx, MoveEffect, RemoveEffect, SetEffectEnabled) { NumberText = $"{n:00}" };
+            var vm = new EffectViewModel(fx, MoveEffect, RemoveEffect, SetEffectEnabled, OnEffectChanged)
+                { NumberText = $"{n:00}" };
             Effects.Add(vm);
             n++;
         }
+    }
+
+    /// <summary>Atomically replace the live rack with a reviewed analysis result.</summary>
+    public void ApplyAnalyzedPreset(EffectFactory.ChainPreset preset)
+    {
+        ArgumentNullException.ThrowIfNull(preset);
+        var effects = EffectFactory.Instantiate(preset);
+        if (effects.Count == 0)
+            throw new ArgumentException("The analyzed rack contains no supported effects.", nameof(preset));
+
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        _master.ReplaceChain(effects);
+        _applyingPreset = true;
+        SelectedPreset = null;
+        _applyingPreset = false;
+        SyncFromMaster();
+        RackStatusText = RackEnabled
+            ? $"{preset.Name} applied · source audio unchanged."
+            : $"{preset.Name} applied · rack remains bypassed.";
+        NotifyTopologyChanged(expandedMonoBefore);
     }
 
     public void SavePresetAs(string name)

@@ -36,14 +36,17 @@ public sealed class EffectViewModel : ObservableObject
     private readonly Action<EffectViewModel, int> _move;
     private readonly Action<EffectViewModel> _remove;
     private readonly Action<EffectViewModel, bool> _setEnabled;
+    private readonly Action<EffectViewModel> _changed;
 
     public EffectViewModel(IAudioEffect effect, Action<EffectViewModel, int> move,
-        Action<EffectViewModel> remove, Action<EffectViewModel, bool> setEnabled)
+        Action<EffectViewModel> remove, Action<EffectViewModel, bool> setEnabled,
+        Action<EffectViewModel> changed)
     {
         Effect = effect;
         _move = move;
         _remove = remove;
         _setEnabled = setEnabled;
+        _changed = changed;
         foreach (var p in effect.Params)
             Params.Add(new EffectParamViewModel(effect, p, OnParamChanged));
         MoveUpCommand = new RelayCommand(() => _move(this, -1));
@@ -98,6 +101,7 @@ public sealed class EffectViewModel : ObservableObject
             Raise(nameof(EqMid));
             Raise(nameof(EqHigh));
         }
+        _changed(this);
     }
 
     public void TickReadout()

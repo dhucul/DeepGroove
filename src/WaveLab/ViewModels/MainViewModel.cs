@@ -1035,8 +1035,11 @@ public sealed class MainViewModel : ObservableObject
 
         if (bypassRack)
         {
-            _previewRackRestoreState = Master.RackEnabled;
-            Master.RackEnabled = false;
+            // Preview bypass is an internal, scoped engine override. Keep the public
+            // rack VM untouched so a transient A/B audition cannot rewrite the
+            // user's rack status or make its toggle flash while the dialog is open.
+            _previewRackRestoreState = Engine.Master.RackEnabled;
+            Engine.Master.RackEnabled = false;
         }
 
         try
@@ -1066,7 +1069,7 @@ public sealed class MainViewModel : ObservableObject
     {
         bool? restore = _previewRackRestoreState;
         _previewRackRestoreState = null;
-        if (restore.HasValue) Master.RackEnabled = restore.Value;
+        if (restore.HasValue) Engine.Master.RackEnabled = restore.Value;
     }
 
     private static void SetTransportPosition(DocumentViewModel document, int position)
