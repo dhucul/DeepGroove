@@ -108,6 +108,11 @@ public static class EffectFactory
     // ── preset files ─────────────────────────────────────────────
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private static readonly string[] FactoryPresetNames =
+    [
+        "Default", "Podcast Voice", "Master Bus", "Vocal Space", "Vinyl Cleanup",
+        "Mono Record Presence", "Clean Transfer",
+    ];
 
     /// <summary>
     /// Build a fresh in-memory copy of a factory preset. Analysis workflows use this
@@ -147,25 +152,39 @@ public static class EffectFactory
                 [State("channel-balance"),
                  State("dehum", ("amount", 0.65)),
                  State("denoise", ("threshold", -64.0), ("reduction", 6.0), ("hiss", 5.0), ("release", 400.0)),
+                 State("trim"),
                  State("normalizer", ("target", -20.0), ("maxBoost", 3.0), ("maxCut", 6.0),
                      ("gate", -58.0), ("response", 2500.0)),
-                 State("trim"), State("limiter", ("ceiling", -1.0))],
+                 State("limiter", ("ceiling", -1.0))],
             _ => throw new ArgumentException($"Unknown factory preset '{name}'.", nameof(name)),
         };
         return new ChainPreset { Name = name, Effects = effects };
     }
 
-    public static void EnsureFactoryPresets()
+    public static void EnsureFactoryPresets() => EnsureFactoryPresets(AppSettings.PresetsDir);
+
+    /// <summary>
+    /// Publish factory presets into a specific directory. Existing presets are
+    /// preserved unless they are an exact semantic match for the previous
+    /// generated factory payload, in which case they are safely upgraded.
+    /// </summary>
+    public static void EnsureFactoryPresets(string directory)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         try
         {
-            Directory.CreateDirectory(AppSettings.PresetsDir);
-            foreach (string name in (string[])
-                     ["Default", "Podcast Voice", "Master Bus", "Vocal Space", "Vinyl Cleanup",
-                      "Mono Record Presence", "Clean Transfer"])
+            Directory.CreateDirectory(directory);
+            foreach (string name in FactoryPresetNames)
             {
                 ChainPreset preset = CreateFactoryPreset(name);
-                WriteIfMissing(preset.Name, preset.Effects);
+                string path = PresetPath(directory, preset.Name);
+                if (!File.Exists(path))
+                {
+                    WritePresetAtomically(preset, path, overwrite: false);
+                    continue;
+                }
+
+                TryUpgradeLegacyFactoryPreset(path, name, preset);
             }
         }
         catch { }
@@ -185,11 +204,23 @@ public static class EffectFactory
         static double e(IAudioEffect fx, string key) => fx.GetParam(key);
     }
 
-    private static void WriteIfMissing(string name, List<EffectState> effects)
+    private static void TryUpgradeLegacyFactoryPreset(
+        string path,
+        string name,
+        ChainPreset currentFactoryPreset)
     {
-        string path = PresetPath(name);
-        if (File.Exists(path)) return;
-        WritePresetAtomically(new ChainPreset { Name = name, Effects = effects }, path, overwrite: false);
+        try
+        {
+            ChainPreset? existing = JsonSerializer.Deserialize<ChainPreset>(File.ReadAllText(path));
+            if (existing == null) return;
+            ChainPreset legacy = CreateLegacyFactoryPreset(name);
+            if (PresetStatesEqual(existing, legacy) && !PresetStatesEqual(existing, currentFactoryPreset))
+                WritePresetAtomically(currentFactoryPreset, path, overwrite: true);
+        }
+        catch
+        {
+            // A malformed, locked, or user-managed file is never replaced.
+        }
     }
 
     public static string PresetPath(string name)
@@ -198,7 +229,65 @@ public static class EffectFactory
             throw new ArgumentException("A preset name is required.", nameof(name));
         name = name.Trim();
         foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
-        return Path.Combine(AppSettings.PresetsDir, name + ".chain.json");
+        return PresetPath(AppSettings.PresetsDir, name);
+    }
+
+    private static string PresetPath(string directory, string name)
+    {
+        name = name.Trim();
+        foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+        return Path.Combine(directory, name + ".chain.json");
+    }
+
+    private static ChainPreset CreateLegacyFactoryPreset(string name)
+    {
+        ChainPreset legacy = CreateFactoryPreset(name);
+        if (name is "Default" or "Podcast Voice" or "Vocal Space" or "Clean Transfer")
+        {
+            EffectState? limiter = legacy.Effects.FirstOrDefault(effect => effect.TypeId == "limiter");
+            if (limiter != null) limiter.Params["thresh"] = 0;
+        }
+
+        if (name == "Clean Transfer")
+        {
+            int trimIndex = legacy.Effects.FindIndex(effect => effect.TypeId == "trim");
+            int normalizerIndex = legacy.Effects.FindIndex(effect => effect.TypeId == "normalizer");
+            if (trimIndex >= 0 && normalizerIndex >= 0 && trimIndex < normalizerIndex)
+            {
+                EffectState trim = legacy.Effects[trimIndex];
+                legacy.Effects.RemoveAt(trimIndex);
+                normalizerIndex = legacy.Effects.FindIndex(effect => effect.TypeId == "normalizer");
+                legacy.Effects.Insert(normalizerIndex + 1, trim);
+            }
+        }
+
+        return legacy;
+    }
+
+    private static bool PresetStatesEqual(ChainPreset left, ChainPreset right)
+    {
+        if (!string.Equals(left.Name, right.Name, StringComparison.Ordinal) ||
+            left.Effects == null || right.Effects == null ||
+            left.Effects.Count != right.Effects.Count)
+            return false;
+
+        for (int index = 0; index < left.Effects.Count; index++)
+        {
+            EffectState a = left.Effects[index];
+            EffectState b = right.Effects[index];
+            if (a == null || b == null ||
+                !string.Equals(a.TypeId, b.TypeId, StringComparison.Ordinal) ||
+                a.Enabled != b.Enabled ||
+                a.Params == null || b.Params == null ||
+                a.Params.Count != b.Params.Count)
+                return false;
+
+            foreach ((string key, double value) in a.Params)
+                if (!b.Params.TryGetValue(key, out double other) || value != other)
+                    return false;
+        }
+
+        return true;
     }
 
     public static List<ChainPreset> LoadPresets()

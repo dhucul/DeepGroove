@@ -231,6 +231,7 @@ public sealed class MainViewModel : ObservableObject
                 _active.Doc.Changed += OnActiveDocumentEdited;
             }
             Raise(nameof(HasDocument));
+            Raise(nameof(CanAnalyzeCleanup));
             Raise(nameof(WindowTitle));
             Raise(nameof(StatusSamples));
             RefreshEditCommandStates();
@@ -238,6 +239,10 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public bool HasDocument => _active != null;
+    public bool CanAnalyzeCleanup => HasDocument &&
+                                     !IsTransportRecording &&
+                                     !IsFinalizingRecording &&
+                                     !HasPendingTransportRecording;
     public string WindowTitle => _active == null ? "WaveLab" : $"{_active.Doc.Title} — {_active.FormatText} · {TimeFormat.Compact(_active.Doc.Duration)}";
 
     public bool IsPlaying
@@ -277,6 +282,7 @@ public sealed class MainViewModel : ObservableObject
             Raise(nameof(RecordStatusText));
             Raise(nameof(RecordButtonToolTip));
             Raise(nameof(CanChangeRecordArm));
+            Raise(nameof(CanAnalyzeCleanup));
             PlayCommand.RaiseCanExecuteChanged();
             RecordSetupCommand.RaiseCanExecuteChanged();
         }
@@ -291,6 +297,7 @@ public sealed class MainViewModel : ObservableObject
             Raise(nameof(RecordStatusText));
             Raise(nameof(RecordButtonToolTip));
             Raise(nameof(CanChangeRecordArm));
+            Raise(nameof(CanAnalyzeCleanup));
             PlayCommand.RaiseCanExecuteChanged();
             RecordCommand.RaiseCanExecuteChanged();
             RecordSetupCommand.RaiseCanExecuteChanged();
@@ -1026,10 +1033,11 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>Play a transient document without adding it to the tab collection.</summary>
-    public void PlayPreview(AudioDocument preview, bool loop = true, bool bypassRack = false)
+    public bool PlayPreview(AudioDocument preview, bool loop = true, bool bypassRack = false)
     {
         ArgumentNullException.ThrowIfNull(preview);
-        if (preview.Length == 0 || IsTransportRecording || IsFinalizingRecording) return;
+        if (preview.Length == 0 || IsTransportRecording || IsFinalizingRecording || HasPendingTransportRecording)
+            return false;
         if (Engine.IsPlaying || Engine.IsPaused || _previewDocument != null || _previewRackRestoreState.HasValue)
             ReleasePlayback();
 
@@ -1051,6 +1059,7 @@ public sealed class MainViewModel : ObservableObject
             _previewDocument = preview;
             _playbackEditVersion = -1;
             IsPlaying = true;
+            return true;
         }
         catch
         {

@@ -223,7 +223,7 @@ public partial class MainWindow : Window
     private void ShowCleanupAnalysis(CleanupProfile profile)
     {
         var document = Doc;
-        if (document == null || document.Doc.Length == 0) return;
+        if (document == null || document.Doc.Length == 0 || !_vm.CanAnalyzeCleanup) return;
 
         var dialog = new CleanupAnalysisDialog(document, _vm, profile) { Owner = this };
         if (dialog.ShowDialog() != true || dialog.ResultPreset == null) return;

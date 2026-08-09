@@ -212,9 +212,9 @@
                 </MenuItem>
                 <MenuItem Header="_Master">
                     <MenuItem Header="Analyze &amp; Tune Vinyl Cleanup…" Click="OnAnalyzeVinylCleanup"
-                              IsEnabled="{Binding HasDocument}"/>
+                              IsEnabled="{Binding CanAnalyzeCleanup}"/>
                     <MenuItem Header="Analyze &amp; Tune Clean Transfer…" Click="OnAnalyzeCleanTransfer"
-                              IsEnabled="{Binding HasDocument}"/>
+                              IsEnabled="{Binding CanAnalyzeCleanup}"/>
                     <Separator/>
                     <MenuItem Header="Apply Chain to Selection / File" Command="{Binding ApplyChainCommand}"/>
                     <MenuItem Header="Render to New Tab" Command="{Binding RenderCommand}"/>
@@ -521,7 +521,7 @@
                             <Button x:Name="analyzeCleanupBtn" Grid.Column="3" Style="{StaticResource ToolButton}"
                                     Width="30" Height="30" Margin="6,0,0,0" Content="✦" FontSize="13"
                                     Foreground="{StaticResource Accent}" Click="OnAnalyzeCleanupMenu"
-                                    IsEnabled="{Binding HasDocument}"
+                                    IsEnabled="{Binding CanAnalyzeCleanup}"
                                     ToolTip="Analyze this file and tune Vinyl Cleanup or Clean Transfer"/>
                         </Grid>
                         <TextBlock Text="{Binding Master.RackStatusText}" Margin="14,5,12,0" FontSize="9.5"

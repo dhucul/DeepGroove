@@ -1,6 +1,7 @@
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
 using Xunit;
+using System.Text.Json;
 
 namespace WaveLab.Tests;
 
@@ -170,6 +171,42 @@ public sealed class CleanupAnalyzerTests
         Assert.True(Recommendation(result, "channel-balance").Confidence >= 0.55);
     }
 
+    [Fact]
+    public void CleanTransferDoesNotTreatAnInvertedPeriodicToneAsChannelLatency()
+    {
+        float[][] input = StereoSignal(4, (time, channel) =>
+        {
+            double tone = 0.16 * Math.Sin(2 * Math.PI * 440 * time);
+            return channel == 0 ? tone : -tone;
+        });
+
+        CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
+            input, SampleRate, CleanupProfile.CleanTransfer);
+        EffectFactory.EffectState balance = State(result.RecommendedPreset, "channel-balance");
+
+        Assert.Equal(0, Param(balance, "align"));
+        Assert.False(balance.Enabled);
+    }
+
+    [Fact]
+    public void CleanTransferAppliesInputTrimBeforeLevelNormalization()
+    {
+        EffectFactory.ChainPreset factory = EffectFactory.CreateFactoryPreset("Clean Transfer");
+        int trimIndex = factory.Effects.FindIndex(effect => effect.TypeId == "trim");
+        int normalizerIndex = factory.Effects.FindIndex(effect => effect.TypeId == "normalizer");
+
+        Assert.True(trimIndex >= 0);
+        Assert.True(normalizerIndex >= 0);
+        Assert.True(trimIndex < normalizerIndex);
+
+        CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
+            StereoSignal(2, (time, _) => 0.8 * Math.Sin(2 * Math.PI * 997 * time)),
+            SampleRate,
+            CleanupProfile.CleanTransfer);
+        Assert.Equal(factory.Effects.Select(effect => effect.TypeId),
+            result.RecommendedPreset.Effects.Select(effect => effect.TypeId));
+    }
+
     [Theory]
     [InlineData(CleanupProfile.VinylCleanup)]
     [InlineData(CleanupProfile.CleanTransfer)]
@@ -268,6 +305,91 @@ public sealed class CleanupAnalyzerTests
     }
 
     [Fact]
+    public void StrongQuietToProgramSeparationStillRequestsUsefulNoiseReduction()
+    {
+        uint state = 0xA11C_E55Du;
+        float[][] input = StereoSignal(12, (time, channel) =>
+        {
+            state = state * 1_664_525u + 1_013_904_223u;
+            double noise = ((state >> 8) / 16_777_215.0 * 2 - 1) * 0.0031;
+            double program = time >= 4
+                ? 0.18 * Math.Sin(2 * Math.PI * (channel == 0 ? 431 : 439) * time)
+                : 0;
+            return noise + program;
+        });
+
+        CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
+            input, SampleRate, CleanupProfile.VinylCleanup);
+        EffectFactory.EffectState denoise = State(result.RecommendedPreset, "denoise");
+
+        Assert.True(denoise.Enabled);
+        Assert.InRange(Param(denoise, "reduction"), 3.0, 12.0);
+        Assert.True(Recommendation(result, "denoise").Confidence >= 0.55);
+    }
+
+    [Fact]
+    public void UntouchedLegacyFactoryPresetIsMigratedButCustomizedPresetIsPreserved()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            EffectFactory.ChainPreset legacyDefault = EffectFactory.CreateFactoryPreset("Default");
+            State(legacyDefault, "limiter").Params["thresh"] = 0;
+            string defaultPath = Path.Combine(directory, "Default.chain.json");
+            File.WriteAllText(defaultPath, JsonSerializer.Serialize(legacyDefault));
+
+            EffectFactory.ChainPreset customized = EffectFactory.CreateFactoryPreset("Vocal Space");
+            State(customized, "limiter").Params["thresh"] = -1.25;
+            string customPath = Path.Combine(directory, "Vocal Space.chain.json");
+            File.WriteAllText(customPath, JsonSerializer.Serialize(customized));
+
+            EffectFactory.EnsureFactoryPresets(directory);
+
+            EffectFactory.ChainPreset migrated = ReadPreset(defaultPath);
+            EffectFactory.ChainPreset preserved = ReadPreset(customPath);
+            Assert.Equal(-4.2, Param(State(migrated, "limiter"), "thresh"), 10);
+            Assert.Equal(-1.25, Param(State(preserved, "limiter"), "thresh"), 10);
+        }
+        finally
+        {
+            foreach (string file in Directory.GetFiles(directory)) File.Delete(file);
+            Directory.Delete(directory);
+        }
+    }
+
+    [Fact]
+    public void UntouchedLegacyCleanTransferIsMigratedToPreNormalizerTrim()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            EffectFactory.ChainPreset legacy = EffectFactory.CreateFactoryPreset("Clean Transfer");
+            State(legacy, "limiter").Params["thresh"] = 0;
+            EffectFactory.EffectState trim = State(legacy, "trim");
+            legacy.Effects.Remove(trim);
+            int normalizer = legacy.Effects.FindIndex(effect => effect.TypeId == "normalizer");
+            legacy.Effects.Insert(normalizer + 1, trim);
+            string path = Path.Combine(directory, "Clean Transfer.chain.json");
+            File.WriteAllText(path, JsonSerializer.Serialize(legacy));
+
+            EffectFactory.EnsureFactoryPresets(directory);
+
+            EffectFactory.ChainPreset migrated = ReadPreset(path);
+            int trimIndex = migrated.Effects.FindIndex(effect => effect.TypeId == "trim");
+            normalizer = migrated.Effects.FindIndex(effect => effect.TypeId == "normalizer");
+            Assert.True(trimIndex < normalizer);
+            Assert.Equal(-4.2, Param(State(migrated, "limiter"), "thresh"), 10);
+        }
+        finally
+        {
+            foreach (string file in Directory.GetFiles(directory)) File.Delete(file);
+            Directory.Delete(directory);
+        }
+    }
+
+    [Fact]
     public void SteadyCleanProgramWithoutAQuietNoisePopulationAvoidsDenoise()
     {
         float[][] input = StereoSignal(10, (time, channel) =>
@@ -349,6 +471,10 @@ public sealed class CleanupAnalyzerTests
 
     private static CleanupRecommendation Recommendation(CleanupAnalysisResult result, string typeId) =>
         Assert.Single(result.Recommendations, recommendation => recommendation.TypeId == typeId);
+
+    private static EffectFactory.ChainPreset ReadPreset(string path) =>
+        JsonSerializer.Deserialize<EffectFactory.ChainPreset>(File.ReadAllText(path))
+        ?? throw new InvalidDataException($"Could not deserialize {path}.");
 
     private static EffectFactory.EffectState State(EffectFactory.ChainPreset preset, string typeId) =>
         Assert.Single(preset.Effects, effect => effect.TypeId == typeId);

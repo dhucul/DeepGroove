@@ -253,7 +253,6 @@ public partial class CleanupAnalysisDialog : Window
         StopPreview();
 
         bool recommended = _nextPreviewIsRecommended;
-        _nextPreviewIsRecommended = !_nextPreviewIsRecommended;
         IReadOnlyList<string> selectedTypeIds = SelectedTypeIds();
         string selectionKey = string.Join("\u001f", selectedTypeIds.Order(StringComparer.Ordinal));
         EffectFactory.ChainPreset? preset = recommended
@@ -299,7 +298,13 @@ public partial class CleanupAnalysisDialog : Window
                     ? $"{ProfileName(_profile)} · recommended preview"
                     : $"{ProfileName(_profile)} · dry preview",
             };
-            _main.PlayPreview(preview, loop: true, bypassRack: true);
+            if (!_main.PlayPreview(preview, loop: true, bypassRack: true))
+            {
+                statusText.Text = "Preview is unavailable while recording audio is active or awaiting recovery.";
+                return;
+            }
+
+            _nextPreviewIsRecommended = !_nextPreviewIsRecommended;
             progressBar.Value = 1;
             previewBtn.Content = recommended ? "▶ Play A · Dry" : "▶ Play B · Tuned";
             statusText.Text = recommended
@@ -355,6 +360,12 @@ public partial class CleanupAnalysisDialog : Window
     {
         if (_analysis == null || _busy || _closed) return;
         StopPreview();
+
+        if (!_main.CanAnalyzeCleanup)
+        {
+            statusText.Text = "Finish or recover the active recording before applying analyzed settings.";
+            return;
+        }
 
         if (_document.Doc.EditVersion != _sourceEditVersion ||
             _rangeStart < 0 || _rangeStart + _rangeCount > _document.Doc.Length)

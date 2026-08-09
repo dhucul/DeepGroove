@@ -665,12 +665,18 @@ public static class CleanupAnalyzer
         double threshold = double.IsFinite(global.NoiseFloorDb)
             ? Math.Clamp(Math.Round(global.NoiseFloorDb + 8), -78, -45)
             : -60;
-        double reduction = Quantize(Math.Clamp((26 - global.DynamicRangeDb) * 0.45, 0, 12), 0.5);
         double high = BandDb(spectral.NoisePower, 6000,
             Math.Min(12000, sampleRate * 0.45), sampleRate, spectral.FftSize);
         double mid = BandDb(spectral.NoisePower, 1500,
             Math.Min(3000, sampleRate * 0.40), sampleRate, spectral.FftSize);
         double hissExcess = double.IsFinite(high) && double.IsFinite(mid) ? high - mid : 0;
+        // Dynamic range tells us whether the quiet windows are representative; it
+        // must not reduce the requested cleanup when that separation is strong.
+        // Derive reduction depth from the measured floor and high-band excess,
+        // while keeping the separation term in the confidence/detection gates.
+        double reduction = Quantize(Math.Clamp(
+            1.5 + floorEvidence * 6.5 + Math.Max(0, hissExcess) * 0.25,
+            0, 12), 0.5);
         double hiss = Quantize(Math.Clamp(2 + Math.Max(0, hissExcess) * 0.55 +
                                                 Math.Max(0, 12 - global.DynamicRangeDb) * 0.20,
             0, Math.Min(10, Math.Max(0, 14 - reduction))), 0.5);
@@ -704,31 +710,63 @@ public static class CleanupAnalyzer
         int count = Math.Min(available, sampleRate * 2);
         int start = Math.Max(0, (available - count) / 2);
         int maximumLag = Math.Max(1, sampleRate * 2 / 1000 / stride);
+        double[] correlations = new double[maximumLag * 2 + 1];
         double best = double.NegativeInfinity;
         int bestLag = 0;
         for (int lag = -maximumLag; lag <= maximumLag; lag++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             double cross = 0, leftSquare = 0, rightSquare = 0;
-            int begin = Math.Max(0, -lag);
+            int begin = Math.Max(1, -lag + 1);
             int end = Math.Min(count / stride, count / stride - lag);
             for (int i = begin; i < end; i++)
             {
-                double l = Finite(left[start + i * stride]);
-                double r = Finite(right[start + (i + lag) * stride]);
+                // First differences suppress stationary DC/low-frequency energy
+                // and give a physical broadband delay a much sharper peak than a
+                // phase-shifted periodic tone.
+                int leftIndex = start + i * stride;
+                int rightIndex = start + (i + lag) * stride;
+                double l = Finite(left[leftIndex]) - Finite(left[leftIndex - stride]);
+                double r = Finite(right[rightIndex]) - Finite(right[rightIndex - stride]);
                 cross += l * r;
                 leftSquare += l * l;
                 rightSquare += r * r;
             }
             double correlation = cross / Math.Max(1e-12, Math.Sqrt(leftSquare * rightSquare));
+            correlations[lag + maximumLag] = correlation;
             if (correlation > best)
             {
                 best = correlation;
                 bestLag = lag;
             }
         }
+
         double milliseconds = -bestLag * stride * 1000.0 / sampleRate;
-        double confidence = Math.Clamp(Math.Max(0, best) * Ramp(Math.Abs(milliseconds), 0.08, 0.6), 0, 0.95);
+        if (bestLag == 0 || best < 0.5) return (0, 0);
+
+        // A periodic or narrow-band signal can have several equally plausible
+        // correlation peaks. Require the winning lag to be materially better
+        // than both zero lag and every non-adjacent alternative before proposing
+        // a channel delay.
+        double zeroCorrelation = correlations[maximumLag];
+        double runnerUp = double.NegativeInfinity;
+        const int adjacentPeakRadius = 1;
+        for (int index = 0; index < correlations.Length; index++)
+        {
+            int lag = index - maximumLag;
+            if (Math.Abs(lag - bestLag) <= adjacentPeakRadius) continue;
+            runnerUp = Math.Max(runnerUp, correlations[index]);
+        }
+        double zeroImprovement = best - zeroCorrelation;
+        double peakContrast = best - runnerUp;
+        if (zeroImprovement < 0.05 || peakContrast < 0.08) return (0, 0);
+
+        double confidence = Math.Clamp(
+            Math.Max(0, best) *
+            Ramp(Math.Abs(milliseconds), 0.08, 0.6) *
+            Ramp(zeroImprovement, 0.05, 0.30) *
+            Ramp(peakContrast, 0.08, 0.35),
+            0, 0.95);
         return (Quantize(Math.Clamp(milliseconds, -2, 2), 0.01), confidence);
     }
 
