@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using Microsoft.Win32;
 using WaveLab.Audio;
@@ -12,7 +13,12 @@ namespace WaveLab.Views;
 
 public partial class ExportDialog : Window
 {
-    private sealed record FormatItem(ExportFormat Format, string Key, string Name)
+    private sealed record FormatItem(
+        ExportFormat Format,
+        string Key,
+        string Name,
+        string Category,
+        string Hint)
     {
         public override string ToString() => Name;
     }
@@ -31,17 +37,30 @@ public partial class ExportDialog : Window
 
         var formats = new List<FormatItem>
         {
-            new(ExportFormat.Wav32Float, "wav32", "WAV — 32-bit float"),
-            new(ExportFormat.Wav24, "wav24", "WAV — 24-bit"),
-            new(ExportFormat.Wav16, "wav16", "WAV — 16-bit (dithered)"),
-            new(ExportFormat.Mp3, "mp3", "MP3"),
-            new(ExportFormat.Aac, "aac", "AAC (M4A)"),
-            new(ExportFormat.Wma, "wma", "WMA"),
+            new(ExportFormat.Wav32Float, "wav32", "WAV · 32-bit float", "UNCOMPRESSED",
+                "WAV stores uncompressed audio. 32-bit float preserves the editor's full working precision."),
+            new(ExportFormat.Wav24, "wav24", "WAV · 24-bit PCM", "UNCOMPRESSED",
+                "WAV stores uncompressed audio. 24-bit PCM is a high-resolution delivery format."),
+            new(ExportFormat.Wav16, "wav16", "WAV · 16-bit PCM (dithered)", "UNCOMPRESSED",
+                "WAV stores uncompressed audio. TPDF dither is applied when reducing processed audio to 16-bit PCM."),
+            new(ExportFormat.Wav16Undithered, "wav16nodither", "WAV · 16-bit PCM (no dither)", "UNCOMPRESSED",
+                "WAV stores uncompressed audio. No dither is added before 16-bit quantization."),
         };
         if (AudioExporter.FlacAvailable())
-            formats.Add(new FormatItem(ExportFormat.Flac, "flac", "FLAC"));
+            formats.Add(new FormatItem(ExportFormat.Flac, "flac", "FLAC · 24-bit", "LOSSLESS COMPRESSED",
+                "FLAC reduces file size without discarding audio information."));
+        formats.AddRange([
+            new(ExportFormat.Mp3, "mp3", "MP3", "LOSSY",
+                "MP3 makes a smaller file by discarding audio information. Choose a bitrate below."),
+            new(ExportFormat.Aac, "aac", "AAC (M4A)", "LOSSY",
+                "AAC makes a smaller file by discarding audio information. Choose a bitrate below."),
+            new(ExportFormat.Wma, "wma", "WMA", "LOSSY",
+                "WMA makes a smaller file by discarding audio information. Choose a bitrate below."),
+        ]);
 
-        foreach (var f in formats) cmbFormat.Items.Add(f);
+        var formatsView = CollectionViewSource.GetDefaultView(formats);
+        formatsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(FormatItem.Category)));
+        cmbFormat.ItemsSource = formatsView;
         cmbFormat.SelectedIndex = 0;
         foreach (FormatItem item in cmbFormat.Items)
             if (item.Key == AppSettings.Instance.ExportFormat) { cmbFormat.SelectedItem = item; break; }
@@ -64,7 +83,12 @@ public partial class ExportDialog : Window
     private void OnFormatChanged(object sender, SelectionChangedEventArgs e)
     {
         if (cmbBitrate == null || cmbFormat.SelectedItem is not FormatItem f) return;
-        cmbBitrate.IsEnabled = AudioExporter.IsLossy(f.Format);
+        bool lossy = AudioExporter.IsLossy(f.Format);
+        cmbBitrate.IsEnabled = lossy;
+        bitratePanel.Visibility = lossy ? Visibility.Visible : Visibility.Collapsed;
+        bitrateColumn.Width = lossy ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+        bitrateGap.Width = lossy ? new GridLength(14) : new GridLength(0);
+        formatHint.Text = f.Hint;
     }
 
     private async void OnExport(object sender, RoutedEventArgs e)

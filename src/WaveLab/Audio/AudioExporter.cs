@@ -6,7 +6,7 @@ using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
 
-public enum ExportFormat { Wav32Float, Wav24, Wav16, Mp3, Aac, Wma, Flac }
+public enum ExportFormat { Wav32Float, Wav24, Wav16, Wav16Undithered, Mp3, Aac, Wma, Flac }
 
 /// <summary>
 /// Exports a document (or a range of it) to WAV via the internal codec, or to
@@ -80,15 +80,16 @@ public static class AudioExporter
                 case ExportFormat.Wav32Float:
                 case ExportFormat.Wav24:
                 case ExportFormat.Wav16:
+                case ExportFormat.Wav16Undithered:
                 {
                     int depth = format switch
                     {
                         ExportFormat.Wav24 => 24,
-                        ExportFormat.Wav16 => 16,
+                        ExportFormat.Wav16 or ExportFormat.Wav16Undithered => 16,
                         _ => 32,
                     };
                     var snapshot = new AudioDocument(data, rate, depth);
-                    WavCodec.Save(snapshot, stagePath, depth, dither: depth == 16,
+                    WavCodec.Save(snapshot, stagePath, depth, dither: format == ExportFormat.Wav16,
                         cancellationToken: cancellationToken);
                     break;
                 }

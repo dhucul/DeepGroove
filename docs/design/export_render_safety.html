@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WaveLab export and render safety preview</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0d10; --panel:#14181d; --panel2:#1a1f25; --line:#303740; --text:#dce2e8; --muted:#929ca6; --faint:#65707a; --accent:#3fd6c2; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:radial-gradient(circle at 50% 8%,#182229 0,#0b0d10 46%); color:var(--text); font:13px Inter,Segoe UI,sans-serif; display:grid; place-items:center; }
+  main { width:1040px; display:grid; grid-template-columns:480px 1fr; gap:34px; align-items:start; }
+  .caption { grid-column:1/-1; color:#8e98a2; letter-spacing:.12em; font-size:11px; font-weight:700; }
+  .window,.rack { background:var(--panel2); border:1px solid #313841; border-radius:14px; box-shadow:0 18px 60px #000a; overflow:hidden; }
+  .title { padding:16px 20px; border-bottom:1px solid #2a3037; font-size:14px; font-weight:650; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--accent); margin-right:10px; }
+  .content { padding:19px 20px 22px; }
+  label { display:block; color:var(--faint); font-size:10px; font-weight:750; letter-spacing:.08em; margin-bottom:7px; }
+  .select { border:1px solid #39424c; background:#11151a; border-radius:6px; min-height:36px; padding:9px 12px; position:relative; }
+  .select:after { content:'⌄'; position:absolute; right:12px; color:var(--muted); }
+  .menu { margin-top:4px; border:1px solid #3b444e; background:#101419; border-radius:7px; padding:6px; box-shadow:0 12px 32px #000a; }
+  .group { color:var(--faint); font-size:9px; font-weight:800; letter-spacing:.12em; padding:9px 9px 5px; }
+  .option { padding:8px 10px; border-radius:5px; color:#cdd4db; }
+  .option.selected { background:#1b3936; color:#dcfffa; }
+  .details { margin-top:15px; display:grid; grid-template-columns:1fr; }
+  .hint { color:var(--muted); font-size:11px; margin-top:8px; line-height:1.45; }
+  .rack { margin-top:42px; padding:18px; }
+  .rack h2 { margin:0 0 5px; font-size:13px; }
+  .rack p { margin:0 0 18px; color:var(--muted); font-size:11px; }
+  .buttons { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+  button { height:39px; border:1px solid #354049; border-radius:7px; background:#171c22; color:#c7d0d7; font:600 11.5px Inter,Segoe UI,sans-serif; }
+  button.primary { background:#173c38; border-color:#2c776e; color:#d9fffa; }
+  .sub { display:block; color:#839098; font:500 9px ui-monospace,Consolas,monospace; margin-top:2px; }
+  button.primary .sub { color:#8dd7cc; }
+  .note { margin-top:13px; border-left:2px solid var(--accent); padding:7px 0 7px 10px; color:#aab4bc; font-size:11px; line-height:1.45; }
+</style>
+</head>
+<body>
+<main>
+  <div class="caption">PROPOSED WORDING · UNCOMPRESSED EXPORT + EXPLICIT RENDER SAFETY</div>
+  <section class="window">
+    <div class="title"><span class="dot"></span>Export — demo_track.wav</div>
+    <div class="content">
+      <label>FORMAT</label>
+      <div class="select">Uncompressed WAV · 32-bit float</div>
+      <div class="menu">
+        <div class="group">UNCOMPRESSED</div>
+        <div class="option selected">WAV · 32-bit float</div>
+        <div class="option">WAV · 24-bit PCM</div>
+        <div class="option">WAV · 16-bit PCM (dithered)</div>
+        <div class="group">LOSSLESS COMPRESSED</div>
+        <div class="option">FLAC · 24-bit</div>
+        <div class="group">LOSSY</div>
+        <div class="option">MP3</div>
+        <div class="option">AAC (M4A)</div>
+        <div class="option">WMA</div>
+      </div>
+      <div class="details">
+        <label>SAMPLE RATE</label>
+        <div class="select">Keep (44.1 kHz)</div>
+        <div class="hint">WAV stores uncompressed audio. Bitrate is shown only for lossy formats.</div>
+      </div>
+    </div>
+  </section>
+  <section class="rack">
+    <h2>Master rack output</h2>
+    <p>Choose whether to update this tab or create a separate mastered copy.</p>
+    <div class="buttons">
+      <button>Render in Place<span class="sub">UNDOABLE · SELECTION OR FILE</span></button>
+      <button class="primary">Render Copy<span class="sub">SOURCE UNCHANGED · NEW TAB</span></button>
+    </div>
+    <div class="note">“Render in Place” creates one undo-history entry. “Render Copy” never changes the source document.</div>
+  </section>
+</main>
+</body>
+</html>

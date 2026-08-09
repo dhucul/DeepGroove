@@ -79,6 +79,8 @@ public sealed class AudioDocument
             _sourceBitDepth = value;
         }
     }
+    /// <summary>Whether ordinary Save should apply TPDF dither when writing 16-bit PCM.</summary>
+    public bool Dither16BitOnSave { get; set; } = true;
     public string? FilePath { get; set; }
     public string Title { get; set; } = "Untitled";
     public bool Dirty { get; private set; }
@@ -146,7 +148,10 @@ public sealed class AudioDocument
         ArgumentNullException.ThrowIfNull(newData);
         ArgumentException.ThrowIfNullOrWhiteSpace(opName);
         var oldData = Volatile.Read(ref _channels);
-        ValidateReplacementData(newData, oldData.Length, opName);
+        // A complete render may legitimately change the channel topology (for
+        // example, an undoable mono-to-stereo master). Region splices still
+        // require the existing channel count.
+        ValidateChannelData(newData, nameof(newData));
         int newLength = newData[0].Length;
 
         int oldLength = oldData[0].Length;

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using Microsoft.Win32;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
@@ -186,6 +187,34 @@ public partial class MainWindow : Window
     {
         if (_vm.ActiveDocument == null) return;
         new ExportDialog(_vm.ActiveDocument) { Owner = this }.ShowDialog();
+    }
+
+    private void OnOpenAsBitDepth(object sender, RoutedEventArgs e)
+    {
+        var files = new OpenFileDialog
+        {
+            Filter = AudioImporter.OpenFilter,
+            Multiselect = true,
+            InitialDirectory = AppSettings.Instance.LastOpenFolder ?? "",
+        };
+        if (files.ShowDialog() != true) return;
+
+        string[] choices =
+        [
+            "16-bit PCM · TPDF dither",
+            "16-bit PCM · no dither",
+            "24-bit PCM",
+            "32-bit float",
+        ];
+        var choice = new ParamDialog(
+            "Open As Bit Depth",
+            "Open Copy",
+            "Target encoding",
+            choices,
+            3) { Owner = this };
+        if (choice.ShowDialog() != true) return;
+
+        _vm.OpenFiles(files.FileNames, (OpenBitDepth)choice.ComboIndex);
     }
 
     private void ShowStatisticsDialog()
@@ -765,6 +794,7 @@ public partial class MainWindow : Window
             new("Extract Audio CD…", null, () => OnExtractAudioCd(this, new RoutedEventArgs())),
             new("Save", "Ctrl+S", () => _vm.SaveCommand.Execute(null)),
             new("Save As…", "Ctrl+Shift+S", () => _vm.SaveAsCommand.Execute(null)),
+            new("Open As Bit Depth…", null, () => OnOpenAsBitDepth(this, new RoutedEventArgs())),
             new("Export…", "Ctrl+E", () => _vm.ExportCommand.Execute(null)),
             new("Recording Setup…", null, () =>
             {
@@ -814,8 +844,8 @@ public partial class MainWindow : Window
             new("Audio Statistics…", null, () => _vm.StatisticsCommand.Execute(null)),
             new("Analyze & Tune Vinyl Cleanup…", null, () => ShowCleanupAnalysis(CleanupProfile.VinylCleanup)),
             new("Analyze & Tune Clean Transfer…", null, () => ShowCleanupAnalysis(CleanupProfile.CleanTransfer)),
-            new("Apply Chain to Selection / File", null, () => _vm.ApplyChainCommand.Execute(null)),
-            new("Render to New Tab", null, () => _vm.RenderCommand.Execute(null)),
+            new("Render in Place (Undoable)", null, () => _vm.ApplyChainCommand.Execute(null)),
+            new("Render Copy to New Tab", null, () => _vm.RenderCommand.Execute(null)),
             new("Batch Converter…", null, () => OnBatchConvert(this, new RoutedEventArgs())),
             new("Settings…", null, () => _vm.SettingsCommand.Execute(null)),
         };

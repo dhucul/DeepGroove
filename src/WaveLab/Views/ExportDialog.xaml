@@ -21,15 +21,29 @@
 
             <StackPanel Margin="20,18">
                 <TextBlock Text="FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                <ComboBox x:Name="cmbFormat" Margin="0,6,0,14" SelectionChanged="OnFormatChanged"/>
+                <ComboBox x:Name="cmbFormat" Margin="0,6,0,0" MaxDropDownHeight="420"
+                          SelectionChanged="OnFormatChanged">
+                    <ComboBox.GroupStyle>
+                        <GroupStyle>
+                            <GroupStyle.HeaderTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Name}" Margin="10,9,10,4" FontSize="9.5"
+                                               FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                                </DataTemplate>
+                            </GroupStyle.HeaderTemplate>
+                        </GroupStyle>
+                    </ComboBox.GroupStyle>
+                </ComboBox>
+                <TextBlock x:Name="formatHint" Margin="0,7,0,14" FontSize="10.5"
+                           Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
 
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="14"/>
+                        <ColumnDefinition x:Name="bitrateColumn" Width="*"/>
+                        <ColumnDefinition x:Name="bitrateGap" Width="14"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <StackPanel>
+                    <StackPanel x:Name="bitratePanel">
                         <TextBlock Text="BITRATE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
                         <ComboBox x:Name="cmbBitrate" Margin="0,6,0,0"/>
                     </StackPanel>

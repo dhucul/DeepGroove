@@ -123,7 +123,7 @@ public static class EffectFactory
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         List<EffectState> effects = name switch
         {
-            "Default" => [State("eq"), State("limiter")],
+            "Default" => [State("eq"), DisabledState("limiter")],
             "Podcast Voice" =>
                 [State("hpf", ("cutoff", 80.0)), State("gate", ("thresh", -55.0)),
                  State("eq", ("low", 1.0), ("mid", 1.5), ("high", 2.0)),
@@ -204,6 +204,13 @@ public static class EffectFactory
         static double e(IAudioEffect fx, string key) => fx.GetParam(key);
     }
 
+    private static EffectState DisabledState(string typeId)
+    {
+        EffectState state = State(typeId);
+        state.Enabled = false;
+        return state;
+    }
+
     private static void TryUpgradeLegacyFactoryPreset(
         string path,
         string name,
@@ -214,7 +221,9 @@ public static class EffectFactory
             ChainPreset? existing = JsonSerializer.Deserialize<ChainPreset>(File.ReadAllText(path));
             if (existing == null) return;
             ChainPreset legacy = CreateLegacyFactoryPreset(name);
-            if (PresetStatesEqual(existing, legacy) && !PresetStatesEqual(existing, currentFactoryPreset))
+            ChainPreset previous = CreatePreviousFactoryPreset(name);
+            if ((PresetStatesEqual(existing, legacy) || PresetStatesEqual(existing, previous)) &&
+                !PresetStatesEqual(existing, currentFactoryPreset))
                 WritePresetAtomically(currentFactoryPreset, path, overwrite: true);
         }
         catch
@@ -245,7 +254,11 @@ public static class EffectFactory
         if (name is "Default" or "Podcast Voice" or "Vocal Space" or "Clean Transfer")
         {
             EffectState? limiter = legacy.Effects.FirstOrDefault(effect => effect.TypeId == "limiter");
-            if (limiter != null) limiter.Params["thresh"] = 0;
+            if (limiter != null)
+            {
+                limiter.Enabled = true;
+                limiter.Params["thresh"] = 0;
+            }
         }
 
         if (name == "Clean Transfer")
@@ -262,6 +275,17 @@ public static class EffectFactory
         }
 
         return legacy;
+    }
+
+    private static ChainPreset CreatePreviousFactoryPreset(string name)
+    {
+        ChainPreset previous = CreateFactoryPreset(name);
+        if (name == "Default")
+        {
+            EffectState? limiter = previous.Effects.FirstOrDefault(effect => effect.TypeId == "limiter");
+            if (limiter != null) limiter.Enabled = true;
+        }
+        return previous;
     }
 
     private static bool PresetStatesEqual(ChainPreset left, ChainPreset right)

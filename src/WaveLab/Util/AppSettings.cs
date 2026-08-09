@@ -104,7 +104,7 @@ public sealed class AppSettings
         settings.AutosaveMinutes = settings.AutosaveMinutes is 1 or 2 or 3 or 5 or 10 or 15
             ? settings.AutosaveMinutes
             : 3;
-        settings.ExportFormat = settings.ExportFormat is "wav32" or "wav24" or "wav16" or "mp3" or "aac" or "wma" or "flac"
+        settings.ExportFormat = settings.ExportFormat is "wav32" or "wav24" or "wav16" or "wav16nodither" or "mp3" or "aac" or "wma" or "flac"
             ? settings.ExportFormat
             : "wav32";
         settings.ExportBitrateKbps = settings.ExportBitrateKbps is 128 or 160 or 192 or 256 or 320

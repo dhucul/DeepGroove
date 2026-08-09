@@ -489,6 +489,7 @@ public sealed class DocumentViewModel : ObservableObject
         ClampView();
         Raise(nameof(Title));
         Raise(nameof(IsDirty));
+        Raise(nameof(FormatText));
         RaiseSelection();
     }
 

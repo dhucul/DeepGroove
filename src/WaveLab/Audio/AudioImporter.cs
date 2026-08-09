@@ -1,7 +1,16 @@
 using System.IO;
 using NAudio.Wave;
+using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
+
+public enum OpenBitDepth
+{
+    Pcm16Dithered,
+    Pcm16Undithered,
+    Pcm24,
+    Float32,
+}
 
 /// <summary>
 /// Loads any supported audio file into an AudioDocument.
@@ -69,5 +78,82 @@ public static class AudioImporter
             FilePath = null, // compressed sources must be saved back out as WAV
             Title = Path.GetFileName(path),
         };
+    }
+
+    /// <summary>
+    /// Decode a file and quantize it into a new, unsaved document at the requested
+    /// depth. Editing buffers remain 32-bit float; 16/24-bit choices deliberately
+    /// constrain sample values to the corresponding PCM grid.
+    /// </summary>
+    public static AudioDocument LoadAs(
+        string path,
+        OpenBitDepth bitDepth,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Enum.IsDefined(bitDepth)) throw new ArgumentOutOfRangeException(nameof(bitDepth));
+        AudioDocument source = Load(path, cancellationToken);
+        float[][] channels = Quantize(
+            source.Channels,
+            bitDepth,
+            cancellationToken);
+        int bits = bitDepth switch
+        {
+            OpenBitDepth.Pcm16Dithered or OpenBitDepth.Pcm16Undithered => 16,
+            OpenBitDepth.Pcm24 => 24,
+            _ => 32,
+        };
+        string suffix = bitDepth switch
+        {
+            OpenBitDepth.Pcm16Dithered => "16-bit dithered",
+            OpenBitDepth.Pcm16Undithered => "16-bit no dither",
+            OpenBitDepth.Pcm24 => "24-bit",
+            _ => "32-bit float",
+        };
+        var converted = new AudioDocument(channels, source.SampleRate, bits)
+        {
+            FilePath = null,
+            Title = $"{Path.GetFileNameWithoutExtension(path)} ({suffix}).wav",
+            Dither16BitOnSave = bitDepth != OpenBitDepth.Pcm16Undithered,
+        };
+        converted.MarkUnsaved();
+        return converted;
+    }
+
+    private static float[][] Quantize(
+        IReadOnlyList<float[]> source,
+        OpenBitDepth bitDepth,
+        CancellationToken cancellationToken)
+    {
+        if (bitDepth == OpenBitDepth.Float32)
+            return source.ToArray();
+
+        var result = new float[source.Count][];
+        var tpdf = new TpdfDither();
+        for (int channel = 0; channel < source.Count; channel++)
+        {
+            float[] input = source[channel];
+            float[] output = new float[input.Length];
+            result[channel] = output;
+            for (int index = 0; index < input.Length; index++)
+            {
+                if ((index & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                float sample = float.IsFinite(input[index]) ? Math.Clamp(input[index], -1f, 1f) : 0f;
+                if (bitDepth is OpenBitDepth.Pcm16Dithered or OpenBitDepth.Pcm16Undithered)
+                {
+                    double value = sample * 32768.0;
+                    if (bitDepth == OpenBitDepth.Pcm16Dithered) value += tpdf.Next();
+                    int quantized = Math.Clamp((int)Math.Round(value), short.MinValue, short.MaxValue);
+                    output[index] = quantized / 32768f;
+                }
+                else
+                {
+                    int quantized = Math.Clamp(
+                        (int)Math.Round(sample * 8388608.0), -8388608, 8388607);
+                    output[index] = quantized / 8388608f;
+                }
+            }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
     }
 }

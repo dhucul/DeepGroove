@@ -39,8 +39,9 @@ public partial class BatchConvertDialog : Window
         Closing += OnClosing;
         fileList.ItemsSource = _items;
 
-        foreach (var f in (string[])["WAV — 32-bit float", "WAV — 24-bit", "WAV — 16-bit (dithered)", "MP3 · 192 kbps",
-                     "MP3 · 320 kbps", "AAC · 192 kbps", "WMA · 192 kbps"])
+        foreach (var f in (string[])["Uncompressed WAV · 32-bit float", "Uncompressed WAV · 24-bit PCM",
+                     "Uncompressed WAV · 16-bit PCM (dithered)", "Uncompressed WAV · 16-bit PCM (no dither)",
+                     "Lossy MP3 · 192 kbps", "Lossy MP3 · 320 kbps", "Lossy AAC · 192 kbps", "Lossy WMA · 192 kbps"])
             cmbFormat.Items.Add(f);
         cmbFormat.SelectedIndex = 0;
 
@@ -91,10 +92,11 @@ public partial class BatchConvertDialog : Window
         {
             1 => (ExportFormat.Wav24, 0, ".wav"),
             2 => (ExportFormat.Wav16, 0, ".wav"),
-            3 => (ExportFormat.Mp3, 192, ".mp3"),
-            4 => (ExportFormat.Mp3, 320, ".mp3"),
-            5 => (ExportFormat.Aac, 192, ".m4a"),
-            6 => (ExportFormat.Wma, 192, ".wma"),
+            3 => (ExportFormat.Wav16Undithered, 0, ".wav"),
+            4 => (ExportFormat.Mp3, 192, ".mp3"),
+            5 => (ExportFormat.Mp3, 320, ".mp3"),
+            6 => (ExportFormat.Aac, 192, ".m4a"),
+            7 => (ExportFormat.Wma, 192, ".wma"),
             _ => (ExportFormat.Wav32Float, 0, ".wav"),
         };
         int normalizeMode = cmbNormalize.SelectedIndex;

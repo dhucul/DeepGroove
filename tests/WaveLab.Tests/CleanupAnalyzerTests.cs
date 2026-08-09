@@ -1,3 +1,4 @@
+using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
 using Xunit;
@@ -189,6 +190,24 @@ public sealed class CleanupAnalyzerTests
     }
 
     [Fact]
+    public void DefaultFactoryPresetStartsWithLimiterBypassed()
+    {
+        EffectFactory.ChainPreset preset = EffectFactory.CreateFactoryPreset("Default");
+
+        Assert.False(State(preset, "limiter").Enabled);
+        Assert.True(State(preset, "eq").Enabled);
+    }
+
+    [Fact]
+    public void FreshMasterRackStartsWithLimiterBypassed()
+    {
+        var master = new MasterSection();
+
+        IAudioEffect limiter = Assert.Single(master.ChainSnapshot, effect => effect.TypeId == "limiter");
+        Assert.False(limiter.Enabled);
+    }
+
+    [Fact]
     public void CleanTransferAppliesInputTrimBeforeLevelNormalization()
     {
         EffectFactory.ChainPreset factory = EffectFactory.CreateFactoryPreset("Clean Transfer");
@@ -335,6 +354,7 @@ public sealed class CleanupAnalyzerTests
         try
         {
             EffectFactory.ChainPreset legacyDefault = EffectFactory.CreateFactoryPreset("Default");
+            State(legacyDefault, "limiter").Enabled = true;
             State(legacyDefault, "limiter").Params["thresh"] = 0;
             string defaultPath = Path.Combine(directory, "Default.chain.json");
             File.WriteAllText(defaultPath, JsonSerializer.Serialize(legacyDefault));

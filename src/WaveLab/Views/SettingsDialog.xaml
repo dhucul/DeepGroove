@@ -80,9 +80,12 @@
                     <!-- Export -->
                     <StackPanel x:Name="pageExport" Visibility="Collapsed">
                         <TextBlock Text="DEFAULT FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbExportFormat" Margin="0,6,0,14" Width="240" HorizontalAlignment="Left"/>
-                        <TextBlock Text="DEFAULT BITRATE (LOSSY)" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbExportBitrate" Margin="0,6,0,0" Width="160" HorizontalAlignment="Left"/>
+                        <ComboBox x:Name="cmbExportFormat" Margin="0,6,0,14" Width="300" HorizontalAlignment="Left"
+                                  SelectionChanged="OnExportFormatChanged"/>
+                        <StackPanel x:Name="exportBitratePanel">
+                            <TextBlock Text="DEFAULT BITRATE (LOSSY)" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                            <ComboBox x:Name="cmbExportBitrate" Margin="0,6,0,0" Width="160" HorizontalAlignment="Left"/>
+                        </StackPanel>
                     </StackPanel>
                 </Grid>
             </Grid>

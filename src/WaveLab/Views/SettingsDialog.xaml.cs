@@ -60,6 +60,7 @@ public partial class SettingsDialog : Window
         cmbExportBitrate.SelectedIndex = bitrateIdx >= 0 ? bitrateIdx : 2;
 
         UpdateLabels();
+        UpdateExportFormatUi();
     }
 
     private static readonly int[] Intervals = [1, 2, 3, 5, 10, 15];
@@ -67,13 +68,14 @@ public partial class SettingsDialog : Window
 
     private static FormatItem[] Formats() =>
     [
-        new("wav32", "WAV — 32-bit float"),
-        new("wav24", "WAV — 24-bit"),
-        new("wav16", "WAV — 16-bit (dithered)"),
-        new("mp3", "MP3"),
-        new("aac", "AAC (M4A)"),
-        new("wma", "WMA"),
-        new("flac", "FLAC"),
+        new("wav32", "Uncompressed WAV · 32-bit float"),
+        new("wav24", "Uncompressed WAV · 24-bit PCM"),
+        new("wav16", "Uncompressed WAV · 16-bit PCM (dithered)"),
+        new("wav16nodither", "Uncompressed WAV · 16-bit PCM (no dither)"),
+        new("flac", "Lossless FLAC · 24-bit"),
+        new("mp3", "Lossy MP3"),
+        new("aac", "Lossy AAC (M4A)"),
+        new("wma", "Lossy WMA"),
     ];
 
     private void UpdateLabels()
@@ -84,6 +86,17 @@ public partial class SettingsDialog : Window
 
     private void OnUndoSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => UpdateLabels();
     private void OnBufferSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => UpdateLabels();
+
+    private void OnExportFormatChanged(object sender, SelectionChangedEventArgs e) => UpdateExportFormatUi();
+
+    private void UpdateExportFormatUi()
+    {
+        if (exportBitratePanel == null) return;
+        string? key = (cmbExportFormat.SelectedItem as FormatItem)?.Key;
+        exportBitratePanel.Visibility = key is "mp3" or "aac" or "wma"
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
 
     private void OnNavChanged(object sender, RoutedEventArgs e)
     {

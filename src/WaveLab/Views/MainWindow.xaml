@@ -95,6 +95,7 @@
             <Menu VerticalAlignment="Center" Margin="8,0" WindowChrome.IsHitTestVisibleInChrome="True">
                 <MenuItem Header="_File">
                     <MenuItem Header="Open…" InputGestureText="Ctrl+O" Command="{Binding OpenCommand}"/>
+                    <MenuItem Header="Open As Bit Depth…" Click="OnOpenAsBitDepth"/>
                     <MenuItem Header="Extract Audio CD…" Click="OnExtractAudioCd"/>
                     <MenuItem Header="Save" InputGestureText="Ctrl+S" Command="{Binding SaveCommand}"/>
                     <MenuItem Header="Save As…" InputGestureText="Ctrl+Shift+S" Command="{Binding SaveAsCommand}"/>
@@ -216,8 +217,8 @@
                     <MenuItem Header="Analyze &amp; Tune Clean Transfer…" Click="OnAnalyzeCleanTransfer"
                               IsEnabled="{Binding CanAnalyzeCleanup}"/>
                     <Separator/>
-                    <MenuItem Header="Apply Chain to Selection / File" Command="{Binding ApplyChainCommand}"/>
-                    <MenuItem Header="Render to New Tab" Command="{Binding RenderCommand}"/>
+                    <MenuItem Header="Render in Place (Undoable)" Command="{Binding ApplyChainCommand}"/>
+                    <MenuItem Header="Render Copy to New Tab (Source Unchanged)" Command="{Binding RenderCommand}"/>
                 </MenuItem>
                 <MenuItem Header="_Options">
                     <MenuItem Header="Settings…" Command="{Binding SettingsCommand}"/>
@@ -652,16 +653,20 @@
                             <ColumnDefinition Width="8"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="36"
-                                Command="{Binding ApplyChainCommand}" ToolTip="Destructively apply the chain to the selection (or whole file), undoable">
-                            <TextBlock Text="Apply to Selection" FontSize="11.5"/>
+                        <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="46"
+                                Command="{Binding ApplyChainCommand}" ToolTip="Render the selection or whole file in this tab as one undoable edit">
+                            <StackPanel>
+                                <TextBlock Text="Render in Place" FontSize="11.5" HorizontalAlignment="Center"/>
+                                <TextBlock Text="UNDOABLE · SELECTION OR FILE" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
+                                           FontSize="8.5" Foreground="{StaticResource Faint}" HorizontalAlignment="Center"/>
+                            </StackPanel>
                         </Button>
-                        <Button Grid.Column="2" Style="{StaticResource AccentButton}" Height="36" Command="{Binding RenderCommand}"
-                                ToolTip="Render the whole file through the chain into a new tab">
-                            <StackPanel Orientation="Horizontal">
-                                <Path Data="M7,1 L7,9 M3.5,6 L7,9.5 10.5,6 M2,12.5 L12,12.5" Stroke="#C8F5EE" StrokeThickness="1.5"
-                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" VerticalAlignment="Center"/>
-                                <TextBlock Text="Render" Margin="8,0,0,0" FontSize="11.5"/>
+                        <Button Grid.Column="2" Style="{StaticResource AccentButton}" Height="46" Command="{Binding RenderCommand}"
+                                ToolTip="Render the whole file through the chain into a new tab without changing the source">
+                            <StackPanel>
+                                <TextBlock Text="Render Copy" FontSize="11.5" HorizontalAlignment="Center"/>
+                                <TextBlock Text="SOURCE UNCHANGED · NEW TAB" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
+                                           FontSize="8.5" Foreground="#8DD7CC" HorizontalAlignment="Center"/>
                             </StackPanel>
                         </Button>
                     </Grid>

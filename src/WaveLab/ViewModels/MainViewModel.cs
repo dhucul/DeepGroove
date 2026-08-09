@@ -358,15 +358,15 @@ public sealed class MainViewModel : ObservableObject
 
     // ── file ─────────────────────────────────────────────────────
 
-    public async void OpenFiles(IEnumerable<string> paths)
+    public async void OpenFiles(IEnumerable<string> paths, OpenBitDepth? openAs = null)
     {
-        var operation = OpenFilesAsync(paths);
+        var operation = OpenFilesAsync(paths, openAs);
         _openOperations.Add(operation);
         try { await operation; }
         finally { _openOperations.Remove(operation); }
     }
 
-    private async Task OpenFilesAsync(IEnumerable<string> paths)
+    private async Task OpenFilesAsync(IEnumerable<string> paths, OpenBitDepth? openAs = null)
     {
         if (_shuttingDown) return;
         foreach (var path in paths.ToList())
@@ -377,7 +377,9 @@ public sealed class MainViewModel : ObservableObject
                 // decode AND build the peak pyramid off the UI thread — the tab appears fully drawn
                 var (doc, peaks) = await Task.Run(() =>
                 {
-                    var loaded = AudioImporter.Load(path);
+                    var loaded = openAs.HasValue
+                        ? AudioImporter.LoadAs(path, openAs.Value)
+                        : AudioImporter.Load(path);
                     var store = new PeakStore();
                     store.Rebuild(loaded);
                     return (loaded, store);
@@ -441,6 +443,7 @@ public sealed class MainViewModel : ObservableObject
         {
             Title = doc.Title,
             FilePath = doc.FilePath,
+            Dither16BitOnSave = doc.Dither16BitOnSave,
         };
     }
 
@@ -461,7 +464,8 @@ public sealed class MainViewModel : ObservableObject
         int depth = doc.SourceBitDepth;
         try
         {
-            await Task.Run(() => WavCodec.Save(snapshot, path, depth, dither: depth == 16));
+            await Task.Run(() => WavCodec.Save(snapshot, path, depth,
+                dither: depth == 16 && snapshot.Dither16BitOnSave));
             // Do not declare the document fully persisted, or discard its
             // recovery copy, while the latest marker sidecar is still pending
             // (or has failed).
@@ -496,23 +500,33 @@ public sealed class MainViewModel : ObservableObject
         var doc = d.Doc;
         var dlg = new SaveFileDialog
         {
-            Filter = "WAV — 32-bit float|*.wav|WAV — 24-bit|*.wav|WAV — 16-bit (dithered)|*.wav",
-            FilterIndex = doc.SourceBitDepth switch { 24 => 2, 16 => 3, _ => 1 },
+            Filter = "WAV — 32-bit float|*.wav|WAV — 24-bit PCM|*.wav|" +
+                     "WAV — 16-bit PCM (dithered)|*.wav|WAV — 16-bit PCM (no dither)|*.wav",
+            FilterIndex = doc.SourceBitDepth switch
+            {
+                24 => 2,
+                16 when !doc.Dither16BitOnSave => 4,
+                16 => 3,
+                _ => 1,
+            },
             FileName = Path.GetFileNameWithoutExtension(doc.Title),
             DefaultExt = ".wav",
         };
         if (dlg.ShowDialog() != true) return;
         if (!_savesInFlight.Add(doc.SessionId)) return; // a save for this document is already writing
-        int depth = dlg.FilterIndex switch { 2 => 24, 3 => 16, _ => 32 };
+        int depth = dlg.FilterIndex switch { 2 => 24, 3 or 4 => 16, _ => 32 };
+        bool dither16 = dlg.FilterIndex != 4;
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
         try
         {
-            await Task.Run(() => WavCodec.Save(snapshot, dlg.FileName, depth, dither: depth == 16));
+            await Task.Run(() => WavCodec.Save(snapshot, dlg.FileName, depth,
+                dither: depth == 16 && dither16));
             _saveFailures.Remove(doc.SessionId);
             doc.FilePath = dlg.FileName;
             doc.Title = Path.GetFileName(dlg.FileName);
             doc.SourceBitDepth = depth;
+            doc.Dither16BitOnSave = dither16;
             // Generated documents could accumulate markers/regions before they had
             // a path. Persist that in-memory metadata alongside the first Save As.
             d.NotifyMarkersChanged();
@@ -1160,12 +1174,12 @@ public sealed class MainViewModel : ObservableObject
             var output = await Task.Run(() => Engine.Master.ProcessOffline(input, sr));
             AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
             {
-                Title = Path.GetFileNameWithoutExtension(doc.Title) + " (mastered).wav",
+                Title = Path.GetFileNameWithoutExtension(doc.Title) + " (rendered copy).wav",
             });
         });
     }
 
-    /// <summary>Destructively process the selection (or whole file) through the current master chain.</summary>
+    /// <summary>Render the selection (or whole file) as one undoable document edit.</summary>
     private async void ApplyChain()
     {
         if (_active == null || _active.Doc.Length == 0) return;
@@ -1174,6 +1188,7 @@ public sealed class MainViewModel : ObservableObject
         if (count <= 0) return;
         var channels = d.Doc.Channels.ToArray();
         int sr = d.Doc.SampleRate;
+        int sourceVersion = d.Doc.EditVersion;
 
         await RunBlocking(async () =>
         {
@@ -1182,19 +1197,23 @@ public sealed class MainViewModel : ObservableObject
                 var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
                 return Engine.Master.ProcessOffline(input, sr);
             });
-            if (output.Length != d.Doc.ChannelCount)
+            if (d.Doc.EditVersion != sourceVersion)
+                throw new InvalidOperationException("The source changed while the master render was running. Try again.");
+
+            bool wholeDocument = start == 0 && count == d.Doc.Length;
+            if (output.Length != d.Doc.ChannelCount && !wholeDocument)
             {
-                // A mono-to-stereo rack changes channel topology, which cannot be
-                // spliced back into a mono document. Keep it non-destructive in a new tab.
-                AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
-                {
-                    Title = Path.GetFileNameWithoutExtension(d.Doc.Title) + " (stereo master).wav",
-                });
+                throw new InvalidOperationException(
+                    "The enabled rack changes the channel layout, so it cannot be inserted into only part of this file. " +
+                    "Select the whole file for an undoable in-place render, or use Render Copy.");
             }
-            else if (start + count <= d.Doc.Length) // re-validate: the doc may only change via this window, but stay safe
+            if (start + count <= d.Doc.Length)
             {
                 PrepareForDocumentEdit(d);
-                d.Doc.ReplaceRange(start, count, output, "Apply Master Chain");
+                if (wholeDocument)
+                    d.Doc.ReplaceAllOwned(output, "Render Master Chain");
+                else
+                    d.Doc.ReplaceRange(start, count, output, "Render Master Chain");
             }
         });
     }

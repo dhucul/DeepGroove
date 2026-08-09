@@ -27,7 +27,9 @@ public sealed class MasterSection : ISampleProvider
     public MasterSection()
     {
         _chain.Add(EffectFactory.Create("eq"));
-        _chain.Add(EffectFactory.Create("limiter"));
+        IAudioEffect limiter = EffectFactory.Create("limiter");
+        limiter.Enabled = false;
+        _chain.Add(limiter);
         ConfigureChain();
     }
 
