@@ -35,12 +35,15 @@ public sealed class EffectViewModel : ObservableObject
 {
     private readonly Action<EffectViewModel, int> _move;
     private readonly Action<EffectViewModel> _remove;
+    private readonly Action<EffectViewModel, bool> _setEnabled;
 
-    public EffectViewModel(IAudioEffect effect, Action<EffectViewModel, int> move, Action<EffectViewModel> remove)
+    public EffectViewModel(IAudioEffect effect, Action<EffectViewModel, int> move,
+        Action<EffectViewModel> remove, Action<EffectViewModel, bool> setEnabled)
     {
         Effect = effect;
         _move = move;
         _remove = remove;
+        _setEnabled = setEnabled;
         foreach (var p in effect.Params)
             Params.Add(new EffectParamViewModel(effect, p, OnParamChanged));
         MoveUpCommand = new RelayCommand(() => _move(this, -1));
@@ -62,8 +65,8 @@ public sealed class EffectViewModel : ObservableObject
         get => Effect.Enabled;
         set
         {
-            Effect.Enabled = value;
-            if (value) Effect.ResetState(); // don't replay stale delay/reverb tails after a bypass
+            if (Effect.Enabled == value) return;
+            _setEnabled(this, value);
             Raise();
         }
     }

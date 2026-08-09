@@ -10,7 +10,7 @@ A sleek audio editor and mastering suite for Windows, built with WPF on .NET 10.
 
 **Editing** — multi-resolution waveform with zoom to sample level and vertical amplitude zoom (Ctrl+wheel); drag selection; cut/copy/paste/delete/trim; unlimited undo/redo with a configurable memory budget; markers and named regions with ruler flags, navigation shortcuts, a manager panel and sidecar persistence; edit-point smoothing (de-click joins); silence detection, trimming and split-to-regions.
 
-**Master rack** — reorderable real-time effect chain: Studio EQ, Compressor, Noise Gate, Reverb, Stereo Delay, Chorus, Saturation, Low/High-Pass Filters, Precision Limiter (5 ms lookahead). Every effect has bypass, remove, move and **reset-to-default**; chains save/load as presets (factory presets included); the chain applies destructively to a selection or renders the whole file to a new tab, both latency-compensated.
+**Master rack** — reorderable real-time effect chain: Studio EQ, Compressor, Noise Gate, Reverb, Stereo Delay, Chorus, Saturation, Low/High-Pass Filters, Precision Limiter (5 ms lookahead). Every effect has bypass, remove, move and **reset-to-default**, with a global rack bypass that preserves individual settings; chains save/load as presets (factory presets included); the chain applies destructively to a selection or renders the whole file to a new tab, both latency-compensated.
 
 **Processing** — gain, normalize, equal-power fades, reverse, DC removal, silence insertion; channel tools (swap, phase invert, balance, mono↔stereo, channel extraction); WSOLA time stretch and pitch shift; windowed-sinc sample-rate conversion.
 

@@ -23,7 +23,17 @@ public sealed class WaveformView : FrameworkElement
         set => SetValue(DocumentProperty, value);
     }
 
+    public static readonly DependencyProperty SeekCommandProperty = DependencyProperty.Register(
+        nameof(SeekCommand), typeof(ICommand), typeof(WaveformView));
+
+    public ICommand? SeekCommand
+    {
+        get => (ICommand?)GetValue(SeekCommandProperty);
+        set => SetValue(SeekCommandProperty, value);
+    }
+
     private bool _dragging;
+    private bool _draggingPlayhead;
     private int _dragAnchor;
 
     // geometry cache — rebuilt only when this key changes
@@ -210,6 +220,23 @@ public sealed class WaveformView : FrameworkElement
         return (int)Math.Clamp(vm.ViewStart + p.X * vm.SamplesPerPixel, 0, Math.Max(0, vm.Doc.Length - 1));
     }
 
+    private bool IsNearPlayhead(Point p)
+    {
+        var vm = Document;
+        if (vm == null || vm.Doc.Length == 0) return false;
+        double x = (vm.PlayheadSample - vm.ViewStart) / vm.SamplesPerPixel;
+        return x >= 0 && x <= ActualWidth && Math.Abs(p.X - x) <= 8;
+    }
+
+    private void RequestSeek(int sample, PlayheadSeekPhase phase)
+    {
+        var vm = Document;
+        if (vm == null) return;
+        var request = new PlayheadSeekRequest(vm, sample, phase);
+        if (SeekCommand?.CanExecute(request) == true)
+            SeekCommand.Execute(request);
+    }
+
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         if (Document == null) return;
@@ -220,25 +247,59 @@ public sealed class WaveformView : FrameworkElement
             e.Handled = true;
             return;
         }
+        var point = e.GetPosition(this);
+        if (IsNearPlayhead(point))
+        {
+            CaptureMouse();
+            _draggingPlayhead = true;
+            RequestSeek(SampleAt(point), PlayheadSeekPhase.Begin);
+            e.Handled = true;
+            return;
+        }
         CaptureMouse();
         _dragging = true;
-        _dragAnchor = SampleAt(e.GetPosition(this));
+        _dragAnchor = SampleAt(point);
         Document.SetCursor(_dragAnchor, clearSelection: true);
         e.Handled = true;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
+        var point = e.GetPosition(this);
+        if (_draggingPlayhead && Document != null)
+        {
+            RequestSeek(SampleAt(point), PlayheadSeekPhase.Update);
+            e.Handled = true;
+            return;
+        }
+        Cursor = IsNearPlayhead(point) ? Cursors.SizeWE : null;
         if (!_dragging || Document == null) return;
-        int s = SampleAt(e.GetPosition(this));
+        int s = SampleAt(point);
         if (Math.Abs(s - _dragAnchor) > (int)Document.SamplesPerPixel)
             Document.SetSelection(Math.Min(_dragAnchor, s), Math.Max(_dragAnchor, s));
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
+        if (_draggingPlayhead && Document != null)
+        {
+            RequestSeek(SampleAt(e.GetPosition(this)), PlayheadSeekPhase.End);
+            _draggingPlayhead = false;
+            ReleaseMouseCapture();
+            e.Handled = true;
+            return;
+        }
         _dragging = false;
         ReleaseMouseCapture();
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        if (_draggingPlayhead && Document != null)
+            RequestSeek(Document.PlayheadSample, PlayheadSeekPhase.End);
+        _draggingPlayhead = false;
+        _dragging = false;
+        base.OnLostMouseCapture(e);
     }
 
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)

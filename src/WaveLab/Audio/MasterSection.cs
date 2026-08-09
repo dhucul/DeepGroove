@@ -14,6 +14,7 @@ public sealed class MasterSection : ISampleProvider
     private ISampleProvider? _source;
     private readonly object _chainLock = new();
     private readonly List<IAudioEffect> _chain = [];
+    private bool _rackEnabled = true;
     private readonly object _ringLock = new();
     private readonly float[] _ringL = new float[16384];
     private readonly float[] _ringR = new float[16384];
@@ -48,6 +49,21 @@ public sealed class MasterSection : ISampleProvider
     /// <summary>Snapshot of the current chain (live references — mutate params freely, structure via the API below).</summary>
     public IAudioEffect[] ChainSnapshot { get { lock (_chainLock) return _chain.ToArray(); } }
 
+    /// <summary>Global rack bypass. Individual effect enabled states are preserved.</summary>
+    public bool RackEnabled
+    {
+        get { lock (_chainLock) return _rackEnabled; }
+        set
+        {
+            lock (_chainLock)
+            {
+                if (_rackEnabled == value) return;
+                _rackEnabled = value;
+                foreach (var fx in _chain) fx.ResetState();
+            }
+        }
+    }
+
     public IAudioEffect AddEffect(string typeId)
     {
         var fx = EffectFactory.Create(typeId);
@@ -56,7 +72,27 @@ public sealed class MasterSection : ISampleProvider
         return fx;
     }
 
-    public void RemoveEffect(IAudioEffect fx) { lock (_chainLock) _chain.Remove(fx); }
+    public bool RemoveEffect(IAudioEffect fx)
+    {
+        lock (_chainLock)
+        {
+            if (!_chain.Remove(fx)) return false;
+            fx.Enabled = false;
+            fx.ResetState();
+            return true;
+        }
+    }
+
+    public bool SetEffectEnabled(IAudioEffect fx, bool enabled)
+    {
+        lock (_chainLock)
+        {
+            if (!_chain.Contains(fx) || fx.Enabled == enabled) return false;
+            fx.Enabled = enabled;
+            fx.ResetState();
+            return true;
+        }
+    }
 
     public void MoveEffect(IAudioEffect fx, int delta)
     {
@@ -118,9 +154,10 @@ public sealed class MasterSection : ISampleProvider
         if (read <= 0) { PeakL = PeakR = RmsL = RmsR = 0; return read; }
 
         lock (_chainLock)
-            foreach (var fx in _chain)
-                if (fx.Enabled)
-                    fx.Process(buffer, offset, read);
+            if (_rackEnabled)
+                foreach (var fx in _chain)
+                    if (fx.Enabled)
+                        fx.Process(buffer, offset, read);
 
         ApplyStartRamp(buffer, offset, read);
         Loudness.Process(buffer, offset, read);
@@ -222,7 +259,10 @@ public sealed class MasterSection : ISampleProvider
     /// </summary>
     public float[][] ProcessOffline(float[][] data, int sampleRate)
     {
-        var chain = ChainSnapshot.Where(f => f.Enabled).Select(EffectFactory.Clone).ToList();
+        IAudioEffect[] enabledEffects;
+        lock (_chainLock)
+            enabledEffects = _rackEnabled ? _chain.Where(f => f.Enabled).ToArray() : [];
+        var chain = enabledEffects.Select(EffectFactory.Clone).ToList();
         int channels = data.Length;
         foreach (var fx in chain) fx.Configure(sampleRate, channels);
         int latency = chain.Sum(f => f.LatencySamples);

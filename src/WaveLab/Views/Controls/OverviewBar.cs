@@ -19,7 +19,17 @@ public sealed class OverviewBar : FrameworkElement
         set => SetValue(DocumentProperty, value);
     }
 
+    public static readonly DependencyProperty SeekCommandProperty = DependencyProperty.Register(
+        nameof(SeekCommand), typeof(ICommand), typeof(OverviewBar));
+
+    public ICommand? SeekCommand
+    {
+        get => (ICommand?)GetValue(SeekCommandProperty);
+        set => SetValue(SeekCommandProperty, value);
+    }
+
     private bool _dragging;
+    private bool _draggingPlayhead;
 
     public OverviewBar()
     {
@@ -116,22 +126,80 @@ public sealed class OverviewBar : FrameworkElement
         vm.CenterViewOn(centerSample);
     }
 
+    private int SampleAt(Point p)
+    {
+        var vm = Document!;
+        return (int)Math.Clamp(p.X / Math.Max(1, ActualWidth) * vm.Doc.Length,
+            0, Math.Max(0, vm.Doc.Length - 1));
+    }
+
+    private bool IsNearPlayhead(Point p)
+    {
+        var vm = Document;
+        if (vm == null || vm.Doc.Length == 0) return false;
+        double x = (double)vm.PlayheadSample / vm.Doc.Length * ActualWidth;
+        return Math.Abs(p.X - x) <= 8;
+    }
+
+    private void RequestSeek(int sample, PlayheadSeekPhase phase)
+    {
+        var vm = Document;
+        if (vm == null) return;
+        var request = new PlayheadSeekRequest(vm, sample, phase);
+        if (SeekCommand?.CanExecute(request) == true)
+            SeekCommand.Execute(request);
+    }
+
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
+        var point = e.GetPosition(this);
+        if (Document != null && IsNearPlayhead(point))
+        {
+            _draggingPlayhead = true;
+            CaptureMouse();
+            RequestSeek(SampleAt(point), PlayheadSeekPhase.Begin);
+            e.Handled = true;
+            return;
+        }
         _dragging = true;
         CaptureMouse();
-        MoveViewTo(e.GetPosition(this));
+        MoveViewTo(point);
         e.Handled = true;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        if (_dragging) MoveViewTo(e.GetPosition(this));
+        var point = e.GetPosition(this);
+        if (_draggingPlayhead && Document != null)
+        {
+            RequestSeek(SampleAt(point), PlayheadSeekPhase.Update);
+            e.Handled = true;
+            return;
+        }
+        Cursor = IsNearPlayhead(point) ? Cursors.SizeWE : null;
+        if (_dragging) MoveViewTo(point);
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
+        if (_draggingPlayhead && Document != null)
+        {
+            RequestSeek(SampleAt(e.GetPosition(this)), PlayheadSeekPhase.End);
+            _draggingPlayhead = false;
+            ReleaseMouseCapture();
+            e.Handled = true;
+            return;
+        }
         _dragging = false;
         ReleaseMouseCapture();
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        if (_draggingPlayhead && Document != null)
+            RequestSeek(Document.PlayheadSample, PlayheadSeekPhase.End);
+        _draggingPlayhead = false;
+        _dragging = false;
+        base.OnLostMouseCapture(e);
     }
 }

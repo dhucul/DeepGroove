@@ -376,9 +376,9 @@
                     <RowDefinition Height="252"/>
                 </Grid.RowDefinitions>
 
-                <c:OverviewBar Grid.Row="0" Document="{Binding ActiveDocument}"/>
+                <c:OverviewBar Grid.Row="0" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}"/>
                 <c:TimeRuler Grid.Row="1" Document="{Binding ActiveDocument}"/>
-                <c:WaveformView Grid.Row="2" Document="{Binding ActiveDocument}">
+                <c:WaveformView Grid.Row="2" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}">
                     <c:WaveformView.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                             <MenuItem Header="Cut" InputGestureText="Ctrl+X" Command="{Binding CutCommand}"/>
@@ -423,33 +423,56 @@
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
-                        <StackPanel Orientation="Horizontal" Margin="14,0" VerticalAlignment="Center">
-                            <Ellipse Width="7" Height="7" Fill="{StaticResource Accent}"/>
-                            <TextBlock Text="MASTER RACK" Margin="8,0,0,0" FontSize="10.5" FontWeight="Bold"
-                                       Foreground="{StaticResource Muted}"/>
-                        </StackPanel>
+                        <DockPanel Margin="14,0" VerticalAlignment="Center">
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Master.RackStateText}" Margin="0,0,7,0" FontSize="8.5"
+                                           FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
+                                <ToggleButton Style="{StaticResource Switch}" IsChecked="{Binding Master.RackEnabled}"
+                                              ToolTip="Enable or bypass the entire effects rack"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse Width="7" Height="7">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Fill" Value="{StaticResource Accent}"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Master.RackEnabled}" Value="False">
+                                                    <Setter Property="Fill" Value="{StaticResource Faint}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+                                <TextBlock Text="MASTER RACK" Margin="8,0,0,0" FontSize="10.5" FontWeight="Bold"
+                                           Foreground="{StaticResource Muted}"/>
+                            </StackPanel>
+                        </DockPanel>
                     </Border>
 
                     <!-- preset row -->
-                    <Grid Grid.Row="1" Margin="12,10,12,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <ComboBox Height="30" ItemsSource="{Binding Master.PresetNames}"
-                                  SelectedItem="{Binding Master.SelectedPreset}" ToolTip="Load a chain preset"/>
-                        <Button Grid.Column="1" Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
-                                Command="{Binding Master.SavePresetCommand}" ToolTip="Save current chain as preset">
-                            <Path Data="M2,2 L10,2 12,4 12,12 2,12 Z M4,2 L4,5.5 9,5.5 9,2 M4,8.5 L10,8.5 10,12 4,12 Z"
-                                  Stroke="#9AA1A9" StrokeThickness="1.1" StrokeLineJoin="Round"/>
-                        </Button>
-                        <Button Grid.Column="2" Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
-                                Command="{Binding Master.ResetChainCommand}" ToolTip="Reset chain to EQ + Limiter">
-                            <Path Data="M3,7 A5,4.5 0 1 1 4.5,10.2 M3,7 L3,3.5 M3,7 L6.5,7" Stroke="#9AA1A9"
-                                  StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                        </Button>
-                    </Grid>
+                    <StackPanel Grid.Row="1">
+                        <Grid Margin="12,10,12,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ComboBox Height="30" ItemsSource="{Binding Master.PresetNames}"
+                                      SelectedItem="{Binding Master.SelectedPreset}" ToolTip="Load a chain preset"/>
+                            <Button Grid.Column="1" Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
+                                    Command="{Binding Master.SavePresetCommand}" ToolTip="Save current chain as preset">
+                                <Path Data="M2,2 L10,2 12,4 12,12 2,12 Z M4,2 L4,5.5 9,5.5 9,2 M4,8.5 L10,8.5 10,12 4,12 Z"
+                                      Stroke="#9AA1A9" StrokeThickness="1.1" StrokeLineJoin="Round"/>
+                            </Button>
+                            <Button Grid.Column="2" Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
+                                    Command="{Binding Master.ResetChainCommand}" ToolTip="Reset chain to EQ + Limiter">
+                                <Path Data="M3,7 A5,4.5 0 1 1 4.5,10.2 M3,7 L3,3.5 M3,7 L6.5,7" Stroke="#9AA1A9"
+                                      StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            </Button>
+                        </Grid>
+                        <TextBlock Text="{Binding Master.RackStatusText}" Margin="14,5,12,0" FontSize="9.5"
+                                   Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
+                    </StackPanel>
 
                     <!-- rack -->
                     <ScrollViewer Grid.Row="2" Margin="12,10,6,0" Padding="0,0,6,0"
@@ -468,8 +491,10 @@
                                                         <Button Style="{StaticResource MiniButton}" Command="{Binding MoveUpCommand}" ToolTip="Move up" Content="▲" FontSize="8"/>
                                                         <Button Style="{StaticResource MiniButton}" Command="{Binding MoveDownCommand}" ToolTip="Move down" Content="▼" FontSize="8"/>
                                                         <Button Style="{StaticResource MiniButton}" Command="{Binding ResetCommand}" ToolTip="Set to defaults" Content="↺" FontSize="11"/>
-                                                        <ToggleButton Style="{StaticResource Switch}" Margin="4,0" IsChecked="{Binding Enabled}" ToolTip="Bypass"/>
-                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding RemoveCommand}" ToolTip="Remove" Content="✕" FontSize="10"/>
+                                                        <ToggleButton Style="{StaticResource Switch}" Margin="4,0" IsChecked="{Binding Enabled}"
+                                                                      ToolTip="Enable or bypass this effect"/>
+                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding RemoveCommand}"
+                                                                ToolTip="Remove from rack and stop processing" Content="✕" FontSize="10"/>
                                                     </StackPanel>
                                                     <TextBlock Text="{Binding DisplayName}" Margin="8,0,0,0" FontSize="12"
                                                                FontWeight="SemiBold" VerticalAlignment="Center"/>

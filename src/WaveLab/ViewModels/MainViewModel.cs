@@ -21,6 +21,8 @@ public sealed class MainViewModel : ObservableObject
     private DocumentViewModel? _playbackDocument;
     private int _playbackEditVersion = -1;
     private long _playbackSession;
+    private DocumentViewModel? _seekDocument;
+    private bool _resumeAfterSeek;
     private bool _isPlaying;
     private bool _isLooping;
     private readonly DispatcherTimer _timer;
@@ -72,6 +74,7 @@ public sealed class MainViewModel : ObservableObject
         PlayCommand = new RelayCommand(TogglePlay);
         StopCommand = new RelayCommand(PausePlayback);
         GoToStartCommand = new RelayCommand(GoToStart);
+        SeekCommand = new RelayCommand<PlayheadSeekRequest>(HandlePlayheadSeek);
         ToggleLoopCommand = new RelayCommand(() => IsLooping = !IsLooping);
 
         ZoomInCommand = new RelayCommand(() => WithDoc(d => d.ZoomBy(1 / 1.5)));
@@ -136,6 +139,7 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand PlayCommand { get; }
     public RelayCommand StopCommand { get; }
     public RelayCommand GoToStartCommand { get; }
+    public RelayCommand<PlayheadSeekRequest> SeekCommand { get; }
     public RelayCommand ToggleLoopCommand { get; }
     public RelayCommand ZoomInCommand { get; }
     public RelayCommand ZoomOutCommand { get; }
@@ -381,6 +385,11 @@ public sealed class MainViewModel : ObservableObject
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
         if (ReferenceEquals(vm, _playbackDocument)) ReleasePlayback();
+        if (ReferenceEquals(vm, _seekDocument))
+        {
+            _seekDocument = null;
+            _resumeAfterSeek = false;
+        }
         AutosaveService.Remove(vm.Doc.SessionId);
         _autosavedVersions.Remove(vm.Doc.SessionId);
         int idx = Documents.IndexOf(vm);
@@ -515,6 +524,51 @@ public sealed class MainViewModel : ObservableObject
             ReleasePlayback(updatePosition: !ReferenceEquals(_playbackDocument, target));
         _active.SetCursor(0, clearSelection: true);
         _active.CenterViewOn(0);
+    }
+
+    private void HandlePlayheadSeek(PlayheadSeekRequest? request)
+    {
+        if (request == null || !Documents.Contains(request.Document) || request.Document.Doc.Length == 0) return;
+        var document = request.Document;
+        int sample = Math.Clamp(request.Sample, 0, document.Doc.Length - 1);
+
+        if (request.Phase == PlayheadSeekPhase.Begin)
+        {
+            _seekDocument = document;
+            bool ownsPlayback = ReferenceEquals(document, _playbackDocument)
+                && ReferenceEquals(document.Doc, Engine.SourceDocument);
+            _resumeAfterSeek = ownsPlayback && Engine.IsPlaying;
+            if (ownsPlayback && (Engine.IsPlaying || Engine.IsPaused))
+                ReleasePlayback(updatePosition: false);
+        }
+        else if (!ReferenceEquals(document, _seekDocument))
+        {
+            return;
+        }
+
+        SetTransportPosition(document, sample);
+
+        if (request.Phase != PlayheadSeekPhase.End) return;
+        bool resume = _resumeAfterSeek;
+        _seekDocument = null;
+        _resumeAfterSeek = false;
+        if (resume && Documents.Contains(document))
+            StartPlaybackAt(document, sample);
+    }
+
+    private void StartPlaybackAt(DocumentViewModel document, int sample)
+    {
+        int start = Math.Clamp(sample, 0, Math.Max(0, document.Doc.Length - 1));
+        int? end = document.HasSelection && start >= document.SelStart && start < document.SelEnd
+            ? document.SelEnd
+            : null;
+        Engine.Loop = IsLooping;
+        Master.ResetMeters();
+        long playbackSession = Engine.Play(document.Doc, start, end);
+        _playbackDocument = document;
+        _playbackEditVersion = document.Doc.EditVersion;
+        _playbackSession = playbackSession;
+        IsPlaying = true;
     }
 
     private void ReleasePlayback(bool updatePosition = true)

@@ -14,6 +14,7 @@ public sealed class MasterSectionViewModel : ObservableObject
     private double _holdL = -60, _holdR = -60;
     private string? _selectedPreset;
     private bool _applyingPreset;
+    private string _rackStatusText = "Rack ready.";
     private int _tick;
 
     // shared loudness-history ring (~2 min at 10 Hz), sampled here so the graph
@@ -43,6 +44,24 @@ public sealed class MasterSectionViewModel : ObservableObject
     public RelayCommand ResetChainCommand { get; }
     public RelayCommand ResetMetersCommand { get; }
 
+    public bool RackEnabled
+    {
+        get => _master.RackEnabled;
+        set
+        {
+            if (_master.RackEnabled == value) return;
+            _master.RackEnabled = value;
+            Raise();
+            Raise(nameof(RackStateText));
+            RackStatusText = value
+                ? "Rack enabled — effects processing active."
+                : "Rack bypassed — all effects processing disabled.";
+        }
+    }
+
+    public string RackStateText => RackEnabled ? "ACTIVE" : "BYPASSED";
+    public string RackStatusText { get => _rackStatusText; private set => Set(ref _rackStatusText, value); }
+
     /// <summary>The window prompts for a preset name and calls SavePresetAs.</summary>
     public event Action? RequestSavePreset;
 
@@ -56,6 +75,7 @@ public sealed class MasterSectionViewModel : ObservableObject
             if (preset == null) return;
             _master.ReplaceChain(EffectFactory.Instantiate(preset));
             SyncFromMaster();
+            RackStatusText = $"Preset ‘{preset.Name}’ loaded.";
         }
     }
 
@@ -63,8 +83,9 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     private void AddEffect(string typeId)
     {
-        _master.AddEffect(typeId);
+        var effect = _master.AddEffect(typeId);
         SyncFromMaster();
+        RackStatusText = $"{effect.DisplayName} added to the rack.";
     }
 
     private void MoveEffect(EffectViewModel vm, int delta)
@@ -75,8 +96,20 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     private void RemoveEffect(EffectViewModel vm)
     {
-        _master.RemoveEffect(vm.Effect);
-        SyncFromMaster();
+        string name = vm.DisplayName;
+        if (_master.RemoveEffect(vm.Effect))
+        {
+            SyncFromMaster();
+            RackStatusText = $"{name} removed — processing stopped.";
+        }
+    }
+
+    private void SetEffectEnabled(EffectViewModel vm, bool enabled)
+    {
+        if (!_master.SetEffectEnabled(vm.Effect, enabled)) return;
+        RackStatusText = enabled
+            ? $"{vm.DisplayName} enabled."
+            : $"{vm.DisplayName} bypassed.";
     }
 
     private void ResetChain()
@@ -86,6 +119,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         SelectedPreset = null;
         _applyingPreset = false;
         SyncFromMaster();
+        RackStatusText = "Rack reset to Studio EQ and Precision Limiter.";
     }
 
     public void SyncFromMaster()
@@ -94,7 +128,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         int n = 1;
         foreach (var fx in _master.ChainSnapshot)
         {
-            var vm = new EffectViewModel(fx, MoveEffect, RemoveEffect) { NumberText = $"{n:00}" };
+            var vm = new EffectViewModel(fx, MoveEffect, RemoveEffect, SetEffectEnabled) { NumberText = $"{n:00}" };
             Effects.Add(vm);
             n++;
         }
