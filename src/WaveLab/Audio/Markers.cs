@@ -14,6 +14,11 @@ public sealed class NamedRegion
     public string Name { get; set; } = "Region";
     public int Start { get; set; }
     public int End { get; set; }
+    /// <summary>
+    /// One-based order when this region belongs to an arranged audio-CD plan.
+    /// Null keeps ordinary editing/restoration regions independent of that plan.
+    /// </summary>
+    public int? CdTrackOrder { get; set; }
 }
 
 /// <summary>Sidecar persistence for markers/regions: &lt;audiofile&gt;.wlmeta.json.</summary>

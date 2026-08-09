@@ -49,6 +49,19 @@ public sealed class MasterSection : ISampleProvider
     /// <summary>Snapshot of the current chain (live references — mutate params freely, structure via the API below).</summary>
     public IAudioEffect[] ChainSnapshot { get { lock (_chainLock) return _chain.ToArray(); } }
 
+    /// <summary>
+    /// True when a mono source should be presented to the rack as stereo so the
+    /// enabled mono-to-stereo processor can generate a side signal.
+    /// </summary>
+    public bool ExpandsMonoToStereo
+    {
+        get
+        {
+            lock (_chainLock)
+                return _rackEnabled && _chain.Any(fx => fx.Enabled && fx.TypeId == "mono-stereo");
+        }
+    }
+
     /// <summary>Global rack bypass. Individual effect enabled states are preserved.</summary>
     public bool RackEnabled
     {
@@ -128,7 +141,7 @@ public sealed class MasterSection : ISampleProvider
 
     public void SetSource(ISampleProvider source)
     {
-        _source = source;
+        Volatile.Write(ref _source, source);
         _sampleRate = source.WaveFormat.SampleRate;
         _channels = source.WaveFormat.Channels;
         ConfigureChain();
@@ -137,6 +150,9 @@ public sealed class MasterSection : ISampleProvider
         _startRampPosition = 0;
         _startRampWaitingForSignal = true;
     }
+
+    /// <summary>Release the current playback source after its output has stopped.</summary>
+    public void ClearSource() => Volatile.Write(ref _source, null);
 
     public void ResetMeters()
     {
@@ -149,8 +165,11 @@ public sealed class MasterSection : ISampleProvider
 
     public int Read(float[] buffer, int offset, int count)
     {
-        if (_source == null) return 0;
-        int read = _source.Read(buffer, offset, count);
+        // ClearSource can run on the control thread while the audio callback is
+        // winding down, so keep one stable reference for this entire read.
+        var source = Volatile.Read(ref _source);
+        if (source == null) return 0;
+        int read = source.Read(buffer, offset, count);
         if (read <= 0) { PeakL = PeakR = RmsL = RmsR = 0; return read; }
 
         lock (_chainLock)
@@ -257,13 +276,21 @@ public sealed class MasterSection : ISampleProvider
     /// Process deinterleaved data through a cloned copy of the enabled chain with
     /// latency compensation. Used by render and apply-to-selection.
     /// </summary>
-    public float[][] ProcessOffline(float[][] data, int sampleRate)
+    public float[][] ProcessOffline(
+        float[][] data,
+        int sampleRate,
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        progress?.Report(0);
         IAudioEffect[] enabledEffects;
         lock (_chainLock)
             enabledEffects = _rackEnabled ? _chain.Where(f => f.Enabled).ToArray() : [];
         var chain = enabledEffects.Select(EffectFactory.Clone).ToList();
-        int channels = data.Length;
+        bool expandMono = data.Length == 1 && enabledEffects.Any(fx => fx.TypeId == "mono-stereo");
+        float[][] sourceData = expandMono ? [data[0], data[0]] : data;
+        int channels = sourceData.Length;
         foreach (var fx in chain) fx.Configure(sampleRate, channels);
         int latency = chain.Sum(f => f.LatencySamples);
 
@@ -277,12 +304,13 @@ public sealed class MasterSection : ISampleProvider
         int outFrame = -latency; // skip the first `latency` processed frames
         for (int start = 0; start < totalFrames; start += block)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int n = Math.Min(block, totalFrames - start);
             for (int f = 0; f < n; f++)
             {
                 int srcF = start + f;
                 for (int c = 0; c < channels; c++)
-                    interleaved[f * channels + c] = srcF < frames ? data[c][srcF] : 0f;
+                    interleaved[f * channels + c] = srcF < frames ? sourceData[c][srcF] : 0f;
             }
             foreach (var fx in chain) fx.Process(interleaved, 0, n * channels);
             for (int f = 0; f < n; f++, outFrame++)
@@ -291,6 +319,99 @@ public sealed class MasterSection : ISampleProvider
                 for (int c = 0; c < channels; c++)
                     output[c][outFrame] = interleaved[f * channels + c];
             }
+            progress?.Report((double)(start + n) / totalFrames);
+        }
+        if (totalFrames == 0) progress?.Report(1);
+        return output;
+    }
+
+    /// <summary>
+    /// Render one compensated output range while warming a cloned rack from the
+    /// beginning of the continuous program. This matches a full offline render's
+    /// state at the requested range without retaining the preceding output.
+    /// </summary>
+    public float[][] ProcessOfflineRange(
+        float[][] data,
+        int sampleRate,
+        int rangeStart,
+        int frameCount,
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        if (data.Length == 0) return [];
+        int sourceFrames = data[0].Length;
+        if (data.Any(channel => channel.Length != sourceFrames))
+            throw new ArgumentException("All source channels must have the same length.", nameof(data));
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        if (rangeStart < 0 || rangeStart > sourceFrames)
+            throw new ArgumentOutOfRangeException(nameof(rangeStart));
+        if (frameCount < 0 || frameCount > sourceFrames - rangeStart)
+            throw new ArgumentOutOfRangeException(nameof(frameCount));
+
+        cancellationToken.ThrowIfCancellationRequested();
+        progress?.Report(0);
+        IAudioEffect[] enabledEffects;
+        lock (_chainLock)
+            enabledEffects = _rackEnabled ? _chain.Where(effect => effect.Enabled).ToArray() : [];
+
+        var chain = enabledEffects.Select(EffectFactory.Clone).ToList();
+        bool expandMono = data.Length == 1 && enabledEffects.Any(effect => effect.TypeId == "mono-stereo");
+        float[][] sourceData = expandMono ? [data[0], data[0]] : data;
+        int channels = sourceData.Length;
+        var output = new float[channels][];
+        for (int channel = 0; channel < channels; channel++) output[channel] = new float[frameCount];
+        if (frameCount == 0)
+        {
+            progress?.Report(1);
+            return output;
+        }
+
+        if (chain.Count == 0)
+        {
+            for (int channel = 0; channel < channels; channel++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Array.Copy(sourceData[channel], rangeStart, output[channel], 0, frameCount);
+            }
+            progress?.Report(1);
+            return output;
+        }
+
+        foreach (var effect in chain) effect.Configure(sampleRate, channels);
+        int latency = checked(chain.Sum(effect => effect.LatencySamples));
+        int rangeEnd = checked(rangeStart + frameCount);
+        int framesToProcess = checked(rangeEnd + latency);
+        const int block = 65536;
+        var interleaved = new float[checked(block * channels)];
+
+        for (int processStart = 0; processStart < framesToProcess; processStart += block)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int framesInBlock = Math.Min(block, framesToProcess - processStart);
+            for (int frame = 0; frame < framesInBlock; frame++)
+            {
+                int sourceFrame = processStart + frame;
+                for (int channel = 0; channel < channels; channel++)
+                {
+                    interleaved[frame * channels + channel] = sourceFrame < sourceFrames
+                        ? sourceData[channel][sourceFrame]
+                        : 0f;
+                }
+            }
+
+            foreach (var effect in chain)
+                effect.Process(interleaved, 0, framesInBlock * channels);
+
+            int outputFrame = processStart - latency;
+            for (int frame = 0; frame < framesInBlock; frame++, outputFrame++)
+            {
+                if (outputFrame < rangeStart || outputFrame >= rangeEnd) continue;
+                int destinationFrame = outputFrame - rangeStart;
+                for (int channel = 0; channel < channels; channel++)
+                    output[channel][destinationFrame] = interleaved[frame * channels + channel];
+            }
+            progress?.Report((double)(processStart + framesInBlock) / framesToProcess);
         }
         return output;
     }

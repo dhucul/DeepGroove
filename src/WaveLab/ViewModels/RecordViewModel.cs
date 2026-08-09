@@ -11,7 +11,9 @@ public sealed class RecordViewModel : ObservableObject
     private readonly RecordingEngine _engine = new();
     private CaptureDevice? _selectedDevice;
     private bool _isRecording;
+    private bool _isFinalizing;
     private double _peakL = -60, _peakR = -60;
+    private Task _finalization = Task.CompletedTask;
 
     public RecordViewModel()
     {
@@ -22,6 +24,17 @@ public sealed class RecordViewModel : ObservableObject
         catch { }
         var preferred = Util.AppSettings.Instance.InputDeviceId;
         _selectedDevice = Devices.FirstOrDefault(d => d.Id == preferred) ?? (Devices.Count > 0 ? Devices[0] : null);
+        _engine.CaptureStopped += info =>
+        {
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(async () =>
+            {
+                if (!IsRecording) return;
+                Exception? failure = null;
+                try { await StopAndFinishAsync(); }
+                catch (Exception ex) { failure = ex; }
+                UnexpectedStopCompleted?.Invoke(info, failure);
+            });
+        };
     }
 
     public ObservableCollection<CaptureDevice> Devices { get; } = [];
@@ -33,6 +46,8 @@ public sealed class RecordViewModel : ObservableObject
     }
 
     public bool IsRecording { get => _isRecording; private set { Set(ref _isRecording, value); Raise(nameof(FormatText)); } }
+    public bool IsFinalizing { get => _isFinalizing; private set => Set(ref _isFinalizing, value); }
+    public bool HasPendingCapture => _engine.HasPendingCapture;
     public double PeakLDb { get => _peakL; private set => Set(ref _peakL, value); }
     public double PeakRDb { get => _peakR; private set => Set(ref _peakR, value); }
 
@@ -44,13 +59,27 @@ public sealed class RecordViewModel : ObservableObject
         : "Records in the device mix format · saved as 16/24/32-bit WAV";
 
     public AudioDocument? Result { get; private set; }
+    public event Action<RecordingStoppedInfo, Exception?>? UnexpectedStopCompleted;
 
     public bool Start()
     {
+        if (IsRecording || IsFinalizing || HasPendingCapture) return false;
         try
         {
             _engine.Start(_selectedDevice?.Id);
+            Result = null;
             IsRecording = true;
+            if (_selectedDevice != null)
+            {
+                // Failure to persist a preference must not leave a live capture
+                // running while the UI believes Start failed.
+                try
+                {
+                    Util.AppSettings.Instance.InputDeviceId = _selectedDevice.Id;
+                    Util.AppSettings.Instance.Save();
+                }
+                catch { }
+            }
             return true;
         }
         catch (Exception ex)
@@ -61,16 +90,31 @@ public sealed class RecordViewModel : ObservableObject
         }
     }
 
-    public void StopAndFinish()
+    public Task StopAndFinishAsync()
     {
-        Result = _engine.StopAndGetDocument();
+        if (IsFinalizing) return _finalization;
         IsRecording = false;
+        IsFinalizing = true;
+        _finalization = FinalizeCoreAsync();
+        return _finalization;
+    }
+
+    private async Task FinalizeCoreAsync()
+    {
+        try { Result = await _engine.StopAndGetDocumentAsync(); }
+        finally
+        {
+            Raise(nameof(HasPendingCapture));
+            IsFinalizing = false;
+        }
     }
 
     public void Cancel()
     {
+        if (IsFinalizing) return;
         _engine.Stop();
         IsRecording = false;
+        Raise(nameof(HasPendingCapture));
     }
 
     public void Tick()

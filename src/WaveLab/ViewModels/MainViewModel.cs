@@ -19,12 +19,22 @@ public sealed class MainViewModel : ObservableObject
 
     private DocumentViewModel? _active;
     private DocumentViewModel? _playbackDocument;
+    private AudioDocument? _previewDocument;
+    private bool? _previewRackRestoreState;
     private int _playbackEditVersion = -1;
     private long _playbackSession;
     private DocumentViewModel? _seekDocument;
     private bool _resumeAfterSeek;
     private bool _isPlaying;
     private bool _isLooping;
+    private readonly RecordingEngine _transportRecorder = new();
+    private bool _isRecordArmed;
+    private bool _isTransportRecording;
+    private bool _isFinalizingRecording;
+    private Task _recordFinalization = Task.CompletedTask;
+    private double _transportPeakL = -60;
+    private double _transportPeakR = -60;
+    private string _recordInputName = "Default input";
     private readonly DispatcherTimer _timer;
     private readonly DispatcherTimer _autosaveTimer;
     private DateTime? _lastAutosave;
@@ -44,9 +54,12 @@ public sealed class MainViewModel : ObservableObject
 
         Engine = new PlaybackEngine();
         Master = new MasterSectionViewModel(Engine.Master);
+        Master.ProcessingTopologyChanged += RestartMonoPlaybackForTopologyChange;
         Engine.PlaybackStopped += OnPlaybackStopped;
+        _transportRecorder.CaptureStopped += OnTransportCaptureStopped;
 
         foreach (var f in AppSettings.Instance.RecentFiles) RecentFiles.Add(f);
+        UpdateRecordInputName();
 
         _timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
         _timer.Tick += (_, _) => OnTick();
@@ -71,8 +84,8 @@ public sealed class MainViewModel : ObservableObject
         TrimCommand = new RelayCommand(Trim, () => _active?.HasSelection == true);
         SelectAllCommand = new RelayCommand(() => WithDoc(d => d.SelectAll()));
 
-        PlayCommand = new RelayCommand(TogglePlay);
-        StopCommand = new RelayCommand(PausePlayback);
+        PlayCommand = new RelayCommand(TogglePlay, () => !IsTransportRecording && !IsFinalizingRecording);
+        StopCommand = new RelayCommand(StopTransport);
         GoToStartCommand = new RelayCommand(GoToStart);
         SeekCommand = new RelayCommand<PlayheadSeekRequest>(HandlePlayheadSeek);
         ToggleLoopCommand = new RelayCommand(() => IsLooping = !IsLooping);
@@ -108,7 +121,9 @@ public sealed class MainViewModel : ObservableObject
 
         RenderCommand = new RelayCommand(RenderMaster);
         ApplyChainCommand = new RelayCommand(ApplyChain);
-        RecordCommand = new RelayCommand(() => RequestRecordDialog?.Invoke());
+        RecordCommand = new RelayCommand(ToggleRecord, () => !IsFinalizingRecording);
+        RecordSetupCommand = new RelayCommand(() => RequestRecordDialog?.Invoke(),
+            () => !IsTransportRecording && !IsFinalizingRecording && !HasPendingTransportRecording);
         SettingsCommand = new RelayCommand(() => RequestSettingsDialog?.Invoke());
         ExportCommand = new RelayCommand(() => { if (_active != null) RequestExportDialog?.Invoke(); });
         StatisticsCommand = new RelayCommand(() => { if (_active != null) RequestStatisticsDialog?.Invoke(); });
@@ -162,6 +177,7 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand RenderCommand { get; }
     public RelayCommand ApplyChainCommand { get; }
     public RelayCommand RecordCommand { get; }
+    public RelayCommand RecordSetupCommand { get; }
     public RelayCommand SettingsCommand { get; }
     public RelayCommand ExportCommand { get; }
     public RelayCommand StatisticsCommand { get; }
@@ -219,6 +235,65 @@ public sealed class MainViewModel : ObservableObject
         set { if (Set(ref _isLooping, value)) Engine.Loop = value; }
     }
 
+    /// <summary>
+    /// When armed, Record starts the persisted input device immediately instead
+    /// of opening the recording setup dialog. Arm intentionally resets on launch.
+    /// </summary>
+    public bool IsRecordArmed
+    {
+        get => _isRecordArmed;
+        set
+        {
+            if (IsTransportRecording || IsFinalizingRecording || HasPendingTransportRecording) return;
+            if (!Set(ref _isRecordArmed, value)) return;
+            Raise(nameof(RecordStatusText));
+            Raise(nameof(RecordButtonToolTip));
+        }
+    }
+
+    public bool IsTransportRecording
+    {
+        get => _isTransportRecording;
+        private set
+        {
+            if (!Set(ref _isTransportRecording, value)) return;
+            Raise(nameof(RecordStatusText));
+            Raise(nameof(RecordButtonToolTip));
+            Raise(nameof(CanChangeRecordArm));
+            PlayCommand.RaiseCanExecuteChanged();
+            RecordSetupCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    public bool IsFinalizingRecording
+    {
+        get => _isFinalizingRecording;
+        private set
+        {
+            if (!Set(ref _isFinalizingRecording, value)) return;
+            Raise(nameof(RecordStatusText));
+            Raise(nameof(RecordButtonToolTip));
+            Raise(nameof(CanChangeRecordArm));
+            PlayCommand.RaiseCanExecuteChanged();
+            RecordCommand.RaiseCanExecuteChanged();
+            RecordSetupCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    public double TransportPeakLDb { get => _transportPeakL; private set => Set(ref _transportPeakL, value); }
+    public double TransportPeakRDb { get => _transportPeakR; private set => Set(ref _transportPeakR, value); }
+    public bool CanChangeRecordArm => !IsTransportRecording && !IsFinalizingRecording && !HasPendingTransportRecording;
+    public bool HasPendingTransportRecording => _transportRecorder.HasPendingCapture;
+    public string RecordStatusText => IsFinalizingRecording ? "FINALIZING…"
+        : IsTransportRecording
+            ? $"REC {TimeFormat.Position((long)(_transportRecorder.RecordedSeconds * _transportRecorder.SampleRate), _transportRecorder.SampleRate)}"
+            : HasPendingTransportRecording ? "CAPTURE NEEDS RETRY"
+            : IsRecordArmed ? $"ARMED · {_recordInputName}" : "";
+    public string RecordButtonToolTip => IsFinalizingRecording ? "Finalizing captured audio"
+        : IsTransportRecording ? "Stop recording"
+        : HasPendingTransportRecording ? "Retry preserving the buffered recording"
+        : IsRecordArmed ? "Record now from the selected input (Ctrl+R)" : "Record setup (Ctrl+R)";
+
     public string StatusEngine => $"Out: {PlaybackEngine.CurrentOutputName()} · WASAPI · {AppSettings.Instance.BufferMs} ms";
     public string StatusSamples => _active == null ? "" : $"{_active.Doc.Length:N0} samples";
 
@@ -230,7 +305,32 @@ public sealed class MainViewModel : ObservableObject
     public string CpuText { get => _cpuText; private set => Set(ref _cpuText, value); }
     public string RamText { get => _ramText; private set => Set(ref _ramText, value); }
 
-    public void RefreshEngineStatus() => Raise(nameof(StatusEngine));
+    public void RefreshEngineStatus()
+    {
+        UpdateRecordInputName();
+        Raise(nameof(StatusEngine));
+        Raise(nameof(RecordStatusText));
+    }
+
+    private void UpdateRecordInputName()
+    {
+        try
+        {
+            var settings = AppSettings.Instance;
+            string? preferred = settings.InputDeviceId;
+            var selected = RecordingEngine.GetCaptureDevices()
+                .FirstOrDefault(device => device.Id == preferred);
+            if (preferred != null && selected == default)
+            {
+                // A removed endpoint must not leave Arm pointing at an ID that
+                // will fail. Fall back to the current Windows default input.
+                settings.InputDeviceId = null;
+                settings.Save();
+            }
+            _recordInputName = selected.Name ?? "Default input";
+        }
+        catch { _recordInputName = "Default input"; }
+    }
 
     // ── file ─────────────────────────────────────────────────────
 
@@ -288,6 +388,12 @@ public sealed class MainViewModel : ObservableObject
         var vm = new DocumentViewModel(doc, prebuiltPeaks);
         Documents.Add(vm);
         ActiveDocument = vm;
+    }
+
+    public void AddGeneratedDocument(AudioDocument doc)
+    {
+        doc.MarkUnsaved();
+        AddDocument(doc);
     }
 
     /// <summary>Point-in-time copy sharing the current channel arrays (splices never mutate old arrays).</summary>
@@ -356,6 +462,9 @@ public sealed class MainViewModel : ObservableObject
             doc.FilePath = dlg.FileName;
             doc.Title = Path.GetFileName(dlg.FileName);
             doc.SourceBitDepth = depth;
+            // Generated documents could accumulate markers/regions before they had
+            // a path. Persist that in-memory metadata alongside the first Save As.
+            d.NotifyMarkersChanged();
             if (doc.EditVersion == version)
             {
                 doc.MarkSaved();
@@ -472,8 +581,99 @@ public sealed class MainViewModel : ObservableObject
 
     // ── transport ────────────────────────────────────────────────
 
+    private void ToggleRecord()
+    {
+        if (IsFinalizingRecording) return;
+        if (HasPendingTransportRecording)
+        {
+            _ = FinishTransportRecordingAsync();
+            return;
+        }
+        if (IsTransportRecording)
+        {
+            _ = FinishTransportRecordingAsync();
+            return;
+        }
+        if (!IsRecordArmed)
+        {
+            RequestRecordDialog?.Invoke();
+            return;
+        }
+
+        if (Engine.IsPlaying || Engine.IsPaused) ReleasePlayback();
+        try
+        {
+            UpdateRecordInputName();
+            _transportRecorder.Start(AppSettings.Instance.InputDeviceId);
+            TransportPeakLDb = TransportPeakRDb = -60;
+            IsTransportRecording = true;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not start recording from the selected input:\n{ex.Message}",
+                "Record", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void StopTransport()
+    {
+        if (IsTransportRecording || HasPendingTransportRecording) _ = FinishTransportRecordingAsync();
+        else PausePlayback();
+    }
+
+    public Task FinishTransportRecordingAsync()
+    {
+        if (IsFinalizingRecording) return _recordFinalization;
+        if (!IsTransportRecording && !HasPendingTransportRecording) return Task.CompletedTask;
+        IsTransportRecording = false;
+        IsFinalizingRecording = true;
+        _recordFinalization = FinalizeCoreAsync();
+        return _recordFinalization;
+    }
+
+    private async Task FinalizeCoreAsync()
+    {
+        try
+        {
+            var result = await _transportRecorder.StopAndGetDocumentAsync();
+            if (result != null) AddGeneratedDocument(result);
+            if (_transportRecorder.LastStopError != null)
+                MessageBox.Show($"The input device stopped unexpectedly. Audio captured before the failure was kept.\n\n{_transportRecorder.LastStopError.Message}",
+                    "Recording stopped", MessageBoxButton.OK, MessageBoxImage.Warning);
+            else if (_transportRecorder.CapacityReached)
+                MessageBox.Show("The recording reached WaveLab's in-memory safety limit. Audio captured up to the limit was kept.",
+                    "Recording stopped", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not finalize the recording:\n{ex.Message}",
+                "Record", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            TransportPeakLDb = TransportPeakRDb = -60;
+            IsFinalizingRecording = false;
+            Raise(nameof(HasPendingTransportRecording));
+            Raise(nameof(RecordStatusText));
+            Raise(nameof(RecordButtonToolTip));
+            Raise(nameof(CanChangeRecordArm));
+            RecordSetupCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    private void OnTransportCaptureStopped(RecordingStoppedInfo info)
+    {
+        // A user-requested stop clears IsTransportRecording before asking the
+        // engine to stop. If it is still true, the device or safety cap ended it.
+        Application.Current?.Dispatcher.BeginInvoke(async () =>
+        {
+            if (IsTransportRecording) await FinishTransportRecordingAsync();
+        });
+    }
+
     private void TogglePlay()
     {
+        if (IsTransportRecording || IsFinalizingRecording) return;
         if (Engine.IsPlaying) { PausePlayback(); return; }
         IsPlaying = false;
         if (_active == null || _active.Doc.Length == 0) return;
@@ -528,6 +728,7 @@ public sealed class MainViewModel : ObservableObject
 
     private void HandlePlayheadSeek(PlayheadSeekRequest? request)
     {
+        if (IsTransportRecording || IsFinalizingRecording) return;
         if (request == null || !Documents.Contains(request.Document) || request.Document.Doc.Length == 0) return;
         var document = request.Document;
         int sample = Math.Clamp(request.Sample, 0, document.Doc.Length - 1);
@@ -571,6 +772,54 @@ public sealed class MainViewModel : ObservableObject
         IsPlaying = true;
     }
 
+    private void RestartMonoPlaybackForTopologyChange()
+    {
+        AudioDocument? source = Engine.SourceDocument;
+        bool wasPlaying = Engine.IsPlaying;
+        bool wasPaused = Engine.IsPaused;
+        if (source?.ChannelCount != 1 || (!wasPlaying && !wasPaused)) return;
+
+        int position = Engine.PositionSamples;
+        bool loop = Engine.Loop;
+        var document = _playbackDocument;
+        var preview = _previewDocument;
+        ReleasePlayback(updatePosition: false);
+
+        try
+        {
+            if (document != null && Documents.Contains(document))
+            {
+                StartPlaybackAt(document, position);
+            }
+            else if (preview != null)
+            {
+                Engine.Loop = loop;
+                Master.ResetMeters();
+                _playbackSession = Engine.Play(preview, position, preview.Length);
+                _playbackDocument = null;
+                _previewDocument = preview;
+                _playbackEditVersion = -1;
+                IsPlaying = true;
+            }
+            else
+            {
+                return;
+            }
+
+            if (wasPaused)
+            {
+                Engine.Pause();
+                IsPlaying = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            ReleasePlayback(updatePosition: false);
+            MessageBox.Show($"Playback could not restart after the rack topology changed:\n{ex.Message}",
+                "Audio rack", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private void ReleasePlayback(bool updatePosition = true)
     {
         var d = _playbackDocument;
@@ -578,9 +827,55 @@ public sealed class MainViewModel : ObservableObject
         Engine.Stop();
         if (updatePosition && d != null && Documents.Contains(d)) SetTransportPosition(d, position);
         _playbackDocument = null;
+        _previewDocument = null;
         _playbackEditVersion = -1;
         _playbackSession = 0;
         IsPlaying = false;
+        RestorePreviewRackOverride();
+    }
+
+    /// <summary>Play a transient document without adding it to the tab collection.</summary>
+    public void PlayPreview(AudioDocument preview, bool loop = true, bool bypassRack = false)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+        if (preview.Length == 0 || IsTransportRecording || IsFinalizingRecording) return;
+        if (Engine.IsPlaying || Engine.IsPaused || _previewDocument != null || _previewRackRestoreState.HasValue)
+            ReleasePlayback();
+
+        if (bypassRack)
+        {
+            _previewRackRestoreState = Master.RackEnabled;
+            Master.RackEnabled = false;
+        }
+
+        try
+        {
+            Engine.Loop = loop;
+            Master.ResetMeters();
+            _playbackSession = Engine.Play(preview, 0, preview.Length);
+            _playbackDocument = null;
+            _previewDocument = preview;
+            _playbackEditVersion = -1;
+            IsPlaying = true;
+        }
+        catch
+        {
+            RestorePreviewRackOverride();
+            throw;
+        }
+    }
+
+    public void StopPreview()
+    {
+        if (_previewDocument != null || _previewRackRestoreState.HasValue)
+            ReleasePlayback(updatePosition: false);
+    }
+
+    private void RestorePreviewRackOverride()
+    {
+        bool? restore = _previewRackRestoreState;
+        _previewRackRestoreState = null;
+        if (restore.HasValue) Master.RackEnabled = restore.Value;
     }
 
     private static void SetTransportPosition(DocumentViewModel document, int position)
@@ -605,9 +900,11 @@ public sealed class MainViewModel : ObservableObject
             if (document != null && Documents.Contains(document) && document.Doc.Length > 0)
                 SetTransportPosition(document, position);
             _playbackDocument = null;
+            _previewDocument = null;
             _playbackEditVersion = -1;
             _playbackSession = 0;
             IsPlaying = false;
+            RestorePreviewRackOverride();
         });
     }
 
@@ -644,7 +941,7 @@ public sealed class MainViewModel : ObservableObject
         await RunBlocking(async () =>
         {
             var output = await Task.Run(() => Engine.Master.ProcessOffline(input, sr));
-            AddDocument(new AudioDocument(output, sr, doc.SourceBitDepth)
+            AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
             {
                 Title = Path.GetFileNameWithoutExtension(doc.Title) + " (mastered).wav",
             });
@@ -664,7 +961,16 @@ public sealed class MainViewModel : ObservableObject
         await RunBlocking(async () =>
         {
             var output = await Task.Run(() => Engine.Master.ProcessOffline(input, sr));
-            if (start + count <= d.Doc.Length) // re-validate: the doc may only change via this window, but stay safe
+            if (output.Length != d.Doc.ChannelCount)
+            {
+                // A mono-to-stereo rack changes channel topology, which cannot be
+                // spliced back into a mono document. Keep it non-destructive in a new tab.
+                AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
+                {
+                    Title = Path.GetFileNameWithoutExtension(d.Doc.Title) + " (stereo master).wav",
+                });
+            }
+            else if (start + count <= d.Doc.Length) // re-validate: the doc may only change via this window, but stay safe
                 d.Doc.ReplaceRange(start, count, output, "Apply Master Chain");
         });
     }
@@ -707,7 +1013,7 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>Replace the active selection with recorded audio (punch), matching layout and rate, smoothing the joins.</summary>
     public void PunchInsert(AudioDocument recorded)
     {
-        if (_active is not { HasSelection: true } d) { AddDocument(recorded); return; }
+        if (_active is not { HasSelection: true } d) { AddGeneratedDocument(recorded); return; }
 
         var target = d.Doc;
         float[][] data = recorded.Channels.ToArray();
@@ -805,8 +1111,8 @@ public sealed class MainViewModel : ObservableObject
                         });
                         doc.FilePath = entry.OriginalPath;
                         doc.Title = entry.Title.Replace(" •", "") + " (recovered)";
+                        doc.MarkUnsaved();
                         AddDocument(doc, peaks);
-                        Documents[^1].NotifySaved();
                     }
                     catch { }
                 }
@@ -832,6 +1138,7 @@ public sealed class MainViewModel : ObservableObject
             Documents.Where(d => d.Doc.FilePath != null).Select(d => d.Doc.FilePath!).ToList();
         AppSettings.Instance.Save();
         AutosaveService.ClearAll();
+        _transportRecorder.Dispose();
         Engine.Dispose();
     }
 
@@ -844,6 +1151,14 @@ public sealed class MainViewModel : ObservableObject
             playbackDocument.EnsurePlayheadVisible();
         }
         Master.Tick(0.033, IsPlaying);
+        if (IsTransportRecording)
+        {
+            static double ToDb(float value) => value <= 1e-5f ? -60 : Math.Max(-60, 20 * Math.Log10(value));
+            static double Decay(double current, double target) => target >= current ? target : Math.Max(target, current - 1.5);
+            TransportPeakLDb = Decay(_transportPeakL, ToDb(_transportRecorder.PeakL));
+            TransportPeakRDb = Decay(_transportPeakR, ToDb(_transportRecorder.PeakR));
+            Raise(nameof(RecordStatusText));
+        }
 
         if (++_tickCount % 30 == 0) // ~1 s
         {

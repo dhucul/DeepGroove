@@ -70,6 +70,43 @@
         </Setter>
     </Style>
 
+    <Style x:Key="RecordArmButton" TargetType="ToggleButton" BasedOn="{StaticResource ToolButton}">
+        <Setter Property="Width" Value="56"/>
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="FontSize" Value="10"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Ellipse x:Name="led" Width="6" Height="6" Margin="0,0,7,0" Fill="{StaticResource Faint}"/>
+                            <ContentPresenter/>
+                        </StackPanel>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="#5E4246"/>
+                            <Setter TargetName="bd" Property="Background" Value="#2B2327"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="#1B1215"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="#7A3030"/>
+                            <Setter TargetName="bd" Property="Background" Value="#3D1E1E"/>
+                            <Setter TargetName="led" Property="Fill" Value="{StaticResource Red}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="AccentButton" TargetType="Button">
         <Setter Property="Foreground" Value="#C8F5EE"/>
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>

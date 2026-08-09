@@ -77,7 +77,7 @@ public static class AudioExporter
         for (int f = 0; f < frames; f++)
             for (int c = 0; c < channels; c++)
             {
-                int q = (int)Math.Round(data[c][f] * 32767.0 + dither.Next());
+                int q = (int)Math.Round(data[c][f] * 32768.0 + dither.Next());
                 q = Math.Clamp(q, short.MinValue, short.MaxValue);
                 pcm[o++] = (byte)q;
                 pcm[o++] = (byte)(q >> 8);

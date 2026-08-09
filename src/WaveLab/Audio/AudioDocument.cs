@@ -10,6 +10,9 @@ public sealed class AudioDocument
     private float[][] _channels;
     private readonly List<Edit> _undo = [];
     private readonly List<Edit> _redo = [];
+    private long _currentStateId;
+    private long? _savedStateId = 0;
+    private long _nextStateId = 1;
 
     /// <summary>Stable identity for autosave/crash-recovery bookkeeping.</summary>
     public Guid SessionId { get; } = Guid.NewGuid();
@@ -70,14 +73,47 @@ public sealed class AudioDocument
     {
         if (newData.Length != ChannelCount)
             throw new ArgumentException($"Channel count mismatch in edit '{opName}' ({newData.Length} vs {ChannelCount}).");
-        var edit = new Edit(opName, start, CopyRange(start, removeCount), CloneData(newData));
+        long beforeStateId = _currentStateId;
+        long afterStateId = _nextStateId++;
+        var edit = new Edit(opName, start, CopyRange(start, removeCount), CloneData(newData), false,
+            beforeStateId, afterStateId);
         Splice(start, removeCount, newData);
         _undo.Add(edit);
         _redo.Clear();
         EnforceUndoBudget();
-        Dirty = true;
+        _currentStateId = afterStateId;
+        UpdateDirtyFromSavepoint();
         EditVersion++;
         Changed?.Invoke(start, removeCount, newData.Length == 0 ? 0 : newData[0].Length);
+    }
+
+    /// <summary>
+    /// Replace the entire document by taking ownership of a completed render.
+    /// This avoids cloning several album-sized buffers at commit time while still
+    /// retaining the previous and new arrays as one undoable edit. The caller must
+    /// not mutate <paramref name="newData"/> after this method returns.
+    /// </summary>
+    public void ReplaceAllOwned(float[][] newData, string opName)
+    {
+        ArgumentNullException.ThrowIfNull(newData);
+        if (newData.Length != ChannelCount)
+            throw new ArgumentException($"Channel count mismatch in edit '{opName}' ({newData.Length} vs {ChannelCount}).");
+        int newLength = newData.Length == 0 ? 0 : newData[0].Length;
+        if (newData.Any(channel => channel.Length != newLength))
+            throw new ArgumentException($"Channel lengths do not match in edit '{opName}'.", nameof(newData));
+
+        var oldData = _channels;
+        int oldLength = Length;
+        long beforeStateId = _currentStateId;
+        long afterStateId = _nextStateId++;
+        _channels = newData;
+        _undo.Add(new Edit(opName, 0, oldData, newData, true, beforeStateId, afterStateId));
+        _redo.Clear();
+        EnforceUndoBudget();
+        _currentStateId = afterStateId;
+        UpdateDirtyFromSavepoint();
+        EditVersion++;
+        Changed?.Invoke(0, oldLength, newLength);
     }
 
     public void Undo()
@@ -86,9 +122,13 @@ public sealed class AudioDocument
         var e = _undo[^1];
         _undo.RemoveAt(_undo.Count - 1);
         int insertedLen = e.New.Length == 0 ? 0 : e.New[0].Length;
-        Splice(e.Start, insertedLen, e.Old);
+        if (e.OwnsFullDocument)
+            _channels = e.Old;
+        else
+            Splice(e.Start, insertedLen, e.Old);
         _redo.Add(e);
-        Dirty = true;
+        _currentStateId = e.BeforeStateId;
+        UpdateDirtyFromSavepoint();
         EditVersion++;
         Changed?.Invoke(e.Start, insertedLen, e.Old.Length == 0 ? 0 : e.Old[0].Length);
     }
@@ -99,9 +139,13 @@ public sealed class AudioDocument
         var e = _redo[^1];
         _redo.RemoveAt(_redo.Count - 1);
         int oldLen = e.Old.Length == 0 ? 0 : e.Old[0].Length;
-        Splice(e.Start, oldLen, e.New);
+        if (e.OwnsFullDocument)
+            _channels = e.New;
+        else
+            Splice(e.Start, oldLen, e.New);
         _undo.Add(e);
-        Dirty = true;
+        _currentStateId = e.AfterStateId;
+        UpdateDirtyFromSavepoint();
         EditVersion++;
         Changed?.Invoke(e.Start, oldLen, e.New.Length == 0 ? 0 : e.New[0].Length);
     }
@@ -124,7 +168,24 @@ public sealed class AudioDocument
         }
     }
 
-    public void MarkSaved() => Dirty = false;
+    public void MarkSaved()
+    {
+        _savedStateId = _currentStateId;
+        Dirty = false;
+    }
+
+    /// <summary>
+    /// Mark generated or recovered audio as needing its first save. This does not
+    /// create an undo entry because no user edit has replaced source samples yet.
+    /// </summary>
+    public void MarkUnsaved()
+    {
+        _savedStateId = null;
+        Dirty = true;
+    }
+
+    private void UpdateDirtyFromSavepoint() =>
+        Dirty = !_savedStateId.HasValue || _currentStateId != _savedStateId.Value;
 
     /// <summary>Interleaved copy of a range (for playback/export).</summary>
     public void ReadInterleaved(int start, int frames, float[] dest, int destOffset)
@@ -161,5 +222,12 @@ public sealed class AudioDocument
         return copy;
     }
 
-    private sealed record Edit(string Name, int Start, float[][] Old, float[][] New);
+    private sealed record Edit(
+        string Name,
+        int Start,
+        float[][] Old,
+        float[][] New,
+        bool OwnsFullDocument,
+        long BeforeStateId,
+        long AfterStateId);
 }

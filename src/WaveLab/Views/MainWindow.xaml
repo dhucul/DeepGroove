@@ -95,6 +95,7 @@
             <Menu VerticalAlignment="Center" Margin="8,0" WindowChrome.IsHitTestVisibleInChrome="True">
                 <MenuItem Header="_File">
                     <MenuItem Header="Open…" InputGestureText="Ctrl+O" Command="{Binding OpenCommand}"/>
+                    <MenuItem Header="Extract Audio CD…" Click="OnExtractAudioCd"/>
                     <MenuItem Header="Save" InputGestureText="Ctrl+S" Command="{Binding SaveCommand}"/>
                     <MenuItem Header="Save As…" InputGestureText="Ctrl+Shift+S" Command="{Binding SaveAsCommand}"/>
                     <MenuItem Header="Export…" InputGestureText="Ctrl+E" Command="{Binding ExportCommand}"/>
@@ -109,7 +110,7 @@
                         </MenuItem.ItemContainerStyle>
                     </MenuItem>
                     <Separator/>
-                    <MenuItem Header="Record New…" InputGestureText="Ctrl+R" Command="{Binding RecordCommand}"/>
+                    <MenuItem Header="Recording Setup…" Command="{Binding RecordSetupCommand}"/>
                     <Separator/>
                     <MenuItem Header="Close File" InputGestureText="Ctrl+W" Command="{Binding CloseTabCommand}"/>
                     <MenuItem Header="Exit" Command="{Binding ExitCommand}"/>
@@ -149,6 +150,10 @@
                     <MenuItem Header="Stop" Command="{Binding StopCommand}"/>
                     <MenuItem Header="Go to Start" InputGestureText="Home" Command="{Binding GoToStartCommand}"/>
                     <MenuItem Header="Loop" IsCheckable="True" IsChecked="{Binding IsLooping}"/>
+                    <Separator/>
+                    <MenuItem Header="Arm Recording Input" IsCheckable="True" IsChecked="{Binding IsRecordArmed}"
+                              IsEnabled="{Binding CanChangeRecordArm}"/>
+                    <MenuItem Header="Record / Stop" InputGestureText="Ctrl+R" Command="{Binding RecordCommand}"/>
                 </MenuItem>
                 <MenuItem Header="_Process">
                     <MenuItem Header="Gain +3 dB" Command="{Binding GainUpCommand}"/>
@@ -181,6 +186,9 @@
                     </MenuItem>
                 </MenuItem>
                 <MenuItem Header="_Restore">
+                    <MenuItem Header="Vinyl Restoration &amp; CD Transfer…" Click="OnVinylWorkflow"/>
+                    <MenuItem Header="Prepare Tracks for Audio CD…" Click="OnPrepareAudioCd"/>
+                    <Separator/>
                     <MenuItem Header="Learn Noise Profile from Selection" Click="OnLearnNoise"/>
                     <MenuItem Header="Reduce Noise…" Click="OnReduceNoise"/>
                     <Separator/>
@@ -270,13 +278,48 @@
                     <Button Style="{StaticResource ToolButton}" Margin="6,0,0,0" Command="{Binding StopCommand}" ToolTip="Stop">
                         <Rectangle Width="11" Height="11" RadiusX="1.5" RadiusY="1.5" Fill="#CFD4DA"/>
                     </Button>
-                    <Button Style="{StaticResource ToolButton}" Margin="6,0,0,0" Command="{Binding RecordCommand}" ToolTip="Record (Ctrl+R)">
-                        <Ellipse Width="12" Height="12" Fill="{StaticResource Red}"/>
+                    <ToggleButton Style="{StaticResource RecordArmButton}" Margin="6,0,0,0"
+                                  IsChecked="{Binding IsRecordArmed}" IsEnabled="{Binding CanChangeRecordArm}"
+                                  ToolTip="Arm the selected recording input">
+                        <TextBlock Text="ARM"/>
+                    </ToggleButton>
+                    <Button Style="{StaticResource ToolButton}" Margin="6,0,0,0" Command="{Binding RecordCommand}"
+                            ToolTip="{Binding RecordButtonToolTip}">
+                        <Grid>
+                            <Ellipse Width="12" Height="12" Fill="{StaticResource Red}">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsTransportRecording}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <Rectangle Width="11" Height="11" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource Red}">
+                                <Rectangle.Style>
+                                    <Style TargetType="Rectangle">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsTransportRecording}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Rectangle.Style>
+                            </Rectangle>
+                        </Grid>
                     </Button>
                     <ToggleButton Style="{StaticResource ToolButton}" Margin="6,0,0,0" IsChecked="{Binding IsLooping}" ToolTip="Loop playback">
                         <Path Data="M3,8 A5,4.5 0 1 1 4.5,11.2 M3,8 L3,4.5 M3,8 L6.5,8" Stroke="#CFD4DA"
                               StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </ToggleButton>
+
+                    <TextBlock Text="{Binding RecordStatusText}" Foreground="{StaticResource Red}"
+                               FontFamily="{StaticResource MonoFont}" FontSize="10.5" FontWeight="Bold"
+                               VerticalAlignment="Center" Margin="9,0,0,0" MinWidth="76"/>
 
                     <Rectangle Width="1" Height="34" Fill="{StaticResource Line}" Margin="14,0"/>
 

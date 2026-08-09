@@ -38,8 +38,41 @@ public partial class MainWindow : Window
             _vm.StartupLoad(args);
         };
 
-        Closing += (_, e) =>
+        Closing += async (_, e) =>
         {
+            if (_vm.IsTransportRecording)
+            {
+                e.Cancel = true;
+                if (MessageBox.Show(
+                        "Recording is still in progress. Stop and keep the capture now? WaveLab will stay open so you can review and save it.",
+                        "Recording in progress", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+                    await _vm.FinishTransportRecordingAsync();
+                return;
+            }
+            if (_vm.IsFinalizingRecording)
+            {
+                e.Cancel = true;
+                await _vm.FinishTransportRecordingAsync();
+                return;
+            }
+            if (_vm.HasPendingTransportRecording)
+            {
+                var choice = MessageBox.Show(
+                    "A buffered recording still needs to be preserved. Retry finalizing it before exit? Choose No only to discard that capture.",
+                    "Recording recovery", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+                if (choice == MessageBoxResult.Cancel)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+                if (choice == MessageBoxResult.Yes)
+                {
+                    e.Cancel = true;
+                    await _vm.FinishTransportRecordingAsync();
+                    return;
+                }
+                // No is an explicit request to discard; normal exit cleanup owns it.
+            }
             if (_vm.Documents.Any(d => d.IsDirty) &&
                 MessageBox.Show("There are unsaved changes. Exit anyway?", "WaveLab",
                     MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
@@ -90,11 +123,21 @@ public partial class MainWindow : Window
     {
         bool punchAvailable = _vm.ActiveDocument?.HasSelection == true;
         var dialog = new RecordDialog(punchAvailable) { Owner = this };
-        if (dialog.ShowDialog() != true || dialog.ViewModel.Result == null) return;
+        bool accepted = dialog.ShowDialog() == true;
+        _vm.RefreshEngineStatus();
+        if (!accepted || dialog.ViewModel.Result == null) return;
         if (punchAvailable && dialog.PunchRequested)
             _vm.PunchInsert(dialog.ViewModel.Result);
         else
-            _vm.AddDocument(dialog.ViewModel.Result);
+            _vm.AddGeneratedDocument(dialog.ViewModel.Result);
+    }
+
+    private void OnExtractAudioCd(object sender, RoutedEventArgs e)
+    {
+        var dialog = new CdImportDialog { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        foreach (var import in dialog.Imports)
+            _vm.AddGeneratedDocument(import.Document);
     }
 
     private void ShowSettingsDialog()
@@ -163,6 +206,22 @@ public partial class MainWindow : Window
     // ── tools ────────────────────────────────────────────────────
 
     private DocumentViewModel? Doc => _vm.ActiveDocument;
+
+    private void OnPrepareAudioCd(object sender, RoutedEventArgs e)
+    {
+        if (Doc == null) return;
+        new CdTransferDialog(Doc, _vm) { Owner = this }.ShowDialog();
+    }
+
+    private void OnVinylWorkflow(object sender, RoutedEventArgs e)
+    {
+        var document = Doc;
+        if (document == null || document.Doc.Length == 0) return;
+        var restoration = new RestorationWorkbenchDialog(document, _vm) { Owner = this };
+        bool applied = restoration.ShowDialog() == true;
+        if (applied && restoration.PrepareCdRequested && _vm.Documents.Contains(document))
+            new CdTransferDialog(document, _vm) { Owner = this }.ShowDialog();
+    }
 
     /// <summary>Run a data-transforming op off the UI thread, then commit it as an undoable edit.</summary>
     private async Task RunRangeTool(string undoName, Func<float[][], int, float[][]?> transform)
@@ -258,9 +317,9 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog() != true) return;
         double sensitivity = dlg.Values[0];
         int repaired = 0;
-        await RunRangeTool("Remove Clicks", (data, _) =>
+        await RunRangeTool("Remove Clicks", (data, sampleRate) =>
         {
-            repaired = Restoration.RemoveClicks(data, sensitivity);
+            repaired = Restoration.RemoveClicks(data, sampleRate, sensitivity);
             return data;
         });
         InfoDialog.Show(this, "Remove Clicks & Pops",
@@ -356,13 +415,13 @@ public partial class MainWindow : Window
     private void OnInvertPhase(object sender, RoutedEventArgs e) { if (Doc != null) ChannelTools.InvertPhase(Doc.Doc, -1); }
     private void OnInvertLeft(object sender, RoutedEventArgs e) { if (Doc != null) ChannelTools.InvertPhase(Doc.Doc, 0); }
     private void OnInvertRight(object sender, RoutedEventArgs e) { if (Doc is { Doc.ChannelCount: > 1 }) ChannelTools.InvertPhase(Doc.Doc, 1); }
-    private void OnMonoMixdown(object sender, RoutedEventArgs e) { if (Doc != null) _vm.AddDocument(ChannelTools.MonoMixdown(Doc.Doc)); }
-    private void OnExtractLeft(object sender, RoutedEventArgs e) { if (Doc != null) _vm.AddDocument(ChannelTools.ExtractChannel(Doc.Doc, 0)); }
-    private void OnExtractRight(object sender, RoutedEventArgs e) { if (Doc is { Doc.ChannelCount: > 1 }) _vm.AddDocument(ChannelTools.ExtractChannel(Doc.Doc, 1)); }
+    private void OnMonoMixdown(object sender, RoutedEventArgs e) { if (Doc != null) _vm.AddGeneratedDocument(ChannelTools.MonoMixdown(Doc.Doc)); }
+    private void OnExtractLeft(object sender, RoutedEventArgs e) { if (Doc != null) _vm.AddGeneratedDocument(ChannelTools.ExtractChannel(Doc.Doc, 0)); }
+    private void OnExtractRight(object sender, RoutedEventArgs e) { if (Doc is { Doc.ChannelCount: > 1 }) _vm.AddGeneratedDocument(ChannelTools.ExtractChannel(Doc.Doc, 1)); }
 
     private void OnMonoToStereo(object sender, RoutedEventArgs e)
     {
-        if (Doc is { Doc.ChannelCount: 1 }) _vm.AddDocument(ChannelTools.MonoToStereo(Doc.Doc));
+        if (Doc is { Doc.ChannelCount: 1 }) _vm.AddGeneratedDocument(ChannelTools.MonoToStereo(Doc.Doc));
         else InfoDialog.Show(this, "Mono → Stereo", "The active file is already multi-channel.");
     }
 
@@ -420,7 +479,7 @@ public partial class MainWindow : Window
         try
         {
             var converted = await Task.Run(() => ChannelTools.ConvertSampleRate(doc, target));
-            _vm.AddDocument(converted);
+            _vm.AddGeneratedDocument(converted);
         }
         catch (Exception ex)
         {
@@ -496,10 +555,16 @@ public partial class MainWindow : Window
         var commands = new List<CommandPalette.Command>
         {
             new("Open File…", "Ctrl+O", () => _vm.OpenCommand.Execute(null)),
+            new("Extract Audio CD…", null, () => OnExtractAudioCd(this, new RoutedEventArgs())),
             new("Save", "Ctrl+S", () => _vm.SaveCommand.Execute(null)),
             new("Save As…", "Ctrl+Shift+S", () => _vm.SaveAsCommand.Execute(null)),
             new("Export…", "Ctrl+E", () => _vm.ExportCommand.Execute(null)),
-            new("Record New…", "Ctrl+R", () => _vm.RecordCommand.Execute(null)),
+            new("Recording Setup…", null, () =>
+            {
+                if (_vm.RecordSetupCommand.CanExecute(null))
+                    _vm.RecordSetupCommand.Execute(null);
+            }),
+            new("Record / Stop", "Ctrl+R", () => _vm.RecordCommand.Execute(null)),
             new("Play / Stop", "Space", () => _vm.PlayCommand.Execute(null)),
             new("Go to Start", "Home", () => _vm.GoToStartCommand.Execute(null)),
             new("Undo", "Ctrl+Z", () => _vm.UndoCommand.Execute(null)),
@@ -529,6 +594,8 @@ public partial class MainWindow : Window
             new("Invert Phase", null, () => OnInvertPhase(this, new RoutedEventArgs())),
             new("Mix Down to Mono", null, () => OnMonoMixdown(this, new RoutedEventArgs())),
             new("Learn Noise Profile from Selection", null, () => OnLearnNoise(this, new RoutedEventArgs())),
+            new("Vinyl Restoration & CD Transfer…", null, () => OnVinylWorkflow(this, new RoutedEventArgs())),
+            new("Prepare Tracks for Audio CD…", null, () => OnPrepareAudioCd(this, new RoutedEventArgs())),
             new("Reduce Noise…", null, () => OnReduceNoise(this, new RoutedEventArgs())),
             new("Remove Clicks & Pops…", null, () => OnRemoveClicks(this, new RoutedEventArgs())),
             new("Remove Hum…", null, () => OnRemoveHum(this, new RoutedEventArgs())),

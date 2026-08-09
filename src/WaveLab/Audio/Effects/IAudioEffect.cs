@@ -44,35 +44,55 @@ public interface IAudioEffect
 /// <summary>Base class handling parameter storage and defaults.</summary>
 public abstract class EffectBase : IAudioEffect
 {
-    private readonly Dictionary<string, double> _values = new();
+    private readonly EffectParam[] _parameterDefinitions;
+    private readonly Dictionary<string, int> _parameterIndices;
+    private readonly double[] _values;
+    private int _enabled = 1;
 
     protected EffectBase()
     {
         // ReSharper disable once VirtualMemberCallInConstructor
-        foreach (var p in Params) _values[p.Key] = p.Default;
+        _parameterDefinitions = Params.ToArray();
+        _parameterIndices = new Dictionary<string, int>(_parameterDefinitions.Length, StringComparer.Ordinal);
+        _values = new double[_parameterDefinitions.Length];
+        for (int index = 0; index < _parameterDefinitions.Length; index++)
+        {
+            var parameter = _parameterDefinitions[index];
+            if (!_parameterIndices.TryAdd(parameter.Key, index))
+                throw new InvalidOperationException($"Effect '{GetType().Name}' repeats parameter key '{parameter.Key}'.");
+            _values[index] = parameter.Default;
+        }
     }
 
     public abstract string TypeId { get; }
     public abstract string DisplayName { get; }
-    public bool Enabled { get; set; } = true;
+    public bool Enabled
+    {
+        get => Volatile.Read(ref _enabled) != 0;
+        set => Volatile.Write(ref _enabled, value ? 1 : 0);
+    }
     public abstract IReadOnlyList<EffectParam> Params { get; }
 
-    protected int SampleRate { get; private set; } = 48000;
+    protected int SampleRate { get; private set; } = 48_000;
     protected int ChannelCount { get; private set; } = 2;
 
-    public double GetParam(string key) => _values.TryGetValue(key, out var v) ? v : 0;
+    public double GetParam(string key) => _parameterIndices.TryGetValue(key, out int index)
+        ? Volatile.Read(ref _values[index])
+        : 0;
 
     public void SetParam(string key, double value)
     {
-        var p = Params.FirstOrDefault(x => x.Key == key);
-        if (p == null) return;
-        _values[key] = Math.Clamp(value, p.Min, p.Max);
+        if (!_parameterIndices.TryGetValue(key, out int index)) return;
+        if (!double.IsFinite(value)) return;
+        var parameter = _parameterDefinitions[index];
+        Volatile.Write(ref _values[index], Math.Clamp(value, parameter.Min, parameter.Max));
         OnParamsChanged();
     }
 
     public void RestoreDefaults()
     {
-        foreach (var p in Params) _values[p.Key] = p.Default;
+        for (int index = 0; index < _parameterDefinitions.Length; index++)
+            Volatile.Write(ref _values[index], _parameterDefinitions[index].Default);
         OnParamsChanged();
     }
 

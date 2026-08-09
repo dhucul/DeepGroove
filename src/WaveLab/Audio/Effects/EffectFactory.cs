@@ -11,6 +11,13 @@ public static class EffectFactory
     [
         ("eq", "Studio EQ"),
         ("compressor", "Compressor"),
+        ("normalizer", "Level Normalizer"),
+        ("trim", "Gain & Trim"),
+        ("mono-stereo", "Mono-to-Stereo Enhancer"),
+        ("stereo-width", "Stereo Width"),
+        ("channel-balance", "Channel Balance & Alignment"),
+        ("denoise", "Noise & Hiss Reduction"),
+        ("dehum", "Hum Removal"),
         ("gate", "Noise Gate"),
         ("reverb", "Reverb"),
         ("delay", "Stereo Delay"),
@@ -25,6 +32,13 @@ public static class EffectFactory
     {
         "eq" => new EqEffect(),
         "compressor" => new CompressorEffect(),
+        "normalizer" => new LevelNormalizerEffect(),
+        "trim" => new TrimEffect(),
+        "mono-stereo" => new MonoToStereoEffect(),
+        "stereo-width" => new StereoWidthEffect(),
+        "channel-balance" => new ChannelBalanceEffect(),
+        "denoise" => new NoiseReductionEffect(),
+        "dehum" => new HumRemovalEffect(),
         "gate" => new GateEffect(),
         "reverb" => new ReverbEffect(),
         "delay" => new DelayEffect(),
@@ -104,6 +118,24 @@ public static class EffectFactory
                  State("limiter", ("thresh", -3.0), ("ceiling", -1.0))]);
             WriteIfMissing("Vocal Space",
                 [State("eq", ("high", 1.5)), State("reverb", ("size", 0.55), ("mix", 0.18)), State("limiter")]);
+            WriteIfMissing("Vinyl Cleanup",
+                [State("hpf", ("cutoff", 28.0), ("q", 0.707)),
+                 State("dehum", ("frequency", 60.0), ("harmonics", 6.0), ("q", 40.0), ("amount", 0.75)),
+                 State("denoise", ("threshold", -62.0), ("reduction", 8.0), ("hiss", 6.0), ("release", 350.0)),
+                 State("eq", ("low", 0.5), ("mid", 0.5), ("high", 1.0)),
+                 State("limiter", ("thresh", -1.5), ("ceiling", -1.0))]);
+            WriteIfMissing("Mono Record Presence",
+                [State("mono-stereo", ("amount", 0.38), ("delay", 11.0), ("bass", 160.0), ("safety", 0.9)),
+                 State("stereo-width", ("width", 1.15), ("monoBass", 140.0), ("safety", 1.0)),
+                 State("eq", ("low", 0.5), ("mid", 0.8), ("high", 1.2)),
+                 State("compressor", ("thresh", -16.0), ("ratio", 1.6), ("attack", 30.0), ("release", 280.0)),
+                 State("limiter", ("thresh", -1.0), ("ceiling", -1.0))]);
+            WriteIfMissing("Clean Transfer",
+                [State("channel-balance"),
+                 State("dehum", ("amount", 0.65)),
+                 State("denoise", ("threshold", -64.0), ("reduction", 6.0), ("hiss", 5.0), ("release", 400.0)),
+                 State("normalizer", ("target", -20.0), ("maxBoost", 3.0), ("maxCut", 6.0), ("gate", -58.0), ("response", 2500.0)),
+                 State("trim"), State("limiter", ("ceiling", -1.0))]);
         }
         catch { }
     }

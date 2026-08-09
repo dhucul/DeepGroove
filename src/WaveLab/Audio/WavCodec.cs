@@ -109,8 +109,10 @@ public static class WavCodec
     }
 
     /// <summary>Write the document. bitDepth: 16, 24, or 32 (IEEE float). TPDF dither applies to 16-bit only.</summary>
-    public static void Save(AudioDocument doc, string path, int bitDepth, bool dither = true)
+    public static void Save(AudioDocument doc, string path, int bitDepth, bool dither = true,
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         using var fs = File.Create(path);
         using var bw = new BinaryWriter(fs);
 
@@ -151,6 +153,11 @@ public static class WavCodec
         var buffer = new byte[blockAlign];
         for (int f = 0; f < frames; f++)
         {
+            if ((f & 4095) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                progress?.Report(frames > 0 ? (double)f / frames : 1);
+            }
             int o = 0;
             for (int c = 0; c < channels; c++)
             {
@@ -159,7 +166,10 @@ public static class WavCodec
                 {
                     case 16:
                     {
-                        double v = s * 32767.0;
+                        // Decode uses signed full-scale divisors (32768 / 8388608).
+                        // Mirror that here so untouched integer PCM round-trips exactly;
+                        // the positive endpoint is handled by the signed clamp.
+                        double v = s * 32768.0;
                         if (dither) v += tpdf.Next();
                         int q = (int)Math.Round(v);
                         q = Math.Clamp(q, short.MinValue, short.MaxValue);
@@ -169,7 +179,8 @@ public static class WavCodec
                     }
                     case 24:
                     {
-                        int q = (int)Math.Round(Math.Clamp(s, -1f, 1f) * 8388607.0);
+                        int q = (int)Math.Round(Math.Clamp(s, -1f, 1f) * 8388608.0);
+                        q = Math.Clamp(q, -8388608, 8388607);
                         buffer[o++] = (byte)q;
                         buffer[o++] = (byte)(q >> 8);
                         buffer[o++] = (byte)(q >> 16);
@@ -186,5 +197,6 @@ public static class WavCodec
             bw.Write(buffer);
         }
         if ((dataSize & 1) == 1) bw.Write((byte)0);
+        progress?.Report(1);
     }
 }

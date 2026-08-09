@@ -1,13 +1,14 @@
 namespace WaveLab.Audio.Dsp;
 
 /// <summary>Restoration DSP: spectral noise reduction, click repair, hum removal, silence detection.</summary>
-public static class Restoration
+public static partial class Restoration
 {
     public const int NrFftSize = 2048;
     private const int NrHop = NrFftSize / 4;
 
     /// <summary>Average magnitude spectrum of a region — the "noise print".</summary>
-    public static float[] LearnNoiseProfile(IReadOnlyList<float[]> channels, int start, int count)
+    public static float[] LearnNoiseProfile(IReadOnlyList<float[]> channels, int start, int count,
+        CancellationToken cancellationToken = default)
     {
         var window = Fft.HannWindow(NrFftSize);
         var profile = new double[NrFftSize / 2];
@@ -17,6 +18,7 @@ public static class Restoration
 
         for (int pos = start; pos + NrFftSize <= start + count; pos += NrHop)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Array.Clear(im);
             for (int i = 0; i < NrFftSize; i++)
             {
@@ -39,7 +41,8 @@ public static class Restoration
     /// Spectral-gate noise reduction with a learned profile. reductionDb = max attenuation,
     /// sensitivityDb raises the gate threshold above the profile. STFT overlap-add, per-bin smoothing.
     /// </summary>
-    public static void ReduceNoise(float[][] data, float[] profile, double reductionDb, double sensitivityDb)
+    public static void ReduceNoise(float[][] data, float[] profile, double reductionDb,
+        double sensitivityDb, CancellationToken cancellationToken = default)
     {
         var window = Fft.HannWindow(NrFftSize);
         float floorGain = (float)Math.Pow(10, -Math.Abs(reductionDb) / 20.0);
@@ -48,6 +51,7 @@ public static class Restoration
 
         foreach (var channel in data)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int n = channel.Length;
             var output = new float[n];
             var norm = new float[n];
@@ -58,6 +62,7 @@ public static class Restoration
 
             for (int pos = 0; pos < n; pos += NrHop)
             {
+                if ((pos & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
                 Array.Clear(im);
                 for (int i = 0; i < NrFftSize; i++)
                     re[i] = (pos + i < n ? channel[pos + i] : 0f) * window[i];
@@ -115,81 +120,58 @@ public static class Restoration
         }
     }
 
-    /// <summary>Detect impulsive clicks via 2nd-derivative outliers and repair with cubic interpolation. Returns repairs made.</summary>
+    /// <summary>
+    /// Compatibility entry point for automatic click/pop analysis and repair. New callers
+    /// should pass the real sample rate to the overload in Restoration.Advanced.
+    /// </summary>
     public static int RemoveClicks(float[][] data, double sensitivity /*1 lax .. 10 aggressive*/)
     {
-        const int repairHalf = 12;
-        double threshMul = 30.0 / Math.Clamp(sensitivity, 1, 10); // lower = more sensitive
-        int total = 0;
-
-        foreach (var x in data)
-        {
-            int n = x.Length;
-            if (n < 64) continue;
-
-            // running RMS of 2nd derivative over ~1024-sample windows
-            const int win = 1024;
-            int idx = 2;
-            while (idx < n - 2)
-            {
-                int end = Math.Min(idx + win, n - 2);
-                double sumSq = 0;
-                int m = 0;
-                for (int i = idx; i < end; i++)
-                {
-                    double d2 = x[i + 1] - 2 * x[i] + x[i - 1];
-                    sumSq += d2 * d2;
-                    m++;
-                }
-                double rms = Math.Sqrt(sumSq / Math.Max(1, m)) + 1e-9;
-                double threshold = rms * threshMul;
-
-                for (int i = idx; i < end; i++)
-                {
-                    double d2 = Math.Abs(x[i + 1] - 2 * x[i] + x[i - 1]);
-                    if (d2 > threshold)
-                    {
-                        int a = Math.Max(1, i - repairHalf);
-                        int b = Math.Min(n - 2, i + repairHalf);
-                        // cubic Hermite across the gap using clean edge samples
-                        float y0 = x[Math.Max(0, a - 1)], y1 = x[a], y2 = x[b], y3 = x[Math.Min(n - 1, b + 1)];
-                        for (int k = a; k <= b; k++)
-                        {
-                            float t = (float)(k - a) / (b - a);
-                            float t2 = t * t, t3 = t2 * t;
-                            x[k] = 0.5f * ((2 * y1) + (-y0 + y2) * t +
-                                   (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2 +
-                                   (-y0 + 3 * y1 - 3 * y2 + y3) * t3);
-                        }
-                        total++;
-                        i = b + repairHalf;
-                    }
-                }
-                idx = end;
-            }
-        }
-        return total;
+        return RemoveClicks(data, DefaultLegacySampleRate, sensitivity);
     }
 
     /// <summary>Remove mains hum: cascaded notches at the base frequency and its harmonics.</summary>
-    public static void RemoveHum(float[][] data, int sampleRate, double baseFreq, int harmonics, double q)
+    public static void RemoveHum(float[][] data, int sampleRate, double baseFreq, int harmonics,
+        double q, CancellationToken cancellationToken = default)
     {
+        RemoveHum(data, sampleRate, baseFreq, harmonics, q, 1.0, cancellationToken);
+    }
+
+    /// <summary>
+    /// Remove mains hum with an adjustable notch amount. A strength of zero is a
+    /// bit-exact no-op; one applies the complete notch bank.
+    /// </summary>
+    public static void RemoveHum(float[][] data, int sampleRate, double baseFreq, int harmonics,
+        double q, double strength, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        float amount = (float)Math.Clamp(strength, 0.0, 1.0);
+        if (amount <= 0f) return;
+
         foreach (var channel in data)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (int h = 1; h <= harmonics; h++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 double f = baseFreq * h;
                 if (f >= sampleRate * 0.48) break;
                 var notch = Biquad.Notch(sampleRate, f, q);
                 for (int i = 0; i < channel.Length; i++)
-                    channel[i] = notch.Process(channel[i]);
+                {
+                    if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                    float dry = channel[i];
+                    float filtered = notch.Process(dry);
+                    channel[i] = amount >= 1f
+                        ? filtered
+                        : dry + (filtered - dry) * amount;
+                }
             }
         }
     }
 
     /// <summary>Find silent stretches: returns (start, end) sample ranges below threshold lasting at least minLength.</summary>
     public static List<(int Start, int End)> DetectSilences(IReadOnlyList<float[]> channels, int sampleRate,
-        double thresholdDb, double minLengthMs)
+        double thresholdDb, double minLengthMs, CancellationToken cancellationToken = default)
     {
         double thresholdLin = Math.Pow(10, thresholdDb / 20.0);
         int minLen = Math.Max(1, (int)(minLengthMs / 1000.0 * sampleRate));
@@ -200,6 +182,7 @@ public static class Restoration
         int silentStart = -1;
         for (int pos = 0; pos < n; pos += hop)
         {
+            if ((pos & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
             int end = Math.Min(pos + hop, n);
             float peak = 0;
             foreach (var ch in channels)

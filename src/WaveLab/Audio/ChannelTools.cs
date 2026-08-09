@@ -46,7 +46,9 @@ public static class ChannelTools
             for (int c = 0; c < doc.ChannelCount; c++) v += doc.Channels[c][i];
             mono[0][i] = v / doc.ChannelCount;
         }
-        return new AudioDocument(mono, doc.SampleRate, doc.SourceBitDepth)
+        // Averaging channels creates values between the source PCM quantization
+        // steps. Mark the result as float-derived so later 16-bit CD export dithers it.
+        return new AudioDocument(mono, doc.SampleRate, sourceBitDepth: 32)
         {
             Title = Base(doc) + " (mono).wav",
         };
@@ -77,7 +79,9 @@ public static class ChannelTools
     public static AudioDocument ConvertSampleRate(AudioDocument doc, int targetRate)
     {
         var data = Resampler.Resample(doc.Channels, doc.SampleRate, targetRate);
-        return new AudioDocument(data, targetRate, doc.SourceBitDepth)
+        // Sample-rate conversion is mathematical processing even when the target
+        // happens to be 44.1 kHz; retain that provenance for correct export dither.
+        return new AudioDocument(data, targetRate, sourceBitDepth: 32)
         {
             Title = $"{Base(doc)} ({targetRate / 1000.0:0.#} kHz).wav",
         };

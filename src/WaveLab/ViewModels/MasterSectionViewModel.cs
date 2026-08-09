@@ -50,12 +50,14 @@ public sealed class MasterSectionViewModel : ObservableObject
         set
         {
             if (_master.RackEnabled == value) return;
+            bool expandedMonoBefore = _master.ExpandsMonoToStereo;
             _master.RackEnabled = value;
             Raise();
             Raise(nameof(RackStateText));
             RackStatusText = value
                 ? "Rack enabled — effects processing active."
                 : "Rack bypassed — all effects processing disabled.";
+            NotifyTopologyChanged(expandedMonoBefore);
         }
     }
 
@@ -65,6 +67,12 @@ public sealed class MasterSectionViewModel : ObservableObject
     /// <summary>The window prompts for a preset name and calls SavePresetAs.</summary>
     public event Action? RequestSavePreset;
 
+    /// <summary>
+    /// Raised when mono source material starts or stops requiring a stereo
+    /// playback stream. WASAPI must be reopened when that topology changes.
+    /// </summary>
+    public event Action? ProcessingTopologyChanged;
+
     public string? SelectedPreset
     {
         get => _selectedPreset;
@@ -73,9 +81,11 @@ public sealed class MasterSectionViewModel : ObservableObject
             if (!Set(ref _selectedPreset, value) || value == null || _applyingPreset) return;
             var preset = EffectFactory.LoadPresets().FirstOrDefault(p => p.Name == value);
             if (preset == null) return;
+            bool expandedMonoBefore = _master.ExpandsMonoToStereo;
             _master.ReplaceChain(EffectFactory.Instantiate(preset));
             SyncFromMaster();
             RackStatusText = $"Preset ‘{preset.Name}’ loaded.";
+            NotifyTopologyChanged(expandedMonoBefore);
         }
     }
 
@@ -83,9 +93,11 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     private void AddEffect(string typeId)
     {
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         var effect = _master.AddEffect(typeId);
         SyncFromMaster();
         RackStatusText = $"{effect.DisplayName} added to the rack.";
+        NotifyTopologyChanged(expandedMonoBefore);
     }
 
     private void MoveEffect(EffectViewModel vm, int delta)
@@ -97,29 +109,41 @@ public sealed class MasterSectionViewModel : ObservableObject
     private void RemoveEffect(EffectViewModel vm)
     {
         string name = vm.DisplayName;
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         if (_master.RemoveEffect(vm.Effect))
         {
             SyncFromMaster();
             RackStatusText = $"{name} removed — processing stopped.";
+            NotifyTopologyChanged(expandedMonoBefore);
         }
     }
 
     private void SetEffectEnabled(EffectViewModel vm, bool enabled)
     {
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         if (!_master.SetEffectEnabled(vm.Effect, enabled)) return;
         RackStatusText = enabled
             ? $"{vm.DisplayName} enabled."
             : $"{vm.DisplayName} bypassed.";
+        NotifyTopologyChanged(expandedMonoBefore);
     }
 
     private void ResetChain()
     {
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         _master.ReplaceChain([EffectFactory.Create("eq"), EffectFactory.Create("limiter")]);
         _applyingPreset = true;
         SelectedPreset = null;
         _applyingPreset = false;
         SyncFromMaster();
         RackStatusText = "Rack reset to Studio EQ and Precision Limiter.";
+        NotifyTopologyChanged(expandedMonoBefore);
+    }
+
+    private void NotifyTopologyChanged(bool expandedMonoBefore)
+    {
+        if (expandedMonoBefore != _master.ExpandsMonoToStereo)
+            ProcessingTopologyChanged?.Invoke();
     }
 
     public void SyncFromMaster()

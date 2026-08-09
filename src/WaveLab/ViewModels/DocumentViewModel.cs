@@ -164,7 +164,13 @@ public sealed class DocumentViewModel : ObservableObject
         // snapshot for the background write so UI mutations can't tear the serialization,
         // and chain writes so they always land in order (latest state wins)
         var markers = Markers.Select(m => new Marker { Name = m.Name, Position = m.Position }).ToList();
-        var regions = Regions.Select(r => new NamedRegion { Name = r.Name, Start = r.Start, End = r.End }).ToList();
+        var regions = Regions.Select(r => new NamedRegion
+        {
+            Name = r.Name,
+            Start = r.Start,
+            End = r.End,
+            CdTrackOrder = r.CdTrackOrder,
+        }).ToList();
         _markerSaveChain = _markerSaveChain.ContinueWith(
             _ => MarkerStore.Save(path, markers, regions),
             CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
@@ -269,7 +275,9 @@ public sealed class DocumentViewModel : ObservableObject
     {
         // keep markers/regions anchored through splices
         int delta = inserted - removed;
-        if (delta != 0 || removed > 0)
+        // A same-length replacement changes samples but not the timeline. Only a
+        // true length-changing splice should move or collapse anchored metadata.
+        if (delta != 0)
         {
             bool changed = false;
             foreach (var m in Markers)

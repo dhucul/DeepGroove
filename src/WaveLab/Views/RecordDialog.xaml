@@ -82,7 +82,7 @@
                         <ColumnDefinition Width="10"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <Button Grid.Column="0" Content="Cancel" Height="38" Click="OnCancel" Style="{StaticResource AccentButton}"
+                    <Button Grid.Column="0" x:Name="cancelBtn" Content="Cancel" Height="38" Click="OnCancel" Style="{StaticResource AccentButton}"
                             Foreground="{StaticResource Muted}"/>
                     <Button Grid.Column="2" x:Name="startBtn" Height="38" Click="OnStartStop" Style="{StaticResource DangerButton}">
                         <StackPanel Orientation="Horizontal">
