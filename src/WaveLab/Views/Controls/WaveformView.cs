@@ -241,6 +241,16 @@ public sealed class WaveformView : FrameworkElement
         ReleaseMouseCapture();
     }
 
+    protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
+    {
+        var vm = Document;
+        if (vm == null) return;
+        Focus();
+        int sample = SampleAt(e.GetPosition(this));
+        if (!vm.HasSelection || sample < vm.SelStart || sample >= vm.SelEnd)
+            vm.SetCursor(sample, clearSelection: true);
+    }
+
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         var vm = Document;

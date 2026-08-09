@@ -30,6 +30,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         AddEffectCommand = new RelayCommand<string>(typeId => { if (typeId != null) AddEffect(typeId); });
         SavePresetCommand = new RelayCommand(() => RequestSavePreset?.Invoke());
         ResetChainCommand = new RelayCommand(ResetChain);
+        ResetMetersCommand = new RelayCommand(ResetMeters);
         SyncFromMaster();
         RefreshPresets();
     }
@@ -40,6 +41,7 @@ public sealed class MasterSectionViewModel : ObservableObject
     public RelayCommand<string> AddEffectCommand { get; }
     public RelayCommand SavePresetCommand { get; }
     public RelayCommand ResetChainCommand { get; }
+    public RelayCommand ResetMetersCommand { get; }
 
     /// <summary>The window prompts for a preset name and calls SavePresetAs.</summary>
     public event Action? RequestSavePreset;
@@ -188,6 +190,15 @@ public sealed class MasterSectionViewModel : ObservableObject
     public void ResetMeters()
     {
         PeakLDb = PeakRDb = RmsLDb = RmsRDb = HoldLDb = HoldRDb = -60;
-        _master.Loudness.Reset();
+        _master.ResetMeters();
+        Raise(nameof(LufsIntText));
+        Raise(nameof(LufsMText));
+        Raise(nameof(LufsSText));
+        Raise(nameof(LraText));
+        Raise(nameof(TruePeakText));
+        Raise(nameof(PeakLrText));
+        Raise(nameof(CorrelationText));
+        Raise(nameof(Correlation));
+        Raise(nameof(BalanceDb));
     }
 }

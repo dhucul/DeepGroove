@@ -20,6 +20,8 @@ public sealed class MasterSection : ISampleProvider
     private int _ringPos;
     private double _corrSmooth;
     private int _sampleRate = 48000, _channels = 2;
+    private int _startRampFrames, _startRampPosition;
+    private bool _startRampWaitingForSignal;
 
     public MasterSection()
     {
@@ -95,6 +97,18 @@ public sealed class MasterSection : ISampleProvider
         _channels = source.WaveFormat.Channels;
         ConfigureChain();
         Loudness.Configure(_sampleRate, _channels);
+        _startRampFrames = Math.Max(1, _sampleRate / 100); // 10 ms
+        _startRampPosition = 0;
+        _startRampWaitingForSignal = true;
+    }
+
+    public void ResetMeters()
+    {
+        PeakL = PeakR = RmsL = RmsR = 0;
+        _corrSmooth = 0;
+        Correlation = 0;
+        BalanceDb = 0;
+        Loudness.Reset();
     }
 
     public int Read(float[] buffer, int offset, int count)
@@ -108,6 +122,7 @@ public sealed class MasterSection : ISampleProvider
                 if (fx.Enabled)
                     fx.Process(buffer, offset, read);
 
+        ApplyStartRamp(buffer, offset, read);
         Loudness.Process(buffer, offset, read);
 
         int channels = _channels;
@@ -142,6 +157,30 @@ public sealed class MasterSection : ISampleProvider
                 BalanceDb = 20 * Math.Log10(RmsR / RmsL);
         }
         return read;
+    }
+
+    private void ApplyStartRamp(float[] buffer, int offset, int count)
+    {
+        if (!_startRampWaitingForSignal && _startRampPosition >= _startRampFrames) return;
+
+        int frames = count / _channels;
+        for (int f = 0; f < frames; f++)
+        {
+            int frameOffset = offset + f * _channels;
+            if (_startRampWaitingForSignal)
+            {
+                float peak = 0;
+                for (int c = 0; c < _channels; c++)
+                    peak = Math.Max(peak, Math.Abs(buffer[frameOffset + c]));
+                if (peak < 1e-7f) continue;
+                _startRampWaitingForSignal = false;
+            }
+
+            double t = (_startRampPosition + 1.0) / _startRampFrames;
+            float gain = (float)(0.5 - 0.5 * Math.Cos(Math.PI * Math.Min(1, t)));
+            for (int c = 0; c < _channels; c++) buffer[frameOffset + c] *= gain;
+            if (++_startRampPosition >= _startRampFrames) break;
+        }
     }
 
     /// <summary>Most recent n mono samples for the spectrum analyzer.</summary>

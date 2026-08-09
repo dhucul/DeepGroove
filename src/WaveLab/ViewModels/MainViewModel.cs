@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -17,6 +18,9 @@ public sealed class MainViewModel : ObservableObject
     private static int _clipboardRate;
 
     private DocumentViewModel? _active;
+    private DocumentViewModel? _playbackDocument;
+    private int _playbackEditVersion = -1;
+    private long _playbackSession;
     private bool _isPlaying;
     private bool _isLooping;
     private readonly DispatcherTimer _timer;
@@ -38,7 +42,7 @@ public sealed class MainViewModel : ObservableObject
 
         Engine = new PlaybackEngine();
         Master = new MasterSectionViewModel(Engine.Master);
-        Engine.PlaybackStopped += () => { IsPlaying = false; };
+        Engine.PlaybackStopped += OnPlaybackStopped;
 
         foreach (var f in AppSettings.Instance.RecentFiles) RecentFiles.Add(f);
 
@@ -56,18 +60,18 @@ public sealed class MainViewModel : ObservableObject
         CloseTabCommand = new RelayCommand<DocumentViewModel>(CloseTab);
         ExitCommand = new RelayCommand(() => Application.Current.MainWindow?.Close());
 
-        UndoCommand = new RelayCommand(() => WithDoc(d => d.Doc.Undo()));
-        RedoCommand = new RelayCommand(() => WithDoc(d => d.Doc.Redo()));
-        CutCommand = new RelayCommand(Cut);
-        CopyCommand = new RelayCommand(Copy);
-        PasteCommand = new RelayCommand(Paste);
-        DeleteCommand = new RelayCommand(DeleteSelection);
-        TrimCommand = new RelayCommand(Trim);
+        UndoCommand = new RelayCommand(() => WithDoc(d => d.Doc.Undo()), () => _active?.Doc.CanUndo == true);
+        RedoCommand = new RelayCommand(() => WithDoc(d => d.Doc.Redo()), () => _active?.Doc.CanRedo == true);
+        CutCommand = new RelayCommand(Cut, () => _active?.HasSelection == true);
+        CopyCommand = new RelayCommand(Copy, () => _active?.HasSelection == true);
+        PasteCommand = new RelayCommand(Paste, () => _active != null && _clipboard != null);
+        DeleteCommand = new RelayCommand(DeleteSelection, () => _active?.HasSelection == true);
+        TrimCommand = new RelayCommand(Trim, () => _active?.HasSelection == true);
         SelectAllCommand = new RelayCommand(() => WithDoc(d => d.SelectAll()));
 
         PlayCommand = new RelayCommand(TogglePlay);
-        StopCommand = new RelayCommand(StopPlayback);
-        GoToStartCommand = new RelayCommand(() => WithDoc(d => { d.SetCursor(0, clearSelection: false); d.PlayheadSample = 0; d.CenterViewOn(0); }));
+        StopCommand = new RelayCommand(PausePlayback);
+        GoToStartCommand = new RelayCommand(GoToStart);
         ToggleLoopCommand = new RelayCommand(() => IsLooping = !IsLooping);
 
         ZoomInCommand = new RelayCommand(() => WithDoc(d => d.ZoomBy(1 / 1.5)));
@@ -84,7 +88,10 @@ public sealed class MainViewModel : ObservableObject
         RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset));
         InsertSilenceCommand = new RelayCommand(() => WithDoc(d => Processing.InsertSilence(d.Doc, d.Cursor, 1.0)));
 
-        AddMarkerCommand = new RelayCommand(() => WithDoc(d => d.AddMarker(d.HasSelection ? d.SelStart : IsPlaying ? d.PlayheadSample : d.Cursor)));
+        AddMarkerCommand = new RelayCommand(() => WithDoc(d => d.AddMarker(
+            d.HasSelection ? d.SelStart
+            : IsPlaying && ReferenceEquals(d, _playbackDocument) ? d.PlayheadSample
+            : d.Cursor)));
         AddRegionCommand = new RelayCommand(() => WithDoc(d => d.AddRegionFromSelection()));
         PrevMarkerCommand = new RelayCommand(() => WithDoc(d => d.JumpToNextMarker(forward: false)));
         NextMarkerCommand = new RelayCommand(() => WithDoc(d => d.JumpToNextMarker(forward: true)));
@@ -174,10 +181,22 @@ public sealed class MainViewModel : ObservableObject
         get => _active;
         set
         {
+            var previous = _active;
             if (!Set(ref _active, value)) return;
+            if (previous != null)
+            {
+                previous.PropertyChanged -= OnActiveDocumentPropertyChanged;
+                previous.Doc.Changed -= OnActiveDocumentEdited;
+            }
+            if (_active != null)
+            {
+                _active.PropertyChanged += OnActiveDocumentPropertyChanged;
+                _active.Doc.Changed += OnActiveDocumentEdited;
+            }
             Raise(nameof(HasDocument));
             Raise(nameof(WindowTitle));
             Raise(nameof(StatusSamples));
+            RefreshEditCommandStates();
         }
     }
 
@@ -361,7 +380,7 @@ public sealed class MainViewModel : ObservableObject
             MessageBox.Show($"{vm.Doc.Title} has unsaved changes. Close anyway?", "Unsaved changes",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
-        if (vm == _active) StopPlayback();
+        if (ReferenceEquals(vm, _playbackDocument)) ReleasePlayback();
         AutosaveService.Remove(vm.Doc.SessionId);
         _autosavedVersions.Remove(vm.Doc.SessionId);
         int idx = Documents.IndexOf(vm);
@@ -377,6 +396,7 @@ public sealed class MainViewModel : ObservableObject
         if (_active is not { HasSelection: true } d) return;
         _clipboard = d.Doc.CopyRange(d.SelStart, d.SelEnd - d.SelStart);
         _clipboardRate = d.Doc.SampleRate;
+        PasteCommand.RaiseCanExecuteChanged();
     }
 
     private void Cut()
@@ -445,21 +465,116 @@ public sealed class MainViewModel : ObservableObject
 
     private void TogglePlay()
     {
-        if (IsPlaying) { StopPlayback(); return; }
+        if (Engine.IsPlaying) { PausePlayback(); return; }
+        IsPlaying = false;
         if (_active == null || _active.Doc.Length == 0) return;
         var d = _active;
-        int start = d.HasSelection ? d.SelStart : d.PlayheadSample >= d.Doc.Length - 1 ? 0 : Math.Max(d.Cursor, 0);
+        bool ownsPausedStream = Engine.IsPaused
+            && ReferenceEquals(_playbackDocument, d)
+            && ReferenceEquals(Engine.SourceDocument, d.Doc);
+        if (ownsPausedStream
+            && _playbackEditVersion == d.Doc.EditVersion
+            && d.PlayheadSample == Engine.PositionSamples)
+        {
+            Engine.Resume();
+            IsPlaying = true;
+            return;
+        }
+
+        if (Engine.IsPlaying || Engine.IsPaused)
+            ReleasePlayback(updatePosition: !ownsPausedStream);
+
+        int start = d.PlayheadSample;
+        if (d.HasSelection && (start < d.SelStart || start >= d.SelEnd)) start = d.SelStart;
+        else if (!d.HasSelection && start >= d.Doc.Length - 1) start = 0;
         int? end = d.HasSelection ? d.SelEnd : null;
         Engine.Loop = IsLooping;
         Master.ResetMeters();
-        Engine.Play(d.Doc, start, end);
+        long playbackSession = Engine.Play(d.Doc, start, end);
+        _playbackDocument = d;
+        _playbackEditVersion = d.Doc.EditVersion;
+        _playbackSession = playbackSession;
         IsPlaying = true;
     }
 
-    private void StopPlayback()
+    private void PausePlayback()
     {
-        Engine.Stop();
+        if (!Engine.IsPlaying) { IsPlaying = false; return; }
+        var d = _playbackDocument;
+        Engine.Pause();
+        if (d != null && Documents.Contains(d)) SetTransportPosition(d, Engine.PositionSamples);
         IsPlaying = false;
+    }
+
+    private void GoToStart()
+    {
+        if (_active == null) return;
+        var target = _active;
+        if (Engine.IsPlaying) Engine.Pause();
+        if (Engine.IsPlaying || Engine.IsPaused)
+            ReleasePlayback(updatePosition: !ReferenceEquals(_playbackDocument, target));
+        _active.SetCursor(0, clearSelection: true);
+        _active.CenterViewOn(0);
+    }
+
+    private void ReleasePlayback(bool updatePosition = true)
+    {
+        var d = _playbackDocument;
+        int position = Engine.PositionSamples;
+        Engine.Stop();
+        if (updatePosition && d != null && Documents.Contains(d)) SetTransportPosition(d, position);
+        _playbackDocument = null;
+        _playbackEditVersion = -1;
+        _playbackSession = 0;
+        IsPlaying = false;
+    }
+
+    private static void SetTransportPosition(DocumentViewModel document, int position)
+    {
+        if (document.Doc.Length <= 0) return;
+        int playhead = Math.Clamp(position, 0, document.Doc.Length);
+        document.SetCursor(Math.Min(playhead, document.Doc.Length - 1), clearSelection: false);
+        document.PlayheadSample = playhead;
+    }
+
+    private void OnPlaybackStopped(long playbackSession, AudioDocument sourceDocument, int position)
+    {
+        // NAudio raises this from its playback thread. Marshal UI-bound state back
+        // to the dispatcher and retain the final transport position.
+        Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            // Ignore a stale completion if this file (or another one) was
+            // restarted before the dispatcher callback had a chance to run.
+            if (playbackSession != _playbackSession || Engine.IsPlaying || Engine.IsPaused) return;
+            var document = _playbackDocument;
+            if (document != null && !ReferenceEquals(document.Doc, sourceDocument)) return;
+            if (document != null && Documents.Contains(document) && document.Doc.Length > 0)
+                SetTransportPosition(document, position);
+            _playbackDocument = null;
+            _playbackEditVersion = -1;
+            _playbackSession = 0;
+            IsPlaying = false;
+        });
+    }
+
+    private void OnActiveDocumentEdited(int start, int removed, int inserted) => RefreshEditCommandStates();
+
+    private void OnActiveDocumentPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(DocumentViewModel.HasSelection)
+            or nameof(DocumentViewModel.SelStart) or nameof(DocumentViewModel.SelEnd))
+            RefreshEditCommandStates();
+    }
+
+    private void RefreshEditCommandStates()
+    {
+        UndoCommand.RaiseCanExecuteChanged();
+        RedoCommand.RaiseCanExecuteChanged();
+        CutCommand.RaiseCanExecuteChanged();
+        CopyCommand.RaiseCanExecuteChanged();
+        PasteCommand.RaiseCanExecuteChanged();
+        DeleteCommand.RaiseCanExecuteChanged();
+        TrimCommand.RaiseCanExecuteChanged();
     }
 
     private async void RenderMaster()
@@ -668,10 +783,11 @@ public sealed class MainViewModel : ObservableObject
 
     private void OnTick()
     {
-        if (_active != null && IsPlaying)
+        var playbackDocument = _playbackDocument;
+        if (playbackDocument != null && IsPlaying && Documents.Contains(playbackDocument))
         {
-            _active.PlayheadSample = Engine.PositionSamples;
-            _active.EnsurePlayheadVisible();
+            playbackDocument.PlayheadSample = Math.Clamp(Engine.PositionSamples, 0, playbackDocument.Doc.Length);
+            playbackDocument.EnsurePlayheadVisible();
         }
         Master.Tick(0.033, IsPlaying);
 

@@ -10,12 +10,16 @@ public sealed class PlaybackEngine : IDisposable
     private WasapiOut? _out;
     private MMDevice? _outDevice;
     private DocumentProvider? _provider;
+    private EventHandler<StoppedEventArgs>? _playbackStoppedHandler;
+    private long _nextPlaybackSession;
 
     public MasterSection Master { get; } = new();
     public bool IsPlaying { get; private set; }
+    public bool IsPaused { get; private set; }
+    public AudioDocument? SourceDocument { get; private set; }
     public bool Loop { get; set; }
 
-    public event Action? PlaybackStopped;
+    public event Action<long, AudioDocument, int>? PlaybackStopped;
 
     public int PositionSamples => _provider?.PositionSamples ?? 0;
 
@@ -63,21 +67,46 @@ public sealed class PlaybackEngine : IDisposable
         return new WasapiOut(AudioClientShareMode.Shared, latency);
     }
 
-    public void Play(AudioDocument doc, int startSample, int? endSample)
+    public long Play(AudioDocument doc, int startSample, int? endSample)
     {
         Stop();
-        _provider = new DocumentProvider(doc, startSample, endSample) { Loop = Loop };
+        long playbackSession = ++_nextPlaybackSession;
+        var provider = new DocumentProvider(doc, startSample, endSample) { Loop = Loop };
+        _provider = provider;
+        SourceDocument = doc;
         Master.SetSource(_provider);
         Master.Loudness.Reset();
-        _out = CreateOut();
-        _out.PlaybackStopped += (_, _) =>
+        var output = CreateOut();
+        _out = output;
+        _playbackStoppedHandler = (_, _) =>
         {
+            if (!ReferenceEquals(_out, output)) return;
             IsPlaying = false;
-            PlaybackStopped?.Invoke();
+            IsPaused = false;
+            PlaybackStopped?.Invoke(playbackSession, doc, provider.PositionSamples);
         };
+        output.PlaybackStopped += _playbackStoppedHandler;
         _out.Init(Master);
         _out.Play();
         IsPlaying = true;
+        IsPaused = false;
+        return playbackSession;
+    }
+
+    public void Pause()
+    {
+        if (_out == null || !IsPlaying) return;
+        _out.Pause();
+        IsPlaying = false;
+        IsPaused = true;
+    }
+
+    public void Resume()
+    {
+        if (_out == null || !IsPaused) return;
+        _out.Play();
+        IsPlaying = true;
+        IsPaused = false;
     }
 
     public void Stop()
@@ -86,6 +115,11 @@ public sealed class PlaybackEngine : IDisposable
         {
             var o = _out;
             _out = null;
+            if (_playbackStoppedHandler != null)
+            {
+                o.PlaybackStopped -= _playbackStoppedHandler;
+                _playbackStoppedHandler = null;
+            }
             try { o.Stop(); o.Dispose(); } catch { }
         }
         if (_outDevice != null)
@@ -94,6 +128,8 @@ public sealed class PlaybackEngine : IDisposable
             _outDevice = null;
         }
         IsPlaying = false;
+        IsPaused = false;
+        SourceDocument = null;
     }
 
     public void Dispose() => Stop();
@@ -103,6 +139,7 @@ public sealed class PlaybackEngine : IDisposable
         private readonly AudioDocument _doc;
         private readonly int _start;
         private readonly int _end;
+        private int _preRollFrames;
         private int _pos;
 
         public DocumentProvider(AudioDocument doc, int start, int? end)
@@ -111,6 +148,9 @@ public sealed class PlaybackEngine : IDisposable
             _start = Math.Clamp(start, 0, Math.Max(0, doc.Length - 1));
             _end = Math.Clamp(end ?? doc.Length, _start, doc.Length);
             _pos = _start;
+            // Give WASAPI and the device a silent lead-in before the first signal.
+            // Resuming a paused stream does not pass through this path again.
+            _preRollFrames = Math.Max(1, doc.SampleRate / 50); // 20 ms
             WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(doc.SampleRate, doc.ChannelCount);
         }
 
@@ -126,6 +166,16 @@ public sealed class PlaybackEngine : IDisposable
 
             while (framesWanted > 0)
             {
+                if (_preRollFrames > 0)
+                {
+                    int silenceFrames = Math.Min(framesWanted, _preRollFrames);
+                    Array.Clear(buffer, offset + written * channels, silenceFrames * channels);
+                    _preRollFrames -= silenceFrames;
+                    written += silenceFrames;
+                    framesWanted -= silenceFrames;
+                    continue;
+                }
+
                 int available = _end - _pos;
                 if (available <= 0)
                 {
