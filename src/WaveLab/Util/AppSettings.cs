@@ -7,6 +7,7 @@ namespace WaveLab.Util;
 /// <summary>Persisted application settings (%AppData%\WaveLab\settings.json).</summary>
 public sealed class AppSettings
 {
+    private static readonly object SaveLock = new();
     public static string AppDataDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WaveLab");
     public static string SettingsPath => Path.Combine(AppDataDir, "settings.json");
@@ -39,12 +40,15 @@ public sealed class AppSettings
     // Window placement
     public double WindowWidth { get; set; }
     public double WindowHeight { get; set; }
-    public double WindowLeft { get; set; } = double.NaN;
-    public double WindowTop { get; set; } = double.NaN;
+    public double? WindowLeft { get; set; }
+    public double? WindowTop { get; set; }
     public bool WindowMaximized { get; set; }
 
     [JsonIgnore]
     public long UndoLimitBytes => (long)Math.Max(64, UndoLimitMb) * 1024 * 1024;
+
+    [JsonIgnore]
+    public string? LastSaveError { get; private set; }
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
@@ -53,29 +57,74 @@ public sealed class AppSettings
         try
         {
             if (File.Exists(SettingsPath))
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath)) ?? new AppSettings();
+                return Normalize(JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath)) ?? new AppSettings());
         }
         catch { }
         return new AppSettings();
     }
 
-    public void Save()
+    public bool Save()
     {
-        try
+        lock (SaveLock)
         {
-            Directory.CreateDirectory(AppDataDir);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, JsonOpts));
+            string temporary = SettingsPath + ".tmp";
+            try
+            {
+                Directory.CreateDirectory(AppDataDir);
+                File.WriteAllText(temporary, JsonSerializer.Serialize(this, JsonOpts));
+                File.Move(temporary, SettingsPath, overwrite: true);
+                LastSaveError = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+                LastSaveError = ex.Message;
+                return false;
+            }
         }
-        catch { }
     }
 
-    public void AddRecentFile(string path)
+    public bool AddRecentFile(string path)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var previous = RecentFiles.ToList();
         RecentFiles.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
         RecentFiles.Insert(0, path);
         if (RecentFiles.Count > 10) RecentFiles.RemoveRange(10, RecentFiles.Count - 10);
-        Save();
+        if (Save()) return true;
+        RecentFiles = previous;
+        return false;
     }
+
+    private static AppSettings Normalize(AppSettings settings)
+    {
+        settings.BufferMs = Math.Clamp(settings.BufferMs, 20, 200);
+        settings.UndoLimitMb = Math.Clamp(settings.UndoLimitMb, 64, 4096);
+        settings.AutosaveMinutes = settings.AutosaveMinutes is 1 or 2 or 3 or 5 or 10 or 15
+            ? settings.AutosaveMinutes
+            : 3;
+        settings.ExportFormat = settings.ExportFormat is "wav32" or "wav24" or "wav16" or "mp3" or "aac" or "wma" or "flac"
+            ? settings.ExportFormat
+            : "wav32";
+        settings.ExportBitrateKbps = settings.ExportBitrateKbps is 128 or 160 or 192 or 256 or 320
+            ? settings.ExportBitrateKbps
+            : 192;
+        settings.RecentFiles = NormalizePaths(settings.RecentFiles, 10);
+        settings.LastSessionFiles = NormalizePaths(settings.LastSessionFiles, int.MaxValue);
+        if (!double.IsFinite(settings.WindowWidth) || settings.WindowWidth < 0) settings.WindowWidth = 0;
+        if (!double.IsFinite(settings.WindowHeight) || settings.WindowHeight < 0) settings.WindowHeight = 0;
+        if (settings.WindowLeft is not { } left || !double.IsFinite(left)) settings.WindowLeft = null;
+        if (settings.WindowTop is not { } top || !double.IsFinite(top)) settings.WindowTop = null;
+        return settings;
+    }
+
+    private static List<string> NormalizePaths(List<string>? paths, int limit) =>
+        (paths ?? [])
+        .Where(path => !string.IsNullOrWhiteSpace(path))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Take(limit)
+        .ToList();
 
     public void RestoreDefaults()
     {

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using System.Text.Json;
 
 namespace WaveLab.Audio;
@@ -50,20 +51,49 @@ public static class MarkerStore
     public static void Save(string? audioPath, IEnumerable<Marker> markers, IEnumerable<NamedRegion> regions)
     {
         if (audioPath == null) return;
+        ArgumentNullException.ThrowIfNull(markers);
+        ArgumentNullException.ThrowIfNull(regions);
+
+        var meta = new Meta { Markers = [.. markers], Regions = [.. regions] };
+        string path = Path.GetFullPath(SidecarPath(audioPath));
+        string directory = Path.GetDirectoryName(path)
+            ?? throw new InvalidOperationException("The marker sidecar path has no directory.");
+
+        if (meta.Markers.Count == 0 && meta.Regions.Count == 0)
+        {
+            lock (WriteLock)
+                File.Delete(path);
+            return;
+        }
+
+        string json = JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true });
+        string stagePath = Path.Combine(directory,
+            $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
         try
         {
-            var meta = new Meta { Markers = [.. markers], Regions = [.. regions] };
-            string path = SidecarPath(audioPath);
             lock (WriteLock)
             {
-                if (meta.Markers.Count == 0 && meta.Regions.Count == 0)
+                using (var stream = new FileStream(
+                           stagePath,
+                           FileMode.CreateNew,
+                           FileAccess.Write,
+                           FileShare.None,
+                           16 * 1024,
+                           FileOptions.SequentialScan))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true))
                 {
-                    if (File.Exists(path)) File.Delete(path);
-                    return;
+                    writer.Write(json);
+                    writer.Flush();
+                    stream.Flush(flushToDisk: true);
                 }
-                File.WriteAllText(path, JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true }));
+
+                File.Move(stagePath, path, overwrite: true);
             }
         }
-        catch { }
+        catch
+        {
+            try { File.Delete(stagePath); } catch { }
+            throw;
+        }
     }
 }

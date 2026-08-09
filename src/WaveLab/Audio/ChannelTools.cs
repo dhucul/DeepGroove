@@ -26,8 +26,11 @@ public static class ChannelTools
 
     public static void Balance(AudioDocument doc, double leftDb, double rightDb)
     {
+        if (doc.ChannelCount < 2) return;
         var data = doc.CopyRange(0, doc.Length);
-        for (int c = 0; c < data.Length; c++)
+        // Without a channel mask there is no safe way to classify centre, LFE,
+        // or surround channels as left/right. Adjust the canonical L/R pair only.
+        for (int c = 0; c < Math.Min(2, data.Length); c++)
         {
             float g = (float)Math.Pow(10, (c == 0 ? leftDb : rightDb) / 20.0);
             var ch = data[c];

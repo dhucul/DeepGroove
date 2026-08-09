@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
@@ -13,190 +14,342 @@ public static class WavCodec
     private const ushort FormatPcm = 1;
     private const ushort FormatIeeeFloat = 3;
     private const ushort FormatExtensible = 0xFFFE;
+    private static readonly Guid PcmSubFormat = new("00000001-0000-0010-8000-00AA00389B71");
+    private static readonly Guid IeeeFloatSubFormat = new("00000003-0000-0010-8000-00AA00389B71");
 
-    public static AudioDocument Load(string path)
+    public static AudioDocument Load(string path, CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        cancellationToken.ThrowIfCancellationRequested();
         using var fs = File.OpenRead(path);
         using var br = new BinaryReader(fs);
 
+        if (fs.Length < 12) throw new InvalidDataException("The WAV header is truncated.");
         if (br.ReadUInt32() != 0x46464952) throw new InvalidDataException("Not a RIFF file."); // "RIFF"
-        br.ReadUInt32(); // riff size
+        br.ReadUInt32(); // RIFF size
         if (br.ReadUInt32() != 0x45564157) throw new InvalidDataException("Not a WAVE file."); // "WAVE"
 
         ushort format = 0, channels = 0, bits = 0;
-        int sampleRate = 0;
+        uint sampleRate = 0, declaredByteRate = 0;
+        ushort declaredBlockAlign = 0;
         byte[]? data = null;
 
         while (fs.Position + 8 <= fs.Length)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             uint chunkId = br.ReadUInt32();
             uint chunkSize = br.ReadUInt32();
             long chunkStart = fs.Position;
+            long chunkEnd = checked(chunkStart + chunkSize);
+            long nextChunk = checked(chunkEnd + (chunkSize & 1));
+            if (chunkEnd > fs.Length || nextChunk > fs.Length)
+                throw new InvalidDataException("The WAV contains a truncated chunk.");
 
             if (chunkId == 0x20746D66) // "fmt "
             {
+                if (chunkSize < 16)
+                    throw new InvalidDataException("The WAV format chunk is truncated.");
                 format = br.ReadUInt16();
                 channels = br.ReadUInt16();
-                sampleRate = br.ReadInt32();
-                br.ReadInt32();  // byte rate
-                br.ReadUInt16(); // block align
+                sampleRate = br.ReadUInt32();
+                declaredByteRate = br.ReadUInt32();
+                declaredBlockAlign = br.ReadUInt16();
                 bits = br.ReadUInt16();
-                if (format == FormatExtensible && chunkSize >= 40)
+                if (format == FormatExtensible)
                 {
-                    br.ReadUInt16(); // cbSize
-                    br.ReadUInt16(); // valid bits
+                    if (chunkSize < 18)
+                        throw new InvalidDataException("The extensible WAV format chunk has no extension size.");
+                    ushort extensionSize = br.ReadUInt16();
+                    if (extensionSize < 22)
+                        throw new InvalidDataException("The extensible WAV format extension must be at least 22 bytes.");
+                    if (chunkSize < 18u + extensionSize)
+                        throw new InvalidDataException("The extensible WAV format extension is truncated.");
+
+                    ushort validBits = br.ReadUInt16();
                     br.ReadUInt32(); // channel mask
-                    format = br.ReadUInt16(); // first 2 bytes of SubFormat GUID
+                    byte[] subFormatBytes = br.ReadBytes(16);
+                    if (subFormatBytes.Length != 16)
+                        throw new InvalidDataException("The extensible WAV subformat GUID is truncated.");
+                    Guid subFormat = new(subFormatBytes);
+                    format = subFormat == PcmSubFormat
+                        ? FormatPcm
+                        : subFormat == IeeeFloatSubFormat
+                            ? FormatIeeeFloat
+                            : throw new InvalidDataException($"Unsupported extensible WAV subformat {subFormat}.");
+                    // Reduced-valid-bit PCM is left-aligned in its container and
+                    // needs a different decoder/scaling path. Reject it instead
+                    // of silently interpreting padding bits as signal.
+                    if (validBits != bits)
+                        throw new InvalidDataException(
+                            "Extensible WAV valid bits must match the container size.");
                 }
             }
             else if (chunkId == 0x61746164) // "data"
             {
-                long size = Math.Min(chunkSize, fs.Length - fs.Position);
-                data = br.ReadBytes((int)size);
+                if ((ulong)chunkSize > (ulong)Array.MaxLength)
+                    throw new InvalidDataException("The WAV data chunk is too large to load into memory.");
+                data = ReadBytes(br, (int)chunkSize, cancellationToken);
             }
 
-            fs.Position = chunkStart + chunkSize + (chunkSize & 1); // chunks are word-aligned
+            fs.Position = nextChunk;
         }
 
-        if (data == null || channels == 0 || sampleRate == 0)
-            throw new InvalidDataException("Missing fmt or data chunk.");
+        if (data == null || channels == 0 || sampleRate == 0 || sampleRate > int.MaxValue)
+            throw new InvalidDataException("Missing or invalid fmt/data chunk.");
         if (format != FormatPcm && format != FormatIeeeFloat)
             throw new InvalidDataException($"Unsupported WAV format tag {format}.");
+        bool supportedSamples = format == FormatPcm && bits is 16 or 24 or 32 ||
+                                format == FormatIeeeFloat && bits is 32 or 64;
+        if (!supportedSamples)
+            throw new InvalidDataException($"Unsupported sample format: tag {format}, {bits}-bit.");
 
         int bytesPerSample = bits / 8;
-        int frameCount = data.Length / (bytesPerSample * channels);
-        var ch = new float[channels][];
-        for (int c = 0; c < channels; c++) ch[c] = new float[frameCount];
+        long expectedBlockAlign = (long)bytesPerSample * channels;
+        if (expectedBlockAlign > ushort.MaxValue || declaredBlockAlign != expectedBlockAlign)
+            throw new InvalidDataException("The WAV block alignment does not match its channel and sample format.");
+        ulong expectedByteRate = (ulong)sampleRate * declaredBlockAlign;
+        if (expectedByteRate > uint.MaxValue || declaredByteRate != expectedByteRate)
+            throw new InvalidDataException("The WAV byte rate does not match its sample rate and block alignment.");
 
-        Decode(data, format, bits, channels, frameCount, ch);
+        int blockAlign = declaredBlockAlign;
+        if (data.Length % blockAlign != 0)
+            throw new InvalidDataException("The WAV data chunk ends in a partial sample frame.");
+        int frameCount = data.Length / blockAlign;
+        var channelData = new float[channels][];
+        for (int channel = 0; channel < channels; channel++)
+            channelData[channel] = new float[frameCount];
+
+        Decode(data, format, bits, channels, frameCount, channelData, cancellationToken);
 
         int sourceBits = format == FormatIeeeFloat ? 32 : Math.Min((int)bits, 32);
-        return new AudioDocument(ch, sampleRate, sourceBits)
+        return new AudioDocument(channelData, (int)sampleRate, sourceBits)
         {
             FilePath = path,
             Title = Path.GetFileName(path),
         };
     }
 
-    private static void Decode(byte[] data, ushort format, int bits, int channels, int frames, float[][] ch)
+    private static byte[] ReadBytes(
+        BinaryReader reader,
+        int count,
+        CancellationToken cancellationToken)
     {
-        int i = 0;
+        var result = new byte[count];
+        int offset = 0;
+        const int blockSize = 1 << 20;
+        while (offset < result.Length)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int read = reader.Read(result, offset, Math.Min(blockSize, result.Length - offset));
+            if (read == 0)
+                throw new InvalidDataException("The WAV data chunk is truncated.");
+            offset += read;
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
+    }
+
+    private static void Decode(
+        byte[] data,
+        ushort format,
+        int bits,
+        int channels,
+        int frames,
+        float[][] destination,
+        CancellationToken cancellationToken)
+    {
+        int offset = 0;
         if (format == FormatPcm && bits == 16)
-            for (int f = 0; f < frames; f++)
-                for (int c = 0; c < channels; c++, i += 2)
-                    ch[c][f] = BitConverter.ToInt16(data, i) / 32768f;
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 2)
+                    destination[channel][frame] = BitConverter.ToInt16(data, offset) / 32768f;
+            }
+        }
         else if (format == FormatPcm && bits == 24)
-            for (int f = 0; f < frames; f++)
-                for (int c = 0; c < channels; c++, i += 3)
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 3)
                 {
-                    int v = (data[i + 2] << 24 | data[i + 1] << 16 | data[i] << 8) >> 8;
-                    ch[c][f] = v / 8388608f;
+                    int value = (data[offset + 2] << 24 | data[offset + 1] << 16 | data[offset] << 8) >> 8;
+                    destination[channel][frame] = value / 8388608f;
                 }
+            }
+        }
         else if (format == FormatPcm && bits == 32)
-            for (int f = 0; f < frames; f++)
-                for (int c = 0; c < channels; c++, i += 4)
-                    ch[c][f] = BitConverter.ToInt32(data, i) / 2147483648f;
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 4)
+                    destination[channel][frame] = BitConverter.ToInt32(data, offset) / 2147483648f;
+            }
+        }
         else if (format == FormatIeeeFloat && bits == 32)
-            for (int f = 0; f < frames; f++)
-                for (int c = 0; c < channels; c++, i += 4)
-                    ch[c][f] = BitConverter.ToSingle(data, i);
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 4)
+                    destination[channel][frame] = BitConverter.ToSingle(data, offset);
+            }
+        }
         else if (format == FormatIeeeFloat && bits == 64)
-            for (int f = 0; f < frames; f++)
-                for (int c = 0; c < channels; c++, i += 8)
-                    ch[c][f] = (float)BitConverter.ToDouble(data, i);
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 8)
+                    destination[channel][frame] = (float)BitConverter.ToDouble(data, offset);
+            }
+        }
         else
+        {
             throw new InvalidDataException($"Unsupported sample format: tag {format}, {bits}-bit.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     /// <summary>Write the document. bitDepth: 16, 24, or 32 (IEEE float). TPDF dither applies to 16-bit only.</summary>
     public static void Save(AudioDocument doc, string path, int bitDepth, bool dither = true,
         CancellationToken cancellationToken = default, IProgress<double>? progress = null)
     {
+        ArgumentNullException.ThrowIfNull(doc);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (bitDepth is not (16 or 24 or 32))
+            throw new ArgumentOutOfRangeException(nameof(bitDepth), "WAV output must be 16, 24, or 32-bit.");
         cancellationToken.ThrowIfCancellationRequested();
-        using var fs = File.Create(path);
-        using var bw = new BinaryWriter(fs);
 
-        int channels = doc.ChannelCount;
-        int frames = doc.Length;
+        var sourceChannels = doc.Channels.ToArray();
+        int channels = sourceChannels.Length;
+        if (channels is <= 0 or > ushort.MaxValue)
+            throw new InvalidOperationException("WAV output requires between 1 and 65,535 channels.");
+        int frames = sourceChannels[0].Length;
+        if (sourceChannels.Any(channel => channel == null || channel.Length != frames))
+            throw new InvalidOperationException("All document channels must have the same sample count.");
+        int sampleRate = doc.SampleRate;
+        if (sampleRate <= 0)
+            throw new InvalidOperationException("The document sample rate must be positive.");
+
         ushort formatTag = bitDepth == 32 ? FormatIeeeFloat : FormatPcm;
         int bytesPerSample = bitDepth / 8;
-        int blockAlign = bytesPerSample * channels;
-        long dataSizeL = (long)frames * blockAlign;
-        if (dataSizeL > int.MaxValue - 1024)
-            throw new InvalidOperationException("Audio exceeds the 2 GB WAV limit — export a selection or a lower bit depth.");
-        int dataSize = (int)dataSizeL;
-        bool fact = formatTag == FormatIeeeFloat;
+        int blockAlign = checked(bytesPerSample * channels);
+        if (blockAlign > ushort.MaxValue)
+            throw new InvalidOperationException("The WAV channel layout exceeds the block-alignment limit.");
+        long dataSizeLong = (long)frames * blockAlign;
+        if (dataSizeLong > int.MaxValue - 1024)
+            throw new InvalidOperationException("Audio exceeds the 2 GB WAV limit; export a selection or lower bit depth.");
+        long byteRate = (long)sampleRate * blockAlign;
+        if (byteRate > uint.MaxValue)
+            throw new InvalidOperationException("The WAV byte rate exceeds the format limit.");
 
+        int dataSize = (int)dataSizeLong;
+        bool fact = formatTag == FormatIeeeFloat;
         int riffSize = 4 + (8 + 16) + (fact ? 8 + 4 : 0) + (8 + dataSize) + (dataSize & 1);
 
-        bw.Write(0x46464952u);            // RIFF
-        bw.Write(riffSize);
-        bw.Write(0x45564157u);            // WAVE
-        bw.Write(0x20746D66u);            // fmt_
-        bw.Write(16);
-        bw.Write(formatTag);
-        bw.Write((ushort)channels);
-        bw.Write(doc.SampleRate);
-        bw.Write(doc.SampleRate * blockAlign);
-        bw.Write((ushort)blockAlign);
-        bw.Write((ushort)bitDepth);
-        if (fact)
-        {
-            bw.Write(0x74636166u);        // fact
-            bw.Write(4);
-            bw.Write(frames);
-        }
-        bw.Write(0x61746164u);            // data
-        bw.Write(dataSize);
+        string finalPath = Path.GetFullPath(path);
+        string directory = Path.GetDirectoryName(finalPath)
+            ?? throw new InvalidOperationException("The WAV output path has no directory.");
+        string stagePath = Path.Combine(directory,
+            $".{Path.GetFileName(finalPath)}.{Guid.NewGuid():N}.tmp");
 
-        var tpdf = new TpdfDither();
-        var buffer = new byte[blockAlign];
-        for (int f = 0; f < frames; f++)
+        try
         {
-            if ((f & 4095) == 0)
+            using (var stream = new FileStream(stagePath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                       64 * 1024, FileOptions.SequentialScan))
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                progress?.Report(frames > 0 ? (double)f / frames : 1);
-            }
-            int o = 0;
-            for (int c = 0; c < channels; c++)
-            {
-                float s = doc.Channels[c][f];
-                switch (bitDepth)
+                writer.Write(0x46464952u);            // RIFF
+                writer.Write(riffSize);
+                writer.Write(0x45564157u);            // WAVE
+                writer.Write(0x20746D66u);            // fmt_
+                writer.Write(16);
+                writer.Write(formatTag);
+                writer.Write((ushort)channels);
+                writer.Write(sampleRate);
+                writer.Write((uint)byteRate);
+                writer.Write((ushort)blockAlign);
+                writer.Write((ushort)bitDepth);
+                if (fact)
                 {
-                    case 16:
-                    {
-                        // Decode uses signed full-scale divisors (32768 / 8388608).
-                        // Mirror that here so untouched integer PCM round-trips exactly;
-                        // the positive endpoint is handled by the signed clamp.
-                        double v = s * 32768.0;
-                        if (dither) v += tpdf.Next();
-                        int q = (int)Math.Round(v);
-                        q = Math.Clamp(q, short.MinValue, short.MaxValue);
-                        buffer[o++] = (byte)q;
-                        buffer[o++] = (byte)(q >> 8);
-                        break;
-                    }
-                    case 24:
-                    {
-                        int q = (int)Math.Round(Math.Clamp(s, -1f, 1f) * 8388608.0);
-                        q = Math.Clamp(q, -8388608, 8388607);
-                        buffer[o++] = (byte)q;
-                        buffer[o++] = (byte)(q >> 8);
-                        buffer[o++] = (byte)(q >> 16);
-                        break;
-                    }
-                    default:
-                    {
-                        var b = BitConverter.GetBytes(s);
-                        buffer[o++] = b[0]; buffer[o++] = b[1]; buffer[o++] = b[2]; buffer[o++] = b[3];
-                        break;
-                    }
+                    writer.Write(0x74636166u);        // fact
+                    writer.Write(4);
+                    writer.Write(frames);
                 }
+                writer.Write(0x61746164u);            // data
+                writer.Write(dataSize);
+
+                var tpdf = new TpdfDither();
+                var buffer = new byte[blockAlign];
+                for (int frame = 0; frame < frames; frame++)
+                {
+                    if ((frame & 4095) == 0)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        progress?.Report(frames > 0 ? (double)frame / frames : 1);
+                    }
+
+                    int output = 0;
+                    for (int channel = 0; channel < channels; channel++)
+                    {
+                        float sample = sourceChannels[channel][frame];
+                        switch (bitDepth)
+                        {
+                            case 16:
+                            {
+                                if (!float.IsFinite(sample)) sample = 0;
+                                sample = Math.Clamp(sample, -1f, 1f);
+                                double value = sample * 32768.0;
+                                if (dither) value += tpdf.Next();
+                                int quantized = Math.Clamp((int)Math.Round(value), short.MinValue, short.MaxValue);
+                                buffer[output++] = (byte)quantized;
+                                buffer[output++] = (byte)(quantized >> 8);
+                                break;
+                            }
+                            case 24:
+                            {
+                                if (!float.IsFinite(sample)) sample = 0;
+                                int quantized = (int)Math.Round(Math.Clamp(sample, -1f, 1f) * 8388608.0);
+                                quantized = Math.Clamp(quantized, -8388608, 8388607);
+                                buffer[output++] = (byte)quantized;
+                                buffer[output++] = (byte)(quantized >> 8);
+                                buffer[output++] = (byte)(quantized >> 16);
+                                break;
+                            }
+                            default:
+                            {
+                                int value = BitConverter.SingleToInt32Bits(sample);
+                                buffer[output++] = (byte)value;
+                                buffer[output++] = (byte)(value >> 8);
+                                buffer[output++] = (byte)(value >> 16);
+                                buffer[output++] = (byte)(value >> 24);
+                                break;
+                            }
+                        }
+                    }
+                    writer.Write(buffer);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                if ((dataSize & 1) == 1) writer.Write((byte)0);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
             }
-            bw.Write(buffer);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(stagePath, finalPath, overwrite: true);
         }
-        if ((dataSize & 1) == 1) bw.Write((byte)0);
+        catch
+        {
+            try { File.Delete(stagePath); } catch { }
+            throw;
+        }
+
         progress?.Report(1);
     }
 }

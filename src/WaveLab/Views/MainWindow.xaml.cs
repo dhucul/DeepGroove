@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -12,6 +13,10 @@ namespace WaveLab.Views;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
+    private bool _allowClose;
+    private bool _closing;
+    private bool _longOperationRunning;
+    private Task _startupTask = Task.CompletedTask;
 
     public MainWindow()
     {
@@ -32,57 +37,81 @@ public partial class MainWindow : Window
 
         RestoreWindowPlacement();
 
-        Loaded += (_, _) =>
+        Loaded += async (_, _) =>
         {
             var args = Environment.GetCommandLineArgs().Skip(1).Where(System.IO.File.Exists).ToArray();
-            _vm.StartupLoad(args);
+            _startupTask = RunStartupAsync(args);
+            await _startupTask;
         };
+        Closing += OnWindowClosing;
+    }
 
-        Closing += async (_, e) =>
-        {
-            if (_vm.IsTransportRecording)
+    private async Task RunStartupAsync(string[] args)
+    {
+            try { await _vm.StartupLoadAsync(args); }
+            catch (Exception ex)
             {
-                e.Cancel = true;
-                if (MessageBox.Show(
-                        "Recording is still in progress. Stop and keep the capture now? WaveLab will stay open so you can review and save it.",
-                        "Recording in progress", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
-                    await _vm.FinishTransportRecordingAsync();
-                return;
+                MessageBox.Show(ex.Message, "Startup failed", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
-            if (_vm.IsFinalizingRecording)
+    }
+
+    private async void OnWindowClosing(object? sender, CancelEventArgs e)
+    {
+        if (_allowClose) return;
+        e.Cancel = true;
+        if (_closing) return;
+        if (_longOperationRunning || !IsEnabled)
+        {
+            MessageBox.Show(
+                "An audio operation is still running. Wait for it to finish, then close WaveLab again.",
+                "Operation in progress", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (_vm.IsTransportRecording)
+        {
+            if (MessageBox.Show(
+                    "Recording is still in progress. Stop and keep the capture now? WaveLab will stay open so you can review and save it.",
+                    "Recording in progress", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+                await _vm.FinishTransportRecordingAsync();
+            return;
+        }
+        if (_vm.IsFinalizingRecording)
+        {
+            await _vm.FinishTransportRecordingAsync();
+            return;
+        }
+        if (_vm.HasPendingTransportRecording)
+        {
+            var choice = MessageBox.Show(
+                "A buffered recording still needs to be preserved. Retry finalizing it before exit? Choose No only to discard that capture.",
+                "Recording recovery", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+            if (choice == MessageBoxResult.Cancel) return;
+            if (choice == MessageBoxResult.Yes)
             {
-                e.Cancel = true;
                 await _vm.FinishTransportRecordingAsync();
                 return;
             }
-            if (_vm.HasPendingTransportRecording)
-            {
-                var choice = MessageBox.Show(
-                    "A buffered recording still needs to be preserved. Retry finalizing it before exit? Choose No only to discard that capture.",
-                    "Recording recovery", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
-                if (choice == MessageBoxResult.Cancel)
-                {
-                    e.Cancel = true;
-                    return;
-                }
-                if (choice == MessageBoxResult.Yes)
-                {
-                    e.Cancel = true;
-                    await _vm.FinishTransportRecordingAsync();
-                    return;
-                }
-                // No is an explicit request to discard; normal exit cleanup owns it.
-            }
-            if (_vm.Documents.Any(d => d.IsDirty) &&
-                MessageBox.Show("There are unsaved changes. Exit anyway?", "WaveLab",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-            {
-                e.Cancel = true;
-                return;
-            }
-            SaveWindowPlacement();
-            _vm.OnCleanExit();
-        };
+            // No is an explicit request to discard; normal exit cleanup owns it.
+        }
+        if (_vm.Documents.Any(d => d.IsDirty) &&
+            MessageBox.Show("There are unsaved changes. Exit anyway?", "WaveLab",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+
+        _closing = true;
+        IsEnabled = false;
+        SaveWindowPlacement();
+        try
+        {
+            await _startupTask;
+            await _vm.OnCleanExitAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message + "\n\nAutosave recovery data, if available, was retained.", "Shutdown warning",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        _allowClose = true;
+        Close();
     }
 
     // ── window placement ─────────────────────────────────────────
@@ -94,11 +123,11 @@ public partial class MainWindow : Window
         {
             Width = s.WindowWidth;
             Height = s.WindowHeight;
-            if (!double.IsNaN(s.WindowLeft) && !double.IsNaN(s.WindowTop))
+            if (s.WindowLeft is { } left && s.WindowTop is { } top)
             {
                 WindowStartupLocation = WindowStartupLocation.Manual;
-                Left = s.WindowLeft;
-                Top = s.WindowTop;
+                Left = left;
+                Top = top;
             }
         }
         if (s.WindowMaximized) WindowState = WindowState.Maximized;
@@ -119,7 +148,7 @@ public partial class MainWindow : Window
 
     // ── dialogs ──────────────────────────────────────────────────
 
-    private void ShowRecordDialog()
+    private async void ShowRecordDialog()
     {
         bool punchAvailable = _vm.ActiveDocument?.HasSelection == true;
         var dialog = new RecordDialog(punchAvailable) { Owner = this };
@@ -127,7 +156,7 @@ public partial class MainWindow : Window
         _vm.RefreshEngineStatus();
         if (!accepted || dialog.ViewModel.Result == null) return;
         if (punchAvailable && dialog.PunchRequested)
-            _vm.PunchInsert(dialog.ViewModel.Result);
+            await _vm.PunchInsertAsync(dialog.ViewModel.Result);
         else
             _vm.AddGeneratedDocument(dialog.ViewModel.Result);
     }
@@ -199,8 +228,8 @@ public partial class MainWindow : Window
 
     private void OnRefreshSpectrogram(object sender, RoutedEventArgs e)
     {
-        analysisTabs.SelectedIndex = 1;
-        RefreshSpectrogram();
+        if (analysisTabs.SelectedIndex == 1) RefreshSpectrogram();
+        else analysisTabs.SelectedIndex = 1;
     }
 
     // ── tools ────────────────────────────────────────────────────
@@ -224,30 +253,40 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Run a data-transforming op off the UI thread, then commit it as an undoable edit.</summary>
-    private async Task RunRangeTool(string undoName, Func<float[][], int, float[][]?> transform)
+    private async Task<bool> RunRangeTool(string undoName, Func<float[][], int, float[][]?> transform)
     {
+        if (_longOperationRunning) return false;
         var d = Doc;
-        if (d == null || d.Doc.Length == 0) return;
+        if (d == null || d.Doc.Length == 0) return false;
         var (start, count) = d.EditRange();
-        if (count <= 0) return;
-        var input = d.Doc.CopyRange(start, count);
+        if (count <= 0) return false;
+        var channels = d.Doc.Channels.ToArray();
         int sr = d.Doc.SampleRate;
+        _longOperationRunning = true;
         IsEnabled = false; // block edits while the transform runs so the splice range stays valid
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
-            var output = await Task.Run(() => transform(input, sr));
-            if (output != null && start + count <= d.Doc.Length)
-                d.Doc.ReplaceRange(start, count, output, undoName);
+            var output = await Task.Run(() =>
+            {
+                var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
+                return transform(input, sr);
+            });
+            if (output == null || start + count > d.Doc.Length) return false;
+            _vm.PrepareForDocumentEdit(d);
+            d.Doc.ReplaceRange(start, count, output, undoName);
+            return true;
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, undoName, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
         }
         finally
         {
             Mouse.OverrideCursor = null;
             IsEnabled = true;
+            _longOperationRunning = false;
         }
     }
 
@@ -273,17 +312,33 @@ public partial class MainWindow : Window
 
     // restoration
 
-    private void OnLearnNoise(object sender, RoutedEventArgs e)
+    private async void OnLearnNoise(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null) return;
+        if (_longOperationRunning || d == null) return;
         if (!d.HasSelection)
         {
             InfoDialog.Show(this, "Learn Noise Profile",
                 "Select a stretch of noise-only audio (room tone, hiss between phrases) first, then run this again.");
             return;
         }
-        d.NoiseProfile = Restoration.LearnNoiseProfile(d.Doc.Channels, d.SelStart, d.SelEnd - d.SelStart);
+        var channels = d.Doc.Channels.ToArray();
+        int start = d.SelStart, count = d.SelEnd - d.SelStart;
+        _longOperationRunning = true;
+        IsEnabled = false;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try { d.NoiseProfile = await Task.Run(() => Restoration.LearnNoiseProfile(channels, start, count)); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Learn Noise Profile", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            IsEnabled = true;
+            _longOperationRunning = false;
+        }
         InfoDialog.Show(this, "Noise Profile Learned",
             "Profile captured from the selection. Now choose Restore → Reduce Noise to apply it to the whole file or another selection.");
     }
@@ -316,15 +371,23 @@ public partial class MainWindow : Window
             new ParamDialog.SliderSpec("Sensitivity", 1, 10, 5, v => $"{v:0}", 1)) { Owner = this };
         if (dlg.ShowDialog() != true) return;
         double sensitivity = dlg.Values[0];
-        int repaired = 0;
-        await RunRangeTool("Remove Clicks", (data, sampleRate) =>
+        int repaired = -1;
+        bool completed = await RunRangeTool("Remove Clicks", (data, sampleRate) =>
         {
             repaired = Restoration.RemoveClicks(data, sampleRate, sensitivity);
-            return data;
+            // A no-op should not allocate an album-sized undo entry or mark the
+            // document dirty merely so the UI can report that nothing was found.
+            return repaired > 0 ? data : null;
         });
+        if (repaired == 0)
+        {
+            InfoDialog.Show(this, "Remove Clicks & Pops",
+                "No clicks found at this sensitivity — try a higher setting.");
+            return;
+        }
+        if (!completed) return;
         InfoDialog.Show(this, "Remove Clicks & Pops",
-            repaired > 0 ? $"{repaired} click(s) repaired. Undo with Ctrl+Z if it went too far."
-                         : "No clicks found at this sensitivity — try a higher setting.");
+            $"{repaired} click(s) repaired. Undo with Ctrl+Z if it went too far.");
     }
 
     private void OnRemoveHum(object sender, RoutedEventArgs e)
@@ -351,24 +414,27 @@ public partial class MainWindow : Window
             new ParamDialog.SliderSpec("Minimum length", 100, 3000, 500, v => $"{v:0} ms"))
         { Owner = this };
 
-    private void OnDetectSilence(object sender, RoutedEventArgs e)
+    private async void OnDetectSilence(object sender, RoutedEventArgs e)
     {
         var d = Doc;
         if (d == null || d.Doc.Length == 0) return;
         var dlg = SilenceDialog("Detect Silences", "Mark");
         if (dlg!.ShowDialog() != true) return;
-        var silences = Restoration.DetectSilences(d.Doc.Channels, d.Doc.SampleRate, dlg.Values[0], dlg.Values[1]);
-        foreach (var (start, _) in silences) d.AddMarker(start, $"Silence {TimeFormat.Compact((double)start / d.Doc.SampleRate)}");
+        var silences = await DetectSilencesAsync(d, dlg.Values[0], dlg.Values[1]);
+        if (silences == null) return;
+        d.AddMarkers(silences.Select(s =>
+            (s.Start, (string?)$"Silence {TimeFormat.Compact((double)s.Start / d.Doc.SampleRate)}")));
         InfoDialog.Show(this, "Detect Silences", $"{silences.Count} silent stretch(es) marked.");
     }
 
-    private void OnTrimSilence(object sender, RoutedEventArgs e)
+    private async void OnTrimSilence(object sender, RoutedEventArgs e)
     {
         var d = Doc;
         if (d == null || d.Doc.Length == 0) return;
         var dlg = SilenceDialog("Trim Silences", "Trim");
         if (dlg!.ShowDialog() != true) return;
-        var silences = Restoration.DetectSilences(d.Doc.Channels, d.Doc.SampleRate, dlg.Values[0], dlg.Values[1]);
+        var silences = await DetectSilencesAsync(d, dlg.Values[0], dlg.Values[1]);
+        if (silences == null) return;
         if (silences.Count == 0)
         {
             InfoDialog.Show(this, "Trim Silences", "Nothing below the threshold was found.");
@@ -376,6 +442,7 @@ public partial class MainWindow : Window
         }
         int pad = d.Doc.SampleRate / 20; // keep 50 ms breaths
         int removed = 0;
+        _vm.PrepareForDocumentEdit(d);
         foreach (var (start, end) in silences.OrderByDescending(s => s.Start))
         {
             int from = start + pad, to = end - pad;
@@ -389,13 +456,14 @@ public partial class MainWindow : Window
             $"Removed {TimeFormat.Compact((double)removed / d.Doc.SampleRate)} of silence across {silences.Count} stretch(es). Each removal is individually undoable.");
     }
 
-    private void OnSplitSilence(object sender, RoutedEventArgs e)
+    private async void OnSplitSilence(object sender, RoutedEventArgs e)
     {
         var d = Doc;
         if (d == null || d.Doc.Length == 0) return;
         var dlg = SilenceDialog("Split by Silence", "Split");
         if (dlg!.ShowDialog() != true) return;
-        var silences = Restoration.DetectSilences(d.Doc.Channels, d.Doc.SampleRate, dlg.Values[0], dlg.Values[1]);
+        var silences = await DetectSilencesAsync(d, dlg.Values[0], dlg.Values[1]);
+        if (silences == null) return;
         int prevEnd = 0, n = 0;
         foreach (var (start, end) in silences)
         {
@@ -409,20 +477,89 @@ public partial class MainWindow : Window
         InfoDialog.Show(this, "Split by Silence", $"{n} region(s) created — click a region band in the ruler to select it.");
     }
 
+    private async Task<List<(int Start, int End)>?> DetectSilencesAsync(
+        DocumentViewModel document, double threshold, double minimumLength)
+    {
+        if (_longOperationRunning) return null;
+        var channels = document.Doc.Channels.ToArray();
+        int sampleRate = document.Doc.SampleRate;
+        _longOperationRunning = true;
+        IsEnabled = false;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            return await Task.Run(() => Restoration.DetectSilences(
+                channels, sampleRate, threshold, minimumLength));
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Silence Detection", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return null;
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            IsEnabled = true;
+            _longOperationRunning = false;
+        }
+    }
+
     // channels
 
-    private void OnSwapChannels(object sender, RoutedEventArgs e) { if (Doc != null) ChannelTools.SwapChannels(Doc.Doc); }
-    private void OnInvertPhase(object sender, RoutedEventArgs e) { if (Doc != null) ChannelTools.InvertPhase(Doc.Doc, -1); }
-    private void OnInvertLeft(object sender, RoutedEventArgs e) { if (Doc != null) ChannelTools.InvertPhase(Doc.Doc, 0); }
-    private void OnInvertRight(object sender, RoutedEventArgs e) { if (Doc is { Doc.ChannelCount: > 1 }) ChannelTools.InvertPhase(Doc.Doc, 1); }
-    private void OnMonoMixdown(object sender, RoutedEventArgs e) { if (Doc != null) _vm.AddGeneratedDocument(ChannelTools.MonoMixdown(Doc.Doc)); }
-    private void OnExtractLeft(object sender, RoutedEventArgs e) { if (Doc != null) _vm.AddGeneratedDocument(ChannelTools.ExtractChannel(Doc.Doc, 0)); }
-    private void OnExtractRight(object sender, RoutedEventArgs e) { if (Doc is { Doc.ChannelCount: > 1 }) _vm.AddGeneratedDocument(ChannelTools.ExtractChannel(Doc.Doc, 1)); }
-
-    private void OnMonoToStereo(object sender, RoutedEventArgs e)
+    private void OnSwapChannels(object sender, RoutedEventArgs e) => EditDocument(ChannelTools.SwapChannels);
+    private void OnInvertPhase(object sender, RoutedEventArgs e) => EditDocument(doc => ChannelTools.InvertPhase(doc, -1));
+    private void OnInvertLeft(object sender, RoutedEventArgs e) => EditDocument(doc => ChannelTools.InvertPhase(doc, 0));
+    private void OnInvertRight(object sender, RoutedEventArgs e)
     {
-        if (Doc is { Doc.ChannelCount: 1 }) _vm.AddGeneratedDocument(ChannelTools.MonoToStereo(Doc.Doc));
+        if (Doc is { Doc.ChannelCount: > 1 } d) { _vm.PrepareForDocumentEdit(d); ChannelTools.InvertPhase(d.Doc, 1); }
+    }
+
+    private void EditDocument(Action<AudioDocument> edit)
+    {
+        var document = Doc;
+        if (document == null) return;
+        _vm.PrepareForDocumentEdit(document);
+        try { edit(document.Doc); }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Edit failed", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+    private async void OnMonoMixdown(object sender, RoutedEventArgs e) =>
+        await RunGeneratedDocumentTool("Mono Mixdown", ChannelTools.MonoMixdown);
+    private async void OnExtractLeft(object sender, RoutedEventArgs e) =>
+        await RunGeneratedDocumentTool("Extract Left", doc => ChannelTools.ExtractChannel(doc, 0));
+    private async void OnExtractRight(object sender, RoutedEventArgs e)
+    {
+        if (Doc is { Doc.ChannelCount: > 1 })
+            await RunGeneratedDocumentTool("Extract Right", doc => ChannelTools.ExtractChannel(doc, 1));
+    }
+
+    private async void OnMonoToStereo(object sender, RoutedEventArgs e)
+    {
+        if (Doc is { Doc.ChannelCount: 1 })
+            await RunGeneratedDocumentTool("Mono to Stereo", ChannelTools.MonoToStereo);
         else InfoDialog.Show(this, "Mono → Stereo", "The active file is already multi-channel.");
+    }
+
+    private async Task RunGeneratedDocumentTool(string title, Func<AudioDocument, AudioDocument> transform)
+    {
+        if (_longOperationRunning || Doc is not { } document) return;
+        _longOperationRunning = true;
+        IsEnabled = false;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            var generated = await Task.Run(() => transform(document.Doc));
+            _vm.AddGeneratedDocument(generated);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            IsEnabled = true;
+            _longOperationRunning = false;
+        }
     }
 
     private void OnChannelBalance(object sender, RoutedEventArgs e)
@@ -432,6 +569,7 @@ public partial class MainWindow : Window
             new ParamDialog.SliderSpec("Left gain", -24, 6, 0, v => $"{v:+0.0;-0.0;0.0} dB"),
             new ParamDialog.SliderSpec("Right gain", -24, 6, 0, v => $"{v:+0.0;-0.0;0.0} dB")) { Owner = this };
         if (dlg.ShowDialog() != true) return;
+        _vm.PrepareForDocumentEdit(Doc!);
         ChannelTools.Balance(Doc!.Doc, dlg.Values[0], dlg.Values[1]);
     }
 
@@ -464,6 +602,7 @@ public partial class MainWindow : Window
 
     private async void OnConvertRate(object sender, RoutedEventArgs e)
     {
+        if (_longOperationRunning) return;
         var d = Doc;
         if (d == null || d.Doc.Length == 0) return;
         int[] rates = [44100, 48000, 88200, 96000, 192000];
@@ -474,6 +613,7 @@ public partial class MainWindow : Window
         int target = rates[Math.Max(0, dlg.ComboIndex)];
         if (target == d.Doc.SampleRate) return;
         var doc = d.Doc;
+        _longOperationRunning = true;
         IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
         try
@@ -489,6 +629,7 @@ public partial class MainWindow : Window
         {
             Mouse.OverrideCursor = null;
             IsEnabled = true;
+            _longOperationRunning = false;
         }
     }
 
@@ -496,6 +637,7 @@ public partial class MainWindow : Window
 
     private async void OnTuner(object sender, RoutedEventArgs e)
     {
+        if (_longOperationRunning) return;
         var d = Doc;
         if (d == null || d.Doc.Length == 0) return;
         var (start, count) = d.HasSelection
@@ -511,6 +653,11 @@ public partial class MainWindow : Window
         var chans = doc.Channels.ToArray(); // stable refs — splices never mutate old arrays
         int chCount = chans.Length;
         int sampleRate = doc.SampleRate;
+        _longOperationRunning = true;
+        IsEnabled = false;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
         var result = await Task.Run(() =>
         {
             var mono = new float[count];
@@ -527,14 +674,25 @@ public partial class MainWindow : Window
                 ? $"Confidence {result.Confidence:P0}. Detected over {TimeFormat.Compact((double)count / doc.SampleRate)} of audio."
                 : "No stable pitch detected — try selecting a sustained note.",
             result.Frequency > 0 ? PitchDetect.Describe(result.Frequency) : null);
+        }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Tuner", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            IsEnabled = true;
+            _longOperationRunning = false;
+        }
     }
 
     private async void OnBpm(object sender, RoutedEventArgs e)
     {
+        if (_longOperationRunning) return;
         var d = Doc;
         if (d == null || d.Doc.Length < d.Doc.SampleRate * 5) return;
         var chans = d.Doc.Channels.ToArray(); // stable refs captured on the UI thread
         int sampleRate = d.Doc.SampleRate;
+        _longOperationRunning = true;
+        IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -544,7 +702,13 @@ public partial class MainWindow : Window
                         : "No clear tempo found — the material may be too sparse or rubato.",
                 bpm > 0 ? $"{bpm:0.#} BPM" : null);
         }
-        finally { Mouse.OverrideCursor = null; }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "Tempo Detection", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            IsEnabled = true;
+            _longOperationRunning = false;
+        }
     }
 
     private void OnBatchConvert(object sender, RoutedEventArgs e) =>

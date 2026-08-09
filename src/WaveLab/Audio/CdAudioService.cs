@@ -45,7 +45,7 @@ public sealed class CdAudioService : ICdAudioService
                 try
                 {
                     using var reader = _platform.OpenDevice(device.DevicePath);
-                    var disc = CreateDisc(device, reader.ReadTableOfContents());
+                    var disc = CreateDisc(device, reader.ReadTableOfContents(cancellationToken));
                     results.Add(disc.AudioTracks.Count == 0
                         ? new CdAudioDrive(
                             device,
@@ -81,7 +81,7 @@ public sealed class CdAudioService : ICdAudioService
             try
             {
                 using var reader = _platform.OpenDevice(devicePath);
-                var disc = CreateDisc(identity, reader.ReadTableOfContents());
+                var disc = CreateDisc(identity, reader.ReadTableOfContents(cancellationToken));
                 EnsureAudioDisc(disc);
                 return disc;
             }
@@ -111,7 +111,7 @@ public sealed class CdAudioService : ICdAudioService
             try
             {
                 using var reader = _platform.OpenDevice(devicePath);
-                var initialToc = reader.ReadTableOfContents();
+                var initialToc = reader.ReadTableOfContents(cancellationToken);
                 var disc = CreateDisc(identity, initialToc);
                 EnsureAudioDisc(disc);
                 var tracks = SelectTracks(disc, requestedNumbers, devicePath);
@@ -123,7 +123,7 @@ public sealed class CdAudioService : ICdAudioService
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (index > 0)
-                        EnsureDiscUnchanged(initialToc, reader.ReadTableOfContents(), devicePath);
+                        EnsureDiscUnchanged(initialToc, reader.ReadTableOfContents(cancellationToken), devicePath);
 
                     var track = tracks[index];
                     progress?.Report(new CdAudioExtractionProgress(
@@ -154,7 +154,7 @@ public sealed class CdAudioService : ICdAudioService
                 // without it, a disc swapped during the only (or last) track could
                 // otherwise be returned as a seemingly valid import.
                 cancellationToken.ThrowIfCancellationRequested();
-                EnsureDiscUnchanged(initialToc, reader.ReadTableOfContents(), devicePath);
+                EnsureDiscUnchanged(initialToc, reader.ReadTableOfContents(cancellationToken), devicePath);
 
                 return imports;
             }
@@ -263,7 +263,7 @@ public sealed class CdAudioService : ICdAudioService
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                return reader.ReadAudioSectors(startSector, sectorCount, destination);
+                return reader.ReadAudioSectors(startSector, sectorCount, destination, cancellationToken);
             }
             catch (Win32Exception error) when (
                 attempt < maximumAttempts && IsTransientReadError(error.NativeErrorCode))

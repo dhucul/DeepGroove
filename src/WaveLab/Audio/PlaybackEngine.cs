@@ -14,14 +14,19 @@ public sealed class PlaybackEngine : IDisposable
     private long _nextPlaybackSession;
     private readonly object _controlLock = new();
     private readonly object _stateLock = new();
+    private readonly object _cleanupLock = new();
+    private readonly List<Task> _pendingCleanupTasks = [];
+    [ThreadStatic] private static int _playbackCallbackDepth;
 
     public MasterSection Master { get; } = new();
     public bool IsPlaying { get; private set; }
     public bool IsPaused { get; private set; }
     public AudioDocument? SourceDocument { get; private set; }
+    public Exception? LastPlaybackError { get; private set; }
     public bool Loop { get; set; }
 
     public event Action<long, AudioDocument, int>? PlaybackStopped;
+    public event Action<long, AudioDocument, Exception>? PlaybackFailed;
 
     public int PositionSamples
     {
@@ -35,7 +40,10 @@ public sealed class PlaybackEngine : IDisposable
         {
             using var enumerator = new MMDeviceEnumerator();
             foreach (var dev in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
-                result.Add((dev.ID, dev.FriendlyName));
+            {
+                using (dev)
+                    result.Add((dev.ID, dev.FriendlyName));
+            }
         }
         catch { }
         return result;
@@ -80,13 +88,16 @@ public sealed class PlaybackEngine : IDisposable
 
     public long Play(AudioDocument doc, int startSample, int? endSample)
     {
+        ArgumentNullException.ThrowIfNull(doc);
+        DrainPendingCleanups();
         lock (_controlLock)
         {
             StopCore();
+            lock (_stateLock) LastPlaybackError = null;
             long playbackSession = ++_nextPlaybackSession;
             var provider = new DocumentProvider(
                 doc, startSample, endSample,
-                expandMonoToStereo: doc.ChannelCount == 1 && Master.ExpandsMonoToStereo)
+                expandMonoToStereo: Master.ExpandsMonoToStereo)
             { Loop = Loop };
             WasapiOut? output = null;
             MMDevice? device = null;
@@ -100,7 +111,8 @@ public sealed class PlaybackEngine : IDisposable
                 Master.Loudness.Reset();
                 output.Init(Master);
 
-                handler = (_, _) => OnPlaybackStopped(output, device, provider, handler!, playbackSession, doc);
+                handler = (_, args) => OnPlaybackStopped(
+                    output, device, provider, handler!, playbackSession, doc, args.Exception);
                 output.PlaybackStopped += handler;
                 lock (_stateLock)
                 {
@@ -109,6 +121,7 @@ public sealed class PlaybackEngine : IDisposable
                     _provider = provider;
                     _playbackStoppedHandler = handler;
                     SourceDocument = doc;
+                    LastPlaybackError = null;
                     IsPlaying = true;
                     IsPaused = false;
                     registered = true;
@@ -117,7 +130,7 @@ public sealed class PlaybackEngine : IDisposable
                 output.Play();
                 return playbackSession;
             }
-            catch
+            catch (Exception error)
             {
                 bool disposeLocally = !registered;
                 lock (_stateLock)
@@ -131,6 +144,7 @@ public sealed class PlaybackEngine : IDisposable
                     {
                         Master.ClearSource();
                     }
+                    LastPlaybackError = error;
                 }
 
                 if (disposeLocally)
@@ -187,6 +201,7 @@ public sealed class PlaybackEngine : IDisposable
     public void Stop()
     {
         lock (_controlLock) StopCore();
+        DrainPendingCleanups();
     }
 
     private void StopCore()
@@ -213,7 +228,8 @@ public sealed class PlaybackEngine : IDisposable
         DocumentProvider provider,
         EventHandler<StoppedEventArgs> handler,
         long playbackSession,
-        AudioDocument document)
+        AudioDocument document,
+        Exception? error)
     {
         int position;
         lock (_stateLock)
@@ -221,13 +237,74 @@ public sealed class PlaybackEngine : IDisposable
             if (!ReferenceEquals(_out, output)) return;
             position = provider.PositionSamples;
             ClearState();
+            LastPlaybackError = error;
         }
 
         output.PlaybackStopped -= handler;
         // Some output implementations raise PlaybackStopped on their playback
         // thread. Dispose elsewhere so cleanup cannot join the current thread.
-        _ = Task.Run(() => DisposeOutput(output, device, stopFirst: false));
-        PlaybackStopped?.Invoke(playbackSession, document, position);
+        QueueOutputCleanup(output, device);
+        _playbackCallbackDepth++;
+        try
+        {
+            InvokePlaybackStopped(playbackSession, document, position);
+            if (error != null)
+                InvokePlaybackFailed(playbackSession, document, error);
+        }
+        finally
+        {
+            _playbackCallbackDepth--;
+        }
+    }
+
+    private void QueueOutputCleanup(WasapiOut output, MMDevice? device)
+    {
+        Task cleanup = Task.Run(() => DisposeOutput(output, device, stopFirst: false));
+        lock (_cleanupLock) _pendingCleanupTasks.Add(cleanup);
+    }
+
+    private void DrainPendingCleanups()
+    {
+        // An event subscriber can synchronously call Stop/Dispose from WASAPI's
+        // callback thread. Waiting there would deadlock with WasapiOut.Dispose,
+        // which may join that same thread. A later non-callback Stop/Dispose drains it.
+        if (_playbackCallbackDepth > 0) return;
+
+        while (true)
+        {
+            Task[] pending;
+            lock (_cleanupLock)
+            {
+                if (_pendingCleanupTasks.Count == 0) return;
+                pending = [.. _pendingCleanupTasks];
+                _pendingCleanupTasks.Clear();
+            }
+
+            try { Task.WhenAll(pending).GetAwaiter().GetResult(); }
+            catch { /* DisposeOutput is best-effort; cleanup must not block shutdown. */ }
+        }
+    }
+
+    private void InvokePlaybackStopped(long session, AudioDocument document, int position)
+    {
+        var handlers = PlaybackStopped;
+        if (handlers == null) return;
+        foreach (Action<long, AudioDocument, int> handler in handlers.GetInvocationList())
+        {
+            try { handler(session, document, position); }
+            catch { /* A subscriber must not crash the WASAPI callback thread. */ }
+        }
+    }
+
+    private void InvokePlaybackFailed(long session, AudioDocument document, Exception error)
+    {
+        var handlers = PlaybackFailed;
+        if (handlers == null) return;
+        foreach (Action<long, AudioDocument, Exception> handler in handlers.GetInvocationList())
+        {
+            try { handler(session, document, error); }
+            catch { /* A subscriber must not crash the WASAPI callback thread. */ }
+        }
     }
 
     /// <summary>Must be called while holding <see cref="_stateLock"/>.</summary>
@@ -260,7 +337,7 @@ public sealed class PlaybackEngine : IDisposable
 
     private sealed class DocumentProvider : ISampleProvider
     {
-        private readonly AudioDocument _doc;
+        private readonly float[][] _channels;
         private readonly int _start;
         private readonly int _end;
         private readonly bool _expandMonoToStereo;
@@ -269,21 +346,27 @@ public sealed class PlaybackEngine : IDisposable
 
         public DocumentProvider(AudioDocument doc, int start, int? end, bool expandMonoToStereo)
         {
-            _doc = doc;
-            _start = Math.Clamp(start, 0, Math.Max(0, doc.Length - 1));
-            _end = Math.Clamp(end ?? doc.Length, _start, doc.Length);
-            _expandMonoToStereo = expandMonoToStereo && doc.ChannelCount == 1;
+            _channels = doc.Channels.ToArray();
+            if (_channels.Length == 0)
+                throw new InvalidOperationException("Cannot play a document with no audio channels.");
+            int length = _channels[0].Length;
+            if (_channels.Any(channel => channel.Length != length))
+                throw new InvalidOperationException("Cannot play a document whose channel lengths differ.");
+
+            _start = Math.Clamp(start, 0, Math.Max(0, length - 1));
+            _end = Math.Clamp(end ?? length, _start, length);
+            _expandMonoToStereo = expandMonoToStereo && _channels.Length == 1;
             _pos = _start;
             // Give WASAPI and the device a silent lead-in before the first signal.
             // Resuming a paused stream does not pass through this path again.
             _preRollFrames = Math.Max(1, doc.SampleRate / 50); // 20 ms
             WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(
-                doc.SampleRate, _expandMonoToStereo ? 2 : doc.ChannelCount);
+                doc.SampleRate, _expandMonoToStereo ? 2 : _channels.Length);
         }
 
         public bool Loop { get; set; }
         public WaveFormat WaveFormat { get; }
-        public int PositionSamples => _pos;
+        public int PositionSamples => Volatile.Read(ref _pos);
 
         public int Read(float[] buffer, int offset, int count)
         {
@@ -313,7 +396,7 @@ public sealed class PlaybackEngine : IDisposable
                 }
                 int n = Math.Min(framesWanted, available);
                 int destination = offset + written * channels;
-                _doc.ReadInterleaved(_pos, n, buffer, destination);
+                ReadSnapshotInterleaved(_pos, n, buffer, destination);
                 if (_expandMonoToStereo)
                 {
                     // Expand backwards so the mono source and stereo destination
@@ -330,6 +413,17 @@ public sealed class PlaybackEngine : IDisposable
                 framesWanted -= n;
             }
             return written * channels;
+        }
+
+        private void ReadSnapshotInterleaved(int start, int frames, float[] destination, int offset)
+        {
+            int sourceChannels = _channels.Length;
+            for (int frame = 0; frame < frames; frame++)
+            {
+                int sourceFrame = start + frame;
+                for (int channel = 0; channel < sourceChannels; channel++)
+                    destination[offset + frame * sourceChannels + channel] = _channels[channel][sourceFrame];
+            }
         }
     }
 }

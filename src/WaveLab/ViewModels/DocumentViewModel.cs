@@ -18,7 +18,13 @@ public sealed class DocumentViewModel : ObservableObject
 
     private bool _rebuildRunning;
     private bool _rebuildQueued;
+    private readonly object _markerSaveLock = new();
     private Task _markerSaveChain = Task.CompletedTask;
+    private MarkerSaveRequest? _pendingMarkerSave;
+    private MarkerSaveRequest? _failedMarkerSave;
+    private bool _markerSaveRunning;
+
+    private sealed record MarkerSaveRequest(string Path, List<Marker> Markers, List<NamedRegion> Regions);
 
     public DocumentViewModel(AudioDocument doc, PeakStore? prebuiltPeaks = null)
     {
@@ -27,8 +33,23 @@ public sealed class DocumentViewModel : ObservableObject
         if (prebuiltPeaks == null) ScheduleRebuild();
         doc.Changed += OnDocChanged;
         var (markers, regions) = MarkerStore.Load(doc.FilePath);
-        foreach (var m in markers) Markers.Add(m);
-        foreach (var r in regions) Regions.Add(r);
+        foreach (var m in markers)
+        {
+            if (m is null) continue;
+            Markers.Add(new Marker { Name = SafeName(m.Name, "Marker"), Position = Math.Clamp(m.Position, 0, doc.Length) });
+        }
+        foreach (var r in regions)
+        {
+            if (r is null) continue;
+            int start = Math.Clamp(r.Start, 0, doc.Length);
+            int end = Math.Clamp(r.End, 0, doc.Length);
+            if (end > start)
+                Regions.Add(new NamedRegion
+                {
+                    Name = SafeName(r.Name, "Region"), Start = start, End = end,
+                    CdTrackOrder = r.CdTrackOrder is > 0 ? r.CdTrackOrder : null,
+                });
+        }
         ZoomFull();
     }
 
@@ -163,29 +184,154 @@ public sealed class DocumentViewModel : ObservableObject
         if (path == null) return;
         // snapshot for the background write so UI mutations can't tear the serialization,
         // and chain writes so they always land in order (latest state wins)
-        var markers = Markers.Select(m => new Marker { Name = m.Name, Position = m.Position }).ToList();
+        var markers = Markers.Select(m => new Marker
+        {
+            Name = SafeName(m.Name, "Marker"), Position = Math.Clamp(m.Position, 0, Doc.Length),
+        }).ToList();
         var regions = Regions.Select(r => new NamedRegion
         {
-            Name = r.Name,
-            Start = r.Start,
-            End = r.End,
-            CdTrackOrder = r.CdTrackOrder,
-        }).ToList();
-        _markerSaveChain = _markerSaveChain.ContinueWith(
-            _ => MarkerStore.Save(path, markers, regions),
-            CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+            Name = SafeName(r.Name, "Region"),
+            Start = Math.Clamp(r.Start, 0, Doc.Length),
+            End = Math.Clamp(r.End, 0, Doc.Length),
+            CdTrackOrder = r.CdTrackOrder is > 0 ? r.CdTrackOrder : null,
+        }).Where(r => r.End > r.Start).ToList();
+        lock (_markerSaveLock)
+        {
+            _pendingMarkerSave = new MarkerSaveRequest(path, markers, regions);
+            _failedMarkerSave = null; // this newer snapshot supersedes any retained failure
+            if (_markerSaveRunning) return;
+            StartMarkerSaveWorkerLocked();
+        }
+    }
+
+    public async Task FlushMarkersAsync()
+    {
+        bool retried = false;
+        while (true)
+        {
+            Task observed;
+            lock (_markerSaveLock) observed = _markerSaveChain;
+
+            Exception? failure = null;
+            try { await observed; }
+            catch (Exception ex) { failure = ex; }
+
+            bool stable;
+            bool retryStarted = false;
+            lock (_markerSaveLock)
+            {
+                stable = ReferenceEquals(observed, _markerSaveChain)
+                    && !_markerSaveRunning && _pendingMarkerSave == null;
+                if (stable && failure != null && !retried && _failedMarkerSave != null)
+                {
+                    retried = true;
+                    _pendingMarkerSave = _failedMarkerSave;
+                    _failedMarkerSave = null;
+                    StartMarkerSaveWorkerLocked();
+                    retryStarted = true;
+                }
+            }
+            if (!stable) continue;
+            if (retryStarted) continue;
+            if (failure != null) throw failure;
+            return;
+        }
+    }
+
+    /// <summary>Starts a worker while <see cref="_markerSaveLock"/> is held.</summary>
+    private void StartMarkerSaveWorkerLocked()
+    {
+        _markerSaveRunning = true;
+        var previous = _markerSaveChain;
+        if (previous.IsFaulted) _ = previous.Exception;
+        else if (!previous.IsCompleted)
+            _ = previous.ContinueWith(task => _ = task.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        _markerSaveChain = Task.Run(DrainMarkerSaves);
+    }
+
+    private void DrainMarkerSaves()
+    {
+        while (true)
+        {
+            MarkerSaveRequest request;
+            lock (_markerSaveLock)
+            {
+                request = _pendingMarkerSave!;
+                _pendingMarkerSave = null;
+            }
+
+            Exception? failure = null;
+            try { MarkerStore.Save(request.Path, request.Markers, request.Regions); }
+            catch (Exception ex) { failure = ex; }
+
+            lock (_markerSaveLock)
+            {
+                if (_pendingMarkerSave != null) continue; // a newer snapshot can recover an older write failure
+                _markerSaveRunning = false;
+                if (failure != null)
+                {
+                    _failedMarkerSave = request;
+                    throw failure;
+                }
+                _failedMarkerSave = null;
+                return;
+            }
+        }
+    }
+
+    private static string SafeName(string? value, string fallback)
+    {
+        string name = (value ?? "").Trim();
+        name = new string(name.Where(ch => !char.IsControl(ch)).Take(200).ToArray());
+        return string.IsNullOrWhiteSpace(name) ? fallback : name;
     }
 
     public void AddMarker(int position, string? name = null)
     {
-        Markers.Add(new Marker { Position = Math.Clamp(position, 0, Doc.Length), Name = name ?? $"Marker {Markers.Count + 1}" });
+        Markers.Add(new Marker
+        {
+            Position = Math.Clamp(position, 0, Doc.Length),
+            Name = SafeName(name, $"Marker {Markers.Count + 1}"),
+        });
         NotifyMarkersChanged();
+    }
+
+    public void AddMarkers(IEnumerable<(int Position, string? Name)> markers)
+    {
+        bool added = false;
+        foreach (var (position, name) in markers)
+        {
+            Markers.Add(new Marker
+            {
+                Position = Math.Clamp(position, 0, Doc.Length),
+                Name = SafeName(name, $"Marker {Markers.Count + 1}"),
+            });
+            added = true;
+        }
+        if (added) NotifyMarkersChanged();
     }
 
     public void AddRegionFromSelection()
     {
         if (!HasSelection) return;
         Regions.Add(new NamedRegion { Start = _selStart, End = _selEnd, Name = $"Region {Regions.Count + 1}" });
+        NotifyMarkersChanged();
+    }
+
+    public void RenameMarker(Marker marker, string name)
+    {
+        if (!Markers.Contains(marker)) return;
+        marker.Name = SafeName(name, "Marker");
+        NotifyMarkersChanged();
+    }
+
+    public void RenameRegion(NamedRegion region, string name)
+    {
+        if (!Regions.Contains(region)) return;
+        region.Name = SafeName(name, "Region");
         NotifyMarkersChanged();
     }
 
@@ -273,6 +419,19 @@ public sealed class DocumentViewModel : ObservableObject
 
     private void OnDocChanged(int start, int removed, int inserted)
     {
+        static int MapAnchor(int value, int editStart, int removedCount, int insertedCount)
+        {
+            if (value <= editStart) return value;
+            int oldEnd = editStart + removedCount;
+            if (value >= oldEnd) return value + insertedCount - removedCount;
+            return editStart + Math.Min(value - editStart, insertedCount);
+        }
+
+        int mappedCursor = MapAnchor(_cursor, start, removed, inserted);
+        int mappedPlayhead = MapAnchor(_playhead, start, removed, inserted);
+        int mappedSelectionStart = HasSelection ? MapAnchor(_selStart, start, removed, inserted) : -1;
+        int mappedSelectionEnd = HasSelection ? MapAnchor(_selEnd, start, removed, inserted) : -1;
+
         // keep markers/regions anchored through splices
         int delta = inserted - removed;
         // A same-length replacement changes samples but not the timeline. Only a
@@ -295,14 +454,38 @@ public sealed class DocumentViewModel : ObservableObject
                     changed = true;
                 }
             }
+            for (int i = Regions.Count - 1; i >= 0; i--)
+            {
+                var region = Regions[i];
+                region.Start = Math.Clamp(region.Start, 0, Doc.Length);
+                region.End = Math.Clamp(region.End, 0, Doc.Length);
+                if (region.End <= region.Start)
+                {
+                    Regions.RemoveAt(i);
+                    changed = true;
+                }
+            }
             if (changed) NotifyMarkersChanged();
         }
 
         ScheduleRebuild();
-        Cursor = Math.Clamp(_cursor, 0, Math.Max(0, Doc.Length - 1));
-        PlayheadSample = Math.Clamp(_playhead, 0, Math.Max(0, Doc.Length - 1));
-        if (HasSelection && (_selStart > Doc.Length || _selEnd > Doc.Length))
-            ClearSelection();
+        Cursor = Math.Clamp(mappedCursor, 0, Math.Max(0, Doc.Length - 1));
+        PlayheadSample = Math.Clamp(mappedPlayhead, 0, Doc.Length);
+        if (mappedSelectionStart >= 0 && mappedSelectionEnd > mappedSelectionStart)
+        {
+            int clampedStart = Math.Clamp(mappedSelectionStart, 0, Doc.Length);
+            int clampedEnd = Math.Clamp(mappedSelectionEnd, 0, Doc.Length);
+            if (clampedEnd > clampedStart)
+            {
+                SelStart = clampedStart;
+                SelEnd = clampedEnd;
+            }
+            else SelStart = SelEnd = -1;
+        }
+        else if (_selStart >= 0 || _selEnd >= 0)
+        {
+            SelStart = SelEnd = -1;
+        }
         ClampView();
         Raise(nameof(Title));
         Raise(nameof(IsDirty));

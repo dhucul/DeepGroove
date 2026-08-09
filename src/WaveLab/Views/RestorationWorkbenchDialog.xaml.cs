@@ -380,6 +380,7 @@ public partial class RestorationWorkbenchDialog : Window
             }
 
             operation.Token.ThrowIfCancellationRequested();
+            _main.PrepareForDocumentEdit(_document);
             if (_rangeStart == 0 && _rangeCount == _document.Doc.Length)
                 _document.Doc.ReplaceAllOwned(result.Audio, "Vinyl Restoration");
             else
@@ -944,12 +945,19 @@ public partial class RestorationWorkbenchDialog : Window
     {
         _closed = true;
         _previewDebounce.Stop();
-        _operation?.Cancel();
-        _lifetime.Cancel();
-        _main.StopPreview();
-        if (_previewRackBypassed)
-            _main.Master.RackEnabled = _rackWasEnabled;
-        _lifetime.Dispose();
+        try { _operation?.Cancel(); } catch { }
+        try { _lifetime.Cancel(); } catch { }
+        try { _main.StopPreview(); } catch { }
+        try
+        {
+            if (_previewRackBypassed)
+                _main.Master.RackEnabled = _rackWasEnabled;
+        }
+        finally
+        {
+            _lifetime.Dispose();
+            _analysisGate.Dispose();
+        }
     }
 
     private void OnDragMove(object sender, MouseButtonEventArgs e)

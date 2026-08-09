@@ -170,7 +170,12 @@ public sealed class MasterSection : ISampleProvider
         var source = Volatile.Read(ref _source);
         if (source == null) return 0;
         int read = source.Read(buffer, offset, count);
-        if (read <= 0) { PeakL = PeakR = RmsL = RmsR = 0; return read; }
+        if (read <= 0)
+        {
+            Loudness.FlushTruePeak();
+            PeakL = PeakR = RmsL = RmsR = 0;
+            return read;
+        }
 
         lock (_chainLock)
             if (_rackEnabled)

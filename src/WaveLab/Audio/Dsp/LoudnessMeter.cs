@@ -17,10 +17,26 @@ public sealed class LoudnessMeter
     private readonly Queue<double> _last3s = new();    // 30 sub-blocks
     private readonly List<double> _blockLoudness = []; // 400ms block loudness values (75% overlap)
     private readonly object _lock = new();
+    private double _momentaryLufs = double.NegativeInfinity;
+    private double _shortTermLufs = double.NegativeInfinity;
+    private double _truePeakDb = double.NegativeInfinity;
+    private long _framesProcessed;
 
-    public double MomentaryLufs { get; private set; } = double.NegativeInfinity;
-    public double ShortTermLufs { get; private set; } = double.NegativeInfinity;
-    public double TruePeakDb { get; private set; } = double.NegativeInfinity;
+    public double MomentaryLufs
+    {
+        get => Volatile.Read(ref _momentaryLufs);
+        private set => Volatile.Write(ref _momentaryLufs, value);
+    }
+    public double ShortTermLufs
+    {
+        get => Volatile.Read(ref _shortTermLufs);
+        private set => Volatile.Write(ref _shortTermLufs, value);
+    }
+    public double TruePeakDb
+    {
+        get => Volatile.Read(ref _truePeakDb);
+        private set => Volatile.Write(ref _truePeakDb, value);
+    }
 
     public void Configure(int sampleRate, int channels)
     {
@@ -45,11 +61,17 @@ public sealed class LoudnessMeter
     {
         lock (_lock)
         {
+            for (int channel = 0; channel < _stage1.Length; channel++) _stage1[channel].Reset();
+            for (int channel = 0; channel < _stage2.Length; channel++) _stage2[channel].Reset();
+            Array.Clear(_prev1);
+            Array.Clear(_prev2);
+            Array.Clear(_prev3);
             _subBlockSumSq = new double[_channels];
             _subBlockFill = 0;
             _last400.Clear();
             _last3s.Clear();
             _blockLoudness.Clear();
+            _framesProcessed = 0;
             MomentaryLufs = ShortTermLufs = TruePeakDb = double.NegativeInfinity;
         }
     }
@@ -64,6 +86,10 @@ public sealed class LoudnessMeter
                 for (int c = 0; c < _channels; c++)
                 {
                     float raw = interleaved[offset + f * _channels + c];
+                    if (!float.IsFinite(raw)) raw = 0;
+
+                    double sampleDb = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(raw)));
+                    if (sampleDb > TruePeakDb) TruePeakDb = sampleDb;
 
                     // true peak: 4x oversample via Catmull-Rom between the last 4 samples
                     float p0 = _prev3[c], p1 = _prev2[c], p2 = _prev1[c], p3 = raw;
@@ -98,6 +124,34 @@ public sealed class LoudnessMeter
 
                     _subBlockSumSq = new double[_channels];
                     _subBlockFill = 0;
+                }
+
+                _framesProcessed++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finalize the last true-peak interpolation segment after end of stream.
+    /// Calling this repeatedly is safe; call it only when no more samples will be
+    /// appended to the current measurement.
+    /// </summary>
+    public void FlushTruePeak()
+    {
+        lock (_lock)
+        {
+            if (_framesProcessed == 0) return;
+            for (int c = 0; c < _channels; c++)
+            {
+                float p0 = _prev3[c], p1 = _prev2[c], p2 = _prev1[c], p3 = p2;
+                for (int k = 1; k <= 4; k++)
+                {
+                    float t = k / 4f;
+                    float interp = 0.5f * ((2 * p1) + (-p0 + p2) * t +
+                                   (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
+                                   (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
+                    double db = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(interp)));
+                    if (db > TruePeakDb) TruePeakDb = db;
                 }
             }
         }

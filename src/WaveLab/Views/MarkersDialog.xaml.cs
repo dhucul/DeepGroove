@@ -84,9 +84,8 @@ public partial class MarkersDialog : Window
         string current = entry.Item is Marker m ? m.Name : ((NamedRegion)entry.Item).Name;
         var name = TextPromptDialog.Show(this, "Rename", current);
         if (string.IsNullOrWhiteSpace(name)) return;
-        if (entry.Item is Marker marker) marker.Name = name.Trim();
-        else ((NamedRegion)entry.Item).Name = name.Trim();
-        _doc.NotifyMarkersChanged();
+        if (entry.Item is Marker marker) _doc.RenameMarker(marker, name);
+        else _doc.RenameRegion((NamedRegion)entry.Item, name);
         Refresh();
     }
 

@@ -36,11 +36,27 @@ public interface ICdAudioDevice : IDisposable
 {
     CdAudioTableOfContents ReadTableOfContents();
 
+    CdAudioTableOfContents ReadTableOfContents(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ReadTableOfContents();
+    }
+
     /// <summary>
     /// Reads <paramref name="sectorCount"/> CD-DA sectors starting at an absolute
     /// logical sector. Returns the number of bytes placed in destination.
     /// </summary>
     int ReadAudioSectors(int startSector, int sectorCount, byte[] destination);
+
+    int ReadAudioSectors(
+        int startSector,
+        int sectorCount,
+        byte[] destination,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ReadAudioSectors(startSector, sectorCount, destination);
+    }
 }
 
 /// <summary>Platform boundary used by <see cref="CdAudioService"/>.</summary>

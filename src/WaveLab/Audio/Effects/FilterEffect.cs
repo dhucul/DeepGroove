@@ -24,17 +24,19 @@ public sealed class FilterEffect(bool highPass) : EffectBase
     {
         double cutoff = Math.Min(GetParam("cutoff"), SampleRate * 0.45);
         double q = GetParam("q");
-        _filters = new Biquad[ChannelCount];
+        var rebuilt = new Biquad[ChannelCount];
         for (int c = 0; c < ChannelCount; c++)
-            _filters[c] = highPass ? Biquad.HighPass(SampleRate, cutoff, q) : Biquad.LowPass(SampleRate, cutoff, q);
+            rebuilt[c] = highPass ? Biquad.HighPass(SampleRate, cutoff, q) : Biquad.LowPass(SampleRate, cutoff, q);
+        Volatile.Write(ref _filters, rebuilt);
     }
 
     public override void ResetState() => Rebuild();
 
     public override void Process(float[] buffer, int offset, int count)
     {
-        if (_filters.Length == 0) return;
+        var filters = Volatile.Read(ref _filters);
+        if (filters.Length != ChannelCount) return;
         for (int i = offset; i < offset + count; i++)
-            buffer[i] = _filters[(i - offset) % ChannelCount].Process(buffer[i]);
+            buffer[i] = filters[(i - offset) % ChannelCount].Process(buffer[i]);
     }
 }

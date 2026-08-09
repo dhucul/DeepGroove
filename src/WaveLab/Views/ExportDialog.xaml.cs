@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -17,11 +18,15 @@ public partial class ExportDialog : Window
     }
 
     private readonly DocumentViewModel _doc;
+    private CancellationTokenSource? _cts;
+    private bool _allowClose;
+    private bool _closeWhenFinished;
 
     public ExportDialog(DocumentViewModel doc)
     {
         InitializeComponent();
         _doc = doc;
+        Closing += OnClosing;
         titleText.Text = $"Export — {doc.Doc.Title}";
 
         var formats = new List<FormatItem>
@@ -64,6 +69,7 @@ public partial class ExportDialog : Window
 
     private async void OnExport(object sender, RoutedEventArgs e)
     {
+        if (_cts != null) return;
         if (cmbFormat.SelectedItem is not FormatItem f) return;
 
         var dlg = new SaveFileDialog
@@ -86,28 +92,66 @@ public partial class ExportDialog : Window
         }
 
         btnExport.IsEnabled = false;
-        btnCancel.IsEnabled = false;
+        btnCancel.IsEnabled = true;
+        btnCancel.Content = "Cancel";
+        busyText.Text = "Exporting…";
         busyText.Visibility = Visibility.Visible;
+        var cts = new CancellationTokenSource();
+        _cts = cts;
         try
         {
             var doc = _doc.Doc;
-            await Task.Run(() => AudioExporter.Export(doc, dlg.FileName, f.Format, bitrate, start, count, targetRate));
+            await Task.Run(() => AudioExporter.Export(
+                doc, dlg.FileName, f.Format, bitrate, start, count, targetRate, cts.Token), cts.Token);
+            _allowClose = true;
             DialogResult = true;
             Close();
+        }
+        catch (OperationCanceledException)
+        {
+            busyText.Text = "Export cancelled.";
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            if (ReferenceEquals(_cts, cts)) _cts = null;
+            cts.Dispose();
             btnExport.IsEnabled = true;
             btnCancel.IsEnabled = true;
-            busyText.Visibility = Visibility.Collapsed;
+            btnCancel.Content = "Close";
+            if (!_closeWhenFinished && busyText.Text != "Export cancelled.")
+                busyText.Visibility = Visibility.Collapsed;
+            if (_closeWhenFinished && !_allowClose)
+            {
+                _allowClose = true;
+                DialogResult = false;
+                Close();
+            }
         }
     }
 
     private void OnCancel(object sender, RoutedEventArgs e)
     {
+        if (_cts != null)
+        {
+            busyText.Text = "Cancelling…";
+            _cts.Cancel();
+            return;
+        }
         DialogResult = false;
         Close();
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_allowClose || _cts == null) return;
+        e.Cancel = true;
+        _closeWhenFinished = true;
+        busyText.Text = "Cancelling…";
+        _cts.Cancel();
     }
 
     private void OnDragMove(object sender, MouseButtonEventArgs e)

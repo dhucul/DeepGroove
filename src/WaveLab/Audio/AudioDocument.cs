@@ -8,6 +8,8 @@ namespace WaveLab.Audio;
 public sealed class AudioDocument
 {
     private float[][] _channels;
+    private int _sampleRate;
+    private int _sourceBitDepth;
     private readonly List<Edit> _undo = [];
     private readonly List<Edit> _redo = [];
     private long _currentStateId;
@@ -22,24 +24,61 @@ public sealed class AudioDocument
 
     public AudioDocument(float[][] channels, int sampleRate, int sourceBitDepth)
     {
+        ValidateChannelData(channels, nameof(channels));
+        if (sampleRate <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sampleRate), "Sample rate must be positive.");
+
         _channels = channels;
-        SampleRate = sampleRate;
+        _sampleRate = sampleRate;
         SourceBitDepth = sourceBitDepth;
     }
 
     public static AudioDocument CreateEmpty(int sampleRate, int channelCount)
     {
+        if (sampleRate <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sampleRate), "Sample rate must be positive.");
+        if (channelCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(channelCount), "Channel count must be positive.");
+
         var ch = new float[channelCount][];
         for (int i = 0; i < channelCount; i++) ch[i] = [];
         return new AudioDocument(ch, sampleRate, 32);
     }
 
-    public IReadOnlyList<float[]> Channels => _channels;
-    public int ChannelCount => _channels.Length;
-    public int Length => _channels.Length == 0 ? 0 : _channels[0].Length;
-    public int SampleRate { get; set; }
+    public IReadOnlyList<float[]> Channels => Volatile.Read(ref _channels);
+    public int ChannelCount => Volatile.Read(ref _channels).Length;
+    public int Length
+    {
+        get
+        {
+            var channels = Volatile.Read(ref _channels);
+            return channels.Length == 0 ? 0 : channels[0].Length;
+        }
+    }
+    public int SampleRate
+    {
+        get => _sampleRate;
+        set
+        {
+            if (value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(value), "Sample rate must be positive.");
+            _sampleRate = value;
+        }
+    }
     /// <summary>16, 24 or 32 (32 = IEEE float).</summary>
-    public int SourceBitDepth { get; set; }
+    public int SourceBitDepth
+    {
+        get => _sourceBitDepth;
+        set
+        {
+            if (value is not (16 or 24 or 32))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value), value, "Source bit depth must be 16, 24, or 32 bits.");
+            }
+            _sourceBitDepth = value;
+        }
+    }
     public string? FilePath { get; set; }
     public string Title { get; set; } = "Untitled";
     public bool Dirty { get; private set; }
@@ -59,11 +98,15 @@ public sealed class AudioDocument
 
     public float[][] CopyRange(int start, int count)
     {
-        var result = new float[ChannelCount][];
-        for (int c = 0; c < ChannelCount; c++)
+        var channels = Volatile.Read(ref _channels);
+        int length = channels[0].Length;
+        ValidateRange(start, count, length);
+
+        var result = new float[channels.Length][];
+        for (int c = 0; c < channels.Length; c++)
         {
             result[c] = new float[count];
-            Array.Copy(_channels[c], start, result[c], 0, count);
+            Array.Copy(channels[c], start, result[c], 0, count);
         }
         return result;
     }
@@ -71,20 +114,25 @@ public sealed class AudioDocument
     /// <summary>Replace [start, start+removeCount) with newData (may be empty).</summary>
     public void ReplaceRange(int start, int removeCount, float[][] newData, string opName)
     {
-        if (newData.Length != ChannelCount)
-            throw new ArgumentException($"Channel count mismatch in edit '{opName}' ({newData.Length} vs {ChannelCount}).");
+        ArgumentNullException.ThrowIfNull(newData);
+        ArgumentException.ThrowIfNullOrWhiteSpace(opName);
+        var channels = Volatile.Read(ref _channels);
+        ValidateRange(start, removeCount, channels[0].Length);
+        ValidateReplacementData(newData, channels.Length, opName);
+
         long beforeStateId = _currentStateId;
         long afterStateId = _nextStateId++;
-        var edit = new Edit(opName, start, CopyRange(start, removeCount), CloneData(newData), false,
+        var oldData = CopyRange(channels, start, removeCount);
+        var edit = new Edit(opName, start, oldData, CloneData(newData), false,
             beforeStateId, afterStateId);
-        Splice(start, removeCount, newData);
+        Splice(channels, start, removeCount, newData);
         _undo.Add(edit);
         _redo.Clear();
         EnforceUndoBudget();
         _currentStateId = afterStateId;
         UpdateDirtyFromSavepoint();
         EditVersion++;
-        Changed?.Invoke(start, removeCount, newData.Length == 0 ? 0 : newData[0].Length);
+        Changed?.Invoke(start, removeCount, newData[0].Length);
     }
 
     /// <summary>
@@ -96,17 +144,15 @@ public sealed class AudioDocument
     public void ReplaceAllOwned(float[][] newData, string opName)
     {
         ArgumentNullException.ThrowIfNull(newData);
-        if (newData.Length != ChannelCount)
-            throw new ArgumentException($"Channel count mismatch in edit '{opName}' ({newData.Length} vs {ChannelCount}).");
-        int newLength = newData.Length == 0 ? 0 : newData[0].Length;
-        if (newData.Any(channel => channel.Length != newLength))
-            throw new ArgumentException($"Channel lengths do not match in edit '{opName}'.", nameof(newData));
+        ArgumentException.ThrowIfNullOrWhiteSpace(opName);
+        var oldData = Volatile.Read(ref _channels);
+        ValidateReplacementData(newData, oldData.Length, opName);
+        int newLength = newData[0].Length;
 
-        var oldData = _channels;
-        int oldLength = Length;
+        int oldLength = oldData[0].Length;
         long beforeStateId = _currentStateId;
         long afterStateId = _nextStateId++;
-        _channels = newData;
+        Volatile.Write(ref _channels, newData);
         _undo.Add(new Edit(opName, 0, oldData, newData, true, beforeStateId, afterStateId));
         _redo.Clear();
         EnforceUndoBudget();
@@ -123,7 +169,7 @@ public sealed class AudioDocument
         _undo.RemoveAt(_undo.Count - 1);
         int insertedLen = e.New.Length == 0 ? 0 : e.New[0].Length;
         if (e.OwnsFullDocument)
-            _channels = e.Old;
+            Volatile.Write(ref _channels, e.Old);
         else
             Splice(e.Start, insertedLen, e.Old);
         _redo.Add(e);
@@ -140,7 +186,7 @@ public sealed class AudioDocument
         _redo.RemoveAt(_redo.Count - 1);
         int oldLen = e.Old.Length == 0 ? 0 : e.Old[0].Length;
         if (e.OwnsFullDocument)
-            _channels = e.New;
+            Volatile.Write(ref _channels, e.New);
         else
             Splice(e.Start, oldLen, e.New);
         _undo.Add(e);
@@ -190,29 +236,103 @@ public sealed class AudioDocument
     /// <summary>Interleaved copy of a range (for playback/export).</summary>
     public void ReadInterleaved(int start, int frames, float[] dest, int destOffset)
     {
-        int ch = ChannelCount;
+        ArgumentNullException.ThrowIfNull(dest);
+        if (start < 0) throw new ArgumentOutOfRangeException(nameof(start));
+        if (frames < 0) throw new ArgumentOutOfRangeException(nameof(frames));
+
+        // Edits publish a completely new jagged array. Keep one point-in-time
+        // reference for this whole callback so a concurrent splice cannot make
+        // the bounds check observe one version and the indexer another.
+        var channels = Volatile.Read(ref _channels);
+        int ch = channels.Length;
+        int length = ch == 0 ? 0 : channels[0].Length;
+        int required = checked(frames * ch);
+        if (destOffset < 0 || destOffset > dest.Length - required)
+            throw new ArgumentOutOfRangeException(nameof(destOffset));
+
         for (int f = 0; f < frames; f++)
         {
             int s = start + f;
             for (int c = 0; c < ch; c++)
-                dest[destOffset + f * ch + c] = (uint)s < (uint)Length ? _channels[c][s] : 0f;
+                dest[destOffset + f * ch + c] = (uint)s < (uint)length ? channels[c][s] : 0f;
         }
     }
 
     private void Splice(int start, int removeCount, float[][] insert)
     {
-        int insertCount = insert.Length == 0 ? 0 : insert[0].Length;
-        int newLen = Length - removeCount + insertCount;
-        var next = new float[ChannelCount][];
-        for (int c = 0; c < ChannelCount; c++)
+        var channels = Volatile.Read(ref _channels);
+        Splice(channels, start, removeCount, insert);
+    }
+
+    private void Splice(float[][] channels, int start, int removeCount, float[][] insert)
+    {
+        int insertCount = insert[0].Length;
+        int oldLength = channels[0].Length;
+        int newLen = checked(oldLength - removeCount + insertCount);
+        var next = new float[channels.Length][];
+        for (int c = 0; c < channels.Length; c++)
         {
             var dst = new float[newLen];
-            Array.Copy(_channels[c], 0, dst, 0, start);
+            Array.Copy(channels[c], 0, dst, 0, start);
             if (insertCount > 0) Array.Copy(insert[c], 0, dst, start, insertCount);
-            Array.Copy(_channels[c], start + removeCount, dst, start + insertCount, Length - start - removeCount);
+            Array.Copy(
+                channels[c],
+                start + removeCount,
+                dst,
+                start + insertCount,
+                oldLength - start - removeCount);
             next[c] = dst;
         }
-        _channels = next;
+        Volatile.Write(ref _channels, next);
+    }
+
+    private static float[][] CopyRange(float[][] channels, int start, int count)
+    {
+        var result = new float[channels.Length][];
+        for (int c = 0; c < channels.Length; c++)
+        {
+            result[c] = new float[count];
+            Array.Copy(channels[c], start, result[c], 0, count);
+        }
+        return result;
+    }
+
+    private static void ValidateChannelData(float[][] channels, string paramName)
+    {
+        ArgumentNullException.ThrowIfNull(channels, paramName);
+        if (channels.Length == 0)
+            throw new ArgumentException("At least one audio channel is required.", paramName);
+        if (channels[0] is null)
+            throw new ArgumentException("Audio channels cannot be null.", paramName);
+
+        int length = channels[0].Length;
+        for (int channel = 1; channel < channels.Length; channel++)
+        {
+            if (channels[channel] is null)
+                throw new ArgumentException("Audio channels cannot be null.", paramName);
+            if (channels[channel].Length != length)
+                throw new ArgumentException("Audio channel lengths must match.", paramName);
+        }
+    }
+
+    private static void ValidateReplacementData(float[][] data, int channelCount, string opName)
+    {
+        if (data.Length != channelCount)
+        {
+            throw new ArgumentException(
+                $"Channel count mismatch in edit '{opName}' ({data.Length} vs {channelCount}).",
+                nameof(data));
+        }
+
+        ValidateChannelData(data, nameof(data));
+    }
+
+    private static void ValidateRange(int start, int count, int length)
+    {
+        if (start < 0 || start > length)
+            throw new ArgumentOutOfRangeException(nameof(start));
+        if (count < 0 || count > length - start)
+            throw new ArgumentOutOfRangeException(nameof(count));
     }
 
     private static float[][] CloneData(float[][] data)

@@ -160,13 +160,14 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     public void SavePresetAs(string name)
     {
+        name = new string((name ?? "").Trim().Where(ch => !char.IsControl(ch)).Take(80).ToArray());
         if (string.IsNullOrWhiteSpace(name)) return;
         try
         {
-            EffectFactory.SavePreset(EffectFactory.Capture(name.Trim(), _master.ChainSnapshot));
+            EffectFactory.SavePreset(EffectFactory.Capture(name, _master.ChainSnapshot));
             RefreshPresets();
             _applyingPreset = true;
-            SelectedPreset = name.Trim();
+            SelectedPreset = name;
             _applyingPreset = false;
         }
         catch (Exception ex)

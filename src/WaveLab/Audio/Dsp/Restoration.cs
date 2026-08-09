@@ -10,6 +10,14 @@ public static partial class Restoration
     public static float[] LearnNoiseProfile(IReadOnlyList<float[]> channels, int start, int count,
         CancellationToken cancellationToken = default)
     {
+        int sampleCount = ValidateRestorationChannels(channels);
+        if (channels.Count == 0)
+            throw new ArgumentException("At least one audio channel is required.", nameof(channels));
+        if (start < 0 || start > sampleCount)
+            throw new ArgumentOutOfRangeException(nameof(start));
+        if (count <= 0 || count > sampleCount - start)
+            throw new ArgumentOutOfRangeException(nameof(count));
+
         var window = Fft.HannWindow(NrFftSize);
         var profile = new double[NrFftSize / 2];
         var re = new float[NrFftSize];
@@ -31,6 +39,29 @@ public static partial class Restoration
                 profile[b] += Math.Sqrt(re[b] * re[b] + im[b] * im[b]);
             frames++;
         }
+
+        // A short but valid noise selection still contains useful information. Analyze
+        // one zero-padded frame instead of returning an all-zero profile that makes the
+        // subsequent gate appear to succeed while doing no work.
+        if (frames == 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Array.Clear(re);
+            Array.Clear(im);
+            int windowOffset = (NrFftSize - count) / 2;
+            for (int i = 0; i < count; i++)
+            {
+                float mono = 0;
+                foreach (var channel in channels) mono += channel[start + i];
+                int windowIndex = windowOffset + i;
+                re[windowIndex] = mono / channels.Count * window[windowIndex];
+            }
+            Fft.Forward(re, im);
+            for (int bin = 0; bin < profile.Length; bin++)
+                profile[bin] = Math.Sqrt(re[bin] * re[bin] + im[bin] * im[bin]);
+            frames = 1;
+        }
+
         var result = new float[profile.Length];
         for (int b = 0; b < profile.Length; b++)
             result[b] = frames > 0 ? (float)(profile[b] / frames) : 0f;
@@ -44,6 +75,12 @@ public static partial class Restoration
     public static void ReduceNoise(float[][] data, float[] profile, double reductionDb,
         double sensitivityDb, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentNullException.ThrowIfNull(profile);
+        ValidateRestorationChannels(data);
+        if (profile.Length == 0)
+            throw new ArgumentException("A noise profile must contain at least one frequency bin.", nameof(profile));
+
         var window = Fft.HannWindow(NrFftSize);
         float floorGain = (float)Math.Pow(10, -Math.Abs(reductionDb) / 20.0);
         double thresholdMul = Math.Pow(10, sensitivityDb / 20.0);
@@ -53,12 +90,16 @@ public static partial class Restoration
         {
             cancellationToken.ThrowIfCancellationRequested();
             int n = channel.Length;
-            var output = new float[n];
-            var norm = new float[n];
+            // Only one FFT window of overlap can remain unfinished. Samples before the
+            // next hop can be normalized and written in place because no future frame
+            // reads or contributes to them.
+            var output = new float[NrFftSize];
+            var norm = new float[NrFftSize];
             var re = new float[NrFftSize];
             var im = new float[NrFftSize];
             var smooth = new float[bins];
             for (int b = 0; b < bins; b++) smooth[b] = 1f;
+            int nextOutput = 0;
 
             for (int pos = 0; pos < n; pos += NrHop)
             {
@@ -110,13 +151,24 @@ public static partial class Restoration
                 {
                     int oi = pos + i;
                     if (oi >= n) break;
-                    output[oi] += re[i] / NrFftSize * window[i];
-                    norm[oi] += window[i] * window[i];
+                    int slot = oi % NrFftSize;
+                    output[slot] += re[i] / NrFftSize * window[i];
+                    norm[slot] += window[i] * window[i];
+                }
+
+                int finalizedThrough = Math.Min(n, pos + NrHop);
+                while (nextOutput < finalizedThrough)
+                {
+                    int slot = nextOutput % NrFftSize;
+                    if (norm[slot] > 1e-6f)
+                        channel[nextOutput] = output[slot] / norm[slot];
+                    // Preserve the original boundary sample when the Hann window has
+                    // effectively zero weight; replacing it with zero creates a click.
+                    output[slot] = 0f;
+                    norm[slot] = 0f;
+                    nextOutput++;
                 }
             }
-
-            for (int i = 0; i < n; i++)
-                channel[i] = norm[i] > 1e-6f ? output[i] / norm[i] : 0f;
         }
     }
 

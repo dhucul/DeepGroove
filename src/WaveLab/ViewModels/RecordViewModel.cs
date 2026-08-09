@@ -6,7 +6,7 @@ namespace WaveLab.ViewModels;
 
 public sealed record CaptureDevice(string Id, string Name);
 
-public sealed class RecordViewModel : ObservableObject
+public sealed class RecordViewModel : ObservableObject, IDisposable
 {
     private readonly RecordingEngine _engine = new();
     private CaptureDevice? _selectedDevice;
@@ -14,6 +14,8 @@ public sealed class RecordViewModel : ObservableObject
     private bool _isFinalizing;
     private double _peakL = -60, _peakR = -60;
     private Task _finalization = Task.CompletedTask;
+    private long _expectedRecordingSessionId;
+    private bool _disposed;
 
     public RecordViewModel()
     {
@@ -26,11 +28,14 @@ public sealed class RecordViewModel : ObservableObject
         _selectedDevice = Devices.FirstOrDefault(d => d.Id == preferred) ?? (Devices.Count > 0 ? Devices[0] : null);
         _engine.CaptureStopped += info =>
         {
+            if (_disposed || !_engine.IsCurrentSession(info.SessionId)) return;
             System.Windows.Application.Current?.Dispatcher.BeginInvoke(async () =>
             {
-                if (!IsRecording) return;
+                if (_disposed || !IsRecording
+                    || info.SessionId != Interlocked.Read(ref _expectedRecordingSessionId)
+                    || !_engine.IsCurrentSession(info.SessionId)) return;
                 Exception? failure = null;
-                try { await StopAndFinishAsync(); }
+                try { await StopAndFinishSessionAsync(info.SessionId); }
                 catch (Exception ex) { failure = ex; }
                 UnexpectedStopCompleted?.Invoke(info, failure);
             });
@@ -66,7 +71,9 @@ public sealed class RecordViewModel : ObservableObject
         if (IsRecording || IsFinalizing || HasPendingCapture) return false;
         try
         {
-            _engine.Start(_selectedDevice?.Id);
+            Interlocked.Exchange(ref _expectedRecordingSessionId, 0);
+            long sessionId = _engine.Start(_selectedDevice?.Id);
+            Interlocked.Exchange(ref _expectedRecordingSessionId, sessionId);
             Result = null;
             IsRecording = true;
             if (_selectedDevice != null)
@@ -75,8 +82,15 @@ public sealed class RecordViewModel : ObservableObject
                 // running while the UI believes Start failed.
                 try
                 {
+                    string? previousDevice = Util.AppSettings.Instance.InputDeviceId;
                     Util.AppSettings.Instance.InputDeviceId = _selectedDevice.Id;
-                    Util.AppSettings.Instance.Save();
+                    if (!Util.AppSettings.Instance.Save())
+                    {
+                        Util.AppSettings.Instance.InputDeviceId = previousDevice;
+                        System.Windows.MessageBox.Show("The input preference could not be saved:\n"
+                            + Util.AppSettings.Instance.LastSaveError, "Record",
+                            System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    }
                 }
                 catch { }
             }
@@ -91,19 +105,33 @@ public sealed class RecordViewModel : ObservableObject
     }
 
     public Task StopAndFinishAsync()
+        => StopAndFinishAsync(sessionId: null);
+
+    private Task StopAndFinishSessionAsync(long sessionId)
+        => StopAndFinishAsync(sessionId);
+
+    private Task StopAndFinishAsync(long? sessionId)
     {
         if (IsFinalizing) return _finalization;
         IsRecording = false;
         IsFinalizing = true;
-        _finalization = FinalizeCoreAsync();
+        long ownedSessionId = sessionId ?? Interlocked.Read(ref _expectedRecordingSessionId);
+        _finalization = FinalizeCoreAsync(ownedSessionId, requireSessionMatch: sessionId.HasValue);
         return _finalization;
     }
 
-    private async Task FinalizeCoreAsync()
+    private async Task FinalizeCoreAsync(long ownedSessionId, bool requireSessionMatch)
     {
-        try { Result = await _engine.StopAndGetDocumentAsync(); }
+        try
+        {
+            Result = requireSessionMatch
+                ? await _engine.StopSessionAndGetDocumentAsync(ownedSessionId)
+                : await _engine.StopAndGetDocumentAsync();
+        }
         finally
         {
+            if (ownedSessionId != 0)
+                Interlocked.CompareExchange(ref _expectedRecordingSessionId, 0, ownedSessionId);
             Raise(nameof(HasPendingCapture));
             IsFinalizing = false;
         }
@@ -112,6 +140,7 @@ public sealed class RecordViewModel : ObservableObject
     public void Cancel()
     {
         if (IsFinalizing) return;
+        Interlocked.Exchange(ref _expectedRecordingSessionId, 0);
         _engine.Stop();
         IsRecording = false;
         Raise(nameof(HasPendingCapture));
@@ -124,5 +153,13 @@ public sealed class RecordViewModel : ObservableObject
         PeakLDb = DecayTo(_peakL, ToDb(_engine.PeakL));
         PeakRDb = DecayTo(_peakR, ToDb(_engine.PeakR));
         Raise(nameof(ElapsedText));
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        Interlocked.Exchange(ref _expectedRecordingSessionId, 0);
+        _engine.Dispose();
     }
 }

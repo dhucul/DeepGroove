@@ -29,11 +29,12 @@ public static partial class Restoration
         double sigmaMultiplier = 15.0 - 9.5 * sensitivityT;
         double relativeFloor = 0.008 - 0.0065 * sensitivityT;
         double minimumConfidence = Math.Clamp(options.MinimumConfidence, 0.0, 1.0);
+        double maximumClickLengthMs = Math.Clamp(options.MaximumClickLengthMs, 0.05, 2.0);
         int maximumClickSamples = Math.Max(1,
-            (int)Math.Round(sampleRate * Math.Clamp(options.MaximumClickLengthMs, 0.05, 2.0) / 1000.0));
+            (int)Math.Round(sampleRate * maximumClickLengthMs / 1000.0));
         int maximumPopSamples = Math.Max(maximumClickSamples,
             (int)Math.Round(sampleRate * Math.Clamp(options.MaximumPopLengthMs,
-                options.MaximumClickLengthMs, 10.0) / 1000.0));
+                maximumClickLengthMs, 10.0) / 1000.0));
         int bridgeSamples = Math.Clamp((int)Math.Round(sampleRate * 0.00018), 1,
             Math.Max(1, maximumPopSamples / 3));
         int blockSize = Math.Clamp((int)Math.Round(sampleRate * 0.025), 256, 4096);

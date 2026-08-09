@@ -20,12 +20,11 @@ public sealed class ReverbEffect : EffectBase
         public float[] Buf = [];
         public int Pos;
         public float FilterStore;
-        public float Feedback, Damp1, Damp2;
-        public float Process(float input)
+        public float Process(float input, float feedback, float damp)
         {
             float output = Buf[Pos];
-            FilterStore = output * Damp2 + FilterStore * Damp1;
-            Buf[Pos] = input + FilterStore * Feedback;
+            FilterStore = output * (1 - damp) + FilterStore * damp;
+            Buf[Pos] = input + FilterStore * feedback;
             if (++Pos >= Buf.Length) Pos = 0;
             return output;
         }
@@ -45,8 +44,11 @@ public sealed class ReverbEffect : EffectBase
         }
     }
 
-    private Comb[][] _combs = [];
-    private Allpass[][] _allpasses = [];
+    private ReverbState _state = new([], [], 0);
+    private ReverbParameters _parameters = new(0.84f, 0.36f, 1f, 0.25f);
+
+    private sealed record ReverbState(Comb[][] Combs, Allpass[][] Allpasses, int Channels);
+    private sealed record ReverbParameters(float Feedback, float Damp, float Width, float Mix);
 
     public override string TypeId => "reverb";
     public override string DisplayName => "Reverb";
@@ -55,62 +57,64 @@ public sealed class ReverbEffect : EffectBase
     protected override void OnConfigure()
     {
         double scale = SampleRate / 44100.0;
-        int chans = Math.Min(2, ChannelCount);
-        _combs = new Comb[chans][];
-        _allpasses = new Allpass[chans][];
+        int chans = ChannelCount;
+        var combs = new Comb[chans][];
+        var allpasses = new Allpass[chans][];
         for (int c = 0; c < chans; c++)
         {
             int spread = c * StereoSpread;
-            _combs[c] = CombTunings.Select(t => new Comb { Buf = new float[Math.Max(4, (int)((t + spread) * scale))] }).ToArray();
-            _allpasses[c] = AllpassTunings.Select(t => new Allpass { Buf = new float[Math.Max(2, (int)((t + spread) * scale))] }).ToArray();
+            combs[c] = CombTunings.Select(t => new Comb { Buf = new float[Math.Max(4, (int)((t + spread) * scale))] }).ToArray();
+            allpasses[c] = AllpassTunings.Select(t => new Allpass { Buf = new float[Math.Max(2, (int)((t + spread) * scale))] }).ToArray();
         }
+        Volatile.Write(ref _state, new ReverbState(combs, allpasses, chans));
     }
 
     protected override void OnParamsChanged()
     {
-        float feedback = (float)(0.7 + GetParam("size") * 0.28);
-        float damp = (float)(GetParam("damp") * 0.9);
-        foreach (var chain in _combs)
-            foreach (var comb in chain)
-            {
-                comb.Feedback = feedback;
-                comb.Damp1 = damp;
-                comb.Damp2 = 1 - damp;
-            }
+        var updated = new ReverbParameters(
+            (float)(0.7 + GetParam("size") * 0.28),
+            (float)(GetParam("damp") * 0.9),
+            (float)GetParam("width"),
+            (float)GetParam("mix"));
+        Volatile.Write(ref _parameters, updated);
     }
 
     public override void ResetState()
     {
-        foreach (var chain in _combs)
+        var state = Volatile.Read(ref _state);
+        foreach (var chain in state.Combs)
             foreach (var comb in chain) { Array.Clear(comb.Buf); comb.FilterStore = 0; comb.Pos = 0; }
-        foreach (var chain in _allpasses)
+        foreach (var chain in state.Allpasses)
             foreach (var ap in chain) { Array.Clear(ap.Buf); ap.Pos = 0; }
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
-        if (_combs.Length == 0) return;
-        float mix = (float)GetParam("mix");
-        float width = (float)GetParam("width");
+        var state = Volatile.Read(ref _state);
+        int channels = state.Channels;
+        if (channels == 0) return;
+        var parameters = Volatile.Read(ref _parameters);
+        float mix = parameters.Mix;
+        float width = parameters.Width;
         float dry = 1 - mix;
         const float fixedGain = 0.015f;
 
-        int frames = count / ChannelCount;
+        int frames = count / channels;
         for (int f = 0; f < frames; f++)
         {
-            int idx = offset + f * ChannelCount;
+            int idx = offset + f * channels;
             // mono input drive
             float input = 0;
-            for (int c = 0; c < ChannelCount; c++) input += buffer[idx + c];
-            input = input / ChannelCount * fixedGain;
+            for (int c = 0; c < channels; c++) input += buffer[idx + c];
+            input = input / channels * fixedGain;
 
             float outL = 0, outR = 0;
-            foreach (var comb in _combs[0]) outL += comb.Process(input);
-            foreach (var ap in _allpasses[0]) outL = ap.Process(outL);
-            if (_combs.Length > 1)
+            foreach (var comb in state.Combs[0]) outL += comb.Process(input, parameters.Feedback, parameters.Damp);
+            foreach (var ap in state.Allpasses[0]) outL = ap.Process(outL);
+            if (channels > 1)
             {
-                foreach (var comb in _combs[1]) outR += comb.Process(input);
-                foreach (var ap in _allpasses[1]) outR = ap.Process(outR);
+                foreach (var comb in state.Combs[1]) outR += comb.Process(input, parameters.Feedback, parameters.Damp);
+                foreach (var ap in state.Allpasses[1]) outR = ap.Process(outR);
             }
             else outR = outL;
 
@@ -119,13 +123,20 @@ public sealed class ReverbEffect : EffectBase
             float wetL = outL * wet1 + outR * wet2;
             float wetR = outR * wet1 + outL * wet2;
 
-            if (ChannelCount == 1)
+            if (channels == 1)
                 buffer[idx] = buffer[idx] * dry + wetL * mix;
             else
             {
                 buffer[idx] = buffer[idx] * dry + wetL * mix;
                 buffer[idx + 1] = buffer[idx + 1] * dry + wetR * mix;
-                for (int c = 2; c < ChannelCount; c++) buffer[idx + c] *= dry;
+                for (int c = 2; c < channels; c++)
+                {
+                    float wet = 0;
+                    foreach (var comb in state.Combs[c])
+                        wet += comb.Process(input, parameters.Feedback, parameters.Damp);
+                    foreach (var ap in state.Allpasses[c]) wet = ap.Process(wet);
+                    buffer[idx + c] = buffer[idx + c] * dry + wet * mix;
+                }
             }
         }
     }

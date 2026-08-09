@@ -23,15 +23,23 @@ public partial class SettingsDialog : Window
         chkAutosave.IsChecked = s.AutosaveEnabled;
 
         cmbOutput.Items.Add(new DeviceItem(null, "System default"));
-        foreach (var (id, name) in PlaybackEngine.GetOutputDevices())
-            cmbOutput.Items.Add(new DeviceItem(id, name));
+        try
+        {
+            foreach (var (id, name) in PlaybackEngine.GetOutputDevices())
+                cmbOutput.Items.Add(new DeviceItem(id, name));
+        }
+        catch (Exception ex) { cmbOutput.ToolTip = "Output devices could not be enumerated: " + ex.Message; }
         cmbOutput.SelectedIndex = 0;
         foreach (DeviceItem item in cmbOutput.Items)
             if (item.Id == s.OutputDeviceId) { cmbOutput.SelectedItem = item; break; }
 
         cmbInput.Items.Add(new DeviceItem(null, "System default"));
-        foreach (var (id, name) in RecordingEngine.GetCaptureDevices())
-            cmbInput.Items.Add(new DeviceItem(id, name));
+        try
+        {
+            foreach (var (id, name) in RecordingEngine.GetCaptureDevices())
+                cmbInput.Items.Add(new DeviceItem(id, name));
+        }
+        catch (Exception ex) { cmbInput.ToolTip = "Input devices could not be enumerated: " + ex.Message; }
         cmbInput.SelectedIndex = 0;
         foreach (DeviceItem item in cmbInput.Items)
             if (item.Id == s.InputDeviceId) { cmbInput.SelectedItem = item; break; }
@@ -102,6 +110,8 @@ public partial class SettingsDialog : Window
     private void OnSave(object sender, RoutedEventArgs e)
     {
         var s = AppSettings.Instance;
+        var previous = (s.ReopenLastSession, s.UndoLimitMb, s.OutputDeviceId, s.InputDeviceId,
+            s.BufferMs, s.AutosaveEnabled, s.AutosaveMinutes, s.ExportFormat, s.ExportBitrateKbps);
         s.ReopenLastSession = chkReopen.IsChecked == true;
         s.UndoLimitMb = (int)sldUndo.Value;
         s.OutputDeviceId = (cmbOutput.SelectedItem as DeviceItem)?.Id;
@@ -111,7 +121,14 @@ public partial class SettingsDialog : Window
         s.AutosaveMinutes = Intervals[Math.Max(0, cmbAutosaveInterval.SelectedIndex)];
         s.ExportFormat = (cmbExportFormat.SelectedItem as FormatItem)?.Key ?? "wav32";
         s.ExportBitrateKbps = Bitrates[Math.Max(0, cmbExportBitrate.SelectedIndex)];
-        s.Save();
+        if (!s.Save())
+        {
+            (s.ReopenLastSession, s.UndoLimitMb, s.OutputDeviceId, s.InputDeviceId,
+                s.BufferMs, s.AutosaveEnabled, s.AutosaveMinutes, s.ExportFormat, s.ExportBitrateKbps) = previous;
+            MessageBox.Show("Settings could not be saved:\n" + s.LastSaveError, "Settings",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
         AudioDocument.UndoBudgetBytes = s.UndoLimitBytes;
         Saved = true;
         DialogResult = true;

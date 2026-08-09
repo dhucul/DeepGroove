@@ -23,6 +23,8 @@ public sealed class MainViewModel : ObservableObject
     private bool? _previewRackRestoreState;
     private int _playbackEditVersion = -1;
     private long _playbackSession;
+    private long _stoppedPlaybackSession;
+    private AudioDocument? _stoppedPlaybackSource;
     private DocumentViewModel? _seekDocument;
     private bool _resumeAfterSeek;
     private bool _isPlaying;
@@ -32,6 +34,7 @@ public sealed class MainViewModel : ObservableObject
     private bool _isTransportRecording;
     private bool _isFinalizingRecording;
     private Task _recordFinalization = Task.CompletedTask;
+    private long _expectedTransportRecordingSessionId;
     private double _transportPeakL = -60;
     private double _transportPeakR = -60;
     private string _recordInputName = "Default input";
@@ -40,6 +43,15 @@ public sealed class MainViewModel : ObservableObject
     private DateTime? _lastAutosave;
     private readonly Dictionary<Guid, int> _autosavedVersions = [];
     private readonly HashSet<Guid> _savesInFlight = [];
+    private readonly HashSet<Task> _saveOperations = [];
+    private readonly HashSet<Task> _openOperations = [];
+    private readonly HashSet<Task> _tabCloseOperations = [];
+    private readonly HashSet<Guid> _tabsClosing = [];
+    private readonly Dictionary<Guid, string> _saveFailures = [];
+    private Task _autosaveTask = Task.CompletedTask;
+    private bool _startupLoaded;
+    private bool _shuttingDown;
+    private bool _editOperationRunning;
     private readonly Process _process = Process.GetCurrentProcess();
     private TimeSpan _cpuPrev;
     private DateTime _cpuPrevAt = DateTime.UtcNow;
@@ -56,6 +68,7 @@ public sealed class MainViewModel : ObservableObject
         Master = new MasterSectionViewModel(Engine.Master);
         Master.ProcessingTopologyChanged += RestartMonoPlaybackForTopologyChange;
         Engine.PlaybackStopped += OnPlaybackStopped;
+        Engine.PlaybackFailed += OnPlaybackFailed;
         _transportRecorder.CaptureStopped += OnTransportCaptureStopped;
 
         foreach (var f in AppSettings.Instance.RecentFiles) RecentFiles.Add(f);
@@ -75,13 +88,13 @@ public sealed class MainViewModel : ObservableObject
         CloseTabCommand = new RelayCommand<DocumentViewModel>(CloseTab);
         ExitCommand = new RelayCommand(() => Application.Current.MainWindow?.Close());
 
-        UndoCommand = new RelayCommand(() => WithDoc(d => d.Doc.Undo()), () => _active?.Doc.CanUndo == true);
-        RedoCommand = new RelayCommand(() => WithDoc(d => d.Doc.Redo()), () => _active?.Doc.CanRedo == true);
-        CutCommand = new RelayCommand(Cut, () => _active?.HasSelection == true);
-        CopyCommand = new RelayCommand(Copy, () => _active?.HasSelection == true);
-        PasteCommand = new RelayCommand(Paste, () => _active != null && _clipboard != null);
-        DeleteCommand = new RelayCommand(DeleteSelection, () => _active?.HasSelection == true);
-        TrimCommand = new RelayCommand(Trim, () => _active?.HasSelection == true);
+        UndoCommand = new RelayCommand(() => WithDoc(d => { PrepareForDocumentEdit(d); d.Doc.Undo(); }), () => _active?.Doc.CanUndo == true);
+        RedoCommand = new RelayCommand(() => WithDoc(d => { PrepareForDocumentEdit(d); d.Doc.Redo(); }), () => _active?.Doc.CanRedo == true);
+        CutCommand = new RelayCommand(Cut, () => !_editOperationRunning && _active?.HasSelection == true);
+        CopyCommand = new RelayCommand(Copy, () => !_editOperationRunning && _active?.HasSelection == true);
+        PasteCommand = new RelayCommand(Paste, () => !_editOperationRunning && _active != null && _clipboard != null);
+        DeleteCommand = new RelayCommand(DeleteSelection, () => !_editOperationRunning && _active?.HasSelection == true);
+        TrimCommand = new RelayCommand(Trim, () => !_editOperationRunning && _active?.HasSelection == true);
         SelectAllCommand = new RelayCommand(() => WithDoc(d => d.SelectAll()));
 
         PlayCommand = new RelayCommand(TogglePlay, () => !IsTransportRecording && !IsFinalizingRecording);
@@ -102,7 +115,11 @@ public sealed class MainViewModel : ObservableObject
         FadeOutCommand = new RelayCommand(() => ApplyToRange(Processing.FadeOut));
         ReverseCommand = new RelayCommand(() => ApplyToRange(Processing.Reverse));
         RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset));
-        InsertSilenceCommand = new RelayCommand(() => WithDoc(d => Processing.InsertSilence(d.Doc, d.Cursor, 1.0)));
+        InsertSilenceCommand = new RelayCommand(() => WithDoc(d =>
+        {
+            PrepareForDocumentEdit(d);
+            Processing.InsertSilence(d.Doc, d.Cursor, 1.0);
+        }));
 
         AddMarkerCommand = new RelayCommand(() => WithDoc(d => d.AddMarker(
             d.HasSelection ? d.SelStart
@@ -325,7 +342,7 @@ public sealed class MainViewModel : ObservableObject
                 // A removed endpoint must not leave Arm pointing at an ID that
                 // will fail. Fall back to the current Windows default input.
                 settings.InputDeviceId = null;
-                settings.Save();
+                if (!settings.Save()) ReportSettingsSaveFailure();
             }
             _recordInputName = selected.Name ?? "Default input";
         }
@@ -336,6 +353,15 @@ public sealed class MainViewModel : ObservableObject
 
     public async void OpenFiles(IEnumerable<string> paths)
     {
+        var operation = OpenFilesAsync(paths);
+        _openOperations.Add(operation);
+        try { await operation; }
+        finally { _openOperations.Remove(operation); }
+    }
+
+    private async Task OpenFilesAsync(IEnumerable<string> paths)
+    {
+        if (_shuttingDown) return;
         foreach (var path in paths.ToList())
         {
             Mouse.OverrideCursor = Cursors.Wait;
@@ -350,8 +376,8 @@ public sealed class MainViewModel : ObservableObject
                     return (loaded, store);
                 });
                 AddDocument(doc, peaks);
-                AppSettings.Instance.AddRecentFile(path);
                 AppSettings.Instance.LastOpenFolder = Path.GetDirectoryName(path);
+                if (!AppSettings.Instance.AddRecentFile(path)) ReportSettingsSaveFailure();
                 SyncRecentFiles();
             }
             catch (Exception ex)
@@ -371,6 +397,10 @@ public sealed class MainViewModel : ObservableObject
         RecentFiles.Clear();
         foreach (var f in AppSettings.Instance.RecentFiles) RecentFiles.Add(f);
     }
+
+    private static void ReportSettingsSaveFailure() => MessageBox.Show(
+        "WaveLab could not save its settings:\n" + AppSettings.Instance.LastSaveError,
+        "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
 
     private void Open()
     {
@@ -399,8 +429,7 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>Point-in-time copy sharing the current channel arrays (splices never mutate old arrays).</summary>
     private static AudioDocument SnapshotDoc(AudioDocument doc)
     {
-        var refs = new float[doc.ChannelCount][];
-        for (int c = 0; c < doc.ChannelCount; c++) refs[c] = doc.Channels[c];
+        var refs = doc.Channels.ToArray();
         return new AudioDocument(refs, doc.SampleRate, doc.SourceBitDepth)
         {
             Title = doc.Title,
@@ -410,10 +439,14 @@ public sealed class MainViewModel : ObservableObject
 
     private async void Save()
     {
-        if (_active == null) return;
-        if (_active.Doc.FilePath == null) { SaveAs(); return; }
-        var d = _active;
+        if (_active != null) await TrackSaveOperationAsync(SaveCoreAsync(_active));
+    }
+
+    private async Task SaveCoreAsync(DocumentViewModel d)
+    {
+        if (_shuttingDown) return;
         var doc = d.Doc;
+        if (doc.FilePath == null) { await SaveAsCoreAsync(d); return; }
         if (!_savesInFlight.Add(doc.SessionId)) return; // a save for this document is already writing
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
@@ -422,6 +455,11 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             await Task.Run(() => WavCodec.Save(snapshot, path, depth, dither: depth == 16));
+            // Do not declare the document fully persisted, or discard its
+            // recovery copy, while the latest marker sidecar is still pending
+            // (or has failed).
+            await d.FlushMarkersAsync();
+            _saveFailures.Remove(doc.SessionId);
             if (doc.EditVersion == version) // only mark clean if nothing changed while writing
             {
                 doc.MarkSaved();
@@ -431,6 +469,7 @@ public sealed class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            _saveFailures[doc.SessionId] = ex.Message;
             MessageBox.Show(ex.Message, "Save failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
@@ -441,8 +480,12 @@ public sealed class MainViewModel : ObservableObject
 
     private async void SaveAs()
     {
-        if (_active == null) return;
-        var d = _active;
+        if (_active != null) await TrackSaveOperationAsync(SaveAsCoreAsync(_active));
+    }
+
+    private async Task SaveAsCoreAsync(DocumentViewModel d)
+    {
+        if (_shuttingDown) return;
         var doc = d.Doc;
         var dlg = new SaveFileDialog
         {
@@ -459,24 +502,28 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             await Task.Run(() => WavCodec.Save(snapshot, dlg.FileName, depth, dither: depth == 16));
+            _saveFailures.Remove(doc.SessionId);
             doc.FilePath = dlg.FileName;
             doc.Title = Path.GetFileName(dlg.FileName);
             doc.SourceBitDepth = depth;
             // Generated documents could accumulate markers/regions before they had
             // a path. Persist that in-memory metadata alongside the first Save As.
             d.NotifyMarkersChanged();
+            await d.FlushMarkersAsync();
             if (doc.EditVersion == version)
             {
                 doc.MarkSaved();
                 AutosaveService.Remove(doc.SessionId);
             }
             d.NotifySaved();
-            AppSettings.Instance.AddRecentFile(dlg.FileName);
+            AppSettings.Instance.LastOpenFolder = Path.GetDirectoryName(dlg.FileName);
+            if (!AppSettings.Instance.AddRecentFile(dlg.FileName)) ReportSettingsSaveFailure();
             SyncRecentFiles();
             Raise(nameof(WindowTitle));
         }
         catch (Exception ex)
         {
+            _saveFailures[doc.SessionId] = ex.Message;
             MessageBox.Show(ex.Message, "Save failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
@@ -485,78 +532,183 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void CloseTab(DocumentViewModel? vm)
+    private async Task TrackSaveOperationAsync(Task operation)
+    {
+        _saveOperations.Add(operation);
+        try { await operation; }
+        finally { _saveOperations.Remove(operation); }
+    }
+
+    private async void CloseTab(DocumentViewModel? vm)
+    {
+        var operation = CloseTabAsync(vm);
+        _tabCloseOperations.Add(operation);
+        try { await operation; }
+        finally { _tabCloseOperations.Remove(operation); }
+    }
+
+    private async Task CloseTabAsync(DocumentViewModel? vm)
     {
         vm ??= _active;
-        if (vm == null) return;
+        if (vm == null || !Documents.Contains(vm)) return;
+        if (_tabsClosing.Contains(vm.Doc.SessionId)) return;
+        if (_savesInFlight.Contains(vm.Doc.SessionId))
+        {
+            MessageBox.Show("Wait for this file's save to finish before closing its tab.", "Save in progress",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         if (vm.IsDirty &&
             MessageBox.Show($"{vm.Doc.Title} has unsaved changes. Close anyway?", "Unsaved changes",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
+        if (!_tabsClosing.Add(vm.Doc.SessionId)) return;
+        try
+        {
         if (ReferenceEquals(vm, _playbackDocument)) ReleasePlayback();
         if (ReferenceEquals(vm, _seekDocument))
         {
             _seekDocument = null;
             _resumeAfterSeek = false;
         }
+        try { await vm.FlushMarkersAsync(); }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Marker metadata could not be saved, so the tab was left open:\n" + ex.Message,
+                "Close file", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
         AutosaveService.Remove(vm.Doc.SessionId);
         _autosavedVersions.Remove(vm.Doc.SessionId);
+        _saveFailures.Remove(vm.Doc.SessionId);
         int idx = Documents.IndexOf(vm);
         Documents.Remove(vm);
         if (_active == vm)
             ActiveDocument = Documents.Count > 0 ? Documents[Math.Clamp(idx, 0, Documents.Count - 1)] : null;
+        }
+        finally { _tabsClosing.Remove(vm.Doc.SessionId); }
     }
 
     // ── edit ─────────────────────────────────────────────────────
 
-    private void Copy()
+    private async void Copy()
     {
         if (_active is not { HasSelection: true } d) return;
-        _clipboard = d.Doc.CopyRange(d.SelStart, d.SelEnd - d.SelStart);
-        _clipboardRate = d.Doc.SampleRate;
-        PasteCommand.RaiseCanExecuteChanged();
+        await CaptureSelectionAsync(d);
     }
 
-    private void Cut()
+    private async void Cut()
     {
         if (_active is not { HasSelection: true } d) return;
-        Copy();
-        d.Doc.ReplaceRange(d.SelStart, d.SelEnd - d.SelStart, EmptyData(d.Doc.ChannelCount), "Cut");
-        d.SetCursor(d.SelStart, clearSelection: true);
+        if (!await CaptureSelectionAsync(d) || !Documents.Contains(d) || !d.HasSelection) return;
+        int start = d.SelStart;
+        int count = d.SelEnd - start;
+        PrepareForDocumentEdit(d);
+        d.Doc.ReplaceRange(start, count, EmptyData(d.Doc.ChannelCount), "Cut");
+        d.SetCursor(start, clearSelection: true);
+    }
+
+    private async Task<bool> CaptureSelectionAsync(DocumentViewModel d)
+    {
+        if (_editOperationRunning || !d.HasSelection) return false;
+        int start = d.SelStart, count = d.SelEnd - d.SelStart;
+        var channels = d.Doc.Channels.ToArray();
+        int sampleRate = d.Doc.SampleRate;
+        SetEditOperationRunning(true);
+        try
+        {
+            _clipboard = await Task.Run(() =>
+            {
+                var copy = new float[channels.Length][];
+                for (int c = 0; c < channels.Length; c++)
+                {
+                    copy[c] = new float[count];
+                    Array.Copy(channels[c], start, copy[c], 0, count);
+                }
+                return copy;
+            });
+            _clipboardRate = sampleRate;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Copy failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        finally { SetEditOperationRunning(false); }
     }
 
     private void DeleteSelection()
     {
         if (_active is not { HasSelection: true } d) return;
         int start = d.SelStart;
+        PrepareForDocumentEdit(d);
         d.Doc.ReplaceRange(start, d.SelEnd - start, EmptyData(d.Doc.ChannelCount), "Delete");
         d.SetCursor(start, clearSelection: true);
     }
 
-    private void Trim()
+    private async void Trim()
     {
-        if (_active is not { HasSelection: true } d) return;
+        if (_editOperationRunning || _active is not { HasSelection: true } d) return;
         int selStart = d.SelStart, selLen = d.SelEnd - d.SelStart;
-        var kept = d.Doc.CopyRange(selStart, selLen);
+        var channels = d.Doc.Channels.ToArray();
+        float[][] kept;
+        SetEditOperationRunning(true);
+        try
+        {
+            kept = await Task.Run(() => channels.Select(ch => ch.AsSpan(selStart, selLen).ToArray()).ToArray());
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Trim failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally { SetEditOperationRunning(false); }
+        if (!Documents.Contains(d)) return;
+        PrepareForDocumentEdit(d);
         d.Doc.ReplaceRange(0, d.Doc.Length, kept, "Trim");
         d.SetCursor(0, clearSelection: true);
         d.ZoomFull();
     }
 
-    private void Paste()
+    private async void Paste()
     {
-        if (_active == null || _clipboard == null) return;
+        if (_editOperationRunning || _active == null || _clipboard == null) return;
         var d = _active;
-        if (_clipboard.Length != d.Doc.ChannelCount)
+        var clipboard = _clipboard;
+        if (clipboard.Length != d.Doc.ChannelCount)
         {
             MessageBox.Show("Clipboard channel count doesn't match this file.", "Paste",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+        float[][] data = clipboard;
+        if (_clipboardRate != d.Doc.SampleRate)
+        {
+            SetEditOperationRunning(true);
+            try { data = await Task.Run(() => Resampler.Resample(clipboard, _clipboardRate, d.Doc.SampleRate)); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Paste failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            finally { SetEditOperationRunning(false); }
+        }
+        if (!Documents.Contains(d)) return;
         int at = d.HasSelection ? d.SelStart : d.Cursor;
         int remove = d.HasSelection ? d.SelEnd - d.SelStart : 0;
-        d.Doc.ReplaceRange(at, remove, _clipboard, "Paste");
-        d.SetCursor(at + _clipboard[0].Length, clearSelection: true);
+        PrepareForDocumentEdit(d);
+        d.Doc.ReplaceRange(at, remove, data, "Paste");
+        d.SetCursor(at + data[0].Length, clearSelection: true);
+    }
+
+    private void SetEditOperationRunning(bool value)
+    {
+        _editOperationRunning = value;
+        var window = Application.Current?.MainWindow;
+        if (window != null) window.IsEnabled = !value;
+        Mouse.OverrideCursor = value ? Cursors.Wait : null;
+        RefreshEditCommandStates();
     }
 
     private static float[][] EmptyData(int channels)
@@ -571,7 +723,15 @@ public sealed class MainViewModel : ObservableObject
         if (_active == null) return;
         var (start, count) = _active.EditRange();
         if (count <= 0) return;
+        PrepareForDocumentEdit(_active);
         op(_active.Doc, start, count);
+    }
+
+    public void PrepareForDocumentEdit(DocumentViewModel document)
+    {
+        if (ReferenceEquals(document, _playbackDocument)
+            || ReferenceEquals(Engine.SourceDocument, document.Doc))
+            ReleasePlayback();
     }
 
     private void WithDoc(Action<DocumentViewModel> action)
@@ -604,7 +764,9 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             UpdateRecordInputName();
-            _transportRecorder.Start(AppSettings.Instance.InputDeviceId);
+            Interlocked.Exchange(ref _expectedTransportRecordingSessionId, 0);
+            long sessionId = _transportRecorder.Start(AppSettings.Instance.InputDeviceId);
+            Interlocked.Exchange(ref _expectedTransportRecordingSessionId, sessionId);
             TransportPeakLDb = TransportPeakRDb = -60;
             IsTransportRecording = true;
         }
@@ -622,20 +784,26 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public Task FinishTransportRecordingAsync()
+        => FinishTransportRecordingAsync(sessionId: null);
+
+    private Task FinishTransportRecordingAsync(long? sessionId)
     {
         if (IsFinalizingRecording) return _recordFinalization;
         if (!IsTransportRecording && !HasPendingTransportRecording) return Task.CompletedTask;
         IsTransportRecording = false;
         IsFinalizingRecording = true;
-        _recordFinalization = FinalizeCoreAsync();
+        long ownedSessionId = sessionId ?? Interlocked.Read(ref _expectedTransportRecordingSessionId);
+        _recordFinalization = FinalizeCoreAsync(ownedSessionId, requireSessionMatch: sessionId.HasValue);
         return _recordFinalization;
     }
 
-    private async Task FinalizeCoreAsync()
+    private async Task FinalizeCoreAsync(long ownedSessionId, bool requireSessionMatch)
     {
         try
         {
-            var result = await _transportRecorder.StopAndGetDocumentAsync();
+            var result = requireSessionMatch
+                ? await _transportRecorder.StopSessionAndGetDocumentAsync(ownedSessionId)
+                : await _transportRecorder.StopAndGetDocumentAsync();
             if (result != null) AddGeneratedDocument(result);
             if (_transportRecorder.LastStopError != null)
                 MessageBox.Show($"The input device stopped unexpectedly. Audio captured before the failure was kept.\n\n{_transportRecorder.LastStopError.Message}",
@@ -651,6 +819,8 @@ public sealed class MainViewModel : ObservableObject
         }
         finally
         {
+            if (ownedSessionId != 0)
+                Interlocked.CompareExchange(ref _expectedTransportRecordingSessionId, 0, ownedSessionId);
             TransportPeakLDb = TransportPeakRDb = -60;
             IsFinalizingRecording = false;
             Raise(nameof(HasPendingTransportRecording));
@@ -663,11 +833,15 @@ public sealed class MainViewModel : ObservableObject
 
     private void OnTransportCaptureStopped(RecordingStoppedInfo info)
     {
+        if (!_transportRecorder.IsCurrentSession(info.SessionId)) return;
         // A user-requested stop clears IsTransportRecording before asking the
         // engine to stop. If it is still true, the device or safety cap ended it.
         Application.Current?.Dispatcher.BeginInvoke(async () =>
         {
-            if (IsTransportRecording) await FinishTransportRecordingAsync();
+            if (IsTransportRecording
+                && info.SessionId == Interlocked.Read(ref _expectedTransportRecordingSessionId)
+                && _transportRecorder.IsCurrentSession(info.SessionId))
+                await FinishTransportRecordingAsync(info.SessionId);
         });
     }
 
@@ -685,8 +859,12 @@ public sealed class MainViewModel : ObservableObject
             && _playbackEditVersion == d.Doc.EditVersion
             && d.PlayheadSample == Engine.PositionSamples)
         {
-            Engine.Resume();
-            IsPlaying = true;
+            try
+            {
+                Engine.Resume();
+                IsPlaying = true;
+            }
+            catch (Exception ex) { HandlePlaybackFailure(ex); }
             return;
         }
 
@@ -696,30 +874,26 @@ public sealed class MainViewModel : ObservableObject
         int start = d.PlayheadSample;
         if (d.HasSelection && (start < d.SelStart || start >= d.SelEnd)) start = d.SelStart;
         else if (!d.HasSelection && start >= d.Doc.Length - 1) start = 0;
-        int? end = d.HasSelection ? d.SelEnd : null;
-        Engine.Loop = IsLooping;
-        Master.ResetMeters();
-        long playbackSession = Engine.Play(d.Doc, start, end);
-        _playbackDocument = d;
-        _playbackEditVersion = d.Doc.EditVersion;
-        _playbackSession = playbackSession;
-        IsPlaying = true;
+        StartPlaybackAt(d, start);
     }
 
     private void PausePlayback()
     {
         if (!Engine.IsPlaying) { IsPlaying = false; return; }
         var d = _playbackDocument;
-        Engine.Pause();
-        if (d != null && Documents.Contains(d)) SetTransportPosition(d, Engine.PositionSamples);
-        IsPlaying = false;
+        try
+        {
+            Engine.Pause();
+            if (d != null && Documents.Contains(d)) SetTransportPosition(d, Engine.PositionSamples);
+            IsPlaying = false;
+        }
+        catch (Exception ex) { HandlePlaybackFailure(ex); }
     }
 
     private void GoToStart()
     {
         if (_active == null) return;
         var target = _active;
-        if (Engine.IsPlaying) Engine.Pause();
         if (Engine.IsPlaying || Engine.IsPaused)
             ReleasePlayback(updatePosition: !ReferenceEquals(_playbackDocument, target));
         _active.SetCursor(0, clearSelection: true);
@@ -757,19 +931,28 @@ public sealed class MainViewModel : ObservableObject
             StartPlaybackAt(document, sample);
     }
 
-    private void StartPlaybackAt(DocumentViewModel document, int sample)
+    private bool StartPlaybackAt(DocumentViewModel document, int sample)
     {
-        int start = Math.Clamp(sample, 0, Math.Max(0, document.Doc.Length - 1));
-        int? end = document.HasSelection && start >= document.SelStart && start < document.SelEnd
-            ? document.SelEnd
-            : null;
-        Engine.Loop = IsLooping;
-        Master.ResetMeters();
-        long playbackSession = Engine.Play(document.Doc, start, end);
-        _playbackDocument = document;
-        _playbackEditVersion = document.Doc.EditVersion;
-        _playbackSession = playbackSession;
-        IsPlaying = true;
+        try
+        {
+            int start = Math.Clamp(sample, 0, Math.Max(0, document.Doc.Length - 1));
+            int? end = document.HasSelection && start >= document.SelStart && start < document.SelEnd
+                ? document.SelEnd
+                : null;
+            Engine.Loop = IsLooping;
+            Master.ResetMeters();
+            long playbackSession = Engine.Play(document.Doc, start, end);
+            _playbackDocument = document;
+            _playbackEditVersion = document.Doc.EditVersion;
+            _playbackSession = playbackSession;
+            IsPlaying = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            HandlePlaybackFailure(ex);
+            return false;
+        }
     }
 
     private void RestartMonoPlaybackForTopologyChange()
@@ -789,7 +972,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (document != null && Documents.Contains(document))
             {
-                StartPlaybackAt(document, position);
+                if (!StartPlaybackAt(document, position)) return;
             }
             else if (preview != null)
             {
@@ -824,7 +1007,8 @@ public sealed class MainViewModel : ObservableObject
     {
         var d = _playbackDocument;
         int position = Engine.PositionSamples;
-        Engine.Stop();
+        try { Engine.Stop(); }
+        catch { /* continue clearing ownership so later transport actions can recover */ }
         if (updatePosition && d != null && Documents.Contains(d)) SetTransportPosition(d, position);
         _playbackDocument = null;
         _previewDocument = null;
@@ -832,6 +1016,13 @@ public sealed class MainViewModel : ObservableObject
         _playbackSession = 0;
         IsPlaying = false;
         RestorePreviewRackOverride();
+    }
+
+    private void HandlePlaybackFailure(Exception exception)
+    {
+        ReleasePlayback(updatePosition: false);
+        MessageBox.Show($"Playback failed:\n{exception.Message}", "Playback",
+            MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
     /// <summary>Play a transient document without adding it to the tab collection.</summary>
@@ -903,8 +1094,23 @@ public sealed class MainViewModel : ObservableObject
             _previewDocument = null;
             _playbackEditVersion = -1;
             _playbackSession = 0;
+            _stoppedPlaybackSession = playbackSession;
+            _stoppedPlaybackSource = sourceDocument;
             IsPlaying = false;
             RestorePreviewRackOverride();
+        });
+    }
+
+    private void OnPlaybackFailed(long playbackSession, AudioDocument sourceDocument, Exception error)
+    {
+        Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            if (_stoppedPlaybackSession != playbackSession
+                || !ReferenceEquals(_stoppedPlaybackSource, sourceDocument)) return;
+            _stoppedPlaybackSession = 0;
+            _stoppedPlaybackSource = null;
+            MessageBox.Show($"Playback stopped because the audio device failed:\n{error.Message}",
+                "Playback", MessageBoxButton.OK, MessageBoxImage.Warning);
         });
     }
 
@@ -934,8 +1140,7 @@ public sealed class MainViewModel : ObservableObject
         var d = _active;
         var doc = d.Doc;
         // capture stable channel refs on the UI thread — splices never mutate old arrays
-        var input = new float[doc.ChannelCount][];
-        for (int c = 0; c < doc.ChannelCount; c++) input[c] = doc.Channels[c];
+        var input = doc.Channels.ToArray();
         int sr = doc.SampleRate;
 
         await RunBlocking(async () =>
@@ -955,12 +1160,16 @@ public sealed class MainViewModel : ObservableObject
         var d = _active;
         var (start, count) = d.EditRange();
         if (count <= 0) return;
-        var input = d.Doc.CopyRange(start, count);
+        var channels = d.Doc.Channels.ToArray();
         int sr = d.Doc.SampleRate;
 
         await RunBlocking(async () =>
         {
-            var output = await Task.Run(() => Engine.Master.ProcessOffline(input, sr));
+            var output = await Task.Run(() =>
+            {
+                var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
+                return Engine.Master.ProcessOffline(input, sr);
+            });
             if (output.Length != d.Doc.ChannelCount)
             {
                 // A mono-to-stereo rack changes channel topology, which cannot be
@@ -971,7 +1180,10 @@ public sealed class MainViewModel : ObservableObject
                 });
             }
             else if (start + count <= d.Doc.Length) // re-validate: the doc may only change via this window, but stay safe
+            {
+                PrepareForDocumentEdit(d);
                 d.Doc.ReplaceRange(start, count, output, "Apply Master Chain");
+            }
         });
     }
 
@@ -999,6 +1211,7 @@ public sealed class MainViewModel : ObservableObject
     private void SmoothEditPoints()
     {
         if (_active == null || _active.Doc.Length == 0) return;
+        PrepareForDocumentEdit(_active);
         if (_active.HasSelection)
         {
             Processing.SmoothEditPoint(_active.Doc, _active.SelEnd);
@@ -1011,38 +1224,48 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>Replace the active selection with recorded audio (punch), matching layout and rate, smoothing the joins.</summary>
-    public void PunchInsert(AudioDocument recorded)
+    public async Task PunchInsertAsync(AudioDocument recorded)
     {
         if (_active is not { HasSelection: true } d) { AddGeneratedDocument(recorded); return; }
 
         var target = d.Doc;
-        float[][] data = recorded.Channels.ToArray();
-
-        if (recorded.SampleRate != target.SampleRate)
-            data = Resampler.Resample(data, recorded.SampleRate, target.SampleRate);
-
-        if (data.Length != target.ChannelCount)
+        float[][] data;
+        SetEditOperationRunning(true);
+        try
         {
-            var converted = new float[target.ChannelCount][];
-            for (int c = 0; c < target.ChannelCount; c++)
+            data = await Task.Run(() =>
             {
-                if (data.Length == 1) converted[c] = (float[])data[0].Clone();
-                else
+                float[][] result = recorded.Channels.ToArray();
+                if (recorded.SampleRate != target.SampleRate)
+                    result = Resampler.Resample(result, recorded.SampleRate, target.SampleRate);
+                if (result.Length == target.ChannelCount) return result;
+
+                var converted = new float[target.ChannelCount][];
+                float[]? mixed = null;
+                if (result.Length > 1)
                 {
-                    // mix down all recorded channels
-                    var mono = new float[data[0].Length];
-                    for (int i = 0; i < mono.Length; i++)
+                    mixed = new float[result[0].Length];
+                    for (int i = 0; i < mixed.Length; i++)
                     {
                         float v = 0;
-                        foreach (var ch in data) v += ch[i];
-                        mono[i] = v / data.Length;
+                        foreach (var ch in result) v += ch[i];
+                        mixed[i] = v / result.Length;
                     }
-                    converted[c] = mono;
                 }
-            }
-            data = converted;
+                for (int c = 0; c < converted.Length; c++)
+                    converted[c] = (float[])(result.Length == 1 ? result[0] : mixed!).Clone();
+                return converted;
+            });
         }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Punch Record", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally { SetEditOperationRunning(false); }
 
+        if (!Documents.Contains(d) || !d.HasSelection) return;
+        PrepareForDocumentEdit(d);
         int start = d.SelStart;
         target.ReplaceRange(start, d.SelEnd - start, data, "Punch Record");
         int end = start + data[0].Length;
@@ -1055,6 +1278,7 @@ public sealed class MainViewModel : ObservableObject
 
     private void AutosaveTick()
     {
+        if (!_startupLoaded || _shuttingDown || !_autosaveTask.IsCompleted) return;
         var s = AppSettings.Instance;
         if (!s.AutosaveEnabled) { Raise(nameof(StatusAutosave)); return; }
         if (_lastAutosave != null && (DateTime.Now - _lastAutosave.Value).TotalMinutes < s.AutosaveMinutes)
@@ -1072,8 +1296,7 @@ public sealed class MainViewModel : ObservableObject
         var snapshots = dirty.Select(d => (snap: SnapshotDoc(d.Doc), d.Doc.SessionId)).ToList();
 
         var versions = dirty.Select(d => (Id: d.Doc.SessionId, Version: d.Doc.EditVersion)).ToList();
-        _lastAutosave = DateTime.Now;
-        Task.Run(() =>
+        _autosaveTask = Task.Run(() =>
         {
             int saved = AutosaveService.RunNow(snapshots.Select(s2 => (s2.snap, s2.SessionId)));
             // only record versions as autosaved if the whole batch made it to disk —
@@ -1081,15 +1304,23 @@ public sealed class MainViewModel : ObservableObject
             if (saved == versions.Count)
                 Application.Current?.Dispatcher.BeginInvoke(() =>
                 {
-                    foreach (var (id, version) in versions) _autosavedVersions[id] = version;
+                    _lastAutosave = DateTime.Now;
+                    foreach (var (id, version) in versions)
+                    {
+                        var document = Documents.FirstOrDefault(d => d.Doc.SessionId == id);
+                        if (document != null && document.Doc.EditVersion == version)
+                            _autosavedVersions[id] = version;
+                    }
                 });
         });
         Raise(nameof(StatusAutosave));
     }
 
     /// <summary>Called once from the window after load: crash recovery, session restore, command-line files.</summary>
-    public async void StartupLoad(string[] args)
+    public async Task StartupLoadAsync(string[] args)
     {
+      try
+      {
         var recoverable = AutosaveService.GetRecoverable();
         if (recoverable.Count > 0)
         {
@@ -1098,6 +1329,9 @@ public sealed class MainViewModel : ObservableObject
                     $"WaveLab didn't shut down cleanly last time. Recover unsaved work?\n\n{names}",
                     "Crash recovery", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
+                var recoveredKeys = new List<string>();
+                var recoveredDocuments = new List<AudioDocument>();
+                var failures = new List<string>();
                 foreach (var entry in recoverable)
                 {
                     try
@@ -1110,36 +1344,90 @@ public sealed class MainViewModel : ObservableObject
                             return (loaded, store);
                         });
                         doc.FilePath = entry.OriginalPath;
-                        doc.Title = entry.Title.Replace(" •", "") + " (recovered)";
+                        string recoveredTitle = string.IsNullOrWhiteSpace(entry.Title)
+                            ? "Recovered audio"
+                            : entry.Title.Replace(" •", "").Trim();
+                        doc.Title = recoveredTitle + " (recovered)";
                         doc.MarkUnsaved();
                         AddDocument(doc, peaks);
+                        recoveredKeys.Add(entry.ManifestKey);
+                        recoveredDocuments.Add(doc);
                     }
-                    catch { }
+                    catch (Exception ex) { failures.Add($"{entry.Title}: {ex.Message}"); }
                 }
+                if (recoveredDocuments.Count > 0)
+                {
+                    var replacementSnapshots = recoveredDocuments
+                        .Select(doc => (SnapshotDoc(doc), doc.SessionId)).ToList();
+                    int published = await Task.Run(() => AutosaveService.RunNow(replacementSnapshots));
+                    if (published == replacementSnapshots.Count)
+                    {
+                        AutosaveService.RemoveRecoverable(recoveredKeys);
+                        foreach (var doc in recoveredDocuments)
+                            _autosavedVersions[doc.SessionId] = doc.EditVersion;
+                        _lastAutosave = DateTime.Now;
+                    }
+                    else failures.Add("Recovered documents could not be re-secured in autosave; original recovery files were retained.");
+                }
+                if (failures.Count > 0)
+                    MessageBox.Show("Some recovery work could not be completed; original recovery files were retained:\n\n"
+                        + string.Join("\n", failures), "Crash recovery", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
-            AutosaveService.ClearAll();
+            else if (!AutosaveService.ClearAll())
+                MessageBox.Show("Recovery files could not be discarded and may be offered again next launch.",
+                    "Crash recovery", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         if (args.Length > 0)
         {
-            OpenFiles(args);
+            await OpenFilesAsync(args);
         }
         else if (AppSettings.Instance.ReopenLastSession && Documents.Count == 0)
         {
             var files = AppSettings.Instance.LastSessionFiles.Where(File.Exists).ToList();
-            if (files.Count > 0) OpenFiles(files);
+            if (files.Count > 0) await OpenFilesAsync(files);
         }
+      }
+      finally { _startupLoaded = true; }
     }
 
     /// <summary>Called from the window on clean shutdown.</summary>
-    public void OnCleanExit()
+    public async Task OnCleanExitAsync()
     {
-        AppSettings.Instance.LastSessionFiles =
-            Documents.Where(d => d.Doc.FilePath != null).Select(d => d.Doc.FilePath!).ToList();
-        AppSettings.Instance.Save();
-        AutosaveService.ClearAll();
-        _transportRecorder.Dispose();
-        Engine.Dispose();
+        if (_shuttingDown) return;
+        _shuttingDown = true;
+        _autosaveTimer.Stop();
+        _timer.Stop();
+        Exception? failure = null;
+        try
+        {
+            if (Engine.IsPlaying || Engine.IsPaused) ReleasePlayback();
+            if (!_recordFinalization.IsCompleted) await _recordFinalization;
+            await _autosaveTask;
+            if (_openOperations.Count > 0) await Task.WhenAll(_openOperations.ToArray());
+            if (_saveOperations.Count > 0) await Task.WhenAll(_saveOperations.ToArray());
+            if (_tabCloseOperations.Count > 0) await Task.WhenAll(_tabCloseOperations.ToArray());
+            var markerTasks = Documents.Select(d => d.FlushMarkersAsync()).ToArray();
+            if (markerTasks.Length > 0) await Task.WhenAll(markerTasks);
+            if (_saveFailures.Count > 0)
+                throw new IOException("One or more file saves failed: " + string.Join("; ", _saveFailures.Values));
+
+            AppSettings.Instance.LastSessionFiles =
+                Documents.Where(d => d.Doc.FilePath != null).Select(d => d.Doc.FilePath!).ToList();
+            if (!AppSettings.Instance.Save())
+                throw new IOException("Settings could not be saved: " + AppSettings.Instance.LastSaveError);
+            if (!AutosaveService.ClearAll())
+                throw new IOException("Autosave recovery files could not be cleared.");
+        }
+        catch (Exception ex) { failure = ex; }
+        finally
+        {
+            Interlocked.Exchange(ref _expectedTransportRecordingSessionId, 0);
+            try { _transportRecorder.Dispose(); } catch (Exception ex) { failure ??= ex; }
+            try { Engine.Dispose(); } catch (Exception ex) { failure ??= ex; }
+            try { _process.Dispose(); } catch (Exception ex) { failure ??= ex; }
+        }
+        if (failure != null) throw failure;
     }
 
     private void OnTick()

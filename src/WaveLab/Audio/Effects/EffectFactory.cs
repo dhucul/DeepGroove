@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using WaveLab.Util;
 
@@ -78,13 +79,19 @@ public static class EffectFactory
 
     public static List<IAudioEffect> Instantiate(ChainPreset preset)
     {
+        ArgumentNullException.ThrowIfNull(preset);
         var result = new List<IAudioEffect>();
-        foreach (var state in preset.Effects)
+        if (preset.Effects is not { } states) return result;
+        foreach (var state in states)
         {
+            if (state is null || !IsKnownTypeId(state.TypeId)) continue;
             IAudioEffect fx;
             try { fx = Create(state.TypeId); } catch { continue; }
             fx.Enabled = state.Enabled;
-            foreach (var (key, value) in state.Params) fx.SetParam(key, value);
+            if (state.Params is { } parameters)
+                foreach (var (key, value) in parameters)
+                    if (!string.IsNullOrWhiteSpace(key) && double.IsFinite(value))
+                        fx.SetParam(key, value);
             result.Add(fx);
         }
         return result;
@@ -158,11 +165,14 @@ public static class EffectFactory
     {
         string path = PresetPath(name);
         if (File.Exists(path)) return;
-        File.WriteAllText(path, JsonSerializer.Serialize(new ChainPreset { Name = name, Effects = effects }, JsonOpts));
+        WritePresetAtomically(new ChainPreset { Name = name, Effects = effects }, path, overwrite: false);
     }
 
     public static string PresetPath(string name)
     {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("A preset name is required.", nameof(name));
+        name = name.Trim();
         foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
         return Path.Combine(AppSettings.PresetsDir, name + ".chain.json");
     }
@@ -178,7 +188,9 @@ public static class EffectFactory
                 try
                 {
                     var preset = JsonSerializer.Deserialize<ChainPreset>(File.ReadAllText(file));
-                    if (preset != null && preset.Effects.Count > 0) result.Add(preset);
+                    if (preset == null || !IsValidPresetName(preset.Name)) continue;
+                    var effects = Instantiate(preset);
+                    if (effects.Count > 0) result.Add(Capture(preset.Name.Trim(), effects));
                 }
                 catch { }
             }
@@ -189,7 +201,48 @@ public static class EffectFactory
 
     public static void SavePreset(ChainPreset preset)
     {
-        Directory.CreateDirectory(AppSettings.PresetsDir);
-        File.WriteAllText(PresetPath(preset.Name), JsonSerializer.Serialize(preset, JsonOpts));
+        ArgumentNullException.ThrowIfNull(preset);
+        if (!IsValidPresetName(preset.Name))
+            throw new ArgumentException("A valid preset name is required.", nameof(preset));
+        var normalized = Capture(preset.Name.Trim(), Instantiate(preset));
+        if (normalized.Effects.Count == 0)
+            throw new ArgumentException("A preset must contain at least one valid effect.", nameof(preset));
+        WritePresetAtomically(normalized, PresetPath(normalized.Name), overwrite: true);
     }
+
+    private static void WritePresetAtomically(ChainPreset preset, string finalPath, bool overwrite)
+    {
+        string directory = Path.GetDirectoryName(finalPath)
+            ?? throw new InvalidOperationException("The preset path has no directory.");
+        Directory.CreateDirectory(directory);
+        string stagePath = Path.Combine(directory,
+            $".{Path.GetFileName(finalPath)}.{Guid.NewGuid():N}.tmp");
+        string json = JsonSerializer.Serialize(preset, JsonOpts);
+        try
+        {
+            using (var stream = new FileStream(stagePath, FileMode.CreateNew, FileAccess.Write,
+                       FileShare.None, 4096, FileOptions.SequentialScan))
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true))
+            {
+                writer.Write(json);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(stagePath, finalPath, overwrite);
+        }
+        catch (IOException) when (!overwrite && File.Exists(finalPath))
+        {
+            // Another startup published the same deterministic factory preset first.
+        }
+        finally
+        {
+            try { File.Delete(stagePath); } catch { }
+        }
+    }
+
+    private static bool IsKnownTypeId(string? typeId) =>
+        !string.IsNullOrWhiteSpace(typeId) && Available.Any(item => item.TypeId == typeId);
+
+    private static bool IsValidPresetName(string? name) =>
+        !string.IsNullOrWhiteSpace(name) && name.Trim().Length <= 128;
 }

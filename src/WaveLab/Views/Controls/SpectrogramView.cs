@@ -13,7 +13,7 @@ public sealed class SpectrogramView : Grid
     private const int FftSize = 1024;
     private readonly Image _image = new() { Stretch = Stretch.Fill };
     private readonly TextBlock _hint;
-    private int _renderToken;
+    private CancellationTokenSource? _renderCts;
 
     public SpectrogramView()
     {
@@ -28,83 +28,102 @@ public sealed class SpectrogramView : Grid
         };
         Children.Add(_image);
         Children.Add(_hint);
+        Unloaded += (_, _) => CancelRender();
     }
 
     public void Render(AudioDocument? doc, int start, int end)
     {
-        if (doc == null || doc.Length == 0 || end - start < FftSize * 2) return;
-        int token = ++_renderToken;
-        int channels = doc.ChannelCount;
-        int sr = doc.SampleRate;
+        CancelRender();
+        _image.Source = null;
+        _hint.Text = "Select or display at least two FFT windows to render a spectrogram.";
+        _hint.Visibility = Visibility.Visible;
+        if (doc == null || doc.Length == 0 || doc.ChannelCount == 0) return;
+        start = Math.Clamp(start, 0, doc.Length);
+        end = Math.Clamp(end, start, doc.Length);
+        if (end - start < FftSize * 2) return;
 
-        // snapshot mono mix of the range so the worker never touches live document arrays
-        int count = end - start;
+        var cts = new CancellationTokenSource();
+        _renderCts = cts;
+        var channels = doc.Channels.ToArray();
+        _hint.Text = "Rendering spectrogram…";
+        _ = RenderAsync(cts, channels, start, end - start, doc.SampleRate);
+    }
+
+    private void CancelRender()
+    {
+        var old = Interlocked.Exchange(ref _renderCts, null);
+        old?.Cancel();
+        // RenderAsync owns disposal. Disposing here races its worker's token
+        // access and can turn an ordinary cancellation into ObjectDisposedException.
+    }
+
+    private async Task RenderAsync(CancellationTokenSource owner, float[][] channels, int start, int count, int sr)
+    {
+        const int cols = 800, rows = 256;
+        CancellationToken token = owner.Token;
+        try
+        {
+            byte[] pixels = await Task.Run(() => RenderWorker(
+                channels, start, count, sr, cols, rows, token), token);
+            if (!ReferenceEquals(owner, _renderCts) || token.IsCancellationRequested) return;
+            var bmp = new WriteableBitmap(cols, rows, 96, 96, PixelFormats.Bgra32, null);
+            bmp.WritePixels(new Int32Rect(0, 0, cols, rows), pixels, cols * 4, 0);
+            bmp.Freeze();
+            _image.Source = bmp;
+            _hint.Visibility = Visibility.Collapsed;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (!ReferenceEquals(owner, _renderCts)) return;
+            _hint.Text = "Spectrogram failed: " + ex.Message;
+            _hint.Visibility = Visibility.Visible;
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _renderCts, null, owner);
+            owner.Dispose();
+        }
+    }
+
+    private static byte[] RenderWorker(float[][] channels, int start, int count, int sr,
+        int cols, int rows, CancellationToken token)
+    {
         var mono = new float[count];
         for (int i = 0; i < count; i++)
         {
-            float v = 0;
-            for (int c = 0; c < channels; c++) v += doc.Channels[c][start + i];
-            mono[i] = v / channels;
+            if ((i & 0x3fff) == 0) token.ThrowIfCancellationRequested();
+            float value = 0;
+            for (int c = 0; c < channels.Length; c++) value += channels[c][start + i];
+            mono[i] = value / channels.Length;
         }
 
-        int cols = 800, rows = 256;
-        Task.Run(() =>
+        var window = Fft.HannWindow(FftSize);
+        var magDb = new float[FftSize / 2];
+        var pixels = new byte[cols * rows * 4];
+        double fMax = Math.Min(20000, sr / 2.0);
+        double hop = Math.Max(1, (count - FftSize) / (double)cols);
+        var frame = new float[FftSize];
+
+        for (int x = 0; x < cols; x++)
         {
-            try
+            token.ThrowIfCancellationRequested();
+            int s0 = (int)(x * hop);
+            for (int i = 0; i < FftSize; i++)
+                frame[i] = s0 + i < count ? mono[s0 + i] : 0;
+            Fft.MagnitudeDb(frame, window, magDb);
+
+            for (int y = 0; y < rows; y++)
             {
-                RenderWorker(token, mono, count, sr, cols, rows);
+                double f = 20 * Math.Pow(fMax / 20, (rows - 1 - y) / (double)(rows - 1));
+                int bin = Math.Clamp((int)(f / sr * FftSize), 1, magDb.Length - 1);
+                double t = Math.Clamp((magDb[bin] + 90) / 90.0, 0, 1);
+                var (r, g, b) = ColorMap(t);
+                int o = (y * cols + x) * 4;
+                pixels[o] = b; pixels[o + 1] = g; pixels[o + 2] = r; pixels[o + 3] = 255;
             }
-            catch (Exception ex)
-            {
-                Dispatcher.BeginInvoke(() =>
-                {
-                    if (token != _renderToken) return;
-                    _hint.Text = "Spectrogram failed: " + ex.Message;
-                    _hint.Visibility = Visibility.Visible;
-                });
-            }
-        });
-    }
-
-    private void RenderWorker(int token, float[] mono, int count, int sr, int cols, int rows)
-    {
-        {
-            var window = Fft.HannWindow(FftSize);
-            var magDb = new float[FftSize / 2];
-            var pixels = new byte[cols * rows * 4];
-            double fMax = Math.Min(20000, sr / 2.0);
-            double hop = Math.Max(1, (count - FftSize) / (double)cols);
-            var frame = new float[FftSize];
-
-            for (int x = 0; x < cols; x++)
-            {
-                int s0 = (int)(x * hop);
-                for (int i = 0; i < FftSize; i++)
-                    frame[i] = s0 + i < count ? mono[s0 + i] : 0;
-                Fft.MagnitudeDb(frame, window, magDb);
-
-                for (int y = 0; y < rows; y++)
-                {
-                    // log frequency, low at the bottom
-                    double f = 20 * Math.Pow(fMax / 20, (rows - 1 - y) / (double)(rows - 1));
-                    int bin = Math.Clamp((int)(f / sr * FftSize), 1, magDb.Length - 1);
-                    double t = Math.Clamp((magDb[bin] + 90) / 90.0, 0, 1);
-                    var (r, g, b) = ColorMap(t);
-                    int o = (y * cols + x) * 4;
-                    pixels[o] = b; pixels[o + 1] = g; pixels[o + 2] = r; pixels[o + 3] = 255;
-                }
-            }
-
-            Dispatcher.BeginInvoke(() =>
-            {
-                if (token != _renderToken) return;
-                var bmp = new WriteableBitmap(cols, rows, 96, 96, PixelFormats.Bgra32, null);
-                bmp.WritePixels(new Int32Rect(0, 0, cols, rows), pixels, cols * 4, 0);
-                bmp.Freeze();
-                _image.Source = bmp;
-                _hint.Visibility = Visibility.Collapsed;
-            });
         }
+        return pixels;
     }
 
     /// <summary>Dark → deep teal → accent → white heat map.</summary>

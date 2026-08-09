@@ -11,6 +11,7 @@ public partial class RecordDialog : Window
 {
     private readonly DispatcherTimer _timer;
     private readonly ClickTrack _click = new();
+    private readonly CancellationTokenSource _lifetimeCts = new();
     private bool _starting;
 
     public RecordViewModel ViewModel { get; } = new();
@@ -61,11 +62,14 @@ public partial class RecordDialog : Window
         };
         Closed += (_, _) =>
         {
+            _lifetimeCts.Cancel();
             _timer.Stop();
             _click.Dispose();
             ViewModel.UnexpectedStopCompleted -= OnUnexpectedStopCompleted;
             ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
             if (ViewModel.IsRecording || ViewModel.HasPendingCapture) ViewModel.Cancel();
+            ViewModel.Dispose();
+            _lifetimeCts.Dispose();
         };
     }
 
@@ -83,6 +87,7 @@ public partial class RecordDialog : Window
             double bpm = double.TryParse(txtBpm.Text, out var b) ? Math.Clamp(b, 30, 300) : 120;
             bool countIn = chkCountIn.IsChecked == true;
             bool metronome = chkMetronome.IsChecked == true;
+            CancellationToken lifetimeToken = _lifetimeCts.Token;
 
             _starting = true;
             startBtn.IsEnabled = false;
@@ -95,8 +100,8 @@ public partial class RecordDialog : Window
                 {
                     countInText.Visibility = Visibility.Visible;
                     int bars = cmbBars.SelectedIndex + 1;
-                    await Task.Delay(ClickTrack.CountInMs(bpm, 4, bars));
-                    if (!IsVisible) { _click.Stop(); return; } // cancelled during count-in
+                    await Task.Delay(ClickTrack.CountInMs(bpm, 4, bars), lifetimeToken);
+                    if (!IsVisible) return; // cancelled during count-in
                     countInText.Visibility = Visibility.Collapsed;
                 }
 
@@ -109,6 +114,17 @@ public partial class RecordDialog : Window
                 }
                 startText.Text = "Stop & Insert";
                 SetSetupControlsEnabled(false);
+            }
+            catch (OperationCanceledException) when (lifetimeToken.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                try { _click.Stop(); } catch { }
+                if (!IsVisible) return;
+                countInText.Visibility = Visibility.Collapsed;
+                startText.Text = "Start Recording";
+                SetSetupControlsEnabled(true);
+                MessageBox.Show($"Could not start the metronome or recording:\n{ex.Message}", "Record",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             finally
             {

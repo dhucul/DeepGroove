@@ -13,15 +13,28 @@ public sealed class ClickTrack : IDisposable
     {
         Stop();
         var provider = new ClickProvider(bpm, beatsPerBar);
-        _out = new WasapiOut(AudioClientShareMode.Shared, 60);
-        _out.Init(provider);
-        _out.Play();
+        WasapiOut? output = null;
+        try
+        {
+            output = new WasapiOut(AudioClientShareMode.Shared, 60);
+            output.Init(provider);
+            output.Play();
+            _out = output;
+        }
+        catch
+        {
+            try { output?.Dispose(); } catch { }
+            throw;
+        }
     }
 
     public void Stop()
     {
-        try { _out?.Stop(); _out?.Dispose(); } catch { }
+        var output = _out;
         _out = null;
+        if (output == null) return;
+        try { output.Stop(); } catch { }
+        try { output.Dispose(); } catch { }
     }
 
     public void Dispose() => Stop();
