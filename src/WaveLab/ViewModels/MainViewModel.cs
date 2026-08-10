@@ -1370,6 +1370,7 @@ public sealed class MainViewModel : ObservableObject
                         var (doc, peaks) = await Task.Run(() =>
                         {
                             var loaded = WavCodec.Load(entry.AutosaveFile);
+                            AutosaveService.RestoreFormatMetadata(loaded, entry);
                             var store = new PeakStore();
                             store.Rebuild(loaded);
                             return (loaded, store);

@@ -1,6 +1,5 @@
 using System.IO;
 using NAudio.Wave;
-using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
 
@@ -81,9 +80,10 @@ public static class AudioImporter
     }
 
     /// <summary>
-    /// Decode a file and quantize it into a new, unsaved document at the requested
-    /// depth. Editing buffers remain 32-bit float; 16/24-bit choices deliberately
-    /// constrain sample values to the corresponding PCM grid.
+    /// Decode a file into a new, unsaved document at the requested depth. Editing
+    /// buffers remain 32-bit float. Undithered 16-bit and 24-bit choices constrain
+    /// samples immediately; dithered 16-bit defers its single stochastic
+    /// quantization pass until save.
     /// </summary>
     public static AudioDocument LoadAs(
         string path,
@@ -92,7 +92,7 @@ public static class AudioImporter
     {
         if (!Enum.IsDefined(bitDepth)) throw new ArgumentOutOfRangeException(nameof(bitDepth));
         AudioDocument source = Load(path, cancellationToken);
-        float[][] channels = Quantize(
+        float[][] channels = PrepareSamples(
             source.Channels,
             bitDepth,
             cancellationToken);
@@ -119,7 +119,7 @@ public static class AudioImporter
         return converted;
     }
 
-    private static float[][] Quantize(
+    private static float[][] PrepareSamples(
         IReadOnlyList<float[]> source,
         OpenBitDepth bitDepth,
         CancellationToken cancellationToken)
@@ -128,7 +128,6 @@ public static class AudioImporter
             return source.ToArray();
 
         var result = new float[source.Count][];
-        var tpdf = new TpdfDither();
         for (int channel = 0; channel < source.Count; channel++)
         {
             float[] input = source[channel];
@@ -138,10 +137,13 @@ public static class AudioImporter
             {
                 if ((index & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
                 float sample = float.IsFinite(input[index]) ? Math.Clamp(input[index], -1f, 1f) : 0f;
-                if (bitDepth is OpenBitDepth.Pcm16Dithered or OpenBitDepth.Pcm16Undithered)
+                if (bitDepth == OpenBitDepth.Pcm16Dithered)
+                {
+                    output[index] = sample;
+                }
+                else if (bitDepth == OpenBitDepth.Pcm16Undithered)
                 {
                     double value = sample * 32768.0;
-                    if (bitDepth == OpenBitDepth.Pcm16Dithered) value += tpdf.Next();
                     int quantized = Math.Clamp((int)Math.Round(value), short.MinValue, short.MaxValue);
                     output[index] = quantized / 32768f;
                 }

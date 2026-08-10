@@ -21,7 +21,23 @@ public static class AutosaveService
         public string AutosaveFile { get; set; } = "";
         public string Title { get; set; } = "";
         public string? OriginalPath { get; set; }
+        public int? SourceBitDepth { get; set; }
+        public bool? Dither16BitOnSave { get; set; }
         public DateTime SavedAt { get; set; }
+    }
+
+    /// <summary>
+    /// Restore format metadata that cannot be inferred from the 32-bit recovery WAV.
+    /// Nullable fields keep manifests written by older versions backward compatible.
+    /// </summary>
+    public static void RestoreFormatMetadata(AudioDocument document, Entry entry)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(entry);
+        if (entry.SourceBitDepth is 16 or 24 or 32)
+            document.SourceBitDepth = entry.SourceBitDepth.Value;
+        if (entry.Dither16BitOnSave is { } dither16BitOnSave)
+            document.Dither16BitOnSave = dither16BitOnSave;
     }
 
     /// <summary>Write every dirty document; returns how many were saved.</summary>
@@ -65,6 +81,8 @@ public static class AutosaveService
                         AutosaveFile = file,
                         Title = doc.Title,
                         OriginalPath = doc.FilePath,
+                        SourceBitDepth = doc.SourceBitDepth,
+                        Dither16BitOnSave = doc.Dither16BitOnSave,
                         SavedAt = DateTime.Now,
                     };
                 }

@@ -136,12 +136,12 @@ public sealed class MasterSectionViewModel : ObservableObject
     private void ResetChain()
     {
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
-        _master.ReplaceChain([EffectFactory.Create("eq"), EffectFactory.Create("limiter")]);
+        _master.ReplaceChain(EffectFactory.Instantiate(EffectFactory.CreateFactoryPreset("Default")));
         _applyingPreset = true;
         SelectedPreset = null;
         _applyingPreset = false;
         SyncFromMaster();
-        RackStatusText = "Rack reset to Studio EQ and Precision Limiter.";
+        RackStatusText = "Rack reset to Studio EQ with Precision Limiter bypassed.";
         NotifyTopologyChanged(expandedMonoBefore);
     }
 

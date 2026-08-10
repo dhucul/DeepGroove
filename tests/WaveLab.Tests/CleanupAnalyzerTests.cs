@@ -1,6 +1,7 @@
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
+using WaveLab.ViewModels;
 using Xunit;
 using System.Text.Json;
 
@@ -202,6 +203,21 @@ public sealed class CleanupAnalyzerTests
     public void FreshMasterRackStartsWithLimiterBypassed()
     {
         var master = new MasterSection();
+
+        IAudioEffect limiter = Assert.Single(master.ChainSnapshot, effect => effect.TypeId == "limiter");
+        Assert.False(limiter.Enabled);
+    }
+
+    [Fact]
+    public void ResetMasterRackKeepsLimiterBypassed()
+    {
+        var master = new MasterSection();
+        var viewModel = new MasterSectionViewModel(master);
+        master.SetEffectEnabled(
+            Assert.Single(master.ChainSnapshot, effect => effect.TypeId == "limiter"),
+            enabled: true);
+
+        viewModel.ResetChainCommand.Execute(null);
 
         IAudioEffect limiter = Assert.Single(master.ChainSnapshot, effect => effect.TypeId == "limiter");
         Assert.False(limiter.Enabled);
