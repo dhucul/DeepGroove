@@ -164,30 +164,30 @@ public static class EffectFactory
                  State("limiter", ("ceiling", -1.0))],
             "Record to CD - Gentle Clarity" =>
                 [TransferHighPass(26.0),
-                 State("eq", ("lowGain", -0.3), ("lowFreq", 100.0), ("lowQ", 0.707),
-                     ("lmGain", -0.8), ("lmFreq", 280.0), ("lmQ", 0.85),
-                     ("midGain", 0.4), ("midFreq", 1100.0), ("midQ", 0.8),
-                     ("hmGain", 1.1), ("hmFreq", 3500.0), ("hmQ", 0.75),
-                     ("highGain", 1.4), ("highFreq", 9500.0), ("highQ", 0.6)),
-                 State("trim", ("gain", -1.5)),
+                 State("eq", ("lowGain", -0.5), ("lowFreq", 100.0), ("lowQ", 0.707),
+                     ("lmGain", -1.2), ("lmFreq", 280.0), ("lmQ", 0.85),
+                     ("midGain", 0.7), ("midFreq", 1100.0), ("midQ", 0.8),
+                     ("hmGain", 1.8), ("hmFreq", 3500.0), ("hmQ", 0.75),
+                     ("highGain", 2.5), ("highFreq", 9500.0), ("highQ", 0.6)),
+                 State("trim", ("gain", -0.75)),
                  TransferLimiter()],
             "Record to CD - Dull Source Rescue" =>
                 [TransferHighPass(28.0),
-                 State("eq", ("lowGain", -0.8), ("lowFreq", 110.0), ("lowQ", 0.707),
-                     ("lmGain", -1.8), ("lmFreq", 330.0), ("lmQ", 0.75),
-                     ("midGain", 0.8), ("midFreq", 1300.0), ("midQ", 0.8),
-                     ("hmGain", 2.5), ("hmFreq", 3600.0), ("hmQ", 0.75),
-                     ("highGain", 3.2), ("highFreq", 9000.0), ("highQ", 0.55)),
-                 State("trim", ("gain", -3.0)),
+                 State("eq", ("lowGain", -1.2), ("lowFreq", 110.0), ("lowQ", 0.707),
+                     ("lmGain", -2.5), ("lmFreq", 330.0), ("lmQ", 0.75),
+                     ("midGain", 1.2), ("midFreq", 1300.0), ("midQ", 0.8),
+                     ("hmGain", 3.8), ("hmFreq", 3600.0), ("hmQ", 0.75),
+                     ("highGain", 5.0), ("highFreq", 9000.0), ("highQ", 0.55)),
+                 State("trim", ("gain", -1.5)),
                  TransferLimiter()],
             "Record to CD - Warm Record Open-Up" =>
                 [TransferHighPass(24.0),
-                 State("eq", ("lowGain", 1.0), ("lowFreq", 85.0), ("lowQ", 0.707),
-                     ("lmGain", -0.9), ("lmFreq", 260.0), ("lmQ", 0.8),
-                     ("midGain", 0.0), ("midFreq", 1000.0), ("midQ", 0.8),
-                     ("hmGain", 0.8), ("hmFreq", 2800.0), ("hmQ", 0.8),
-                     ("highGain", 2.0), ("highFreq", 10500.0), ("highQ", 0.6)),
-                 State("trim", ("gain", -2.0)),
+                 State("eq", ("lowGain", 1.5), ("lowFreq", 85.0), ("lowQ", 0.707),
+                     ("lmGain", -1.2), ("lmFreq", 260.0), ("lmQ", 0.8),
+                     ("midGain", 0.3), ("midFreq", 1000.0), ("midQ", 0.8),
+                     ("hmGain", 1.5), ("hmFreq", 2800.0), ("hmQ", 0.8),
+                     ("highGain", 3.0), ("highFreq", 10500.0), ("highQ", 0.6)),
+                 State("trim", ("gain", -1.0)),
                  TransferLimiter()],
             _ => throw new ArgumentException($"Unknown factory preset '{name}'.", nameof(name)),
         };
@@ -335,7 +335,40 @@ public static class EffectFactory
             EffectState? eq = previous.Effects.FirstOrDefault(effect => effect.TypeId == "eq");
             if (eq != null) previous.Effects.Remove(eq);
         }
+        RestoreFirstGenerationRecordToCdSettings(previous);
         return previous;
+    }
+
+    private static void RestoreFirstGenerationRecordToCdSettings(ChainPreset preset)
+    {
+        EffectState? eq = preset.Effects.FirstOrDefault(effect => effect.TypeId == "eq");
+        EffectState? trim = preset.Effects.FirstOrDefault(effect => effect.TypeId == "trim");
+        if (eq == null || trim == null) return;
+
+        switch (preset.Name)
+        {
+            case "Record to CD - Gentle Clarity":
+                SetEq(eq, -0.3, -0.8, 0.4, 1.1, 1.4);
+                trim.Params["gain"] = -1.5;
+                break;
+            case "Record to CD - Dull Source Rescue":
+                SetEq(eq, -0.8, -1.8, 0.8, 2.5, 3.2);
+                trim.Params["gain"] = -3.0;
+                break;
+            case "Record to CD - Warm Record Open-Up":
+                SetEq(eq, 1.0, -0.9, 0.0, 0.8, 2.0);
+                trim.Params["gain"] = -2.0;
+                break;
+        }
+
+        static void SetEq(EffectState state, double low, double lowMid, double mid, double highMid, double high)
+        {
+            state.Params["lowGain"] = low;
+            state.Params["lmGain"] = lowMid;
+            state.Params["midGain"] = mid;
+            state.Params["hmGain"] = highMid;
+            state.Params["highGain"] = high;
+        }
     }
 
     private static ChainPreset CreateOldestFactoryPreset(string name)

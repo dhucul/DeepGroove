@@ -1,4 +1,6 @@
+using WaveLab.Audio;
 using WaveLab.Audio.Effects;
+using WaveLab.ViewModels;
 using Xunit;
 
 namespace WaveLab.Tests;
@@ -97,6 +99,34 @@ public sealed class EffectFactoryPresetTests
     }
 
     [Fact]
+    public void RecordToCdPresetsProduceAudiblyDistinctToneShaping()
+    {
+        double gentleContrast = ToneContrastDb("Record to CD - Gentle Clarity");
+        double rescueContrast = ToneContrastDb("Record to CD - Dull Source Rescue");
+        double warmContrast = ToneContrastDb("Record to CD - Warm Record Open-Up");
+
+        Assert.True(gentleContrast >= 2.0, $"Gentle contrast was only {gentleContrast:0.0} dB.");
+        Assert.True(rescueContrast >= gentleContrast + 2.0,
+            $"Rescue {rescueContrast:0.0} dB was not clearly stronger than gentle {gentleContrast:0.0} dB.");
+        Assert.True(Math.Abs(warmContrast - rescueContrast) >= 1.0,
+            $"Warm {warmContrast:0.0} dB was too similar to rescue {rescueContrast:0.0} dB.");
+    }
+
+    [Fact]
+    public void LoadingAStoredPresetActivatesABypassedRack()
+    {
+        var master = new MasterSection { RackEnabled = false };
+        var viewModel = new MasterSectionViewModel(master);
+
+        viewModel.ApplyStoredPreset(
+            EffectFactory.CreateFactoryPreset("Record to CD - Dull Source Rescue"));
+
+        Assert.True(master.RackEnabled);
+        Assert.Equal("ACTIVE", viewModel.RackStateText);
+        Assert.Contains("rack activated", viewModel.RackStatusText);
+    }
+
+    [Fact]
     public void CleanTransferNowIncludesPresenceEqBeforeGainManagement()
     {
         EffectFactory.ChainPreset preset = EffectFactory.CreateFactoryPreset("Clean Transfer");
@@ -165,6 +195,40 @@ public sealed class EffectFactoryPresetTests
         }
     }
 
+    [Fact]
+    public void FirstGenerationDullSourcePresetIsUpgradedToAudibleSettings()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            EffectFactory.ChainPreset previous =
+                EffectFactory.CreateFactoryPreset("Record to CD - Dull Source Rescue");
+            EffectFactory.EffectState eq = State(previous, "eq");
+            eq.Params["lowGain"] = -0.8;
+            eq.Params["lmGain"] = -1.8;
+            eq.Params["midGain"] = 0.8;
+            eq.Params["hmGain"] = 2.5;
+            eq.Params["highGain"] = 3.2;
+            State(previous, "trim").Params["gain"] = -3.0;
+            string path = Path.Combine(directory, previous.Name + ".chain.json");
+            File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(previous));
+
+            EffectFactory.EnsureFactoryPresets(directory);
+
+            EffectFactory.ChainPreset upgraded =
+                System.Text.Json.JsonSerializer.Deserialize<EffectFactory.ChainPreset>(File.ReadAllText(path))!;
+            Assert.Equal(3.8, Param(State(upgraded, "eq"), "hmGain"));
+            Assert.Equal(5.0, Param(State(upgraded, "eq"), "highGain"));
+            Assert.Equal(-1.5, Param(State(upgraded, "trim"), "gain"));
+        }
+        finally
+        {
+            foreach (string file in Directory.GetFiles(directory)) File.Delete(file);
+            Directory.Delete(directory);
+        }
+    }
+
     private static EffectFactory.EffectState State(EffectFactory.ChainPreset preset, string typeId) =>
         Assert.Single(preset.Effects, effect => effect.TypeId == typeId);
 
@@ -182,6 +246,37 @@ public sealed class EffectFactoryPresetTests
                 Assert.True(double.IsFinite(value), $"{state.TypeId}.{descriptor.Key} is not finite.");
                 Assert.InRange(value, descriptor.Min, descriptor.Max);
             }
+        }
+    }
+
+    private static double ToneContrastDb(string presetName) =>
+        MeasureGainDb(presetName, 3_600) - MeasureGainDb(presetName, 330);
+
+    private static double MeasureGainDb(string presetName, double frequency)
+    {
+        const int sampleRate = 48_000;
+        const int frames = sampleRate;
+        var input = new float[2][];
+        for (int channel = 0; channel < input.Length; channel++)
+        {
+            input[channel] = new float[frames];
+            for (int frame = 0; frame < frames; frame++)
+                input[channel][frame] = (float)(0.05 * Math.Sin(2 * Math.PI * frequency * frame / sampleRate));
+        }
+
+        var rack = new MasterSection();
+        rack.ReplaceChain(EffectFactory.Instantiate(EffectFactory.CreateFactoryPreset(presetName)));
+        float[][] output = rack.ProcessOffline(input, sampleRate);
+        int start = sampleRate / 4;
+        double inputRms = Rms(input[0], start);
+        double outputRms = Rms(output[0], start);
+        return 20 * Math.Log10(outputRms / inputRms);
+
+        static double Rms(float[] samples, int start)
+        {
+            double sum = 0;
+            for (int index = start; index < samples.Length; index++) sum += samples[index] * samples[index];
+            return Math.Sqrt(sum / (samples.Length - start));
         }
     }
 }

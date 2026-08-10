@@ -89,12 +89,25 @@ public sealed class MasterSectionViewModel : ObservableObject
             if (!Set(ref _selectedPreset, value) || value == null || _applyingPreset) return;
             var preset = EffectFactory.LoadPresets().FirstOrDefault(p => p.Name == value);
             if (preset == null) return;
-            bool expandedMonoBefore = _master.ExpandsMonoToStereo;
-            _master.ReplaceChain(EffectFactory.Instantiate(preset));
-            SyncFromMaster();
-            RackStatusText = $"Preset ‘{preset.Name}’ loaded · active in rack; source unchanged until render.";
-            NotifyTopologyChanged(expandedMonoBefore);
+            ApplyStoredPreset(preset);
         }
+    }
+
+    internal void ApplyStoredPreset(EffectFactory.ChainPreset preset)
+    {
+        ArgumentNullException.ThrowIfNull(preset);
+        var effects = EffectFactory.Instantiate(preset);
+        if (effects.Count == 0)
+            throw new ArgumentException("The preset contains no supported effects.", nameof(preset));
+
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        _master.RackEnabled = true;
+        _master.ReplaceChain(effects);
+        Raise(nameof(RackEnabled));
+        Raise(nameof(RackStateText));
+        SyncFromMaster();
+        RackStatusText = $"Preset ‘{preset.Name}’ loaded · rack activated; source unchanged until render.";
+        NotifyTopologyChanged(expandedMonoBefore);
     }
 
     // ── chain ops ────────────────────────────────────────────────
