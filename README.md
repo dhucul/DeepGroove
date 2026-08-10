@@ -6,7 +6,7 @@ A sleek audio editor and mastering suite for Windows, built with WPF on .NET 10.
 
 ## Features
 
-**Formats & files** — sample-accurate WAV 16/24-bit and 32-bit IEEE float, with explicit dithered or undithered 16-bit output and Open As conversion to 16/24/32-bit; MP3/FLAC/M4A/WMA import; direct CD-DA track discovery, selection, extraction and import from Windows optical drives; export to WAV, MP3, AAC, WMA and FLAC (where Windows provides the encoder) with bitrate choice, sample-rate conversion and selection-only export; batch converter with LUFS/peak normalization and effect-chain processing; recent files, session restore, autosave with crash recovery.
+**Formats & files** — sample-accurate WAV (16/24-bit PCM and 32-bit IEEE float) and AIFF/AIFF-C import, with native AIFF 16/24/32-bit PCM output, explicit dithered or undithered 16-bit output and Open As conversion to 16/24/32-bit; MP3/FLAC/M4A/WMA import; direct CD-DA track discovery, selection, extraction and import from Windows optical drives; export to WAV, AIFF, MP3, AAC, WMA and FLAC (where Windows provides the encoder) with bitrate choice, sample-rate conversion and selection-only export; batch converter with LUFS/peak normalization and effect-chain processing; recent files, session restore, autosave with crash recovery.
 
 **Editing** — multi-resolution waveform with zoom to sample level and vertical amplitude zoom (Ctrl+wheel); drag selection; cut/copy/paste/delete/trim; unlimited undo/redo with a configurable memory budget; markers and named regions with ruler flags, navigation shortcuts, a manager panel and sidecar persistence; edit-point smoothing (de-click joins); silence detection, trimming and split-to-regions.
 

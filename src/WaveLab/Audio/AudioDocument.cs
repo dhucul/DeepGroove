@@ -81,6 +81,11 @@ public sealed class AudioDocument
     }
     /// <summary>Whether ordinary Save should apply TPDF dither when writing 16-bit PCM.</summary>
     public bool Dither16BitOnSave { get; set; } = true;
+    /// <summary>
+    /// Whether Save must prompt for a new output path instead of replacing <see cref="FilePath"/>.
+    /// Used for imported containers whose non-audio chunks WaveLab cannot preserve.
+    /// </summary>
+    public bool RequiresSaveAs { get; set; }
     public string? FilePath { get; set; }
     public string Title { get; set; } = "Untitled";
     public bool Dirty { get; private set; }

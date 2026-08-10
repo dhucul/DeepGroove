@@ -6,7 +6,7 @@ WaveLab-style audio editor for Windows. C# / WPF / .NET 10 (`net10.0-windows`), 
 
 - C# over C++: WPF is .NET-native; MVVM + NAudio ecosystem gives the more sophisticated app.
 - Audio stored deinterleaved 32-bit float in `AudioDocument`; 16/24-bit sources load losslessly into float.
-- Custom RIFF codec (`WavCodec`) instead of NAudio's reader for exact 16/24/32f control + TPDF dither on 16-bit export. Compressed import (MP3/FLAC/M4A) uses MediaFoundationReader.
+- Custom RIFF and AIFF codecs (`WavCodec` / `AiffCodec`) provide exact 16/24/32-bit control + TPDF dither on 16-bit export. AIFF-C import accepts uncompressed `NONE`/`twos`/`sowt`/`raw `/`in24`/`in32` PCM and `fl32`/`fl64`; compressed media import uses MediaFoundationReader.
 - All edits go through `AudioDocument.ReplaceRange` (region splice) → undo/redo + change events for free.
 - Waveform drawing reads `PeakStore` (min/max/RMS pyramid, base bin 256, ×4 per level); rebuilt synchronously on every edit.
 - Playback: NAudio `WasapiOut` shared mode ← `MasterSection` (StudioEq → Limiter → meters/LUFS/FFT ring) ← `DocumentProvider`.

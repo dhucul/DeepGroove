@@ -6,10 +6,24 @@ using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
 
-public enum ExportFormat { Wav32Float, Wav24, Wav16, Wav16Undithered, Mp3, Aac, Wma, Flac }
+public enum ExportFormat
+{
+    Wav32Float,
+    Wav24,
+    Wav16,
+    Wav16Undithered,
+    Aiff32,
+    Aiff24,
+    Aiff16,
+    Aiff16Undithered,
+    Mp3,
+    Aac,
+    Wma,
+    Flac,
+}
 
 /// <summary>
-/// Exports a document (or a range of it) to WAV via the internal codec, or to
+/// Exports a document (or a range of it) to WAV/AIFF via internal codecs, or to
 /// MP3 / AAC / WMA / FLAC through Media Foundation encoders where Windows provides them.
 /// </summary>
 public static class AudioExporter
@@ -20,6 +34,8 @@ public static class AudioExporter
         ExportFormat.Aac => "AAC (M4A)|*.m4a",
         ExportFormat.Wma => "WMA|*.wma",
         ExportFormat.Flac => "FLAC|*.flac",
+        ExportFormat.Aiff32 or ExportFormat.Aiff24 or ExportFormat.Aiff16 or
+            ExportFormat.Aiff16Undithered => "AIFF|*.aiff",
         _ => "WAV|*.wav",
     };
 
@@ -90,6 +106,23 @@ public static class AudioExporter
                     };
                     var snapshot = new AudioDocument(data, rate, depth);
                     WavCodec.Save(snapshot, stagePath, depth, dither: format == ExportFormat.Wav16,
+                        cancellationToken: cancellationToken);
+                    break;
+                }
+                case ExportFormat.Aiff32:
+                case ExportFormat.Aiff24:
+                case ExportFormat.Aiff16:
+                case ExportFormat.Aiff16Undithered:
+                {
+                    int depth = format switch
+                    {
+                        ExportFormat.Aiff24 => 24,
+                        ExportFormat.Aiff16 or ExportFormat.Aiff16Undithered => 16,
+                        _ => 32,
+                    };
+                    var snapshot = new AudioDocument(data, rate, depth);
+                    AiffCodec.Save(snapshot, stagePath, depth,
+                        dither: format == ExportFormat.Aiff16,
                         cancellationToken: cancellationToken);
                     break;
                 }

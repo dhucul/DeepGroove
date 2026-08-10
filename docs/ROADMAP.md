@@ -2,7 +2,7 @@
 
 ## 1. Current feature inventory (v1)
 
-**File & formats** — WAV 16/24-bit PCM and 32-bit IEEE float read/write (sample-accurate custom RIFF codec, WAVE_FORMAT_EXTENSIBLE read, TPDF dither on 16-bit export); MP3/FLAC/M4A/WMA import via Media Foundation; multi-tab documents; drag-and-drop and command-line open; dirty tracking with close/exit prompts.
+**File & formats** — WAV 16/24-bit PCM and 32-bit IEEE float read/write; AIFF/AIFF-C import and AIFF 16/24/32-bit PCM output (sample-accurate custom codecs, TPDF dither on 16-bit export); MP3/FLAC/M4A/WMA import via Media Foundation; multi-tab documents; drag-and-drop and command-line open; dirty tracking with close/exit prompts.
 
 **Editing** — sample-accurate selection; cut/copy/paste/delete/trim; cross-tab clipboard (channel-matched); unlimited undo/redo via region splicing; select all.
 
@@ -29,7 +29,7 @@
 - Recent files menu; window placement persistence
 - Undo history memory budget (evict oldest) — large-file robustness
 - Audio statistics dialog (per-channel peak/true peak/RMS/DC/clipped samples, offline LUFS/LRA, copy to clipboard)
-- Export dialog: WAV 16/24/32f, MP3, AAC/M4A, WMA, FLAC (when the Windows encoder is present); bitrate choice; optional sample-rate conversion; export selection only
+- Export dialog: WAV 16/24/32f, AIFF 16/24/32 PCM, MP3, AAC/M4A, WMA, FLAC (when the Windows encoder is present); bitrate choice; optional sample-rate conversion; export selection only
 
 ### HIGH VALUE (Phases B & C)
 - Effects rack: ordered chain of real-time effects replacing the fixed EQ→limiter pair — Studio EQ, Precision Limiter, Compressor, Noise Gate, Reverb, Stereo Delay, Chorus, Saturation, HP/LP Filter; add/remove/reorder/bypass; auto-generated parameter UI; **per-effect reset-to-default**; chain presets (factory + user JSON); destructive **apply chain to selection/file** with undo

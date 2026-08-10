@@ -23,6 +23,7 @@ public static class AutosaveService
         public string? OriginalPath { get; set; }
         public int? SourceBitDepth { get; set; }
         public bool? Dither16BitOnSave { get; set; }
+        public bool? RequiresSaveAs { get; set; }
         public DateTime SavedAt { get; set; }
     }
 
@@ -38,6 +39,8 @@ public static class AutosaveService
             document.SourceBitDepth = entry.SourceBitDepth.Value;
         if (entry.Dither16BitOnSave is { } dither16BitOnSave)
             document.Dither16BitOnSave = dither16BitOnSave;
+        if (entry.RequiresSaveAs is { } requiresSaveAs)
+            document.RequiresSaveAs = requiresSaveAs;
     }
 
     /// <summary>Write every dirty document; returns how many were saved.</summary>
@@ -83,6 +86,7 @@ public static class AutosaveService
                         OriginalPath = doc.FilePath,
                         SourceBitDepth = doc.SourceBitDepth,
                         Dither16BitOnSave = doc.Dither16BitOnSave,
+                        RequiresSaveAs = doc.RequiresSaveAs,
                         SavedAt = DateTime.Now,
                     };
                 }

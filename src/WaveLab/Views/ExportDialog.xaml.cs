@@ -45,6 +45,14 @@ public partial class ExportDialog : Window
                 "WAV stores uncompressed audio. TPDF dither is applied when reducing processed audio to 16-bit PCM."),
             new(ExportFormat.Wav16Undithered, "wav16nodither", "WAV · 16-bit PCM (no dither)", "UNCOMPRESSED",
                 "WAV stores uncompressed audio. No dither is added before 16-bit quantization."),
+            new(ExportFormat.Aiff32, "aiff32", "AIFF · 32-bit PCM", "UNCOMPRESSED",
+                "AIFF stores portable, uncompressed big-endian audio as 32-bit integer PCM."),
+            new(ExportFormat.Aiff24, "aiff24", "AIFF · 24-bit PCM", "UNCOMPRESSED",
+                "AIFF stores portable, uncompressed audio. 24-bit PCM is a high-resolution delivery format."),
+            new(ExportFormat.Aiff16, "aiff16", "AIFF · 16-bit PCM (dithered)", "UNCOMPRESSED",
+                "TPDF dither is applied when reducing processed audio to 16-bit AIFF PCM."),
+            new(ExportFormat.Aiff16Undithered, "aiff16nodither", "AIFF · 16-bit PCM (no dither)", "UNCOMPRESSED",
+                "No dither is added before 16-bit AIFF quantization."),
         };
         if (AudioExporter.FlacAvailable())
             formats.Add(new FormatItem(ExportFormat.Flac, "flac", "FLAC · 24-bit", "LOSSLESS COMPRESSED",

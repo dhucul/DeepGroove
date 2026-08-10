@@ -13,20 +13,26 @@ public enum OpenBitDepth
 
 /// <summary>
 /// Loads any supported audio file into an AudioDocument.
-/// WAV goes through the sample-accurate WavCodec; MP3/FLAC/M4A decode via Media Foundation.
+/// WAV and AIFF go through sample-accurate native codecs; compressed formats decode via Media Foundation.
 /// </summary>
 public static class AudioImporter
 {
     public const string OpenFilter =
-        "Audio files (*.wav;*.mp3;*.flac;*.m4a;*.wma)|*.wav;*.mp3;*.flac;*.m4a;*.wma|" +
-        "Wave files (*.wav)|*.wav|All files (*.*)|*.*";
+        "Audio files (*.wav;*.aif;*.aiff;*.aifc;*.mp3;*.flac;*.m4a;*.wma)|*.wav;*.aif;*.aiff;*.aifc;*.mp3;*.flac;*.m4a;*.wma|" +
+        "Wave files (*.wav)|*.wav|AIFF files (*.aif;*.aiff;*.aifc)|*.aif;*.aiff;*.aifc|" +
+        "All files (*.*)|*.*";
 
     public static AudioDocument Load(string path, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         cancellationToken.ThrowIfCancellationRequested();
-        if (Path.GetExtension(path).Equals(".wav", StringComparison.OrdinalIgnoreCase))
+        string extension = Path.GetExtension(path);
+        if (extension.Equals(".wav", StringComparison.OrdinalIgnoreCase))
             return WavCodec.Load(path, cancellationToken);
+        if (extension.Equals(".aif", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".aiff", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".aifc", StringComparison.OrdinalIgnoreCase))
+            return AiffCodec.Load(path, cancellationToken);
 
         using var reader = new MediaFoundationReader(path);
         var sp = reader.ToSampleProvider();

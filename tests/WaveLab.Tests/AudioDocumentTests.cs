@@ -41,6 +41,10 @@ public sealed class AudioDocumentTests
     [InlineData(ExportFormat.Wav24)]
     [InlineData(ExportFormat.Wav16)]
     [InlineData(ExportFormat.Wav16Undithered)]
+    [InlineData(ExportFormat.Aiff32)]
+    [InlineData(ExportFormat.Aiff24)]
+    [InlineData(ExportFormat.Aiff16)]
+    [InlineData(ExportFormat.Aiff16Undithered)]
     [InlineData(ExportFormat.Flac)]
     public void LosslessAndUncompressedFormatsDoNotUseLossyBitrateControls(ExportFormat format)
     {
@@ -136,6 +140,7 @@ public sealed class AudioDocumentTests
             OriginalPath = "source.wav",
             SourceBitDepth = 16,
             Dither16BitOnSave = false,
+            RequiresSaveAs = true,
             SavedAt = DateTime.Now,
         };
         string json = JsonSerializer.Serialize(entry);
@@ -147,6 +152,7 @@ public sealed class AudioDocumentTests
 
         Assert.Equal(16, recoveredDocument.SourceBitDepth);
         Assert.False(recoveredDocument.Dither16BitOnSave);
+        Assert.True(recoveredDocument.RequiresSaveAs);
 
         var legacyDocument = new AudioDocument([[0.25f]], 48_000, 32);
         AutosaveService.Entry legacyEntry =
@@ -154,6 +160,7 @@ public sealed class AudioDocumentTests
         AutosaveService.RestoreFormatMetadata(legacyDocument, legacyEntry);
         Assert.Equal(32, legacyDocument.SourceBitDepth);
         Assert.True(legacyDocument.Dither16BitOnSave);
+        Assert.False(legacyDocument.RequiresSaveAs);
     }
 
     [Fact]

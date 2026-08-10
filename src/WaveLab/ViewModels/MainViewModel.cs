@@ -147,7 +147,7 @@ public sealed class MainViewModel : ObservableObject
         OpenRecentCommand = new RelayCommand<string>(path => { if (path != null) OpenFiles([path]); });
         CommandPaletteCommand = new RelayCommand(() => RequestCommandPalette?.Invoke());
         AboutCommand = new RelayCommand(() => MessageBox.Show(
-            "WaveLab 2.0\n\nAudio editor and mastering suite.\nWAV 16/24/32-bit float · MP3/FLAC/AAC import & export\nEffects rack · restoration · EBU R128 metering\nWASAPI playback and recording",
+            "WaveLab 2.0\n\nAudio editor and mastering suite.\nWAV/AIFF · MP3/FLAC/AAC import & export\nEffects rack · restoration · EBU R128 metering\nWASAPI playback and recording",
             "About WaveLab", MessageBoxButton.OK, MessageBoxImage.Information));
     }
 
@@ -444,7 +444,45 @@ public sealed class MainViewModel : ObservableObject
             Title = doc.Title,
             FilePath = doc.FilePath,
             Dither16BitOnSave = doc.Dither16BitOnSave,
+            RequiresSaveAs = doc.RequiresSaveAs,
         };
+    }
+
+    private static bool IsAiffFamilyPath(string path)
+    {
+        string extension = Path.GetExtension(path);
+        return extension.Equals(".aif", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".aiff", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".aifc", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsClassicAiffPath(string path)
+    {
+        string extension = Path.GetExtension(path);
+        return extension.Equals(".aif", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".aiff", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void SaveEditableDocument(
+        AudioDocument doc,
+        string path,
+        int depth,
+        bool dither,
+        bool? writeAiff = null,
+        CancellationToken cancellationToken = default)
+    {
+        bool useAiff = writeAiff ?? IsClassicAiffPath(path);
+        string extension = Path.GetExtension(path);
+        if (useAiff && !IsClassicAiffPath(path))
+            throw new NotSupportedException(
+                "AIFF output requires a .aif or .aiff file name; AIFF-C output is not supported.");
+        if (!useAiff && !extension.Equals(".wav", StringComparison.OrdinalIgnoreCase))
+            throw new NotSupportedException("WAV output requires a .wav file name.");
+
+        if (useAiff)
+            AiffCodec.Save(doc, path, depth, dither, cancellationToken);
+        else
+            WavCodec.Save(doc, path, depth, dither, cancellationToken);
     }
 
     private async void Save()
@@ -456,7 +494,7 @@ public sealed class MainViewModel : ObservableObject
     {
         if (_shuttingDown) return;
         var doc = d.Doc;
-        if (doc.FilePath == null) { await SaveAsCoreAsync(d); return; }
+        if (doc.FilePath == null || doc.RequiresSaveAs) { await SaveAsCoreAsync(d); return; }
         if (!_savesInFlight.Add(doc.SessionId)) return; // a save for this document is already writing
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
@@ -464,7 +502,7 @@ public sealed class MainViewModel : ObservableObject
         int depth = doc.SourceBitDepth;
         try
         {
-            await Task.Run(() => WavCodec.Save(snapshot, path, depth,
+            await Task.Run(() => SaveEditableDocument(snapshot, path, depth,
                 dither: depth == 16 && snapshot.Dither16BitOnSave));
             // Do not declare the document fully persisted, or discard its
             // recovery copy, while the latest marker sidecar is still pending
@@ -498,32 +536,41 @@ public sealed class MainViewModel : ObservableObject
     {
         if (_shuttingDown) return;
         var doc = d.Doc;
+        bool preferAiff = IsAiffFamilyPath(doc.FilePath ?? doc.Title);
         var dlg = new SaveFileDialog
         {
             Filter = "WAV — 32-bit float|*.wav|WAV — 24-bit PCM|*.wav|" +
-                     "WAV — 16-bit PCM (dithered)|*.wav|WAV — 16-bit PCM (no dither)|*.wav",
-            FilterIndex = doc.SourceBitDepth switch
+                     "WAV — 16-bit PCM (dithered)|*.wav|WAV — 16-bit PCM (no dither)|*.wav|" +
+                     "AIFF — 32-bit PCM|*.aiff|AIFF — 24-bit PCM|*.aiff|" +
+                     "AIFF — 16-bit PCM (dithered)|*.aiff|AIFF — 16-bit PCM (no dither)|*.aiff",
+            FilterIndex = (preferAiff, doc.SourceBitDepth, doc.Dither16BitOnSave) switch
             {
-                24 => 2,
-                16 when !doc.Dither16BitOnSave => 4,
-                16 => 3,
+                (true, 24, _) => 6,
+                (true, 16, false) => 8,
+                (true, 16, _) => 7,
+                (true, _, _) => 5,
+                (false, 24, _) => 2,
+                (false, 16, false) => 4,
+                (false, 16, _) => 3,
                 _ => 1,
             },
             FileName = Path.GetFileNameWithoutExtension(doc.Title),
-            DefaultExt = ".wav",
+            DefaultExt = preferAiff ? ".aiff" : ".wav",
         };
         if (dlg.ShowDialog() != true) return;
         if (!_savesInFlight.Add(doc.SessionId)) return; // a save for this document is already writing
-        int depth = dlg.FilterIndex switch { 2 => 24, 3 or 4 => 16, _ => 32 };
-        bool dither16 = dlg.FilterIndex != 4;
+        int depth = dlg.FilterIndex switch { 2 or 6 => 24, 3 or 4 or 7 or 8 => 16, _ => 32 };
+        bool dither16 = dlg.FilterIndex is not (4 or 8);
+        bool writeAiff = dlg.FilterIndex >= 5;
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
         try
         {
-            await Task.Run(() => WavCodec.Save(snapshot, dlg.FileName, depth,
-                dither: depth == 16 && dither16));
+            await Task.Run(() => SaveEditableDocument(snapshot, dlg.FileName, depth,
+                dither: depth == 16 && dither16, writeAiff: writeAiff));
             _saveFailures.Remove(doc.SessionId);
             doc.FilePath = dlg.FileName;
+            doc.RequiresSaveAs = false;
             doc.Title = Path.GetFileName(dlg.FileName);
             doc.SourceBitDepth = depth;
             doc.Dither16BitOnSave = dither16;

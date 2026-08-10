@@ -8,7 +8,7 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        try { MediaFoundationApi.Startup(); } catch { /* MP3/FLAC import unavailable */ }
+        try { MediaFoundationApi.Startup(); } catch { /* Compressed import/export unavailable */ }
     }
 
     protected override void OnExit(ExitEventArgs e)
