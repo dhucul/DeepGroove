@@ -62,22 +62,22 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel>
                         <TextBlock Text="FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbFormat" Margin="0,5,0,0" Height="32"/>
+                        <ComboBox x:Name="cmbFormat" Margin="0,5,0,0" Height="32" AutomationProperties.Name="Output format"/>
                     </StackPanel>
                     <StackPanel Grid.Column="2">
                         <TextBlock Text="NORMALIZE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbNormalize" Margin="0,5,0,0" Height="32"/>
+                        <ComboBox x:Name="cmbNormalize" Margin="0,5,0,0" Height="32" AutomationProperties.Name="Normalization"/>
                     </StackPanel>
                     <StackPanel Grid.Column="4">
                         <TextBlock Text="EFFECT CHAIN" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbChain" Margin="0,5,0,0" Height="32"/>
+                        <ComboBox x:Name="cmbChain" Margin="0,5,0,0" Height="32" AutomationProperties.Name="Effects chain"/>
                     </StackPanel>
                 </Grid>
                 <TextBlock Text="OUTPUT FOLDER" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}" Margin="0,12,0,0"/>
                 <DockPanel Margin="0,5,0,0">
                     <Button DockPanel.Dock="Right" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"
                             Height="32" Width="80" Margin="8,0,0,0" Click="OnBrowse" Content="Browse…"/>
-                    <TextBox x:Name="txtOutput" Height="32"/>
+                    <TextBox x:Name="txtOutput" Height="32" AutomationProperties.Name="Output folder"/>
                 </DockPanel>
                 <ProgressBar x:Name="progress" Margin="0,12,0,0"/>
                 <TextBlock x:Name="statusText" Margin="0,6,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"/>
@@ -93,7 +93,7 @@
                     <Button x:Name="btnCancel" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"
                             Height="36" Click="OnCancel" Content="Close"/>
                     <Button x:Name="btnStart" Grid.Column="2" Style="{StaticResource AccentButton}" Height="36"
-                            Click="OnStart" Content="Start"/>
+                            Click="OnStart" Content="Start" IsDefault="True"/>
                 </Grid>
             </Border>
         </Grid>

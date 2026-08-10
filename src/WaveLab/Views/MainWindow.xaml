@@ -82,13 +82,16 @@
                                Foreground="{StaticResource Muted}" Text="{Binding WindowTitle}"/>
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" WindowChrome.IsHitTestVisibleInChrome="True">
-                    <Button Style="{StaticResource CaptionButton}" Click="OnMinimize">
+                    <Button Style="{StaticResource CaptionButton}" Click="OnMinimize" Focusable="False"
+                            AutomationProperties.Name="Minimize window">
                         <Path Data="M0,0 L10,0" Stroke="{StaticResource Muted}" StrokeThickness="1"/>
                     </Button>
-                    <Button Style="{StaticResource CaptionButton}" Click="OnMaximize">
+                    <Button Style="{StaticResource CaptionButton}" Click="OnMaximize" Focusable="False"
+                            AutomationProperties.Name="Maximize or restore window">
                         <Path Data="M0.5,0.5 L9.5,0.5 9.5,9.5 0.5,9.5 Z" Stroke="{StaticResource Muted}" StrokeThickness="1"/>
                     </Button>
-                    <Button Style="{StaticResource CaptionCloseButton}" Click="OnCloseWindow">
+                    <Button Style="{StaticResource CaptionCloseButton}" Click="OnCloseWindow" Focusable="False"
+                            AutomationProperties.Name="Close WaveLab">
                         <Path Data="M0,0 L10,10 M10,0 L0,10" Stroke="{StaticResource Muted}" StrokeThickness="1"/>
                     </Button>
                 </StackPanel>
@@ -133,7 +136,7 @@
                     <MenuItem Header="Trim to Selection" Command="{Binding TrimCommand}"/>
                     <MenuItem Header="Select All" InputGestureText="Ctrl+A" Command="{Binding SelectAllCommand}"/>
                 </MenuItem>
-                <MenuItem Header="_View">
+                <MenuItem Header="_View" IsEnabled="{Binding HasAudioDocument}">
                     <MenuItem Header="Zoom In" InputGestureText="Ctrl+=" Command="{Binding ZoomInCommand}"/>
                     <MenuItem Header="Zoom Out" InputGestureText="Ctrl+-" Command="{Binding ZoomOutCommand}"/>
                     <MenuItem Header="Zoom to Fit" InputGestureText="Ctrl+0" Command="{Binding ZoomFitCommand}"/>
@@ -141,7 +144,7 @@
                     <Separator/>
                     <MenuItem Header="Reset Amplitude Zoom" InputGestureText="Ctrl+Wheel" Click="OnResetAmpZoom"/>
                 </MenuItem>
-                <MenuItem Header="Mar_kers">
+                <MenuItem Header="Mar_kers" IsEnabled="{Binding HasDocument}">
                     <MenuItem Header="Add Marker" InputGestureText="Ctrl+M" Command="{Binding AddMarkerCommand}"/>
                     <MenuItem Header="Add Region from Selection" InputGestureText="Ctrl+Shift+M" Command="{Binding AddRegionCommand}"/>
                     <Separator/>
@@ -152,7 +155,7 @@
                     <MenuItem Header="Clear All" Command="{Binding ClearMarkersCommand}"/>
                 </MenuItem>
                 <MenuItem Header="_Transport">
-                    <MenuItem Header="Play / Stop" InputGestureText="Space" Command="{Binding PlayCommand}"/>
+                    <MenuItem Header="Play / Pause" InputGestureText="Space" Command="{Binding PlayCommand}"/>
                     <MenuItem Header="Stop" Command="{Binding StopCommand}"/>
                     <MenuItem Header="Go to Start" InputGestureText="Home" Command="{Binding GoToStartCommand}"/>
                     <MenuItem Header="Loop" IsCheckable="True" IsChecked="{Binding IsLooping}"/>
@@ -161,7 +164,7 @@
                               IsEnabled="{Binding CanChangeRecordArm}"/>
                     <MenuItem Header="Record / Stop" InputGestureText="Ctrl+R" Command="{Binding RecordCommand}"/>
                 </MenuItem>
-                <MenuItem Header="_Process">
+                <MenuItem Header="_Process" IsEnabled="{Binding HasAudioDocument}">
                     <MenuItem Header="Gain +3 dB" Command="{Binding GainUpCommand}"/>
                     <MenuItem Header="Gain −3 dB" Command="{Binding GainDownCommand}"/>
                     <MenuItem Header="Normalize to −0.3 dBFS" Command="{Binding NormalizeCommand}"/>
@@ -179,19 +182,19 @@
                         <MenuItem Header="Split by Silence → Regions…" Click="OnSplitSilence"/>
                     </MenuItem>
                     <MenuItem Header="Channels">
-                        <MenuItem Header="Swap Left ↔ Right" Click="OnSwapChannels"/>
+                        <MenuItem Header="Swap Left ↔ Right" Click="OnSwapChannels" IsEnabled="{Binding HasMultichannelDocument}"/>
                         <MenuItem Header="Invert Phase (All)" Click="OnInvertPhase"/>
                         <MenuItem Header="Invert Phase — Left" Click="OnInvertLeft"/>
-                        <MenuItem Header="Invert Phase — Right" Click="OnInvertRight"/>
-                        <MenuItem Header="Channel Balance…" Click="OnChannelBalance"/>
+                        <MenuItem Header="Invert Phase — Right" Click="OnInvertRight" IsEnabled="{Binding HasMultichannelDocument}"/>
+                        <MenuItem Header="Channel Balance…" Click="OnChannelBalance" IsEnabled="{Binding HasMultichannelDocument}"/>
                         <Separator/>
                         <MenuItem Header="Mix Down to Mono → New Tab" Click="OnMonoMixdown"/>
-                        <MenuItem Header="Mono → Stereo → New Tab" Click="OnMonoToStereo"/>
+                        <MenuItem Header="Mono → Stereo → New Tab" Click="OnMonoToStereo" IsEnabled="{Binding HasMonoDocument}"/>
                         <MenuItem Header="Extract Left → New Tab" Click="OnExtractLeft"/>
-                        <MenuItem Header="Extract Right → New Tab" Click="OnExtractRight"/>
+                        <MenuItem Header="Extract Right → New Tab" Click="OnExtractRight" IsEnabled="{Binding HasMultichannelDocument}"/>
                     </MenuItem>
                 </MenuItem>
-                <MenuItem Header="_Restore">
+                <MenuItem Header="_Restore" IsEnabled="{Binding HasAudioDocument}">
                     <MenuItem Header="Vinyl Restoration &amp; CD Transfer…" Click="OnVinylWorkflow"/>
                     <MenuItem Header="Prepare Tracks for Audio CD…" Click="OnPrepareAudioCd"/>
                     <Separator/>
@@ -202,21 +205,21 @@
                     <MenuItem Header="Remove Hum…" Click="OnRemoveHum"/>
                 </MenuItem>
                 <MenuItem Header="_Tools">
-                    <MenuItem Header="Time Stretch…" Click="OnTimeStretch"/>
-                    <MenuItem Header="Pitch Shift…" Click="OnPitchShift"/>
-                    <MenuItem Header="Convert Sample Rate…" Click="OnConvertRate"/>
+                    <MenuItem Header="Time Stretch…" Click="OnTimeStretch" IsEnabled="{Binding HasAudioDocument}"/>
+                    <MenuItem Header="Pitch Shift…" Click="OnPitchShift" IsEnabled="{Binding HasAudioDocument}"/>
+                    <MenuItem Header="Convert Sample Rate…" Click="OnConvertRate" IsEnabled="{Binding HasAudioDocument}"/>
                     <Separator/>
-                    <MenuItem Header="Detect Pitch (Tuner)" Click="OnTuner"/>
-                    <MenuItem Header="Detect Tempo (BPM)" Click="OnBpm"/>
+                    <MenuItem Header="Detect Pitch (Tuner)" Click="OnTuner" IsEnabled="{Binding HasAudioDocument}"/>
+                    <MenuItem Header="Detect Tempo (BPM)" Click="OnBpm" IsEnabled="{Binding HasAudioDocument}"/>
                     <Separator/>
                     <MenuItem Header="Batch Converter…" Click="OnBatchConvert"/>
                     <MenuItem Header="Command Palette" InputGestureText="Ctrl+Shift+P" Command="{Binding CommandPaletteCommand}"/>
                 </MenuItem>
-                <MenuItem Header="_Analyze">
+                <MenuItem Header="_Analyze" IsEnabled="{Binding HasAudioDocument}">
                     <MenuItem Header="Audio Statistics…" Command="{Binding StatisticsCommand}"/>
                     <MenuItem Header="Refresh Spectrogram" Click="OnRefreshSpectrogram"/>
                 </MenuItem>
-                <MenuItem Header="_Master">
+                <MenuItem Header="_Master" IsEnabled="{Binding HasAudioDocument}">
                     <MenuItem Header="Analyze &amp; Tune Vinyl Cleanup…" Click="OnAnalyzeVinylCleanup"
                               IsEnabled="{Binding CanAnalyzeCleanup}"/>
                     <MenuItem Header="Analyze &amp; Tune Clean Transfer…" Click="OnAnalyzeCleanTransfer"
@@ -247,23 +250,27 @@
                     <GradientStop Color="#14171B" Offset="1"/>
                 </LinearGradientBrush>
             </Border.Background>
-            <DockPanel Margin="14,0" LastChildFill="False">
+            <DockPanel Margin="14,0" LastChildFill="True">
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Style="{StaticResource ToolButton}" Width="32" Height="32" Command="{Binding OpenCommand}" ToolTip="Open (Ctrl+O)">
+                    <Button Style="{StaticResource ToolButton}" Width="32" Height="32" Command="{Binding OpenCommand}" ToolTip="Open (Ctrl+O)"
+                            AutomationProperties.Name="Open file">
                         <Path Data="M1,4 L1,12 13,12 13,5 6.5,5 5,3 1,3 Z" Stroke="#CFD4DA" StrokeThickness="1.2" StrokeLineJoin="Round"/>
                     </Button>
-                    <Button Style="{StaticResource ToolButton}" Width="32" Height="32" Margin="6,0,0,0" Command="{Binding SaveCommand}" ToolTip="Save (Ctrl+S)">
+                    <Button Style="{StaticResource ToolButton}" Width="32" Height="32" Margin="6,0,0,0" Command="{Binding SaveCommand}" ToolTip="Save (Ctrl+S)"
+                            AutomationProperties.Name="Save active file">
                         <Path Data="M2,2 L10,2 12,4 12,12 2,12 Z M4,2 L4,5.5 9,5.5 9,2 M4,8.5 L10,8.5 10,12 4,12 Z"
                               Stroke="#CFD4DA" StrokeThickness="1.1" StrokeLineJoin="Round"/>
                     </Button>
 
                     <Rectangle Width="1" Height="34" Fill="{StaticResource Line}" Margin="14,0"/>
 
-                    <Button Style="{StaticResource ToolButton}" Command="{Binding GoToStartCommand}" ToolTip="Go to start (Home)">
+                    <Button Style="{StaticResource ToolButton}" Command="{Binding GoToStartCommand}" ToolTip="Go to start (Home)"
+                            AutomationProperties.Name="Go to start">
                         <Path Data="M2,1.5 L2,13.5 M13,1.5 L5,7.5 13,13.5 Z" Stroke="#CFD4DA" StrokeThickness="1.4" StrokeLineJoin="Round"/>
                     </Button>
                     <Button x:Name="playBtn" Style="{StaticResource ToolButton}" Width="46" Margin="6,0,0,0"
-                            Command="{Binding PlayCommand}" ToolTip="Play / Stop (Space)">
+                            Command="{Binding PlayCommand}" ToolTip="Play / Pause (Space)"
+                            AutomationProperties.Name="Play or pause">
                         <Grid>
                             <Path Data="M3,1.5 L14.5,8 3,14.5 Z" Fill="{StaticResource Accent}">
                                 <Path.Style>
@@ -277,9 +284,9 @@
                                     </Style>
                                 </Path.Style>
                             </Path>
-                            <Rectangle Width="12" Height="12" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource Accent}">
-                                <Rectangle.Style>
-                                    <Style TargetType="Rectangle">
+                            <Grid Width="12" Height="12">
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
                                         <Setter Property="Visibility" Value="Collapsed"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsPlaying}" Value="True">
@@ -287,20 +294,28 @@
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
-                                </Rectangle.Style>
-                            </Rectangle>
+                                </Grid.Style>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="4"/>
+                                    <ColumnDefinition Width="4"/>
+                                    <ColumnDefinition Width="4"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Width="4" RadiusX="1" RadiusY="1" Fill="{StaticResource Accent}"/>
+                                <Rectangle Grid.Column="2" Width="4" RadiusX="1" RadiusY="1" Fill="{StaticResource Accent}"/>
+                            </Grid>
                         </Grid>
                     </Button>
-                    <Button Style="{StaticResource ToolButton}" Margin="6,0,0,0" Command="{Binding StopCommand}" ToolTip="Stop">
+                    <Button Style="{StaticResource ToolButton}" Margin="6,0,0,0" Command="{Binding StopCommand}" ToolTip="Stop"
+                            AutomationProperties.Name="Stop playback or recording">
                         <Rectangle Width="11" Height="11" RadiusX="1.5" RadiusY="1.5" Fill="#CFD4DA"/>
                     </Button>
                     <ToggleButton Style="{StaticResource RecordArmButton}" Margin="6,0,0,0"
                                   IsChecked="{Binding IsRecordArmed}" IsEnabled="{Binding CanChangeRecordArm}"
-                                  ToolTip="Arm the selected recording input">
+                                  ToolTip="Arm the selected recording input" AutomationProperties.Name="Arm recording input">
                         <TextBlock Text="ARM"/>
                     </ToggleButton>
                     <Button Style="{StaticResource ToolButton}" Margin="6,0,0,0" Command="{Binding RecordCommand}"
-                            ToolTip="{Binding RecordButtonToolTip}">
+                            ToolTip="{Binding RecordButtonToolTip}" AutomationProperties.Name="Record or stop recording">
                         <Grid>
                             <Ellipse Width="12" Height="12" Fill="{StaticResource Red}">
                                 <Ellipse.Style>
@@ -328,7 +343,8 @@
                             </Rectangle>
                         </Grid>
                     </Button>
-                    <ToggleButton Style="{StaticResource ToolButton}" Margin="6,0,0,0" IsChecked="{Binding IsLooping}" ToolTip="Loop playback">
+                    <ToggleButton Style="{StaticResource ToolButton}" Margin="6,0,0,0" IsChecked="{Binding IsLooping}" ToolTip="Loop playback"
+                                  AutomationProperties.Name="Loop playback">
                         <Path Data="M3,8 A5,4.5 0 1 1 4.5,11.2 M3,8 L3,4.5 M3,8 L6.5,8" Stroke="#CFD4DA"
                               StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </ToggleButton>
@@ -379,17 +395,17 @@
                                    Text="{Binding ActiveDocument.FormatText, FallbackValue=No file loaded}"/>
                     </Border>
                     <Button Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="14,0,0,0"
-                            Command="{Binding ZoomOutCommand}" ToolTip="Zoom out (Ctrl+-)">
+                            Command="{Binding ZoomOutCommand}" ToolTip="Zoom out (Ctrl+-)" AutomationProperties.Name="Zoom out">
                         <Path Data="M5.5,1 A4.5,4.5 0 1 0 5.5,10 A4.5,4.5 0 1 0 5.5,1 M9,9 L12.5,12.5 M3.5,5.5 L7.5,5.5"
                               Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </Button>
                     <Button Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
-                            Command="{Binding ZoomInCommand}" ToolTip="Zoom in (Ctrl+=)">
+                            Command="{Binding ZoomInCommand}" ToolTip="Zoom in (Ctrl+=)" AutomationProperties.Name="Zoom in">
                         <Path Data="M5.5,1 A4.5,4.5 0 1 0 5.5,10 A4.5,4.5 0 1 0 5.5,1 M9,9 L12.5,12.5 M3.5,5.5 L7.5,5.5 M5.5,3.5 L5.5,7.5"
                               Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </Button>
                     <Button Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
-                            Command="{Binding ZoomFitCommand}" ToolTip="Zoom to fit (Ctrl+0)">
+                            Command="{Binding ZoomFitCommand}" ToolTip="Zoom to fit (Ctrl+0)" AutomationProperties.Name="Zoom to fit">
                         <Path Data="M1,5 L1,1 5,1 M9,1 L13,1 13,5 M13,9 L13,13 9,13 M5,13 L1,13 1,9"
                               Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </Button>
@@ -408,9 +424,9 @@
                                      Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}"/>
                             <TextBlock Text="{Binding Doc.Title}" FontSize="12" Foreground="{StaticResource Text}"/>
                             <Button Margin="8,0,0,0" Padding="2" Background="Transparent" BorderThickness="0"
-                                    Foreground="{StaticResource Faint}" Cursor="Hand" FocusVisualStyle="{x:Null}"
+                                    Foreground="{StaticResource Faint}" Cursor="Hand"
                                     Command="{Binding DataContext.CloseTabCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                    CommandParameter="{Binding}">
+                                    CommandParameter="{Binding}" AutomationProperties.Name="Close file tab">
                                 <TextBlock Text="×" FontSize="13"/>
                             </Button>
                         </StackPanel>
@@ -487,7 +503,8 @@
                                 <TextBlock Text="{Binding Master.RackStateText}" Margin="0,0,7,0" FontSize="8.5"
                                            FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
                                 <ToggleButton Style="{StaticResource Switch}" IsChecked="{Binding Master.RackEnabled}"
-                                              ToolTip="Enable or bypass the entire effects rack"/>
+                                              ToolTip="Enable or bypass the entire effects rack"
+                                              AutomationProperties.Name="Enable or bypass effects rack"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <Ellipse Width="7" Height="7">
@@ -518,14 +535,17 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <ComboBox Height="30" ItemsSource="{Binding Master.PresetNames}"
-                                      SelectedItem="{Binding Master.SelectedPreset}" ToolTip="Load a chain preset"/>
+                                      SelectedItem="{Binding Master.SelectedPreset}" ToolTip="Load a chain preset"
+                                      AutomationProperties.Name="Effects rack preset"/>
                             <Button Grid.Column="1" Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
-                                    Command="{Binding Master.SavePresetCommand}" ToolTip="Save current chain as preset">
+                                    Command="{Binding Master.SavePresetCommand}" ToolTip="Save current chain as preset"
+                                    AutomationProperties.Name="Save rack preset">
                                 <Path Data="M2,2 L10,2 12,4 12,12 2,12 Z M4,2 L4,5.5 9,5.5 9,2 M4,8.5 L10,8.5 10,12 4,12 Z"
                                       Stroke="#9AA1A9" StrokeThickness="1.1" StrokeLineJoin="Round"/>
                             </Button>
                             <Button Grid.Column="2" Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
-                                    Command="{Binding Master.ResetChainCommand}" ToolTip="Reset chain to EQ + Limiter">
+                                    Command="{Binding Master.ResetChainCommand}" ToolTip="Reset chain to EQ + Limiter"
+                                    AutomationProperties.Name="Reset effects rack">
                                 <Path Data="M3,7 A5,4.5 0 1 1 4.5,10.2 M3,7 L3,3.5 M3,7 L6.5,7" Stroke="#9AA1A9"
                                       StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                             </Button>
@@ -533,7 +553,8 @@
                                     Width="30" Height="30" Margin="6,0,0,0" Content="✦" FontSize="13"
                                     Foreground="{StaticResource Accent}" Click="OnAnalyzeCleanupMenu"
                                     IsEnabled="{Binding CanAnalyzeCleanup}"
-                                    ToolTip="Analyze this file and tune Vinyl Cleanup or Clean Transfer"/>
+                                    ToolTip="Analyze this file and tune Vinyl Cleanup or Clean Transfer"
+                                    AutomationProperties.Name="Analyze and tune cleanup"/>
                         </Grid>
                         <TextBlock Text="{Binding Master.RackStatusText}" Margin="14,5,12,0" FontSize="9.5"
                                    Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
@@ -553,13 +574,13 @@
                                                     <TextBlock Text="{Binding NumberText}" FontFamily="{StaticResource MonoFont}"
                                                                FontSize="9.5" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
                                                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding MoveUpCommand}" ToolTip="Move up" Content="▲" FontSize="8"/>
-                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding MoveDownCommand}" ToolTip="Move down" Content="▼" FontSize="8"/>
-                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding ResetCommand}" ToolTip="Set to defaults" Content="↺" FontSize="11"/>
+                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding MoveUpCommand}" ToolTip="Move up" Content="▲" FontSize="8" AutomationProperties.Name="Move effect up"/>
+                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding MoveDownCommand}" ToolTip="Move down" Content="▼" FontSize="8" AutomationProperties.Name="Move effect down"/>
+                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding ResetCommand}" ToolTip="Set to defaults" Content="↺" FontSize="11" AutomationProperties.Name="Reset effect parameters"/>
                                                         <ToggleButton Style="{StaticResource Switch}" Margin="4,0" IsChecked="{Binding Enabled}"
-                                                                      ToolTip="Enable or bypass this effect"/>
+                                                                      ToolTip="Enable or bypass this effect" AutomationProperties.Name="Enable or bypass effect"/>
                                                         <Button Style="{StaticResource MiniButton}" Command="{Binding RemoveCommand}"
-                                                                ToolTip="Remove from rack and stop processing" Content="✕" FontSize="10"/>
+                                                                ToolTip="Remove from rack and stop processing" Content="✕" FontSize="10" AutomationProperties.Name="Remove effect"/>
                                                     </StackPanel>
                                                     <TextBlock Text="{Binding DisplayName}" Margin="8,0,0,0" FontSize="12"
                                                                FontWeight="SemiBold" VerticalAlignment="Center"/>
@@ -579,7 +600,7 @@
                                                                 <TextBlock Text="{Binding Label}" FontSize="8.5" FontWeight="Bold"
                                                                            Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
                                                                 <Slider Grid.Column="1" Minimum="{Binding Min}" Maximum="{Binding Max}"
-                                                                        Value="{Binding Value}" Margin="2,0,6,0"/>
+                                                                        Value="{Binding Value}" Margin="2,0,6,0" AutomationProperties.Name="{Binding Label}"/>
                                                                 <TextBlock Grid.Column="2" Text="{Binding ValueText}" FontFamily="{StaticResource MonoFont}"
                                                                            FontSize="9.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
                                                                            TextAlignment="Right"/>
@@ -595,7 +616,7 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
-                            <Button x:Name="addFxBtn" Click="OnAddEffect" Cursor="Hand" FocusVisualStyle="{x:Null}">
+                            <Button x:Name="addFxBtn" Click="OnAddEffect" Cursor="Hand" AutomationProperties.Name="Add effect">
                                 <Button.Template>
                                     <ControlTemplate TargetType="Button">
                                         <Border x:Name="bd" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10"
@@ -648,7 +669,7 @@
                             </Grid>
                             <Button Grid.Column="2" Style="{StaticResource MiniButton}" Width="24" Height="24" Margin="7,0,0,0"
                                     VerticalAlignment="Top" Command="{Binding Master.ResetMetersCommand}"
-                                    ToolTip="Reset level and loudness meters">
+                                    ToolTip="Reset level and loudness meters" AutomationProperties.Name="Reset meters">
                                 <Path Data="M3,7 A5,4.5 0 1 1 4.5,10.2 M3,7 L3,3.5 M3,7 L6.5,7"
                                       Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round"
                                       StrokeEndLineCap="Round"/>
@@ -664,7 +685,8 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="46"
-                                Command="{Binding ApplyChainCommand}" ToolTip="Render the selection or whole file in this tab as one undoable edit">
+                                Command="{Binding ApplyChainCommand}" ToolTip="Render the selection or whole file in this tab as one undoable edit"
+                                AutomationProperties.Name="Render effects in place">
                             <StackPanel>
                                 <TextBlock Text="Render in Place" FontSize="11.5" HorizontalAlignment="Center"/>
                                 <TextBlock Text="UNDOABLE · SELECTION OR FILE" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
@@ -672,6 +694,7 @@
                             </StackPanel>
                         </Button>
                         <Button Grid.Column="2" Style="{StaticResource AccentButton}" Height="46" Command="{Binding RenderCommand}"
+                                AutomationProperties.Name="Render effects to a new file tab"
                                 ToolTip="Render the whole file through the chain into a new tab without changing the source">
                             <StackPanel>
                                 <TextBlock Text="Render Copy" FontSize="11.5" HorizontalAlignment="Center"/>
@@ -703,6 +726,13 @@
                     <TextBlock Text="{Binding CpuText}" Margin="20,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Muted}"/>
                     <TextBlock Text="{Binding RamText}" Margin="20,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Muted}"/>
                 </StackPanel>
+                <TextBlock Text="{Binding ActionStatusText}" Margin="22,0" VerticalAlignment="Center"
+                           TextAlignment="Center" TextTrimming="CharacterEllipsis" FontSize="10.5"
+                           FontWeight="SemiBold" Foreground="{StaticResource Green}"
+                           ToolTip="{Binding ActionStatusText}"
+                           AutomationProperties.Name="{Binding ActionStatusText}"
+                           AutomationProperties.HelpText="Last completed action"
+                           AutomationProperties.LiveSetting="Polite"/>
             </DockPanel>
         </Border>
     </Grid>

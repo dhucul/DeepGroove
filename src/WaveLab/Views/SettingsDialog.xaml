@@ -43,6 +43,7 @@
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                             <Slider x:Name="sldUndo" Width="220" Minimum="64" Maximum="4096" TickFrequency="64" IsSnapToTickEnabled="True"
+                                    AutomationProperties.Name="Undo history memory limit"
                                     ValueChanged="OnUndoSliderChanged"/>
                             <TextBlock x:Name="lblUndo" Margin="12,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="11.5"
                                        Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
@@ -54,12 +55,13 @@
                     <!-- Audio -->
                     <StackPanel x:Name="pageAudio" Visibility="Collapsed">
                         <TextBlock Text="OUTPUT DEVICE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbOutput" Margin="0,6,0,14"/>
+                        <ComboBox x:Name="cmbOutput" Margin="0,6,0,14" AutomationProperties.Name="Output device"/>
                         <TextBlock Text="DEFAULT INPUT DEVICE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbInput" Margin="0,6,0,14"/>
+                        <ComboBox x:Name="cmbInput" Margin="0,6,0,14" AutomationProperties.Name="Default input device"/>
                         <TextBlock Text="PLAYBACK BUFFER" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                             <Slider x:Name="sldBuffer" Width="220" Minimum="20" Maximum="200" TickFrequency="10" IsSnapToTickEnabled="True"
+                                    AutomationProperties.Name="Playback buffer duration"
                                     ValueChanged="OnBufferSliderChanged"/>
                             <TextBlock x:Name="lblBuffer" Margin="12,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="11.5"
                                        Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
@@ -72,7 +74,8 @@
                     <StackPanel x:Name="pageAutosave" Visibility="Collapsed">
                         <CheckBox x:Name="chkAutosave" Content="Autosave modified files for crash recovery"/>
                         <TextBlock Text="INTERVAL" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}" Margin="0,16,0,0"/>
-                        <ComboBox x:Name="cmbAutosaveInterval" Margin="0,6,0,0" Width="180" HorizontalAlignment="Left"/>
+                        <ComboBox x:Name="cmbAutosaveInterval" Margin="0,6,0,0" Width="180" HorizontalAlignment="Left"
+                                  AutomationProperties.Name="Autosave interval"/>
                         <TextBlock Margin="0,10,0,0" FontSize="10.5" Foreground="{StaticResource Faint}" TextWrapping="Wrap"
                                    Text="Copies of unsaved work are kept in your user profile and offered for recovery if WaveLab doesn't shut down cleanly. They are removed on normal exit."/>
                     </StackPanel>
@@ -81,10 +84,12 @@
                     <StackPanel x:Name="pageExport" Visibility="Collapsed">
                         <TextBlock Text="DEFAULT FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
                         <ComboBox x:Name="cmbExportFormat" Margin="0,6,0,14" Width="300" HorizontalAlignment="Left"
+                                  AutomationProperties.Name="Default export format"
                                   SelectionChanged="OnExportFormatChanged"/>
                         <StackPanel x:Name="exportBitratePanel">
                             <TextBlock Text="DEFAULT BITRATE (LOSSY)" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                            <ComboBox x:Name="cmbExportBitrate" Margin="0,6,0,0" Width="160" HorizontalAlignment="Left"/>
+                            <ComboBox x:Name="cmbExportBitrate" Margin="0,6,0,0" Width="160" HorizontalAlignment="Left"
+                                      AutomationProperties.Name="Default lossy export bitrate"/>
                         </StackPanel>
                     </StackPanel>
                 </Grid>
@@ -95,8 +100,10 @@
                     <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="34" Padding="14,0"
                             Click="OnRestoreDefaults" Content="↺ Restore Defaults" HorizontalAlignment="Left"/>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="34" Width="90" Click="OnCancel" Content="Cancel"/>
-                        <Button Style="{StaticResource AccentButton}" Height="34" Width="90" Margin="10,0,0,0" Click="OnSave" Content="Save"/>
+                        <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="34" Width="90"
+                                Click="OnCancel" Content="Cancel" IsCancel="True"/>
+                        <Button Style="{StaticResource AccentButton}" Height="34" Width="90" Margin="10,0,0,0"
+                                Click="OnSave" Content="Save" IsDefault="True"/>
                     </StackPanel>
                 </DockPanel>
             </Border>

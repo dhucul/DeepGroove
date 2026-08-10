@@ -58,6 +58,7 @@ public sealed class MainViewModel : ObservableObject
     private int _tickCount;
     private string _cpuText = "CPU —";
     private string _ramText = "RAM —";
+    private string _actionStatusText = "Ready.";
 
     public MainViewModel()
     {
@@ -67,6 +68,7 @@ public sealed class MainViewModel : ObservableObject
         Engine = new PlaybackEngine();
         Master = new MasterSectionViewModel(Engine.Master);
         Master.ProcessingTopologyChanged += RestartMonoPlaybackForTopologyChange;
+        Master.StatusChanged += ReportAction;
         Engine.PlaybackStopped += OnPlaybackStopped;
         Engine.PlaybackFailed += OnPlaybackFailed;
         _transportRecorder.CaptureStopped += OnTransportCaptureStopped;
@@ -83,67 +85,77 @@ public sealed class MainViewModel : ObservableObject
         _autosaveTimer.Start();
 
         OpenCommand = new RelayCommand(Open);
-        SaveCommand = new RelayCommand(Save);
-        SaveAsCommand = new RelayCommand(SaveAs);
-        CloseTabCommand = new RelayCommand<DocumentViewModel>(CloseTab);
+        SaveCommand = new RelayCommand(Save, () => _active != null);
+        SaveAsCommand = new RelayCommand(SaveAs, () => _active != null);
+        CloseTabCommand = new RelayCommand<DocumentViewModel>(CloseTab,
+            document => document != null ? Documents.Contains(document) : _active != null);
         ExitCommand = new RelayCommand(() => Application.Current.MainWindow?.Close());
 
-        UndoCommand = new RelayCommand(() => WithDoc(d => { PrepareForDocumentEdit(d); d.Doc.Undo(); }), () => _active?.Doc.CanUndo == true);
-        RedoCommand = new RelayCommand(() => WithDoc(d => { PrepareForDocumentEdit(d); d.Doc.Redo(); }), () => _active?.Doc.CanRedo == true);
+        UndoCommand = new RelayCommand(Undo, () => _active?.Doc.CanUndo == true);
+        RedoCommand = new RelayCommand(Redo, () => _active?.Doc.CanRedo == true);
         CutCommand = new RelayCommand(Cut, () => !_editOperationRunning && _active?.HasSelection == true);
         CopyCommand = new RelayCommand(Copy, () => !_editOperationRunning && _active?.HasSelection == true);
         PasteCommand = new RelayCommand(Paste, () => !_editOperationRunning && _active != null && _clipboard != null);
         DeleteCommand = new RelayCommand(DeleteSelection, () => !_editOperationRunning && _active?.HasSelection == true);
         TrimCommand = new RelayCommand(Trim, () => !_editOperationRunning && _active?.HasSelection == true);
-        SelectAllCommand = new RelayCommand(() => WithDoc(d => d.SelectAll()));
+        SelectAllCommand = new RelayCommand(() => WithDoc(d => d.SelectAll()), () => HasAudioDocument);
 
-        PlayCommand = new RelayCommand(TogglePlay, () => !IsTransportRecording && !IsFinalizingRecording);
-        StopCommand = new RelayCommand(StopTransport);
-        GoToStartCommand = new RelayCommand(GoToStart);
+        PlayCommand = new RelayCommand(TogglePlay,
+            () => HasAudioDocument && !IsTransportRecording && !IsFinalizingRecording);
+        StopCommand = new RelayCommand(StopTransport,
+            () => IsTransportRecording || HasPendingTransportRecording || Engine.IsPlaying || Engine.IsPaused);
+        GoToStartCommand = new RelayCommand(GoToStart, () => HasDocument);
         SeekCommand = new RelayCommand<PlayheadSeekRequest>(HandlePlayheadSeek);
         ToggleLoopCommand = new RelayCommand(() => IsLooping = !IsLooping);
 
-        ZoomInCommand = new RelayCommand(() => WithDoc(d => d.ZoomBy(1 / 1.5)));
-        ZoomOutCommand = new RelayCommand(() => WithDoc(d => d.ZoomBy(1.5)));
-        ZoomFitCommand = new RelayCommand(() => WithDoc(d => d.ZoomFull()));
-        ZoomSelectionCommand = new RelayCommand(() => WithDoc(d => d.ZoomToSelection()));
+        ZoomInCommand = new RelayCommand(() => WithDoc(d => d.ZoomBy(1 / 1.5)), () => HasAudioDocument);
+        ZoomOutCommand = new RelayCommand(() => WithDoc(d => d.ZoomBy(1.5)), () => HasAudioDocument);
+        ZoomFitCommand = new RelayCommand(() => WithDoc(d => d.ZoomFull()), () => HasAudioDocument);
+        ZoomSelectionCommand = new RelayCommand(() => WithDoc(d => d.ZoomToSelection()),
+            () => _active?.HasSelection == true);
 
-        GainUpCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Gain(d, s, c, 3)));
-        GainDownCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Gain(d, s, c, -3)));
-        NormalizeCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Normalize(d, s, c, -0.3)));
-        FadeInCommand = new RelayCommand(() => ApplyToRange(Processing.FadeIn));
-        FadeOutCommand = new RelayCommand(() => ApplyToRange(Processing.FadeOut));
-        ReverseCommand = new RelayCommand(() => ApplyToRange(Processing.Reverse));
-        RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset));
+        GainUpCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Gain(d, s, c, 3)),
+            () => HasAudioDocument);
+        GainDownCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Gain(d, s, c, -3)),
+            () => HasAudioDocument);
+        NormalizeCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Normalize(d, s, c, -0.3)),
+            () => HasAudioDocument);
+        FadeInCommand = new RelayCommand(() => ApplyToRange(Processing.FadeIn), () => HasAudioDocument);
+        FadeOutCommand = new RelayCommand(() => ApplyToRange(Processing.FadeOut), () => HasAudioDocument);
+        ReverseCommand = new RelayCommand(() => ApplyToRange(Processing.Reverse), () => HasAudioDocument);
+        RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset), () => HasAudioDocument);
         InsertSilenceCommand = new RelayCommand(() => WithDoc(d =>
         {
             PrepareForDocumentEdit(d);
             Processing.InsertSilence(d.Doc, d.Cursor, 1.0);
-        }));
+        }), () => HasDocument);
 
         AddMarkerCommand = new RelayCommand(() => WithDoc(d => d.AddMarker(
             d.HasSelection ? d.SelStart
             : IsPlaying && ReferenceEquals(d, _playbackDocument) ? d.PlayheadSample
-            : d.Cursor)));
-        AddRegionCommand = new RelayCommand(() => WithDoc(d => d.AddRegionFromSelection()));
-        PrevMarkerCommand = new RelayCommand(() => WithDoc(d => d.JumpToNextMarker(forward: false)));
-        NextMarkerCommand = new RelayCommand(() => WithDoc(d => d.JumpToNextMarker(forward: true)));
+            : d.Cursor)), () => HasAudioDocument);
+        AddRegionCommand = new RelayCommand(() => WithDoc(d => d.AddRegionFromSelection()),
+            () => _active?.HasSelection == true);
+        PrevMarkerCommand = new RelayCommand(() => WithDoc(d => d.JumpToNextMarker(forward: false)),
+            () => _active?.Markers.Count > 0);
+        NextMarkerCommand = new RelayCommand(() => WithDoc(d => d.JumpToNextMarker(forward: true)),
+            () => _active?.Markers.Count > 0);
         ClearMarkersCommand = new RelayCommand(() => WithDoc(d =>
         {
             d.Markers.Clear();
             d.Regions.Clear();
             d.NotifyMarkersChanged();
-        }));
-        SmoothEditCommand = new RelayCommand(SmoothEditPoints);
+        }), () => _active is { } d && (d.Markers.Count > 0 || d.Regions.Count > 0));
+        SmoothEditCommand = new RelayCommand(SmoothEditPoints, () => HasAudioDocument);
 
-        RenderCommand = new RelayCommand(RenderMaster);
-        ApplyChainCommand = new RelayCommand(ApplyChain);
+        RenderCommand = new RelayCommand(RenderMaster, () => HasAudioDocument);
+        ApplyChainCommand = new RelayCommand(ApplyChain, () => HasAudioDocument);
         RecordCommand = new RelayCommand(ToggleRecord, () => !IsFinalizingRecording);
         RecordSetupCommand = new RelayCommand(() => RequestRecordDialog?.Invoke(),
             () => !IsTransportRecording && !IsFinalizingRecording && !HasPendingTransportRecording);
         SettingsCommand = new RelayCommand(() => RequestSettingsDialog?.Invoke());
-        ExportCommand = new RelayCommand(() => { if (_active != null) RequestExportDialog?.Invoke(); });
-        StatisticsCommand = new RelayCommand(() => { if (_active != null) RequestStatisticsDialog?.Invoke(); });
+        ExportCommand = new RelayCommand(() => RequestExportDialog?.Invoke(), () => HasAudioDocument);
+        StatisticsCommand = new RelayCommand(() => RequestStatisticsDialog?.Invoke(), () => HasAudioDocument);
         OpenRecentCommand = new RelayCommand<string>(path => { if (path != null) OpenFiles([path]); });
         CommandPaletteCommand = new RelayCommand(() => RequestCommandPalette?.Invoke());
         AboutCommand = new RelayCommand(() => MessageBox.Show(
@@ -231,6 +243,9 @@ public sealed class MainViewModel : ObservableObject
                 _active.Doc.Changed += OnActiveDocumentEdited;
             }
             Raise(nameof(HasDocument));
+            Raise(nameof(HasAudioDocument));
+            Raise(nameof(HasMultichannelDocument));
+            Raise(nameof(HasMonoDocument));
             Raise(nameof(CanAnalyzeCleanup));
             Raise(nameof(WindowTitle));
             Raise(nameof(StatusSamples));
@@ -239,7 +254,10 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public bool HasDocument => _active != null;
-    public bool CanAnalyzeCleanup => HasDocument &&
+    public bool HasAudioDocument => _active?.Doc.Length > 0;
+    public bool HasMultichannelDocument => _active?.Doc.ChannelCount > 1;
+    public bool HasMonoDocument => _active?.Doc.ChannelCount == 1;
+    public bool CanAnalyzeCleanup => HasAudioDocument &&
                                      !IsTransportRecording &&
                                      !IsFinalizingRecording &&
                                      !HasPendingTransportRecording;
@@ -248,7 +266,12 @@ public sealed class MainViewModel : ObservableObject
     public bool IsPlaying
     {
         get => _isPlaying;
-        private set => Set(ref _isPlaying, value);
+        private set
+        {
+            if (!Set(ref _isPlaying, value)) return;
+            PlayCommand.RaiseCanExecuteChanged();
+            StopCommand.RaiseCanExecuteChanged();
+        }
     }
 
     public bool IsLooping
@@ -284,6 +307,7 @@ public sealed class MainViewModel : ObservableObject
             Raise(nameof(CanChangeRecordArm));
             Raise(nameof(CanAnalyzeCleanup));
             PlayCommand.RaiseCanExecuteChanged();
+            StopCommand.RaiseCanExecuteChanged();
             RecordSetupCommand.RaiseCanExecuteChanged();
         }
     }
@@ -299,6 +323,7 @@ public sealed class MainViewModel : ObservableObject
             Raise(nameof(CanChangeRecordArm));
             Raise(nameof(CanAnalyzeCleanup));
             PlayCommand.RaiseCanExecuteChanged();
+            StopCommand.RaiseCanExecuteChanged();
             RecordCommand.RaiseCanExecuteChanged();
             RecordSetupCommand.RaiseCanExecuteChanged();
         }
@@ -320,6 +345,7 @@ public sealed class MainViewModel : ObservableObject
 
     public string StatusEngine => $"Out: {PlaybackEngine.CurrentOutputName()} · WASAPI · {AppSettings.Instance.BufferMs} ms";
     public string StatusSamples => _active == null ? "" : $"{_active.Doc.Length:N0} samples";
+    public string ActionStatusText { get => _actionStatusText; private set => Set(ref _actionStatusText, value); }
 
     public string StatusAutosave =>
         !AppSettings.Instance.AutosaveEnabled ? "Autosave off"
@@ -328,6 +354,12 @@ public sealed class MainViewModel : ObservableObject
 
     public string CpuText { get => _cpuText; private set => Set(ref _cpuText, value); }
     public string RamText { get => _ramText; private set => Set(ref _ramText, value); }
+
+    public void ReportAction(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return;
+        ActionStatusText = $"✓ {message.Trim()}";
+    }
 
     public void RefreshEngineStatus()
     {
@@ -385,6 +417,7 @@ public sealed class MainViewModel : ObservableObject
                     return (loaded, store);
                 });
                 AddDocument(doc, peaks);
+                ReportAction($"{doc.Title} opened.");
                 AppSettings.Instance.LastOpenFolder = Path.GetDirectoryName(path);
                 if (!AppSettings.Instance.AddRecentFile(path)) ReportSettingsSaveFailure();
                 SyncRecentFiles();
@@ -429,10 +462,11 @@ public sealed class MainViewModel : ObservableObject
         ActiveDocument = vm;
     }
 
-    public void AddGeneratedDocument(AudioDocument doc)
+    public void AddGeneratedDocument(AudioDocument doc, string? completedAction = null)
     {
         doc.MarkUnsaved();
         AddDocument(doc);
+        ReportAction(completedAction ?? $"{doc.Title} created in a new tab.");
     }
 
     /// <summary>Point-in-time copy sharing the current channel arrays (splices never mutate old arrays).</summary>
@@ -515,6 +549,9 @@ public sealed class MainViewModel : ObservableObject
                 d.NotifySaved();
                 AutosaveService.Remove(doc.SessionId);
             }
+            ReportAction(doc.EditVersion == version
+                ? $"{doc.Title} saved."
+                : $"{doc.Title} save completed · newer edits remain unsaved.");
         }
         catch (Exception ex)
         {
@@ -588,6 +625,9 @@ public sealed class MainViewModel : ObservableObject
             if (!AppSettings.Instance.AddRecentFile(dlg.FileName)) ReportSettingsSaveFailure();
             SyncRecentFiles();
             Raise(nameof(WindowTitle));
+            ReportAction(doc.EditVersion == version
+                ? $"{doc.Title} saved."
+                : $"{doc.Title} save completed · newer edits remain unsaved.");
         }
         catch (Exception ex)
         {
@@ -659,10 +699,26 @@ public sealed class MainViewModel : ObservableObject
 
     // ── edit ─────────────────────────────────────────────────────
 
+    private void Undo()
+    {
+        if (_active is not { } document || document.Doc.NextUndoName is not { } operation) return;
+        PrepareForDocumentEdit(document);
+        document.Doc.Undo();
+        ReportAction($"{operation} undone.");
+    }
+
+    private void Redo()
+    {
+        if (_active is not { } document || document.Doc.NextRedoName is not { } operation) return;
+        PrepareForDocumentEdit(document);
+        document.Doc.Redo();
+        ReportAction($"{operation} reapplied · Undo available.");
+    }
+
     private async void Copy()
     {
         if (_active is not { HasSelection: true } d) return;
-        await CaptureSelectionAsync(d);
+        if (await CaptureSelectionAsync(d)) ReportAction("Selection copied.");
     }
 
     private async void Cut()
@@ -848,7 +904,7 @@ public sealed class MainViewModel : ObservableObject
     private void StopTransport()
     {
         if (IsTransportRecording || HasPendingTransportRecording) _ = FinishTransportRecordingAsync();
-        else PausePlayback();
+        else if (Engine.IsPlaying || Engine.IsPaused) ReleasePlayback();
     }
 
     public Task FinishTransportRecordingAsync()
@@ -896,6 +952,7 @@ public sealed class MainViewModel : ObservableObject
             Raise(nameof(RecordButtonToolTip));
             Raise(nameof(CanChangeRecordArm));
             RecordSetupCommand.RaiseCanExecuteChanged();
+            StopCommand.RaiseCanExecuteChanged();
         }
     }
 
@@ -1187,12 +1244,24 @@ public sealed class MainViewModel : ObservableObject
         });
     }
 
-    private void OnActiveDocumentEdited(int start, int removed, int inserted) => RefreshEditCommandStates();
+    private void OnActiveDocumentEdited(int start, int removed, int inserted)
+    {
+        if (_active?.Doc.NextUndoName is { } operation)
+            ReportAction($"{operation} applied · Undo available.");
+        Raise(nameof(HasAudioDocument));
+        Raise(nameof(HasMultichannelDocument));
+        Raise(nameof(HasMonoDocument));
+        Raise(nameof(CanAnalyzeCleanup));
+        RefreshEditCommandStates();
+    }
 
     private void OnActiveDocumentPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(DocumentViewModel.MarkersVersion))
+            ReportAction("Markers or regions updated.");
         if (e.PropertyName is nameof(DocumentViewModel.HasSelection)
-            or nameof(DocumentViewModel.SelStart) or nameof(DocumentViewModel.SelEnd))
+            or nameof(DocumentViewModel.SelStart) or nameof(DocumentViewModel.SelEnd)
+            or nameof(DocumentViewModel.MarkersVersion))
             RefreshEditCommandStates();
     }
 
@@ -1205,6 +1274,34 @@ public sealed class MainViewModel : ObservableObject
         PasteCommand.RaiseCanExecuteChanged();
         DeleteCommand.RaiseCanExecuteChanged();
         TrimCommand.RaiseCanExecuteChanged();
+        SaveCommand.RaiseCanExecuteChanged();
+        SaveAsCommand.RaiseCanExecuteChanged();
+        CloseTabCommand.RaiseCanExecuteChanged();
+        SelectAllCommand.RaiseCanExecuteChanged();
+        PlayCommand.RaiseCanExecuteChanged();
+        GoToStartCommand.RaiseCanExecuteChanged();
+        ZoomInCommand.RaiseCanExecuteChanged();
+        ZoomOutCommand.RaiseCanExecuteChanged();
+        ZoomFitCommand.RaiseCanExecuteChanged();
+        ZoomSelectionCommand.RaiseCanExecuteChanged();
+        GainUpCommand.RaiseCanExecuteChanged();
+        GainDownCommand.RaiseCanExecuteChanged();
+        NormalizeCommand.RaiseCanExecuteChanged();
+        FadeInCommand.RaiseCanExecuteChanged();
+        FadeOutCommand.RaiseCanExecuteChanged();
+        ReverseCommand.RaiseCanExecuteChanged();
+        RemoveDcCommand.RaiseCanExecuteChanged();
+        InsertSilenceCommand.RaiseCanExecuteChanged();
+        AddMarkerCommand.RaiseCanExecuteChanged();
+        AddRegionCommand.RaiseCanExecuteChanged();
+        PrevMarkerCommand.RaiseCanExecuteChanged();
+        NextMarkerCommand.RaiseCanExecuteChanged();
+        ClearMarkersCommand.RaiseCanExecuteChanged();
+        SmoothEditCommand.RaiseCanExecuteChanged();
+        RenderCommand.RaiseCanExecuteChanged();
+        ApplyChainCommand.RaiseCanExecuteChanged();
+        ExportCommand.RaiseCanExecuteChanged();
+        StatisticsCommand.RaiseCanExecuteChanged();
     }
 
     private async void RenderMaster()
@@ -1222,7 +1319,7 @@ public sealed class MainViewModel : ObservableObject
             AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
             {
                 Title = Path.GetFileNameWithoutExtension(doc.Title) + " (rendered copy).wav",
-            });
+            }, "Effects rack rendered to a new tab · source audio unchanged.");
         });
     }
 

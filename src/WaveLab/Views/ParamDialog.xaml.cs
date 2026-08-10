@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -31,6 +32,7 @@ public partial class ParamDialog : Window
         {
             body.Children.Add(Label(comboLabel));
             _combo = new ComboBox { Margin = new Thickness(0, 6, 0, 14) };
+            AutomationProperties.SetName(_combo, comboLabel);
             foreach (var item in comboItems) _combo.Items.Add(item);
             _combo.SelectedIndex = Math.Clamp(comboDefault, 0, comboItems.Length - 1);
             body.Children.Add(_combo);
@@ -54,6 +56,7 @@ public partial class ParamDialog : Window
                 slider.TickFrequency = spec.Tick;
                 slider.IsSnapToTickEnabled = true;
             }
+            AutomationProperties.SetName(slider, spec.Label);
             var value = new TextBlock
             {
                 FontFamily = (FontFamily)FindResource("MonoFont"),

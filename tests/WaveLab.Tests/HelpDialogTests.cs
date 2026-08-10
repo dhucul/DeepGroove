@@ -1,5 +1,7 @@
 using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using WaveLab.Help;
 using WaveLab.Views;
 using Xunit;
@@ -13,6 +15,7 @@ public sealed class HelpDialogTests
     {
         Exception? failure = null;
         string? selectedTopicId = null;
+        bool submenuPopupPresent = false;
         var thread = new Thread(() =>
         {
             Application? application = null;
@@ -30,6 +33,14 @@ public sealed class HelpDialogTests
                 var content = Assert.IsAssignableFrom<FrameworkElement>(dialog.FindName("topicContent"));
                 selectedTopicId = Assert.IsType<HelpTopic>(content.DataContext).Id;
                 dialog.Close();
+
+                var menuStyle = Assert.IsType<Style>(application.TryFindResource(typeof(MenuItem)));
+                var submenu = new MenuItem { Header = "Parent", Style = menuStyle };
+                submenu.Items.Add(new MenuItem { Header = "Child" });
+                Assert.True(submenu.ApplyTemplate());
+                Assert.IsType<Popup>(
+                    submenu.Template.FindName("PART_Popup", submenu));
+                submenuPopupPresent = true;
             }
             catch (Exception ex)
             {
@@ -46,5 +57,6 @@ public sealed class HelpDialogTests
         Assert.True(thread.Join(TimeSpan.FromSeconds(10)), "Help dialog smoke test timed out.");
         Assert.Null(failure);
         Assert.Equal(HelpCatalog.RecordingTopicId, selectedTopicId);
+        Assert.True(submenuPopupPresent, "The submenu template does not host its child popup.");
     }
 }

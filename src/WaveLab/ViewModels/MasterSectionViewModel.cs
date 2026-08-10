@@ -31,7 +31,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         AddEffectCommand = new RelayCommand<string>(typeId => { if (typeId != null) AddEffect(typeId); });
         SavePresetCommand = new RelayCommand(() => RequestSavePreset?.Invoke());
         ResetChainCommand = new RelayCommand(ResetChain);
-        ResetMetersCommand = new RelayCommand(ResetMeters);
+        ResetMetersCommand = new RelayCommand(() => ResetMeters(reportStatus: true));
         SyncFromMaster();
         RefreshPresets();
     }
@@ -55,17 +55,25 @@ public sealed class MasterSectionViewModel : ObservableObject
             Raise();
             Raise(nameof(RackStateText));
             RackStatusText = value
-                ? "Rack enabled — effects processing active."
-                : "Rack bypassed — all effects processing disabled.";
+                ? "Rack enabled · effects active for playback; source unchanged until render."
+                : "Rack bypassed · effects processing disabled; source unchanged.";
             NotifyTopologyChanged(expandedMonoBefore);
         }
     }
 
     public string RackStateText => RackEnabled ? "ACTIVE" : "BYPASSED";
-    public string RackStatusText { get => _rackStatusText; private set => Set(ref _rackStatusText, value); }
+    public string RackStatusText
+    {
+        get => _rackStatusText;
+        private set
+        {
+            if (Set(ref _rackStatusText, value)) StatusChanged?.Invoke(value);
+        }
+    }
 
     /// <summary>The window prompts for a preset name and calls SavePresetAs.</summary>
     public event Action? RequestSavePreset;
+    public event Action<string>? StatusChanged;
 
     /// <summary>
     /// Raised when mono source material starts or stops requiring a stereo
@@ -84,7 +92,7 @@ public sealed class MasterSectionViewModel : ObservableObject
             bool expandedMonoBefore = _master.ExpandsMonoToStereo;
             _master.ReplaceChain(EffectFactory.Instantiate(preset));
             SyncFromMaster();
-            RackStatusText = $"Preset ‘{preset.Name}’ loaded.";
+            RackStatusText = $"Preset ‘{preset.Name}’ loaded · active in rack; source unchanged until render.";
             NotifyTopologyChanged(expandedMonoBefore);
         }
     }
@@ -97,7 +105,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         var effect = _master.AddEffect(typeId);
         MarkChainCustom();
         SyncFromMaster();
-        RackStatusText = $"{effect.DisplayName} added to the rack.";
+        RackStatusText = $"{effect.DisplayName} added · active in rack; source unchanged until render.";
         NotifyTopologyChanged(expandedMonoBefore);
     }
 
@@ -106,7 +114,14 @@ public sealed class MasterSectionViewModel : ObservableObject
         if (!_master.MoveEffect(vm.Effect, delta)) return;
         MarkChainCustom();
         SyncFromMaster();
-        RackStatusText = "Effects reordered · custom chain.";
+        RackStatusText = "Effects reordered · active rack updated; source unchanged until render.";
+    }
+
+    private bool CanMoveEffect(EffectViewModel vm, int delta)
+    {
+        int index = Effects.IndexOf(vm);
+        int destination = index + delta;
+        return index >= 0 && destination >= 0 && destination < Effects.Count;
     }
 
     private void RemoveEffect(EffectViewModel vm)
@@ -128,8 +143,8 @@ public sealed class MasterSectionViewModel : ObservableObject
         if (!_master.SetEffectEnabled(vm.Effect, enabled)) return;
         MarkChainCustom();
         RackStatusText = enabled
-            ? $"{vm.DisplayName} enabled."
-            : $"{vm.DisplayName} bypassed.";
+            ? $"{vm.DisplayName} enabled · active in rack; source unchanged until render."
+            : $"{vm.DisplayName} bypassed · source unchanged.";
         NotifyTopologyChanged(expandedMonoBefore);
     }
 
@@ -141,7 +156,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         SelectedPreset = null;
         _applyingPreset = false;
         SyncFromMaster();
-        RackStatusText = "Rack reset to Studio EQ with Precision Limiter bypassed.";
+        RackStatusText = "Rack reset to Studio EQ with Precision Limiter bypassed · source unchanged until render.";
         NotifyTopologyChanged(expandedMonoBefore);
     }
 
@@ -151,10 +166,10 @@ public sealed class MasterSectionViewModel : ObservableObject
             ProcessingTopologyChanged?.Invoke();
     }
 
-    private void OnEffectChanged(EffectViewModel _)
+    private void OnEffectChanged(EffectViewModel effect)
     {
         MarkChainCustom();
-        RackStatusText = "Rack parameters changed · custom chain.";
+        RackStatusText = $"{effect.DisplayName} adjusted · active in rack; source unchanged until render.";
     }
 
     private void MarkChainCustom()
@@ -171,7 +186,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         int n = 1;
         foreach (var fx in _master.ChainSnapshot)
         {
-            var vm = new EffectViewModel(fx, MoveEffect, RemoveEffect, SetEffectEnabled, OnEffectChanged)
+            var vm = new EffectViewModel(fx, MoveEffect, CanMoveEffect, RemoveEffect, SetEffectEnabled, OnEffectChanged)
                 { NumberText = $"{n:00}" };
             Effects.Add(vm);
             n++;
@@ -209,6 +224,7 @@ public sealed class MasterSectionViewModel : ObservableObject
             _applyingPreset = true;
             SelectedPreset = name;
             _applyingPreset = false;
+            RackStatusText = $"Preset ‘{name}’ saved.";
         }
         catch (Exception ex)
         {
@@ -286,7 +302,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         foreach (var fx in Effects) fx.TickReadout();
     }
 
-    public void ResetMeters()
+    public void ResetMeters(bool reportStatus = false)
     {
         PeakLDb = PeakRDb = RmsLDb = RmsRDb = HoldLDb = HoldRDb = -60;
         _master.ResetMeters();
@@ -295,6 +311,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         Raise(nameof(LufsSText));
         Raise(nameof(LraText));
         Raise(nameof(TruePeakText));
+        if (reportStatus) RackStatusText = "Level and loudness meters reset.";
         Raise(nameof(PeakLrText));
         Raise(nameof(CorrelationText));
         Raise(nameof(Correlation));

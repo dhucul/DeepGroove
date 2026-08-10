@@ -30,7 +30,7 @@
             <StackPanel Margin="20,17,20,16">
                 <TextBlock Text="INPUT DEVICE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
                 <ComboBox x:Name="deviceCombo" Margin="0,6,0,0" ItemsSource="{Binding Devices}"
-                          SelectedItem="{Binding SelectedDevice}">
+                          SelectedItem="{Binding SelectedDevice}" AutomationProperties.Name="Input device">
                     <ComboBox.ItemTemplate>
                         <DataTemplate><TextBlock Text="{Binding Name}"/></DataTemplate>
                     </ComboBox.ItemTemplate>
@@ -192,10 +192,11 @@
                         <ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <CheckBox x:Name="chkCountIn" Content="Count-in" VerticalAlignment="Center"/>
-                    <TextBox x:Name="txtBpm" Grid.Column="2" Text="120" Padding="8,5" FontSize="12" VerticalAlignment="Center"/>
+                    <TextBox x:Name="txtBpm" Grid.Column="2" Text="120" Padding="8,5" FontSize="12" VerticalAlignment="Center"
+                             AutomationProperties.Name="Metronome tempo in BPM"/>
                     <TextBlock Grid.Column="4" Text="BPM ·" Foreground="{StaticResource Faint}" FontSize="11" VerticalAlignment="Center"/>
                     <StackPanel Grid.Column="5" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center">
-                        <ComboBox x:Name="cmbBars" Width="86" Height="30"/>
+                        <ComboBox x:Name="cmbBars" Width="86" Height="30" AutomationProperties.Name="Count-in bars"/>
                         <CheckBox x:Name="chkMetronome" Content="Click while recording" Margin="12,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
                 </Grid>
@@ -218,7 +219,7 @@
                     <Button Grid.Column="0" x:Name="cancelBtn" Content="Cancel" Height="38" Click="OnCancel"
                             Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"/>
                     <Button Grid.Column="2" x:Name="startBtn" Height="38" Click="OnStartStop"
-                            Style="{StaticResource DangerButton}">
+                            Style="{StaticResource DangerButton}" AutomationProperties.Name="Start or stop recording">
                         <StackPanel Orientation="Horizontal">
                             <Ellipse Width="11" Height="11" Fill="{StaticResource Red}" VerticalAlignment="Center"/>
                             <TextBlock x:Name="startText" Text="Start Recording" Margin="8,0,0,0"/>

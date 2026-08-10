@@ -20,8 +20,9 @@
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
                 <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="34"
-                        Click="OnCancel" Content="Cancel"/>
-                <Button Grid.Column="2" Style="{StaticResource AccentButton}" Height="34" Click="OnOk" Content="OK"/>
+                        Click="OnCancel" Content="Cancel" IsCancel="True"/>
+                <Button Grid.Column="2" Style="{StaticResource AccentButton}" Height="34" Click="OnOk" Content="OK"
+                        IsDefault="True"/>
             </Grid>
         </StackPanel>
     </Border>

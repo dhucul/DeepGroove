@@ -34,23 +34,26 @@ public sealed class EffectParamViewModel(IAudioEffect fx, EffectParam param, Act
 public sealed class EffectViewModel : ObservableObject
 {
     private readonly Action<EffectViewModel, int> _move;
+    private readonly Func<EffectViewModel, int, bool> _canMove;
     private readonly Action<EffectViewModel> _remove;
     private readonly Action<EffectViewModel, bool> _setEnabled;
     private readonly Action<EffectViewModel> _changed;
 
     public EffectViewModel(IAudioEffect effect, Action<EffectViewModel, int> move,
+        Func<EffectViewModel, int, bool> canMove,
         Action<EffectViewModel> remove, Action<EffectViewModel, bool> setEnabled,
         Action<EffectViewModel> changed)
     {
         Effect = effect;
         _move = move;
+        _canMove = canMove;
         _remove = remove;
         _setEnabled = setEnabled;
         _changed = changed;
         foreach (var p in effect.Params)
             Params.Add(new EffectParamViewModel(effect, p, OnParamChanged));
-        MoveUpCommand = new RelayCommand(() => _move(this, -1));
-        MoveDownCommand = new RelayCommand(() => _move(this, +1));
+        MoveUpCommand = new RelayCommand(() => _move(this, -1), () => _canMove(this, -1));
+        MoveDownCommand = new RelayCommand(() => _move(this, +1), () => _canMove(this, +1));
         RemoveCommand = new RelayCommand(() => _remove(this));
         ResetCommand = new RelayCommand(ResetToDefaults);
     }

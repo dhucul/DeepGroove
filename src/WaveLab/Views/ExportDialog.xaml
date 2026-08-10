@@ -22,6 +22,7 @@
             <StackPanel Margin="20,18">
                 <TextBlock Text="FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
                 <ComboBox x:Name="cmbFormat" Margin="0,6,0,0" MaxDropDownHeight="420"
+                          AutomationProperties.Name="Export format"
                           SelectionChanged="OnFormatChanged">
                     <ComboBox.GroupStyle>
                         <GroupStyle>
@@ -45,16 +46,16 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel x:Name="bitratePanel">
                         <TextBlock Text="BITRATE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbBitrate" Margin="0,6,0,0"/>
+                        <ComboBox x:Name="cmbBitrate" Margin="0,6,0,0" AutomationProperties.Name="Export bitrate"/>
                     </StackPanel>
                     <StackPanel Grid.Column="2">
                         <TextBlock Text="SAMPLE RATE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <ComboBox x:Name="cmbRate" Margin="0,6,0,0"/>
+                        <ComboBox x:Name="cmbRate" Margin="0,6,0,0" AutomationProperties.Name="Export sample rate"/>
                     </StackPanel>
                 </Grid>
 
                 <TextBlock Text="RANGE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}" Margin="0,14,0,0"/>
-                <ComboBox x:Name="cmbRange" Margin="0,6,0,0"/>
+                <ComboBox x:Name="cmbRange" Margin="0,6,0,0" AutomationProperties.Name="Export range"/>
 
                 <TextBlock x:Name="busyText" Margin="0,14,0,0" FontSize="11.5" Foreground="{StaticResource Accent}"
                            Text="Exporting…" Visibility="Collapsed"/>
@@ -70,7 +71,7 @@
                     <Button x:Name="btnCancel" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"
                             Height="36" Click="OnCancel" Content="Cancel"/>
                     <Button x:Name="btnExport" Grid.Column="2" Style="{StaticResource AccentButton}" Height="36"
-                            Click="OnExport" Content="Export…"/>
+                            Click="OnExport" Content="Export…" IsDefault="True"/>
                 </Grid>
             </Border>
         </StackPanel>

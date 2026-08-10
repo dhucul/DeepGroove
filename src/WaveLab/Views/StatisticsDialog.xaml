@@ -48,7 +48,7 @@
                 <DockPanel>
                     <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="34" Width="90"
                             Click="OnCopy" Content="Copy" HorizontalAlignment="Left"/>
-                    <Button Style="{StaticResource AccentButton}" Height="34" Width="90" Click="OnClose"
+                    <Button Style="{StaticResource AccentButton}" Height="34" Width="90" Click="OnClose" IsCancel="True"
                             Content="Close" HorizontalAlignment="Right"/>
                 </DockPanel>
             </Border>

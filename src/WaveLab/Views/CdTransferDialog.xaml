@@ -74,7 +74,7 @@
                              SelectionChanged="OnTrackSelected" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
-                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
                                 <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
                                     <Border x:Name="row" Padding="14,7" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0">
                                         <ContentPresenter/>

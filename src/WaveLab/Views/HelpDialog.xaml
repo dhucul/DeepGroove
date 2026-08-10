@@ -58,7 +58,7 @@
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                                 <Setter Property="Padding" Value="0"/>
                                 <Setter Property="Margin" Value="0,0,0,3"/>
-                                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                                <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
@@ -115,7 +115,7 @@
                 <TextBlock x:Name="resultCount" VerticalAlignment="Center" Foreground="{StaticResource Faint}"
                            FontSize="10.5"/>
                 <Button DockPanel.Dock="Right" Content="Close" Width="82" Height="28"
-                        VerticalAlignment="Center" Style="{StaticResource AccentButton}" Click="OnClose"/>
+                        VerticalAlignment="Center" Style="{StaticResource AccentButton}" Click="OnClose" IsCancel="True"/>
             </DockPanel>
         </Border>
     </Grid>

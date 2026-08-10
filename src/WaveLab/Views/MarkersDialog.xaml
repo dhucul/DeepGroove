@@ -29,7 +29,7 @@
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="OnJump">
                 <ListBox.ItemContainerStyle>
                     <Style TargetType="ListBoxItem">
-                        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
                         <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                         <Setter Property="Template">
                             <Setter.Value>
@@ -60,7 +60,7 @@
                             Click="OnRename" Content="Rename"/>
                     <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="33" Margin="2,0"
                             Click="OnDelete" Content="Delete"/>
-                    <Button Style="{StaticResource AccentButton}" Height="33" Margin="2,0" Click="OnClose" Content="Close"/>
+                    <Button Style="{StaticResource AccentButton}" Height="33" Margin="2,0" Click="OnClose" Content="Close" IsCancel="True"/>
                 </UniformGrid>
             </Border>
         </Grid>

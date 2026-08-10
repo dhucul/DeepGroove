@@ -37,7 +37,7 @@
                 <StackPanel>
                     <TextBlock Text="OPTICAL DRIVE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
                     <ComboBox x:Name="driveCombo" Margin="0,6,0,0" SelectionChanged="OnDriveChanged"
-                              DisplayMemberPath="DisplayText"/>
+                              DisplayMemberPath="DisplayText" AutomationProperties.Name="Optical drive"/>
                 </StackPanel>
                 <Button Grid.Column="2" Height="36" VerticalAlignment="Bottom" Content="Refresh"
                         Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Click="OnRefresh"/>
@@ -62,7 +62,7 @@
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                                <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBoxItem">
@@ -84,7 +84,8 @@
                                         <ColumnDefinition Width="42"/><ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="110"/><ColumnDefinition Width="90"/>
                                     </Grid.ColumnDefinitions>
-                                    <CheckBox IsChecked="{Binding Selected}" VerticalAlignment="Center"/>
+                                    <CheckBox IsChecked="{Binding Selected}" VerticalAlignment="Center"
+                                              AutomationProperties.Name="{Binding Name}"/>
                                     <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"/>
                                     <TextBlock Grid.Column="2" Text="{Binding StartText}" FontFamily="{StaticResource MonoFont}"
                                                Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>

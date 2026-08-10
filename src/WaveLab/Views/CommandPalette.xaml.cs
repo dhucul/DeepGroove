@@ -8,7 +8,7 @@ namespace WaveLab.Views;
 /// <summary>Searchable command palette (Ctrl+Shift+P).</summary>
 public partial class CommandPalette : Window
 {
-    public sealed record Command(string Name, string? Gesture, Action Execute);
+    public sealed record Command(string Name, string? Gesture, Action Execute, Func<bool>? CanExecute = null);
 
     private readonly List<Command> _all;
 
@@ -43,10 +43,15 @@ public partial class CommandPalette : Window
                 Grid.SetColumn(g, 1);
                 grid.Children.Add(g);
             }
-            results.Items.Add(new ListBoxItem { Content = grid, Tag = cmd });
+            results.Items.Add(new ListBoxItem
+            {
+                Content = grid,
+                Tag = cmd,
+                IsEnabled = cmd.CanExecute?.Invoke() ?? true,
+            });
             if (results.Items.Count >= 40) break;
         }
-        if (results.Items.Count > 0) results.SelectedIndex = 0;
+        results.SelectedItem = results.Items.OfType<ListBoxItem>().FirstOrDefault(item => item.IsEnabled);
     }
 
     private void OnSearchChanged(object sender, TextChangedEventArgs e) => Filter(search.Text);
@@ -64,13 +69,11 @@ public partial class CommandPalette : Window
                 e.Handled = true;
                 break;
             case Key.Down:
-                if (results.SelectedIndex < results.Items.Count - 1) results.SelectedIndex++;
-                results.ScrollIntoView(results.SelectedItem);
+                MoveSelection(1);
                 e.Handled = true;
                 break;
             case Key.Up:
-                if (results.SelectedIndex > 0) results.SelectedIndex--;
-                results.ScrollIntoView(results.SelectedItem);
+                MoveSelection(-1);
                 e.Handled = true;
                 break;
         }
@@ -80,9 +83,22 @@ public partial class CommandPalette : Window
 
     private void RunSelected()
     {
-        if ((results.SelectedItem as ListBoxItem)?.Tag is not Command cmd) return;
+        if (results.SelectedItem is not ListBoxItem { IsEnabled: true, Tag: Command cmd }) return;
+        if (cmd.CanExecute?.Invoke() == false) return;
         Close();
         cmd.Execute();
+    }
+
+    private void MoveSelection(int delta)
+    {
+        int index = results.SelectedIndex;
+        for (int next = index + delta; next >= 0 && next < results.Items.Count; next += delta)
+        {
+            if (results.Items[next] is not ListBoxItem { IsEnabled: true } item) continue;
+            results.SelectedItem = item;
+            results.ScrollIntoView(item);
+            return;
+        }
     }
 
     private void OnDeactivated(object sender, EventArgs e) => Close();

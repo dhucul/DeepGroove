@@ -33,6 +33,6 @@ dotnet run --project src/WaveLab
 
 ## Keyboard shortcuts
 
-Space play/stop · Home go to start · Ctrl+O/S/Shift+S open/save/save-as · Ctrl+E export · Ctrl+Z/Y undo/redo · Ctrl+X/C/V/Del edit · Ctrl+A select all · Ctrl+= / Ctrl+- / Ctrl+0 zoom · Ctrl+M marker · Ctrl+Shift+M region · Alt+←/→ marker navigation · Ctrl+R record · Ctrl+Shift+P command palette · wheel zoom · Shift+wheel pan · Ctrl+wheel amplitude zoom
+Space play/pause · Home go to start · Ctrl+O/S/Shift+S open/save/save-as · Ctrl+E export · Ctrl+Z/Y undo/redo · Ctrl+X/C/V/Del edit · Ctrl+A select all · Ctrl+= / Ctrl+- / Ctrl+0 zoom · Ctrl+M marker · Ctrl+Shift+M region · Alt+←/→ marker navigation · Ctrl+R record · Ctrl+Shift+P command palette · wheel zoom · Shift+wheel pan · Ctrl+wheel amplitude zoom
 
 UI typefaces: [Inter](https://rsms.me/inter/) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/), embedded. Design mockups and the feature roadmap live in `docs/`.

@@ -15,7 +15,8 @@
             <TextBlock x:Name="bigText" FontFamily="{StaticResource MonoFont}" FontSize="26"
                        Foreground="{StaticResource Accent}" Margin="0,12,0,0" Visibility="Collapsed"/>
             <TextBlock x:Name="messageText" Margin="0,10,0,0" FontSize="12" Foreground="#CDD3D9" TextWrapping="Wrap"/>
-            <Button Style="{StaticResource AccentButton}" Height="34" Margin="0,16,0,0" Click="OnOk" Content="OK"/>
+            <Button Style="{StaticResource AccentButton}" Height="34" Margin="0,16,0,0" Click="OnOk" Content="OK"
+                    IsDefault="True" IsCancel="True"/>
         </StackPanel>
     </Border>
 </Window>

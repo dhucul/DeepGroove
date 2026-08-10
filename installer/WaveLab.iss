@@ -4,7 +4,7 @@
 ;   ISCC.exe installer\WaveLab.iss
 
 #define MyAppName "WaveLab"
-#define MyAppVersion "2.0.4"
+#define MyAppVersion "2.0.5"
 #define MyAppExeName "WaveLab.exe"
 #define PublishDir "..\src\WaveLab\bin\Release\net10.0-windows\win-x64\publish"
 

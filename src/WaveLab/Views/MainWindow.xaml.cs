@@ -181,13 +181,17 @@ public partial class MainWindow : Window
     {
         var dialog = new SettingsDialog { Owner = this };
         if (dialog.ShowDialog() == true)
+        {
             _vm.RefreshEngineStatus();
+            _vm.ReportAction("Settings saved.");
+        }
     }
 
     private void ShowExportDialog()
     {
         if (_vm.ActiveDocument == null) return;
-        new ExportDialog(_vm.ActiveDocument) { Owner = this }.ShowDialog();
+        if (new ExportDialog(_vm.ActiveDocument) { Owner = this }.ShowDialog() == true)
+            _vm.ReportAction("Audio export completed.");
     }
 
     private void OnOpenAsBitDepth(object sender, RoutedEventArgs e)
@@ -318,6 +322,7 @@ public partial class MainWindow : Window
     {
         if (analysisTabs.SelectedIndex == 1) RefreshSpectrogram();
         else analysisTabs.SelectedIndex = 1;
+        _vm.ReportAction("Spectrogram refreshed.");
     }
 
     // ── tools ────────────────────────────────────────────────────
@@ -380,7 +385,11 @@ public partial class MainWindow : Window
 
     private void OnResetAmpZoom(object sender, RoutedEventArgs e)
     {
-        if (Doc != null) Doc.AmpZoom = 1;
+        if (Doc != null)
+        {
+            Doc.AmpZoom = 1;
+            _vm.ReportAction("Amplitude zoom reset.");
+        }
     }
 
     private void OnManageMarkers(object sender, RoutedEventArgs e)
@@ -429,6 +438,7 @@ public partial class MainWindow : Window
         }
         InfoDialog.Show(this, "Noise Profile Learned",
             "Profile captured from the selection. Now choose Restore → Reduce Noise to apply it to the whole file or another selection.");
+        _vm.ReportAction("Noise profile learned from the selection.");
     }
 
     private void OnReduceNoise(object sender, RoutedEventArgs e)
@@ -512,6 +522,7 @@ public partial class MainWindow : Window
         if (silences == null) return;
         d.AddMarkers(silences.Select(s =>
             (s.Start, (string?)$"Silence {TimeFormat.Compact((double)s.Start / d.Doc.SampleRate)}")));
+        _vm.ReportAction($"Silence detection completed · {silences.Count} marker(s) added.");
         InfoDialog.Show(this, "Detect Silences", $"{silences.Count} silent stretch(es) marked.");
     }
 
@@ -562,6 +573,7 @@ public partial class MainWindow : Window
         if (d.Doc.Length - prevEnd > d.Doc.SampleRate / 10)
             d.Regions.Add(new NamedRegion { Name = $"Part {++n}", Start = prevEnd, End = d.Doc.Length });
         d.NotifyMarkersChanged();
+        _vm.ReportAction($"Split by Silence completed · {n} region(s) created.");
         InfoDialog.Show(this, "Split by Silence", $"{n} region(s) created — click a region band in the ruler to select it.");
     }
 
@@ -636,7 +648,8 @@ public partial class MainWindow : Window
         try
         {
             var generated = await Task.Run(() => transform(document.Doc));
-            _vm.AddGeneratedDocument(generated);
+            _vm.AddGeneratedDocument(generated,
+                $"{title} completed in a new tab · source audio unchanged.");
         }
         catch (Exception ex)
         {
@@ -671,7 +684,11 @@ public partial class MainWindow : Window
             new ParamDialog.SliderSpec("New length", 50, 200, 100, v => $"{v:0} %", 1)) { Owner = this };
         if (dlg.ShowDialog() != true) return;
         double factor = dlg.Values[0] / 100.0;
-        if (Math.Abs(factor - 1) < 0.005) return;
+        if (Math.Abs(factor - 1) < 0.005)
+        {
+            _vm.ReportAction("Time Stretch unchanged · no processing applied.");
+            return;
+        }
         _ = RunRangeTool("Time Stretch", (data, sr) => TimeStretch.Stretch(data, sr, factor));
     }
 
@@ -684,7 +701,11 @@ public partial class MainWindow : Window
             new ParamDialog.SliderSpec("Cents", -100, 100, 0, v => $"{v:+0;-0;0} ¢", 1)) { Owner = this };
         if (dlg.ShowDialog() != true) return;
         double semitones = dlg.Values[0] + dlg.Values[1] / 100.0;
-        if (Math.Abs(semitones) < 0.01) return;
+        if (Math.Abs(semitones) < 0.01)
+        {
+            _vm.ReportAction("Pitch Shift unchanged · no processing applied.");
+            return;
+        }
         _ = RunRangeTool("Pitch Shift", (data, sr) => TimeStretch.PitchShift(data, sr, semitones));
     }
 
@@ -699,7 +720,11 @@ public partial class MainWindow : Window
             "Target rate", items, 1) { Owner = this };
         if (dlg.ShowDialog() != true) return;
         int target = rates[Math.Max(0, dlg.ComboIndex)];
-        if (target == d.Doc.SampleRate) return;
+        if (target == d.Doc.SampleRate)
+        {
+            _vm.ReportAction("Sample rate unchanged · no conversion applied.");
+            return;
+        }
         var doc = d.Doc;
         _longOperationRunning = true;
         IsEnabled = false;
@@ -707,7 +732,8 @@ public partial class MainWindow : Window
         try
         {
             var converted = await Task.Run(() => ChannelTools.ConvertSampleRate(doc, target));
-            _vm.AddGeneratedDocument(converted);
+            _vm.AddGeneratedDocument(converted,
+                $"Sample rate converted to {target / 1000.0:0.###} kHz in a new tab · source audio unchanged.");
         }
         catch (Exception ex)
         {
@@ -804,66 +830,66 @@ public partial class MainWindow : Window
 
     private void ShowCommandPalette()
     {
+        static CommandPalette.Command VmCommand(string name, string? gesture, ICommand command, object? parameter = null) =>
+            new(name, gesture, () => command.Execute(parameter), () => command.CanExecute(parameter));
+
         var commands = new List<CommandPalette.Command>
         {
-            new("Open File…", "Ctrl+O", () => _vm.OpenCommand.Execute(null)),
+            VmCommand("Open File…", "Ctrl+O", _vm.OpenCommand),
             new("Extract Audio CD…", null, () => OnExtractAudioCd(this, new RoutedEventArgs())),
-            new("Save", "Ctrl+S", () => _vm.SaveCommand.Execute(null)),
-            new("Save As…", "Ctrl+Shift+S", () => _vm.SaveAsCommand.Execute(null)),
+            VmCommand("Save", "Ctrl+S", _vm.SaveCommand),
+            VmCommand("Save As…", "Ctrl+Shift+S", _vm.SaveAsCommand),
             new("Open As Bit Depth…", null, () => OnOpenAsBitDepth(this, new RoutedEventArgs())),
-            new("Export…", "Ctrl+E", () => _vm.ExportCommand.Execute(null)),
-            new("Recording Setup…", null, () =>
-            {
-                if (_vm.RecordSetupCommand.CanExecute(null))
-                    _vm.RecordSetupCommand.Execute(null);
-            }),
-            new("Record / Stop", "Ctrl+R", () => _vm.RecordCommand.Execute(null)),
-            new("Play / Stop", "Space", () => _vm.PlayCommand.Execute(null)),
-            new("Go to Start", "Home", () => _vm.GoToStartCommand.Execute(null)),
-            new("Undo", "Ctrl+Z", () => _vm.UndoCommand.Execute(null)),
-            new("Redo", "Ctrl+Y", () => _vm.RedoCommand.Execute(null)),
-            new("Cut", "Ctrl+X", () => _vm.CutCommand.Execute(null)),
-            new("Copy", "Ctrl+C", () => _vm.CopyCommand.Execute(null)),
-            new("Paste", "Ctrl+V", () => _vm.PasteCommand.Execute(null)),
-            new("Trim to Selection", null, () => _vm.TrimCommand.Execute(null)),
-            new("Select All", "Ctrl+A", () => _vm.SelectAllCommand.Execute(null)),
-            new("Zoom to Fit", "Ctrl+0", () => _vm.ZoomFitCommand.Execute(null)),
-            new("Zoom to Selection", null, () => _vm.ZoomSelectionCommand.Execute(null)),
-            new("Add Marker", "Ctrl+M", () => _vm.AddMarkerCommand.Execute(null)),
-            new("Add Region from Selection", "Ctrl+Shift+M", () => _vm.AddRegionCommand.Execute(null)),
-            new("Manage Markers & Regions…", null, () => OnManageMarkers(this, new RoutedEventArgs())),
-            new("Gain +3 dB", null, () => _vm.GainUpCommand.Execute(null)),
-            new("Gain −3 dB", null, () => _vm.GainDownCommand.Execute(null)),
-            new("Normalize to −0.3 dBFS", null, () => _vm.NormalizeCommand.Execute(null)),
-            new("Fade In", null, () => _vm.FadeInCommand.Execute(null)),
-            new("Fade Out", null, () => _vm.FadeOutCommand.Execute(null)),
-            new("Reverse", null, () => _vm.ReverseCommand.Execute(null)),
-            new("Remove DC Offset", null, () => _vm.RemoveDcCommand.Execute(null)),
-            new("Smooth Edit Points", null, () => _vm.SmoothEditCommand.Execute(null)),
-            new("Detect Silences → Markers…", null, () => OnDetectSilence(this, new RoutedEventArgs())),
-            new("Trim Silences…", null, () => OnTrimSilence(this, new RoutedEventArgs())),
-            new("Split by Silence → Regions…", null, () => OnSplitSilence(this, new RoutedEventArgs())),
-            new("Swap Channels", null, () => OnSwapChannels(this, new RoutedEventArgs())),
-            new("Invert Phase", null, () => OnInvertPhase(this, new RoutedEventArgs())),
-            new("Mix Down to Mono", null, () => OnMonoMixdown(this, new RoutedEventArgs())),
-            new("Learn Noise Profile from Selection", null, () => OnLearnNoise(this, new RoutedEventArgs())),
-            new("Vinyl Restoration & CD Transfer…", null, () => OnVinylWorkflow(this, new RoutedEventArgs())),
-            new("Prepare Tracks for Audio CD…", null, () => OnPrepareAudioCd(this, new RoutedEventArgs())),
-            new("Reduce Noise…", null, () => OnReduceNoise(this, new RoutedEventArgs())),
-            new("Remove Clicks & Pops…", null, () => OnRemoveClicks(this, new RoutedEventArgs())),
-            new("Remove Hum…", null, () => OnRemoveHum(this, new RoutedEventArgs())),
-            new("Time Stretch…", null, () => OnTimeStretch(this, new RoutedEventArgs())),
-            new("Pitch Shift…", null, () => OnPitchShift(this, new RoutedEventArgs())),
-            new("Convert Sample Rate…", null, () => OnConvertRate(this, new RoutedEventArgs())),
-            new("Detect Pitch (Tuner)", null, () => OnTuner(this, new RoutedEventArgs())),
-            new("Detect Tempo (BPM)", null, () => OnBpm(this, new RoutedEventArgs())),
-            new("Audio Statistics…", null, () => _vm.StatisticsCommand.Execute(null)),
-            new("Analyze & Tune Vinyl Cleanup…", null, () => ShowCleanupAnalysis(CleanupProfile.VinylCleanup)),
-            new("Analyze & Tune Clean Transfer…", null, () => ShowCleanupAnalysis(CleanupProfile.CleanTransfer)),
-            new("Render in Place (Undoable)", null, () => _vm.ApplyChainCommand.Execute(null)),
-            new("Render Copy to New Tab", null, () => _vm.RenderCommand.Execute(null)),
+            VmCommand("Export…", "Ctrl+E", _vm.ExportCommand),
+            VmCommand("Recording Setup…", null, _vm.RecordSetupCommand),
+            VmCommand("Record / Stop", "Ctrl+R", _vm.RecordCommand),
+            VmCommand("Play / Pause", "Space", _vm.PlayCommand),
+            VmCommand("Stop", null, _vm.StopCommand),
+            VmCommand("Go to Start", "Home", _vm.GoToStartCommand),
+            VmCommand("Undo", "Ctrl+Z", _vm.UndoCommand),
+            VmCommand("Redo", "Ctrl+Y", _vm.RedoCommand),
+            VmCommand("Cut", "Ctrl+X", _vm.CutCommand),
+            VmCommand("Copy", "Ctrl+C", _vm.CopyCommand),
+            VmCommand("Paste", "Ctrl+V", _vm.PasteCommand),
+            VmCommand("Trim to Selection", null, _vm.TrimCommand),
+            VmCommand("Select All", "Ctrl+A", _vm.SelectAllCommand),
+            VmCommand("Zoom to Fit", "Ctrl+0", _vm.ZoomFitCommand),
+            VmCommand("Zoom to Selection", null, _vm.ZoomSelectionCommand),
+            VmCommand("Add Marker", "Ctrl+M", _vm.AddMarkerCommand),
+            VmCommand("Add Region from Selection", "Ctrl+Shift+M", _vm.AddRegionCommand),
+            new("Manage Markers & Regions…", null, () => OnManageMarkers(this, new RoutedEventArgs()), () => _vm.HasDocument),
+            VmCommand("Gain +3 dB", null, _vm.GainUpCommand),
+            VmCommand("Gain −3 dB", null, _vm.GainDownCommand),
+            VmCommand("Normalize to −0.3 dBFS", null, _vm.NormalizeCommand),
+            VmCommand("Fade In", null, _vm.FadeInCommand),
+            VmCommand("Fade Out", null, _vm.FadeOutCommand),
+            VmCommand("Reverse", null, _vm.ReverseCommand),
+            VmCommand("Remove DC Offset", null, _vm.RemoveDcCommand),
+            VmCommand("Smooth Edit Points", null, _vm.SmoothEditCommand),
+            new("Detect Silences → Markers…", null, () => OnDetectSilence(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Trim Silences…", null, () => OnTrimSilence(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Split by Silence → Regions…", null, () => OnSplitSilence(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Swap Channels", null, () => OnSwapChannels(this, new RoutedEventArgs()), () => _vm.HasMultichannelDocument),
+            new("Invert Phase", null, () => OnInvertPhase(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Mix Down to Mono", null, () => OnMonoMixdown(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Learn Noise Profile from Selection", null, () => OnLearnNoise(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Vinyl Restoration & CD Transfer…", null, () => OnVinylWorkflow(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Prepare Tracks for Audio CD…", null, () => OnPrepareAudioCd(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Reduce Noise…", null, () => OnReduceNoise(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Remove Clicks & Pops…", null, () => OnRemoveClicks(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Remove Hum…", null, () => OnRemoveHum(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Time Stretch…", null, () => OnTimeStretch(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Pitch Shift…", null, () => OnPitchShift(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Convert Sample Rate…", null, () => OnConvertRate(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Detect Pitch (Tuner)", null, () => OnTuner(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Detect Tempo (BPM)", null, () => OnBpm(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            VmCommand("Audio Statistics…", null, _vm.StatisticsCommand),
+            new("Analyze & Tune Vinyl Cleanup…", null, () => ShowCleanupAnalysis(CleanupProfile.VinylCleanup), () => _vm.CanAnalyzeCleanup),
+            new("Analyze & Tune Clean Transfer…", null, () => ShowCleanupAnalysis(CleanupProfile.CleanTransfer), () => _vm.CanAnalyzeCleanup),
+            VmCommand("Render in Place (Undoable)", null, _vm.ApplyChainCommand),
+            VmCommand("Render Copy to New Tab", null, _vm.RenderCommand),
             new("Batch Converter…", null, () => OnBatchConvert(this, new RoutedEventArgs())),
-            new("Settings…", null, () => _vm.SettingsCommand.Execute(null)),
+            VmCommand("Settings…", null, _vm.SettingsCommand),
         };
         new CommandPalette(commands) { Owner = this }.ShowDialog();
     }

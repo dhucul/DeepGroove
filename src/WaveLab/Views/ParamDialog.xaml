@@ -29,9 +29,9 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="35"
-                            Click="OnCancel" Content="Cancel"/>
+                            Click="OnCancel" Content="Cancel" IsCancel="True"/>
                     <Button x:Name="okBtn" Grid.Column="2" Style="{StaticResource AccentButton}" Height="35"
-                            Click="OnOk" Content="Apply"/>
+                            Click="OnOk" Content="Apply" IsDefault="True"/>
                 </Grid>
             </Border>
         </StackPanel>
