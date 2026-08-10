@@ -1,6 +1,7 @@
 using NAudio.CoreAudioApi;
 using NAudio.MediaFoundation;
 using NAudio.Wave;
+using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
 
@@ -23,6 +24,8 @@ public sealed class RecordingEngine : IDisposable
     private bool _isRecording;
     private float _peakL;
     private float _peakR;
+    private float _rmsL;
+    private float _rmsR;
     private Exception? _lastStopError;
     private readonly SemaphoreSlim _stopGate = new(1, 1);
     private readonly SemaphoreSlim _finalizeGate = new(1, 1);
@@ -31,15 +34,33 @@ public sealed class RecordingEngine : IDisposable
     private int _activeFinalizations;
     private int _disposed;
     private long _nextSessionId;
+    private readonly RecordingLevelAnalyzer _levelAnalyzer = new(48000, 2);
 
     private sealed class CaptureSession(
         long id,
         WasapiCapture capture,
-        TaskCompletionSource<StoppedEventArgs> stopped)
+        TaskCompletionSource<StoppedEventArgs> stopped,
+        bool retainAudio)
     {
+        // Epoch and retention mode are one atomic value so a callback cannot
+        // observe the mode from one side of a boundary and the epoch from the
+        // other. Bit zero is the retention flag; higher bits are the epoch.
+        private long _dataState = retainAudio ? 1 : 0;
+
         public long Id { get; } = id;
         public WasapiCapture Capture { get; } = capture;
         public TaskCompletionSource<StoppedEventArgs> Stopped { get; } = stopped;
+        public long DataState => Volatile.Read(ref _dataState);
+        public bool RetainAudio => RetainsAudio(DataState);
+        public static bool RetainsAudio(long dataState) => (dataState & 1) != 0;
+
+        /// <summary>Call only while holding the owning engine's block and session locks.</summary>
+        public void AdvanceDataState(bool retainAudio)
+        {
+            long nextEpoch = (DataState >> 1) + 1;
+            Volatile.Write(ref _dataState, (nextEpoch << 1) | (retainAudio ? 1L : 0L));
+        }
+
         /// <summary>Access only while holding the owning engine's session lock.</summary>
         public bool AcceptCallbacks { get; set; } = true;
     }
@@ -67,6 +88,17 @@ public sealed class RecordingEngine : IDisposable
         get => Volatile.Read(ref _peakR);
         private set => Volatile.Write(ref _peakR, value);
     }
+    public float RmsL
+    {
+        get => Volatile.Read(ref _rmsL);
+        private set => Volatile.Write(ref _rmsL, value);
+    }
+    public float RmsR
+    {
+        get => Volatile.Read(ref _rmsR);
+        private set => Volatile.Write(ref _rmsR, value);
+    }
+    public RecordingLevelSnapshot LevelSnapshot => _levelAnalyzer.Snapshot;
     public double RecordedSeconds
     {
         get
@@ -106,13 +138,17 @@ public sealed class RecordingEngine : IDisposable
         lock (_sessionLock) return _session;
     }
 
-    private CaptureSession? GetSessionFor(object? sender)
+    private CaptureSession? GetSessionFor(object? sender, out long dataState)
     {
         lock (_sessionLock)
         {
-            return _session is { AcceptCallbacks: true } && ReferenceEquals(sender, _session.Capture)
-                ? _session
-                : null;
+            if (_session is { AcceptCallbacks: true } && ReferenceEquals(sender, _session.Capture))
+            {
+                dataState = _session.DataState;
+                return _session;
+            }
+            dataState = 0;
+            return null;
         }
     }
 
@@ -185,11 +221,82 @@ public sealed class RecordingEngine : IDisposable
         lock (_lifecycleLock)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            return StartCore(deviceId);
+            return StartCore(deviceId, retainAudio: true);
         }
     }
 
-    private long StartCore(string? deviceId)
+    /// <summary>
+    /// Start the input stream for a level check without retaining calibration
+    /// audio or applying the recording memory limit.
+    /// </summary>
+    public long StartLevelCheck(string? deviceId)
+    {
+        lock (_lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            return StartCore(deviceId, retainAudio: false);
+        }
+    }
+
+    /// <summary>
+    /// Atomically discard calibration history and begin retaining the current
+    /// monitor stream. No device reopen occurs at the take boundary.
+    /// </summary>
+    public bool BeginRetainedCapture(long sessionId)
+    {
+        if (sessionId <= 0) return false;
+        lock (_lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            CaptureSession? session = GetCurrentSession();
+            if (session == null || session.Id != sessionId) return false;
+            lock (_blocks)
+            {
+                lock (_sessionLock)
+                {
+                    if (!ReferenceEquals(_session, session)
+                        || !session.AcceptCallbacks
+                        || session.RetainAudio) return false;
+                    _blocks.Clear();
+                    _pendingSnapshot = null;
+                    Interlocked.Exchange(ref _totalSamples, 0);
+                    Volatile.Write(ref _capacityReached, false);
+                    _levelAnalyzer.Reset();
+                    PeakL = PeakR = RmsL = RmsR = 0;
+                    session.AdvanceDataState(retainAudio: true);
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// <summary>Restart a monitor-only analysis without reopening the device.</summary>
+    public bool ResetLevelCheck(long sessionId)
+    {
+        if (sessionId <= 0) return false;
+        lock (_lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            CaptureSession? session = GetCurrentSession();
+            if (session == null || session.Id != sessionId) return false;
+            lock (_blocks)
+            {
+                lock (_sessionLock)
+                {
+                    if (!ReferenceEquals(_session, session)
+                        || !session.AcceptCallbacks
+                        || session.RetainAudio) return false;
+                    Interlocked.Exchange(ref _totalSamples, 0);
+                    _levelAnalyzer.Reset();
+                    PeakL = PeakR = RmsL = RmsR = 0;
+                    session.AdvanceDataState(retainAudio: false);
+                    return true;
+                }
+            }
+        }
+    }
+
+    private long StartCore(string? deviceId, bool retainAudio)
     {
         Stop();
         using var enumerator = new MMDeviceEnumerator();
@@ -216,12 +323,14 @@ public sealed class RecordingEngine : IDisposable
             Interlocked.Exchange(ref _totalSamples, 0);
             Volatile.Write(ref _capacityReached, false);
             LastStopError = null;
-            PeakL = PeakR = 0;
+            PeakL = PeakR = RmsL = RmsR = 0;
+            _levelAnalyzer.Configure(format.SampleRate, format.Channels);
 
             session = new CaptureSession(
                 Interlocked.Increment(ref _nextSessionId),
                 capture,
-                new TaskCompletionSource<StoppedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously));
+                new TaskCompletionSource<StoppedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously),
+                retainAudio);
             capture.DataAvailable += OnData;
             capture.RecordingStopped += OnRecordingStopped;
 
@@ -276,8 +385,10 @@ public sealed class RecordingEngine : IDisposable
 
     private void OnData(object? sender, WaveInEventArgs e)
     {
-        CaptureSession? session = GetSessionFor(sender);
-        if (session == null || CapacityReached) return;
+        CaptureSession? session = GetSessionFor(sender, out long dataState);
+        if (session == null) return;
+        bool retainAudio = CaptureSession.RetainsAudio(dataState);
+        if (retainAudio && CapacityReached) return;
 
         int channels = Volatile.Read(ref _channels);
         if (channels <= 0) return;
@@ -287,49 +398,81 @@ public sealed class RecordingEngine : IDisposable
         int samples = (e.BytesRecorded / sizeof(float) / channels) * channels;
         if (samples <= 0) return;
 
-        float[]? block = null;
+        var block = new float[samples];
+        Buffer.BlockCopy(e.Buffer, 0, block, 0, samples * sizeof(float));
+
+        float pl = 0, pr = 0;
+        double squareL = 0, squareR = 0;
+        int frames = samples / channels;
+        for (int i = 0; i < samples; i += channels)
+        {
+            float left = float.IsFinite(block[i]) ? block[i] : 0;
+            float al = Math.Abs(left);
+            if (al > pl) pl = al;
+            squareL += left * left;
+            if (channels > 1)
+            {
+                float right = float.IsFinite(block[i + 1]) ? block[i + 1] : 0;
+                float ar = Math.Abs(right);
+                if (ar > pr) pr = ar;
+                squareR += right * right;
+            }
+        }
+
+        bool capacityRejected = false;
         lock (_blocks)
         {
             // Unsubscribing does not revoke a delegate invocation that was
             // already queued. Recheck under the mutation lock before allowing
             // an old capture to append into a newer session's block list.
-            if (!IsCurrentSession(session) || CapacityReached) return;
+            if (!IsCurrentSession(session)
+                || dataState != session.DataState
+                || (retainAudio && CapacityReached)) return;
 
-            long maxSamples = MaxCaptureBytes / sizeof(float);
-            if (Interlocked.Read(ref _totalSamples) > maxSamples - samples)
+            if (retainAudio)
             {
-                Volatile.Write(ref _capacityReached, true);
+                long maxSamples = MaxCaptureBytes / sizeof(float);
+                if (Interlocked.Read(ref _totalSamples) > maxSamples - samples)
+                {
+                    Volatile.Write(ref _capacityReached, true);
+                    capacityRejected = true;
+                }
             }
-            else
+
+            if (!capacityRejected)
             {
-                block = new float[samples];
-                Buffer.BlockCopy(e.Buffer, 0, block, 0, samples * sizeof(float));
-                _blocks.Add(block);
+                // Analyze untouched driver data so invalid-sample telemetry is
+                // accurate, then sanitize before the block can enter a document.
+                _levelAnalyzer.Process(block, 0, samples);
+                if (retainAudio)
+                {
+                    SanitizeNonFiniteSamples(block);
+                    _blocks.Add(block);
+                }
                 Interlocked.Add(ref _totalSamples, samples);
+                PeakL = pl;
+                PeakR = channels > 1 ? pr : pl;
+                RmsL = (float)Math.Sqrt(squareL / Math.Max(1, frames));
+                RmsR = channels > 1
+                    ? (float)Math.Sqrt(squareR / Math.Max(1, frames))
+                    : RmsL;
             }
         }
 
-        if (block == null)
+        if (capacityRejected)
         {
             // Stop capturing but keep the buffered audio for finalization.
             _ = Task.Run(() => { try { session.Capture.StopRecording(); } catch { } });
             return;
         }
+    }
 
-        float pl = 0, pr = 0;
-        for (int i = 0; i < samples; i += channels)
+    private static void SanitizeNonFiniteSamples(float[] samples)
+    {
+        for (int index = 0; index < samples.Length; index++)
         {
-            float al = Math.Abs(block[i]);
-            if (al > pl) pl = al;
-            if (channels > 1)
-            {
-                float ar = Math.Abs(block[i + 1]);
-                if (ar > pr) pr = ar;
-            }
+            if (!float.IsFinite(samples[index])) samples[index] = 0;
         }
-        if (!IsCurrentSession(session)) return;
-        PeakL = pl;
-        PeakR = channels > 1 ? pr : pl;
     }
 
     /// <summary>
@@ -439,6 +582,13 @@ public sealed class RecordingEngine : IDisposable
 
             lock (_blocks)
             {
+                if (!session.RetainAudio)
+                {
+                    _blocks.Clear();
+                    _pendingSnapshot = null;
+                    Interlocked.Exchange(ref _totalSamples, 0);
+                    return null;
+                }
                 var snapshot = new CaptureSnapshot(
                     session.Id,
                     _blocks.ToArray(),
@@ -519,7 +669,8 @@ public sealed class RecordingEngine : IDisposable
                     _pendingSnapshot = null;
                     Interlocked.Exchange(ref _totalSamples, 0);
                 }
-                PeakL = PeakR = 0;
+                PeakL = PeakR = RmsL = RmsR = 0;
+                _levelAnalyzer.Reset();
                 Volatile.Write(ref _capacityReached, false);
                 LastStopError = null;
             }

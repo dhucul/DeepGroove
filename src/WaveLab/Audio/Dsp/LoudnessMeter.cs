@@ -9,6 +9,7 @@ public sealed class LoudnessMeter
     private int _sampleRate = 48000, _channels = 2;
     private Biquad[] _stage1 = [], _stage2 = [];
     private float[] _prev1 = [], _prev2 = [], _prev3 = [];
+    private int[] _truePeakHistory = [];
 
     private int _subBlockSize;           // 100 ms
     private double[] _subBlockSumSq = [];
@@ -53,6 +54,7 @@ public sealed class LoudnessMeter
         _prev1 = new float[channels];
         _prev2 = new float[channels];
         _prev3 = new float[channels];
+        _truePeakHistory = new int[channels];
         _subBlockSize = Math.Max(1, sampleRate / 10);
         Reset();
     }
@@ -66,6 +68,7 @@ public sealed class LoudnessMeter
             Array.Clear(_prev1);
             Array.Clear(_prev2);
             Array.Clear(_prev3);
+            Array.Clear(_truePeakHistory);
             _subBlockSumSq = new double[_channels];
             _subBlockFill = 0;
             _last400.Clear();
@@ -86,23 +89,43 @@ public sealed class LoudnessMeter
                 for (int c = 0; c < _channels; c++)
                 {
                     float raw = interleaved[offset + f * _channels + c];
-                    if (!float.IsFinite(raw)) raw = 0;
-
-                    double sampleDb = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(raw)));
-                    if (sampleDb > TruePeakDb) TruePeakDb = sampleDb;
-
-                    // true peak: 4x oversample via Catmull-Rom between the last 4 samples
-                    float p0 = _prev3[c], p1 = _prev2[c], p2 = _prev1[c], p3 = raw;
-                    for (int k = 1; k <= 4; k++)
+                    bool valid = float.IsFinite(raw);
+                    if (!valid)
                     {
-                        float t = k / 4f;
-                        float interp = 0.5f * ((2 * p1) + (-p0 + p2) * t +
-                                       (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
-                                       (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
-                        double db = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(interp)));
-                        if (db > TruePeakDb) TruePeakDb = db;
+                        raw = 0;
+                        _truePeakHistory[c] = 0;
+                        _prev1[c] = _prev2[c] = _prev3[c] = 0;
                     }
-                    _prev3[c] = _prev2[c]; _prev2[c] = _prev1[c]; _prev1[c] = raw;
+                    else
+                    {
+                        double sampleDb = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(raw)));
+                        if (sampleDb > TruePeakDb) TruePeakDb = sampleDb;
+
+                        // Do not interpolate against reset-time zero padding. It
+                        // can invent an overshoot when capture begins on a hot
+                        // waveform phase. Wait for four real samples, and break
+                        // continuity across invalid driver data.
+                        if (_truePeakHistory[c] >= 3)
+                        {
+                            float p0 = _prev3[c], p1 = _prev2[c], p2 = _prev1[c], p3 = raw;
+                            for (int k = 1; k <= 4; k++)
+                            {
+                                float t = k / 4f;
+                                float interp = 0.5f * ((2 * p1) + (-p0 + p2) * t +
+                                               (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
+                                               (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
+                                double db = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(interp)));
+                                if (db > TruePeakDb) TruePeakDb = db;
+                            }
+                        }
+                        else
+                        {
+                            _truePeakHistory[c]++;
+                        }
+                        _prev3[c] = _prev2[c];
+                        _prev2[c] = _prev1[c];
+                        _prev1[c] = raw;
+                    }
 
                     // K-weighted mean square
                     float w = _stage2[c].Process(_stage1[c].Process(raw));
@@ -143,6 +166,7 @@ public sealed class LoudnessMeter
             if (_framesProcessed == 0) return;
             for (int c = 0; c < _channels; c++)
             {
+                if (_truePeakHistory[c] < 3) continue;
                 float p0 = _prev3[c], p1 = _prev2[c], p2 = _prev1[c], p3 = p2;
                 for (int k = 1; k <= 4; k++)
                 {

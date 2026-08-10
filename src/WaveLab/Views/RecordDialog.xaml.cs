@@ -22,6 +22,7 @@ public partial class RecordDialog : Window
     public RecordDialog(bool punchAvailable = false)
     {
         InitializeComponent();
+        MaxHeight = Math.Max(320, SystemParameters.WorkArea.Height - 24);
         DataContext = ViewModel;
 
         cmbBars.Items.Add("1 bar (4/4)");
@@ -38,6 +39,7 @@ public partial class RecordDialog : Window
         _timer.Tick += (_, _) => ViewModel.Tick();
         _timer.Start();
         ViewModel.UnexpectedStopCompleted += OnUnexpectedStopCompleted;
+        ViewModel.MonitoringStopped += OnMonitoringStopped;
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
         Closing += (_, e) =>
         {
@@ -66,11 +68,22 @@ public partial class RecordDialog : Window
             _timer.Stop();
             _click.Dispose();
             ViewModel.UnexpectedStopCompleted -= OnUnexpectedStopCompleted;
+            ViewModel.MonitoringStopped -= OnMonitoringStopped;
             ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
-            if (ViewModel.IsRecording || ViewModel.HasPendingCapture) ViewModel.Cancel();
+            if (ViewModel.IsRecording || ViewModel.IsLevelChecking || ViewModel.HasPendingCapture)
+                ViewModel.Cancel();
             ViewModel.Dispose();
             _lifetimeCts.Dispose();
         };
+    }
+
+    private void OnLevelCheck(object sender, RoutedEventArgs e)
+    {
+        if (_starting || ViewModel.IsRecording || ViewModel.IsFinalizing) return;
+        bool started = ViewModel.IsLevelChecking
+            ? ViewModel.RestartLevelCheck()
+            : ViewModel.StartLevelCheck();
+        if (started) SetSetupControlsEnabled(true);
     }
 
     private async void OnStartStop(object sender, RoutedEventArgs e)
@@ -84,6 +97,7 @@ public partial class RecordDialog : Window
 
         if (!ViewModel.IsRecording)
         {
+            bool transitionFromLevelCheck = ViewModel.IsLevelChecking;
             double bpm = double.TryParse(txtBpm.Text, out var b) ? Math.Clamp(b, 30, 300) : 120;
             bool countIn = chkCountIn.IsChecked == true;
             bool metronome = chkMetronome.IsChecked == true;
@@ -91,6 +105,7 @@ public partial class RecordDialog : Window
 
             _starting = true;
             startBtn.IsEnabled = false;
+            SetSetupControlsEnabled(false);
             try
             {
                 if (countIn || metronome)
@@ -107,9 +122,18 @@ public partial class RecordDialog : Window
 
                 if (!metronome) _click.Stop();
 
+                // Do not silently open a fresh recording stream if the monitored
+                // device disappeared while a count-in was running.
+                if (transitionFromLevelCheck && !ViewModel.IsLevelChecking)
+                {
+                    _click.Stop();
+                    return;
+                }
+
                 if (!ViewModel.Start())
                 {
                     _click.Stop();
+                    SetSetupControlsEnabled(true);
                     return;
                 }
                 startText.Text = "Stop & Insert";
@@ -130,6 +154,8 @@ public partial class RecordDialog : Window
             {
                 _starting = false;
                 startBtn.IsEnabled = !ViewModel.IsFinalizing;
+                if (!ViewModel.IsRecording && !ViewModel.IsFinalizing)
+                    SetSetupControlsEnabled(true);
             }
         }
         else
@@ -189,8 +215,29 @@ public partial class RecordDialog : Window
         }
     }
 
+    private void OnMonitoringStopped(RecordingStoppedInfo info)
+    {
+        if (!IsVisible) return;
+        string reason = info.Error != null
+            ? $"The input device stopped during the level check.\n\n{info.Error.Message}"
+            : "The input device stopped during the level check.";
+        MessageBox.Show(reason, "Level check stopped", MessageBoxButton.OK,
+            info.Error != null ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        SetSetupControlsEnabled(true);
+    }
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(RecordViewModel.IsLevelChecking))
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(() => OnViewModelPropertyChanged(sender, e));
+                return;
+            }
+            SetSetupControlsEnabled(!ViewModel.IsRecording && !ViewModel.IsFinalizing);
+            return;
+        }
         if (e.PropertyName != nameof(RecordViewModel.IsFinalizing)) return;
         if (!Dispatcher.CheckAccess())
         {
@@ -215,7 +262,8 @@ public partial class RecordDialog : Window
 
     private void SetSetupControlsEnabled(bool enabled)
     {
-        deviceCombo.IsEnabled = enabled;
+        deviceCombo.IsEnabled = enabled && !ViewModel.IsLevelChecking;
+        levelCheckBtn.IsEnabled = enabled && !ViewModel.IsRecording;
         chkCountIn.IsEnabled = enabled;
         chkMetronome.IsEnabled = enabled;
         txtBpm.IsEnabled = enabled;
