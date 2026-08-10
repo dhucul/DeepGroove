@@ -63,6 +63,16 @@ public partial class RestorationWorkbenchDialog : Window
         }
     }
 
+    private sealed class CleanupProgressAdapter(
+        IProgress<OperationProgress> target,
+        double start,
+        double span) : IProgress<CleanupAnalysisProgress>
+    {
+        public void Report(CleanupAnalysisProgress value) =>
+            target.Report(new OperationProgress(value.Stage,
+                Math.Clamp(start + value.Fraction * span, 0, 1)));
+    }
+
     private readonly DocumentViewModel _document;
     private readonly MainViewModel _main;
     private readonly float[][] _sourceReferences;
@@ -84,6 +94,7 @@ public partial class RestorationWorkbenchDialog : Window
     private float[]? _noiseProfile;
     private ClickAnalysisResult? _clickAnalysis;
     private ClippingAnalysisResult? _clippingAnalysis;
+    private RestorationRecommendations.Settings? _analysisRecommendations;
     private RestorationSettings? _previewWetCacheSettings;
     private float[][]? _previewWetCache;
     private double _analyzedClickSensitivity = double.NaN;
@@ -160,14 +171,14 @@ public partial class RestorationWorkbenchDialog : Window
         }
 
         _initializing = true;
-        var operation = BeginOperation(applying: false, "Creating a stable restoration snapshot…");
+        var operation = BeginOperation(applying: false, "Starting full-file offline analysis…");
         var progress = CreateProgress(operation);
-        double sensitivity = clickSensitivity.Value;
         try
         {
             var prepared = await Task.Run(() =>
             {
-                progress.Report(new OperationProgress("Copying the selected source without changing it…", 0.02));
+                progress.Report(new OperationProgress(
+                    "Scanning the complete file offline; no audio will be played…", 0.02));
                 operation.Token.ThrowIfCancellationRequested();
                 bool wholeDocument = _rangeStart == 0 && _sourceReferences.Length > 0 &&
                                      _rangeCount == _sourceReferences[0].Length;
@@ -186,23 +197,47 @@ public partial class RestorationWorkbenchDialog : Window
                 }
                 else
                 {
-                    progress.Report(new OperationProgress("Finding a quiet passage for the automatic noise print…", 0.12));
-                    noise = BuildAutomaticNoiseProfile(source, _sampleRate, operation.Token);
+                    progress.Report(new OperationProgress("Scanning the full file for its quietest noise-print passage…", 0.12));
+                    noise = BuildAutomaticNoiseProfile(_sourceReferences, _sampleRate, operation.Token);
                 }
 
-                var clickProgress = new DspProgressAdapter(progress, 0.25, 0.35);
-                var clicks = Restoration.AnalyzeClicks(source, _sampleRate,
+                var cleanup = CleanupAnalyzer.Analyze(_sourceReferences, _sampleRate,
+                    CleanupProfile.VinylCleanup, operation.Token,
+                    new CleanupProgressAdapter(progress, 0.18, 0.25));
+
+                var clickProgress = new DspProgressAdapter(progress, 0.45, 0.27);
+                var clicks = Restoration.AnalyzeClicks(_sourceReferences, _sampleRate,
                     new ClickAnalysisOptions
                     {
-                        Sensitivity = sensitivity,
+                        Sensitivity = RestorationRecommendations.ExploratoryClickSensitivity,
                         PreserveTransients = true,
                     }, operation.Token, clickProgress);
 
-                var clipProgress = new DspProgressAdapter(progress, 0.62, 0.35);
-                var clipping = Restoration.AnalyzeClipping(source, _sampleRate,
+                var clipProgress = new DspProgressAdapter(progress, 0.74, 0.19);
+                var clipping = Restoration.AnalyzeClipping(_sourceReferences, _sampleRate,
                     new ClippingAnalysisOptions(), operation.Token, clipProgress);
+                var recommendations = RestorationRecommendations.Create(clicks, clipping, cleanup);
+                if (Math.Abs(recommendations.ClickSensitivity -
+                             RestorationRecommendations.ExploratoryClickSensitivity) > 0.001)
+                {
+                    progress.Report(new OperationProgress(
+                        $"Confirming click candidates at {recommendations.ClickSensitivity:0.0}/10 sensitivity...",
+                        0.94));
+                    clicks = Restoration.AnalyzeClicks(_sourceReferences, _sampleRate,
+                        new ClickAnalysisOptions
+                        {
+                            Sensitivity = recommendations.ClickSensitivity,
+                            PreserveTransients = true,
+                        }, operation.Token,
+                        new DspProgressAdapter(progress, 0.94, 0.05));
+                    recommendations = RestorationRecommendations.Create(clicks, clipping, cleanup) with
+                    {
+                        ClickSensitivity = recommendations.ClickSensitivity,
+                    };
+                }
                 operation.Token.ThrowIfCancellationRequested();
-                return (Source: source, Noise: noise, Clicks: clicks, Clipping: clipping);
+                return (Source: source, Noise: noise, Clicks: clicks, Clipping: clipping,
+                    Recommendations: recommendations);
             }, operation.Token);
 
             if (!IsCurrent(operation)) return;
@@ -210,7 +245,9 @@ public partial class RestorationWorkbenchDialog : Window
             _noiseProfile = prepared.Noise.Profile;
             _clickAnalysis = prepared.Clicks;
             _clippingAnalysis = prepared.Clipping;
-            _analyzedClickSensitivity = sensitivity;
+            _analyzedClickSensitivity = prepared.Recommendations.ClickSensitivity;
+            _analysisRecommendations = prepared.Recommendations;
+            ApplyAnalysisRecommendations(prepared.Recommendations);
             UpdateAnalysisSummary(new AnalysisBundle(prepared.Clicks, prepared.Clipping));
 
             if (_capturedNoiseProfile != null)
@@ -219,7 +256,7 @@ public partial class RestorationWorkbenchDialog : Window
             }
             else if (prepared.Noise.Profile != null)
             {
-                long absoluteNoiseStart = _rangeStart + prepared.Noise.RelativeStart;
+                long absoluteNoiseStart = prepared.Noise.RelativeStart;
                 noiseSourceText.Text = $"Auto · quietest at {TimeFormat.Position(absoluteNoiseStart, _sampleRate)}";
             }
             else
@@ -229,8 +266,9 @@ public partial class RestorationWorkbenchDialog : Window
                 noiseEnabled.IsEnabled = false;
             }
 
-            progress.Report(new OperationProgress(
-                $"Ready · previewing is limited to {_previewLength / (double)_sampleRate:0.#} seconds and never changes the source.", 1));
+            statusText.Text =
+                $"Full file analyzed and settings tuned; no audio played. Optional audition is {_previewLength / (double)_sampleRate:0.#} seconds.";
+            progressBar.Value = 1;
         }
         catch (OperationCanceledException)
         {
@@ -415,13 +453,14 @@ public partial class RestorationWorkbenchDialog : Window
     private AnalysisBundle EnsureAnalyses(double sensitivity, CancellationToken cancellationToken,
         IProgress<RestorationProgress> progress)
     {
-        var source = _source ?? throw new InvalidOperationException("The restoration source is not ready.");
+        if (_source == null)
+            throw new InvalidOperationException("The restoration source is not ready.");
         _analysisGate.Wait(cancellationToken);
         try
         {
             if (_clickAnalysis == null || Math.Abs(_analyzedClickSensitivity - sensitivity) > 0.001)
             {
-                _clickAnalysis = Restoration.AnalyzeClicks(source, _sampleRate,
+                _clickAnalysis = Restoration.AnalyzeClicks(_sourceReferences, _sampleRate,
                     new ClickAnalysisOptions
                     {
                         Sensitivity = sensitivity,
@@ -430,7 +469,7 @@ public partial class RestorationWorkbenchDialog : Window
                 _analyzedClickSensitivity = sensitivity;
             }
 
-            _clippingAnalysis ??= Restoration.AnalyzeClipping(source, _sampleRate,
+            _clippingAnalysis ??= Restoration.AnalyzeClipping(_sourceReferences, _sampleRate,
                 new ClippingAnalysisOptions(), cancellationToken, progress);
             cancellationToken.ThrowIfCancellationRequested();
             return new AnalysisBundle(_clickAnalysis, _clippingAnalysis);
@@ -441,10 +480,40 @@ public partial class RestorationWorkbenchDialog : Window
         }
     }
 
+    private AnalysisBundle AnalysisForApplyRange(AnalysisBundle fullFile)
+    {
+        int absoluteEnd = checked(_rangeStart + _rangeCount);
+        ClickEvent[] clicks = fullFile.Clicks.Events
+            .Where(item => item.StartSample >= _rangeStart + 1 && item.EndSample < absoluteEnd)
+            .Select(item => item with
+            {
+                StartSample = item.StartSample - _rangeStart,
+                EndSample = item.EndSample - _rangeStart,
+                PeakSample = item.PeakSample - _rangeStart,
+            })
+            .ToArray();
+        ClippedPeakEvent[] clipping = fullFile.Clipping.Events
+            .Where(item => item.StartSample >= _rangeStart + 1 && item.EndSample < absoluteEnd)
+            .Select(item => item with
+            {
+                StartSample = item.StartSample - _rangeStart,
+                EndSample = item.EndSample - _rangeStart,
+                PeakSample = item.PeakSample - _rangeStart,
+            })
+            .ToArray();
+
+        return new AnalysisBundle(
+            new ClickAnalysisResult(clicks, _rangeCount, fullFile.Clicks.ChannelCount,
+                fullFile.Clicks.SampleRate),
+            new ClippingAnalysisResult(clipping, _rangeCount, fullFile.Clipping.ChannelCount,
+                fullFile.Clipping.SampleRate, fullFile.Clipping.UsedAutomaticThreshold));
+    }
+
     private float[][] RenderPreviewRange(RestorationSettings settings, AnalysisBundle analyses,
         CancellationToken cancellationToken, IProgress<OperationProgress> progress)
     {
         var source = _source ?? throw new InvalidOperationException("The restoration source is not ready.");
+        analyses = AnalysisForApplyRange(analyses);
         int padding = Math.Max(Restoration.NrFftSize * 2, _sampleRate / 10);
         bool needsContinuousState = !settings.Bypass && settings.WetAmount > 0 &&
             ((settings.RemoveHum && settings.HumAmount > 0) ||
@@ -523,6 +592,7 @@ public partial class RestorationWorkbenchDialog : Window
         CancellationToken cancellationToken, IProgress<OperationProgress> progress)
     {
         var source = _source ?? throw new InvalidOperationException("The restoration source is not ready.");
+        analyses = AnalysisForApplyRange(analyses);
         var work = CopyChannels(source, 0, source[0].Length, cancellationToken);
         return RenderOwnedWork(work, source, 0, settings,
             analyses.Clicks.Events, analyses.Clipping.Events,
@@ -677,6 +747,37 @@ public partial class RestorationWorkbenchDialog : Window
             : new NoiseProfileResult(null, quietestStart, true);
     }
 
+    private void ApplyAnalysisRecommendations(RestorationRecommendations.Settings recommendations)
+    {
+        _suppressControlEvents = true;
+        try
+        {
+            clickEnabled.IsChecked = recommendations.RepairClicks;
+            clickSensitivity.Value = recommendations.ClickSensitivity;
+            clickStrength.Value = recommendations.ClickStrength * 100;
+            declipEnabled.IsChecked = recommendations.Declip;
+            declipStrength.Value = recommendations.DeclipStrength * 100;
+            declipHeadroom.Value = recommendations.DeclipHeadroomDb;
+            noiseEnabled.IsChecked = recommendations.ReduceNoise && _noiseProfile != null;
+            noiseReduction.Value = recommendations.NoiseReductionDb;
+            noiseSensitivity.Value = recommendations.NoiseSensitivityDb;
+            humEnabled.IsChecked = recommendations.RemoveHum;
+            humStrength.Value = recommendations.HumAmount * 100;
+            humFrequency.SelectedIndex = recommendations.HumFrequency == 50 ? 0 : 1;
+            humHarmonics.Value = recommendations.HumHarmonics;
+            humQ.Value = recommendations.HumQ;
+            if (presetCombo.Items.Count >= 5)
+                presetCombo.SelectedIndex = 4;
+        }
+        finally
+        {
+            _suppressControlEvents = false;
+        }
+        UpdateReadouts();
+        _previewWetCacheSettings = null;
+        _previewWetCache = null;
+    }
+
     private RestorationSettings CaptureSettings() => new(
         clickEnabled.IsChecked == true,
         clickSensitivity.Value,
@@ -738,7 +839,17 @@ public partial class RestorationWorkbenchDialog : Window
 
     private void OnPresetChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!_initialized || _suppressControlEvents || presetCombo.SelectedIndex is < 0 or > 2) return;
+        if (!_initialized || _suppressControlEvents) return;
+        if (presetCombo.SelectedIndex == 4)
+        {
+            if (_analysisRecommendations != null)
+            {
+                ApplyAnalysisRecommendations(_analysisRecommendations);
+                QueueParameterRefresh();
+            }
+            return;
+        }
+        if (presetCombo.SelectedIndex is < 0 or > 2) return;
         _suppressControlEvents = true;
         try
         {

@@ -60,7 +60,7 @@
                         </Border>
                         <StackPanel Margin="11,0,0,0">
                             <TextBlock Text="Vinyl Restoration" FontSize="15" FontWeight="SemiBold"/>
-                            <TextBlock Text="Analysis-first repair · non-destructive preview · one-step undo"
+                            <TextBlock Text="Full-file offline analysis · optional audition · one-step undo"
                                        Margin="0,2,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"/>
                         </StackPanel>
                     </StackPanel>
@@ -77,7 +77,7 @@
                     <ColumnDefinition Width="250"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel>
-                    <TextBlock Text="SOURCE RANGE" Style="{StaticResource UpperLabel}"/>
+                    <TextBlock Text="APPLY RANGE" Style="{StaticResource UpperLabel}"/>
                     <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
                         <TextBlock x:Name="rangeText" Text="Preparing selection…" FontWeight="SemiBold"/>
                         <TextBlock x:Name="formatText" Margin="12,0,0,0" Foreground="{StaticResource Muted}"/>
@@ -92,6 +92,7 @@
                         <ComboBoxItem Content="Balanced"/>
                         <ComboBoxItem Content="Strong"/>
                         <ComboBoxItem Content="Custom"/>
+                        <ComboBoxItem Content="Analyzed"/>
                     </ComboBox>
                 </Grid>
             </Grid>
@@ -108,12 +109,12 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="IMPULSE ANALYSIS" Style="{StaticResource UpperLabel}"/>
+                                <TextBlock Text="FULL-FILE IMPULSES" Style="{StaticResource UpperLabel}"/>
                                 <TextBlock x:Name="clickCountText" Text="Analyzing clicks and pops…" Margin="0,5,0,0" FontWeight="SemiBold"/>
                             </StackPanel>
                             <Border Grid.Column="1" Background="{StaticResource LineSoft}" Margin="14,0"/>
                             <StackPanel Grid.Column="2">
-                                <TextBlock Text="CLIPPING ANALYSIS" Style="{StaticResource UpperLabel}"/>
+                                <TextBlock Text="FULL-FILE CLIPPING" Style="{StaticResource UpperLabel}"/>
                                 <TextBlock x:Name="clipCountText" Text="Analyzing distorted peaks…" Margin="0,5,0,0" FontWeight="SemiBold"/>
                             </StackPanel>
                             <Border Grid.Column="3" Background="{StaticResource LineSoft}" Margin="14,0"/>
@@ -297,7 +298,7 @@
                     <StackPanel Grid.Column="2" Orientation="Horizontal">
                         <Button x:Name="closeBtn" Content="Cancel" Width="72" Height="38"
                                 Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Click="OnClose"/>
-                        <Button x:Name="previewBtn" Content="▶ Preview 12 s" Width="118" Height="38" Margin="8,0,0,0"
+                        <Button x:Name="previewBtn" Content="▶ Audition 12 s" Width="124" Height="38" Margin="8,0,0,0"
                                 Style="{StaticResource AccentButton}" Click="OnPreview" IsEnabled="False"/>
                         <Button x:Name="applyBtn" Content="Apply" Width="82" Height="38" Margin="8,0,0,0"
                                 Style="{StaticResource AccentButton}" Click="OnApply" IsEnabled="False"/>
