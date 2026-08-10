@@ -117,10 +117,14 @@ public sealed class CompressorEffect : EffectBase
                 _rmsCount++;
                 if (_rmsCount >= RmsWindowFrames)
                 {
-                    _rmsAccum /= _rmsCount;
+                    detector = Math.Sqrt(Math.Max(1e-12, _rmsAccum / _rmsCount));
+                    _rmsAccum = 0;
                     _rmsCount = 0;
                 }
-                detector = Math.Sqrt(Math.Max(1e-12, _rmsAccum));
+                else
+                {
+                    detector = Math.Sqrt(Math.Max(1e-12, _rmsAccum / _rmsCount));
+                }
             }
             else
             {

@@ -156,12 +156,9 @@ public sealed class ReverbEffect : EffectBase
             input /= channels;
 
             // --- Pre-delay ---
-            float preDelayed = _preDelayLine.Process(input * 0.5f);
-            _preDelayLine.Buf[_preDelayLine.Pos > 0 ? _preDelayLine.Pos - 1 : _preDelayLine.Buf.Length - 1]
-                = input * 0.5f;
-            // Re-insert at correct position
-            int pdWrite = (_preDelayLine.Pos - 1 + _preDelayLine.Buf.Length) % _preDelayLine.Buf.Length;
-            _preDelayLine.Buf[pdWrite] = input * 0.5f;
+            // Write input to delay line; Process() reads the delayed output
+            _preDelayLine.Buf[_preDelayLine.Pos] = input * 0.5f;
+            float preDelayed = _preDelayLine.Process(0f);
 
             // --- Early reflections ---
             float erOut = 0;

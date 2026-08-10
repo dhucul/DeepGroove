@@ -343,13 +343,14 @@ public static partial class Restoration
             effectiveFreq = DetectMainsFrequency(data, sampleRate);
         }
 
-        // Per-harmonic energy tracking for dynamic depth
-        var harmonicEnergy = new double[harmonics];
-        var harmonicSmoothing = new double[harmonics];
-
         foreach (var channel in data)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Per-channel harmonic energy tracking for dynamic depth
+            var harmonicEnergy = new double[harmonics];
+            var harmonicSmoothing = new double[harmonics];
+
             for (int h = 1; h <= harmonics; h++)
             {
                 cancellationToken.ThrowIfCancellationRequested();

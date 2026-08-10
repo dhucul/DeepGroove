@@ -259,9 +259,20 @@ public sealed class NoiseReductionEffect : EffectBase
                     reconstructed[i] = sum / FftSize;
                 }
 
-                // Overlap-add back into buffer
-                // We need to write back to the buffer at the right positions
-                // This is approximate since we're processing in-place
+                // Overlap-add back into buffer at the correct positions
+                // Write reconstructed samples back to the buffer for the hop region
+                int bufferStart = offset + (f - FftSize + HopSize) * ChannelCount;
+                if (bufferStart >= offset)
+                {
+                    for (int i = 0; i < HopSize && bufferStart + i * ChannelCount < offset + count; i++)
+                    {
+                        int bufIdx = bufferStart + i * ChannelCount;
+                        if (bufIdx < offset + count)
+                            buffer[bufIdx] = (float)reconstructed[i];
+                    }
+                }
+
+                // Shift overlap buffer
                 Array.Copy(_fftOverlap, HopSize, _fftOverlap, 0, FftSize - HopSize);
             }
         }
