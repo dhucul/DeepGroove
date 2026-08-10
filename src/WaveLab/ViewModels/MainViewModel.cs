@@ -121,8 +121,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             () => HasAudioDocument);
         NormalizeCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Normalize(d, s, c, -0.3)),
             () => HasAudioDocument);
-        FadeInCommand = new RelayCommand(() => ApplyToRange(Processing.FadeIn), () => HasAudioDocument);
-        FadeOutCommand = new RelayCommand(() => ApplyToRange(Processing.FadeOut), () => HasAudioDocument);
+        FadeInCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.FadeIn(d, s, c)), () => HasAudioDocument);
+        FadeOutCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.FadeOut(d, s, c)), () => HasAudioDocument);
         ReverseCommand = new RelayCommand(() => ApplyToRange(Processing.Reverse), () => HasAudioDocument);
         RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset), () => HasAudioDocument);
         InsertSilenceCommand = new RelayCommand(() => WithDoc(d =>

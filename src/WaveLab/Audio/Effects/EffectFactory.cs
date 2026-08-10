@@ -10,7 +10,7 @@ public static class EffectFactory
 {
     public static readonly (string TypeId, string Name)[] Available =
     [
-        ("eq", "Studio EQ"),
+        ("eq", "Parametric EQ"),
         ("compressor", "Compressor"),
         ("normalizer", "Level Normalizer"),
         ("trim", "Gain & Trim"),
@@ -24,8 +24,7 @@ public static class EffectFactory
         ("delay", "Stereo Delay"),
         ("chorus", "Chorus"),
         ("saturation", "Saturation"),
-        ("lpf", "Low-Pass Filter"),
-        ("hpf", "High-Pass Filter"),
+        ("filter", "Multi-Mode Filter"),
         ("limiter", "Precision Limiter"),
     ];
 
@@ -45,8 +44,7 @@ public static class EffectFactory
         "delay" => new DelayEffect(),
         "chorus" => new ChorusEffect(),
         "saturation" => new SaturationEffect(),
-        "lpf" => new FilterEffect(highPass: false),
-        "hpf" => new FilterEffect(highPass: true),
+        "filter" => new FilterEffect(),
         "limiter" => new LimiterEffect(),
         _ => throw new ArgumentException($"Unknown effect type '{typeId}'."),
     };
@@ -125,8 +123,9 @@ public static class EffectFactory
         {
             "Default" => [State("eq"), DisabledState("limiter")],
             "Podcast Voice" =>
-                [State("hpf", ("cutoff", 80.0)), State("gate", ("thresh", -55.0)),
-                 State("eq", ("low", 1.0), ("mid", 1.5), ("high", 2.0)),
+                [State("filter", ("mode", 1.0), ("cutoff", 80.0), ("slope", 0.0)),
+                 State("gate", ("thresh", -55.0)),
+                 State("eq", ("lowGain", 1.0), ("midGain", 1.5), ("highGain", 2.0)),
                  State("compressor", ("thresh", -20.0), ("ratio", 3.0), ("makeup", 4.0)),
                  State("limiter", ("ceiling", -1.0))],
             "Master Bus" =>
@@ -134,18 +133,18 @@ public static class EffectFactory
                      ("attack", 30.0), ("release", 250.0)),
                  State("limiter", ("thresh", -3.0), ("ceiling", -1.0))],
             "Vocal Space" =>
-                [State("eq", ("high", 1.5)), State("reverb", ("size", 0.55), ("mix", 0.18)),
+                [State("eq", ("highGain", 1.5)), State("reverb", ("size", 0.55), ("mix", 0.18)),
                  State("limiter")],
             "Vinyl Cleanup" =>
-                [State("hpf", ("cutoff", 28.0), ("q", 0.707)),
+                [State("filter", ("mode", 1.0), ("cutoff", 28.0), ("q", 0.707), ("slope", 0.0)),
                  State("dehum", ("frequency", 60.0), ("harmonics", 6.0), ("q", 40.0), ("amount", 0.75)),
                  State("denoise", ("threshold", -62.0), ("reduction", 8.0), ("hiss", 6.0), ("release", 350.0)),
-                 State("eq", ("low", 0.5), ("mid", 0.5), ("high", 1.0)),
+                 State("eq", ("lowGain", 0.5), ("midGain", 0.5), ("highGain", 1.0)),
                  State("limiter", ("thresh", -1.5), ("ceiling", -1.0))],
             "Mono Record Presence" =>
                 [State("mono-stereo", ("amount", 0.38), ("delay", 11.0), ("bass", 160.0), ("safety", 0.9)),
                  State("stereo-width", ("width", 1.15), ("monoBass", 140.0), ("safety", 1.0)),
-                 State("eq", ("low", 0.5), ("mid", 0.8), ("high", 1.2)),
+                 State("eq", ("lowGain", 0.5), ("midGain", 0.8), ("highGain", 1.2)),
                  State("compressor", ("thresh", -16.0), ("ratio", 1.6), ("attack", 30.0), ("release", 280.0)),
                  State("limiter", ("thresh", -1.0), ("ceiling", -1.0))],
             "Clean Transfer" =>

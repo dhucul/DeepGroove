@@ -4,21 +4,27 @@ using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Views.Controls;
 
-/// <summary>Studio EQ response curve with band node dots. Bind the three gains.</summary>
+/// <summary>Parametric EQ response curve with band node dots. Bind the five band gains.</summary>
 public sealed class EqCurve : FrameworkElement
 {
     private const double Range = 15; // ±dB display
 
-    public static readonly DependencyProperty LowDbProperty = DependencyProperty.Register(
-        nameof(LowDb), typeof(double), typeof(EqCurve), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
-    public static readonly DependencyProperty MidDbProperty = DependencyProperty.Register(
-        nameof(MidDb), typeof(double), typeof(EqCurve), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
-    public static readonly DependencyProperty HighDbProperty = DependencyProperty.Register(
-        nameof(HighDb), typeof(double), typeof(EqCurve), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty LowGainDbProperty = DependencyProperty.Register(
+        nameof(LowGainDb), typeof(double), typeof(EqCurve), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty LowMidGainDbProperty = DependencyProperty.Register(
+        nameof(LowMidGainDb), typeof(double), typeof(EqCurve), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty MidGainDbProperty = DependencyProperty.Register(
+        nameof(MidGainDb), typeof(double), typeof(EqCurve), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty HighMidGainDbProperty = DependencyProperty.Register(
+        nameof(HighMidGainDb), typeof(double), typeof(EqCurve), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty HighGainDbProperty = DependencyProperty.Register(
+        nameof(HighGainDb), typeof(double), typeof(EqCurve), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
-    public double LowDb { get => (double)GetValue(LowDbProperty); set => SetValue(LowDbProperty, value); }
-    public double MidDb { get => (double)GetValue(MidDbProperty); set => SetValue(MidDbProperty, value); }
-    public double HighDb { get => (double)GetValue(HighDbProperty); set => SetValue(HighDbProperty, value); }
+    public double LowGainDb { get => (double)GetValue(LowGainDbProperty); set => SetValue(LowGainDbProperty, value); }
+    public double LowMidGainDb { get => (double)GetValue(LowMidGainDbProperty); set => SetValue(LowMidGainDbProperty, value); }
+    public double MidGainDb { get => (double)GetValue(MidGainDbProperty); set => SetValue(MidGainDbProperty, value); }
+    public double HighMidGainDb { get => (double)GetValue(HighMidGainDbProperty); set => SetValue(HighMidGainDbProperty, value); }
+    public double HighGainDb { get => (double)GetValue(HighGainDbProperty); set => SetValue(HighGainDbProperty, value); }
 
     private static readonly Brush NodeFill = new SolidColorBrush(Color.FromRgb(0x0D, 0x0F, 0x12));
 
@@ -42,9 +48,12 @@ public sealed class EqCurve : FrameworkElement
             dc.DrawLine(WaveTheme.GridLine, new Point(FToX(f), 0), new Point(FToX(f), h));
         dc.DrawLine(WaveTheme.CenterLine, new Point(0, h / 2), new Point(w, h / 2));
 
-        var low = Biquad.LowShelf(fs, StudioEq.LowFreq, LowDb);
-        var mid = Biquad.Peaking(fs, StudioEq.MidFreq, StudioEq.MidQ, MidDb);
-        var high = Biquad.HighShelf(fs, StudioEq.HighFreq, HighDb);
+        // 5-band parametric EQ: low shelf 80Hz, low-mid 250Hz, mid 650Hz, high-mid 2500Hz, high shelf 8kHz
+        var low = Biquad.LowShelf(fs, 80, LowGainDb);
+        var lm = Biquad.Peaking(fs, 250, 1.0, LowMidGainDb);
+        var mid = Biquad.Peaking(fs, 650, 1.0, MidGainDb);
+        var hm = Biquad.Peaking(fs, 2500, 1.0, HighMidGainDb);
+        var high = Biquad.HighShelf(fs, 8000, HighGainDb);
 
         var geo = new StreamGeometry();
         using (var g = geo.Open())
@@ -53,7 +62,8 @@ public sealed class EqCurve : FrameworkElement
             for (double x = 0; x <= w; x += 2)
             {
                 double f = XToF(x);
-                double db = low.MagnitudeDb(f, fs) + mid.MagnitudeDb(f, fs) + high.MagnitudeDb(f, fs);
+                double db = low.MagnitudeDb(f, fs) + lm.MagnitudeDb(f, fs) + mid.MagnitudeDb(f, fs)
+                          + hm.MagnitudeDb(f, fs) + high.MagnitudeDb(f, fs);
                 var p = new Point(x, DbToY(db));
                 if (first) { g.BeginFigure(p, false, false); first = false; }
                 else g.LineTo(p, true, false);
@@ -62,7 +72,7 @@ public sealed class EqCurve : FrameworkElement
         geo.Freeze();
         dc.DrawGeometry(null, WaveTheme.AccentPen, geo);
 
-        foreach (var (f, db) in ((double, double)[])[(StudioEq.LowFreq, LowDb), (StudioEq.MidFreq, MidDb), (StudioEq.HighFreq, HighDb)])
+        foreach (var (f, db) in ((double, double)[])[(80, LowGainDb), (250, LowMidGainDb), (650, MidGainDb), (2500, HighMidGainDb), (8000, HighGainDb)])
         {
             var center = new Point(FToX(f), DbToY(db));
             dc.DrawEllipse(NodeFill, WaveTheme.AccentPen, center, 3.5, 3.5);

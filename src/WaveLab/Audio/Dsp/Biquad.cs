@@ -103,4 +103,64 @@ public struct Biquad
             (1 + cw) / 2, -(1 + cw), (1 + cw) / 2,
             1 + alpha, -2 * cw, 1 - alpha);
     }
+
+    public static Biquad BandPass(double fs, double f, double q)
+    {
+        double w = 2 * Math.PI * f / fs;
+        double cw = Math.Cos(w), alpha = Math.Sin(w) / (2 * q);
+        return FromCoefficients(
+            alpha, 0, -alpha,
+            1 + alpha, -2 * cw, 1 - alpha);
+    }
+
+    public static Biquad BandStop(double fs, double f, double q)
+    {
+        double w = 2 * Math.PI * f / fs;
+        double cw = Math.Cos(w), alpha = Math.Sin(w) / (2 * q);
+        return FromCoefficients(
+            1, -2 * cw, 1,
+            1 + alpha, -2 * cw, 1 - alpha);
+    }
+
+    public static Biquad AllPass(double fs, double f, double q)
+    {
+        double w = 2 * Math.PI * f / fs;
+        double cw = Math.Cos(w), alpha = Math.Sin(w) / (2 * q);
+        return FromCoefficients(
+            1 - alpha, -2 * cw, 1 + alpha,
+            1 + alpha, -2 * cw, 1 - alpha);
+    }
+
+    public static Biquad FirstOrderHighPass(double fs, double f)
+    {
+        double w = 2 * Math.PI * f / fs;
+        double cw = Math.Cos(w), sw = Math.Sin(w);
+        double b0 = (1 + cw) / 2;
+        double b1 = -(1 + cw);
+        double b2 = b0;
+        double a0 = 1 + sw;
+        double a1 = -2 * cw;
+        double a2 = 1 - sw;
+        return FromCoefficients(b0, b1, b2, a0, a1, a2);
+    }
+
+    public static Biquad LowPass12Db(double fs, double f)
+    {
+        double w = 2 * Math.PI * f / fs;
+        double cw = Math.Cos(w), sw = Math.Sin(w);
+        double alpha = sw / Math.Sqrt(2);
+        return FromCoefficients(
+            (1 - cw) / 2, 1 - cw, (1 - cw) / 2,
+            1 + alpha, -2 * cw, 1 - alpha);
+    }
+
+    public static Biquad HighPass12Db(double fs, double f)
+    {
+        double w = 2 * Math.PI * f / fs;
+        double cw = Math.Cos(w), sw = Math.Sin(w);
+        double alpha = sw / Math.Sqrt(2);
+        return FromCoefficients(
+            (1 + cw) / 2, -(1 + cw), (1 + cw) / 2,
+            1 + alpha, -2 * cw, 1 - alpha);
+    }
 }

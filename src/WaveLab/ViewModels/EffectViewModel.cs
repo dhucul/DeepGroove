@@ -80,9 +80,11 @@ public sealed class EffectViewModel : ObservableObject
     public string? Readout => Effect.Readout;
     public bool HasReadout => Effect.Readout != null;
 
-    public double EqLow => Effect.GetParam("low");
-    public double EqMid => Effect.GetParam("mid");
-    public double EqHigh => Effect.GetParam("high");
+    public double EqLow => Effect.GetParam("lowGain");
+    public double EqLowMid => Effect.GetParam("lmGain");
+    public double EqMid => Effect.GetParam("midGain");
+    public double EqHighMid => Effect.GetParam("hmGain");
+    public double EqHigh => Effect.GetParam("highGain");
 
     public RelayCommand MoveUpCommand { get; }
     public RelayCommand MoveDownCommand { get; }
@@ -101,7 +103,9 @@ public sealed class EffectViewModel : ObservableObject
         if (IsEq)
         {
             Raise(nameof(EqLow));
+            Raise(nameof(EqLowMid));
             Raise(nameof(EqMid));
+            Raise(nameof(EqHighMid));
             Raise(nameof(EqHigh));
         }
         _changed(this);

@@ -126,16 +126,18 @@ public static class CleanupAnalyzer
         List<CleanupMetric> metrics,
         List<CleanupRecommendation> recommendations)
     {
-        EffectFactory.EffectState hpf = State(recommended, "hpf");
+        EffectFactory.EffectState hpf = State(recommended, "filter");
         hpf.Enabled = rumble.Detected;
+        Set(hpf, "mode", 1.0); // HP mode
         Set(hpf, "cutoff", rumble.Cutoff);
         Set(hpf, "q", 0.707);
+        Set(hpf, "slope", 0.0); // 12dB
         recommendations.Add(Recommendation(
             baseline, hpf, "High-Pass Filter",
             rumble.Detected
                 ? $"Subsonic energy is {rumble.RatioDb:+0.0;-0.0;0.0} dB relative to bass fundamentals."
                 : "No persistent subsonic rumble was separated from musical bass.",
-            $"{Param(State(baseline, "hpf"), "cutoff"):0} Hz",
+            $"{Param(State(baseline, "filter"), "cutoff"):0} Hz",
             rumble.Detected ? $"{rumble.Cutoff:0} Hz · Q 0.71" : "Bypass",
             rumble.Confidence, true));
 
@@ -185,9 +187,9 @@ public static class CleanupAnalyzer
             lowGain = 0;
             highGain = 0;
         }
-        Set(eq, "low", lowGain);
-        Set(eq, "mid", 0);
-        Set(eq, "high", highGain);
+        Set(eq, "lowGain", lowGain);
+        Set(eq, "midGain", 0);
+        Set(eq, "highGain", highGain);
         eq.Enabled = eqSupported;
         recommendations.Add(Recommendation(
             baseline, eq, "Studio EQ",
@@ -945,7 +947,7 @@ public static class CleanupAnalyzer
         $"{Param(state, "threshold"):0} dB floor · {Param(state, "reduction"):0.#} dB NR · {Param(state, "hiss"):0.#} dB @ {Param(state, "hissFreq") / 1000:0.0}k";
 
     private static string EqText(EffectFactory.EffectState state) =>
-        $"L {Param(state, "low"):+0.0;-0.0;0.0} · M {Param(state, "mid"):+0.0;-0.0;0.0} · H {Param(state, "high"):+0.0;-0.0;0.0} dB";
+        $"L {Param(state, "lowGain"):+0.0;-0.0;0.0} · M {Param(state, "midGain"):+0.0;-0.0;0.0} · H {Param(state, "highGain"):+0.0;-0.0;0.0} dB";
 
     private static string LimiterText(EffectFactory.EffectState state) =>
         $"{Param(state, "thresh"):0.0} dB drive · {Param(state, "ceiling"):0.0} dBTP";

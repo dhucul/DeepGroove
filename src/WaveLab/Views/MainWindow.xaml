@@ -587,7 +587,7 @@
                                                 </DockPanel>
                                                 <c:EqCurve Height="44" Margin="0,7,0,2"
                                                            Visibility="{Binding IsEq, Converter={StaticResource BoolToVis}}"
-                                                           LowDb="{Binding EqLow}" MidDb="{Binding EqMid}" HighDb="{Binding EqHigh}"/>
+                                                           LowGainDb="{Binding EqLow}" LowMidGainDb="{Binding EqLowMid}" MidGainDb="{Binding EqMid}" HighMidGainDb="{Binding EqHighMid}" HighGainDb="{Binding EqHigh}"/>
                                                 <ItemsControl ItemsSource="{Binding Params}" Margin="0,5,0,0">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>

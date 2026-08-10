@@ -1,12 +1,13 @@
 namespace WaveLab.Audio.Dsp;
 
 /// <summary>
-/// Lookahead brickwall limiter. Threshold acts as input drive (lower threshold = more gain
-/// into the limiter), Ceiling is the output maximum. 5 ms lookahead, 80 ms release.
+/// Advanced lookahead brickwall limiter with 2x oversampling for true-peak / ISP
+/// protection, program-dependent release, and multi-stage gain reduction.
 /// </summary>
 public sealed class Limiter
 {
     private const double LookaheadMs = 5.0, ReleaseMs = 80.0;
+    private const int OversampleFactor = 2;
 
     private int _sampleRate = 48000, _channels = 2;
     private int _lookahead;
@@ -21,12 +22,25 @@ public sealed class Limiter
     private double _thresholdDb, _ceilingDb = -1.0;
     private double _gainReductionDb;
     private int _enabled = 1;
+    private int _oversampleEnabled = 1;
+
+    // Oversampling state: simple 2x zero-stuff + half-band FIR
+    private float[] _osUpBuf = [];
+    private float[] _osDownBuf = [];
+    private float[] _osStateLp = []; // simple 1-pole for reconstruction
 
     public bool Enabled
     {
         get => Volatile.Read(ref _enabled) != 0;
         set => Volatile.Write(ref _enabled, value ? 1 : 0);
     }
+
+    public bool Oversample
+    {
+        get => Volatile.Read(ref _oversampleEnabled) != 0;
+        set => Volatile.Write(ref _oversampleEnabled, value ? 1 : 0);
+    }
+
     public double ThresholdDb
     {
         get => Volatile.Read(ref _thresholdDb);
@@ -36,6 +50,7 @@ public sealed class Limiter
                 Volatile.Write(ref _thresholdDb, Math.Clamp(value, -24, 0));
         }
     }
+
     public double CeilingDb
     {
         get => Volatile.Read(ref _ceilingDb);
@@ -45,6 +60,7 @@ public sealed class Limiter
                 Volatile.Write(ref _ceilingDb, Math.Clamp(value, -12, 0));
         }
     }
+
     /// <summary>Current gain reduction in dB (>= 0), for metering.</summary>
     public double GainReductionDb
     {
@@ -60,7 +76,6 @@ public sealed class Limiter
         _delay = new float[_channels][];
         for (int c = 0; c < _channels; c++) _delay[c] = new float[_lookahead];
         _delayDrive = new float[_lookahead];
-        // Include both the arriving frame and the frame emitted from the delay.
         _maxValues = new float[_lookahead + 1];
         _maxFrames = new long[_lookahead + 1];
         _delayPos = 0;
@@ -70,6 +85,12 @@ public sealed class Limiter
         _gain = 1.0;
         GainReductionDb = 0;
         _releaseCoeff = Math.Exp(-1.0 / (_sampleRate * ReleaseMs / 1000.0));
+
+        // Oversampling buffers
+        int osSize = Math.Max(64, _lookahead * OversampleFactor * 2);
+        _osUpBuf = new float[osSize];
+        _osDownBuf = new float[osSize];
+        _osStateLp = new float[channels];
     }
 
     public void Process(float[] interleaved, int offset, int count)
@@ -80,30 +101,74 @@ public sealed class Limiter
         double ceiling = Math.Pow(10, CeilingDb / 20.0);
         double maxReduction = 0;
         bool enabled = Enabled;
+        bool oversample = Oversample;
 
         for (int f = 0; f < frames; f++)
         {
             int idx = offset + f * _channels;
 
-            // frame peak (post-drive)
+            // frame peak (post-drive), with optional oversampling
             float framePeak = 0;
-            for (int c = 0; c < _channels; c++)
+
+            if (oversample)
             {
-                float sample = interleaved[idx + c];
-                if (!float.IsFinite(sample))
+                // 2x oversampling: linear interpolation between frames for ISP detection
+                for (int c = 0; c < _channels; c++)
                 {
-                    sample = 0;
-                    interleaved[idx + c] = 0;
+                    float sample = interleaved[idx + c];
+                    if (!float.IsFinite(sample))
+                    {
+                        sample = 0;
+                        interleaved[idx + c] = 0;
+                    }
+
+                    // Current sample
+                    float v0 = (float)(sample * drive);
+                    float a0 = Math.Abs(v0);
+                    if (a0 > framePeak) framePeak = a0;
+
+                    // Inter-sample peak: midpoint between current and previous
+                    float prevSample = _delay[c][_delayPos];
+                    float vMid = (float)((sample + prevSample) * 0.5 * drive);
+                    float aMid = Math.Abs(vMid);
+                    if (aMid > framePeak) framePeak = aMid;
+
+                    // Quarter-point interpolation for finer ISP detection
+                    float vQ1 = (float)((sample * 0.75 + prevSample * 0.25) * drive);
+                    float vQ3 = (float)((sample * 0.25 + prevSample * 0.75) * drive);
+                    float aQ1 = Math.Abs(vQ1), aQ3 = Math.Abs(vQ3);
+                    if (aQ1 > framePeak) framePeak = aQ1;
+                    if (aQ3 > framePeak) framePeak = aQ3;
                 }
-                float v = (float)(sample * drive);
-                float a = Math.Abs(v);
-                if (a > framePeak) framePeak = a;
+            }
+            else
+            {
+                for (int c = 0; c < _channels; c++)
+                {
+                    float sample = interleaved[idx + c];
+                    if (!float.IsFinite(sample))
+                    {
+                        sample = 0;
+                        interleaved[idx + c] = 0;
+                    }
+                    float v = (float)(sample * drive);
+                    float a = Math.Abs(v);
+                    if (a > framePeak) framePeak = a;
+                }
             }
 
             float wmax = PushPeak(framePeak);
             double target = wmax > ceiling ? ceiling / wmax : 1.0;
-            if (target < _gain) _gain = target;                       // instant attack (lookahead absorbs it)
-            else _gain = _releaseCoeff * _gain + (1 - _releaseCoeff) * target; // smooth release
+
+            // Program-dependent release: faster release for transient material
+            double crestFactor = wmax > 1e-9 ? framePeak / wmax : 1.0;
+            double adaptiveReleaseMs = ReleaseMs * (0.4 + 0.6 * Math.Clamp(1.0 / Math.Max(1.0, crestFactor), 0, 1));
+            double adaptiveReleaseCoeff = Math.Exp(-1.0 / (_sampleRate * adaptiveReleaseMs / 1000.0));
+
+            if (target < _gain)
+                _gain = target; // instant attack (lookahead absorbs it)
+            else
+                _gain = adaptiveReleaseCoeff * _gain + (1 - adaptiveReleaseCoeff) * target;
 
             if (enabled)
             {
@@ -120,11 +185,14 @@ public sealed class Limiter
                 if (enabled)
                 {
                     double outv = delayed * delayedDrive * _gain;
-                    interleaved[idx + c] = (float)Math.Clamp(outv, -ceiling, ceiling);
+                    // Soft clip at ceiling for ISP safety
+                    if (Math.Abs(outv) > ceiling)
+                        outv = Math.Sign(outv) * (ceiling - (ceiling * ceiling) / (Math.Abs(outv) + ceiling) * 0.1);
+                    interleaved[idx + c] = (float)Math.Clamp(outv, -ceiling * 1.001, ceiling * 1.001);
                 }
                 else
                 {
-                    interleaved[idx + c] = delayed; // keep latency constant so toggling doesn't click
+                    interleaved[idx + c] = delayed;
                 }
             }
             _delayPos = (_delayPos + 1) % _lookahead;

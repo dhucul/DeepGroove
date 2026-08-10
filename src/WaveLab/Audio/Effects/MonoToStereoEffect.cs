@@ -1,9 +1,11 @@
+using WaveLab.Audio.Dsp;
+
 namespace WaveLab.Audio.Effects;
 
 /// <summary>
-/// Creates a complementary, decorrelated side signal from mono-compatible stereo input.
-/// The generated side is added with opposite polarity, so a mono fold-down always returns
-/// the original mid signal instead of producing Haas-delay comb filtering.
+/// Advanced mono-to-stereo enhancer with multiple decorrelation algorithms:
+/// delay-based, all-pass filter network, and micro-pitch shift.
+/// Includes mono bass keep, correlation safety limiter, and frequency-dependent spread.
 /// </summary>
 public sealed class MonoToStereoEffect : EffectBase
 {
@@ -13,6 +15,12 @@ public sealed class MonoToStereoEffect : EffectBase
         new("delay", "SPACE", 3, 25, 12, v => $"{v:0.0} ms"),
         new("bass", "MONO BASS", 40, 400, 140, EffectParam.Hz),
         new("safety", "MONO SAFE", 0, 1, 0.85, EffectParam.Pct),
+        new("algorithm", "ALGORITHM", 0, 2, 0, v => ((int)v) switch
+        {
+            0 => "DELAY",
+            1 => "ALL-PASS",
+            _ => "PITCH",
+        }),
     ];
 
     private float[] _delayLine = [];
@@ -22,6 +30,10 @@ public sealed class MonoToStereoEffect : EffectBase
     private double _decorrelatedEnergy;
     private double _safetyGain = 1;
     private double _spread;
+    private Biquad[] _allPassFilters = [];
+    private double _pitchPhase;
+    private float[] _pitchDelayLine = [];
+    private int _pitchWritePos;
 
     public override string TypeId => "mono-stereo";
     public override string DisplayName => "Mono-to-Stereo Enhancer";
@@ -32,19 +44,33 @@ public sealed class MonoToStereoEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        // Parameters never resize this line, keeping slider moves allocation-free.
         _delayLine = new float[Math.Max(32, (int)Math.Ceiling(SampleRate * 0.03) + 2)];
+        _pitchDelayLine = new float[Math.Max(32, (int)Math.Ceiling(SampleRate * 0.05) + 2)];
+        _allPassFilters = new Biquad[4];
+        RebuildAllPasses();
+    }
+
+    private void RebuildAllPasses()
+    {
+        // All-pass network at different frequencies for decorrelation
+        double[] apFreqs = [250, 700, 1800, 4500];
+        for (int i = 0; i < 4; i++)
+            _allPassFilters[i] = Biquad.AllPass(SampleRate, apFreqs[i], 0.707);
     }
 
     public override void ResetState()
     {
         Array.Clear(_delayLine);
+        Array.Clear(_pitchDelayLine);
         _writePosition = 0;
+        _pitchWritePos = 0;
         _decorrelationLowPass = 0;
         _midEnergy = 0;
         _decorrelatedEnergy = 0;
         _safetyGain = 1;
         _spread = 0;
+        _pitchPhase = 0;
+        foreach (var f in _allPassFilters) f.Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
@@ -58,6 +84,7 @@ public sealed class MonoToStereoEffect : EffectBase
         double safety = GetParam("safety");
         double reduceCoefficient = Math.Exp(-1.0 / (SampleRate * 0.005));
         double recoverCoefficient = Math.Exp(-1.0 / (SampleRate * 0.12));
+        int algorithm = (int)GetParam("algorithm");
 
         int frames = count / ChannelCount;
         for (int frame = 0; frame < frames; frame++)
@@ -69,26 +96,25 @@ public sealed class MonoToStereoEffect : EffectBase
             double originalSide = (left - right) * 0.5;
 
             _delayLine[_writePosition] = (float)mid;
-            double readPosition = _writePosition - delaySamples;
-            if (readPosition < 0) readPosition += _delayLine.Length;
-            int read0 = (int)readPosition;
-            int read1 = read0 + 1;
-            if (read1 == _delayLine.Length) read1 = 0;
-            double fraction = readPosition - read0;
-            double delayed = _delayLine[read0] * (1 - fraction) + _delayLine[read1] * fraction;
-            if (++_writePosition == _delayLine.Length) _writePosition = 0;
 
-            // Removing low-frequency content from the decorrelator keeps bass centered.
-            double difference = mid - delayed;
-            _decorrelationLowPass += highPassAlpha * (difference - _decorrelationLowPass);
-            double decorrelated = difference - _decorrelationLowPass;
+            double decorrelated;
+            switch (algorithm)
+            {
+                case 1: // All-pass network
+                    decorrelated = AllPassDecorrelation(mid);
+                    break;
+                case 2: // Micro-pitch shift
+                    decorrelated = PitchShiftDecorrelation(mid);
+                    break;
+                default: // Delay-based (original)
+                    decorrelated = DelayBasedDecorrelation(mid, delaySamples, highPassAlpha);
+                    break;
+            }
 
             _midEnergy = energyCoefficient * _midEnergy + (1 - energyCoefficient) * mid * mid;
             _decorrelatedEnergy = energyCoefficient * _decorrelatedEnergy
                                   + (1 - energyCoefficient) * decorrelated * decorrelated;
 
-            // At full safety, synthetic side RMS stays well below mid RMS. This keeps
-            // newly widened mono sources positively correlated while retaining width.
             double targetSafetyGain = 1;
             if (safety > 0 && amount > 0 && _decorrelatedEnergy > 1e-12)
             {
@@ -103,10 +129,56 @@ public sealed class MonoToStereoEffect : EffectBase
             double syntheticSide = decorrelated * amount * _safetyGain;
             _spread = amount * _safetyGain;
 
-            if (amount <= 1e-9) continue;
-            double side = originalSide + syntheticSide;
-            buffer[index] = (float)(mid + side);
-            buffer[index + 1] = (float)(mid - side);
+            if (amount > 1e-9)
+            {
+                double side = originalSide + syntheticSide;
+                buffer[index] = (float)(mid + side);
+                buffer[index + 1] = (float)(mid - side);
+            }
+
+            if (++_writePosition == _delayLine.Length) _writePosition = 0;
         }
+    }
+
+    private double DelayBasedDecorrelation(double mid, double delaySamples, double highPassAlpha)
+    {
+        double readPosition = _writePosition - delaySamples;
+        if (readPosition < 0) readPosition += _delayLine.Length;
+        int read0 = (int)readPosition;
+        int read1 = read0 + 1;
+        if (read1 == _delayLine.Length) read1 = 0;
+        double fraction = readPosition - read0;
+        double delayed = _delayLine[read0] * (1 - fraction) + _delayLine[read1] * fraction;
+
+        double difference = mid - delayed;
+        _decorrelationLowPass += highPassAlpha * (difference - _decorrelationLowPass);
+        return difference - _decorrelationLowPass;
+    }
+
+    private double AllPassDecorrelation(double mid)
+    {
+        float x = (float)mid;
+        for (int i = 0; i < 4; i++)
+            x = _allPassFilters[i].Process(x);
+        return x - mid; // difference signal
+    }
+
+    private double PitchShiftDecorrelation(double mid)
+    {
+        // Micro pitch-shift via modulated delay (very subtle, ~5 cents)
+        _pitchPhase += 2 * Math.PI * 0.3 / SampleRate; // 0.3 Hz modulation
+        if (_pitchPhase > 2 * Math.PI) _pitchPhase -= 2 * Math.PI;
+
+        double modDelay = 2.0 + Math.Sin(_pitchPhase) * 1.5; // 0.5-3.5 sample modulation
+        _pitchDelayLine[_pitchWritePos] = (float)mid;
+        double readPos = _pitchWritePos - modDelay;
+        if (readPos < 0) readPos += _pitchDelayLine.Length;
+        int r0 = (int)readPos;
+        int r1 = (r0 + 1) % _pitchDelayLine.Length;
+        double frac = readPos - r0;
+        double shifted = _pitchDelayLine[r0] * (1 - frac) + _pitchDelayLine[r1] * frac;
+
+        if (++_pitchWritePos >= _pitchDelayLine.Length) _pitchWritePos = 0;
+        return shifted - mid;
     }
 }

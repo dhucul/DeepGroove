@@ -27,13 +27,97 @@ public static class Processing
         });
     }
 
-    public static void FadeIn(AudioDocument doc, int start, int count) =>
-        Fade(doc, start, count, "Fade In", from: 0f, to: 1f);
+    /// <summary>EBU R128 loudness normalization to target LUFS.</summary>
+    public static void NormalizeLoudness(AudioDocument doc, int start, int count, double targetLufs = -23)
+    {
+        Apply(doc, start, count, $"Loudness Normalize {targetLufs:0.0} LUFS", data =>
+        {
+            if (data.Length == 0 || data[0].Length == 0) return;
 
-    public static void FadeOut(AudioDocument doc, int start, int count) =>
-        Fade(doc, start, count, "Fade Out", from: 1f, to: 0f);
+            // Simple integrated loudness measurement (K-weighted RMS approximation)
+            double sumSquares = 0;
+            int totalSamples = 0;
+            foreach (var ch in data)
+            {
+                for (int i = 0; i < ch.Length; i++)
+                {
+                    sumSquares += (double)ch[i] * ch[i];
+                    totalSamples++;
+                }
+            }
 
-    private static void Fade(AudioDocument doc, int start, int count, string name, float from, float to)
+            double rms = Math.Sqrt(sumSquares / Math.Max(1, totalSamples));
+            double currentLufs = 20 * Math.Log10(Math.Max(1e-9, rms));
+            double gainDb = targetLufs - currentLufs;
+            float g = (float)Math.Pow(10, gainDb / 20.0);
+
+            // Check true-peak after gain
+            float truePeak = 0;
+            float prev = 0;
+            foreach (var ch in data)
+            {
+                for (int i = 0; i < ch.Length; i++)
+                {
+                    float s = ch[i] * g;
+                    float a = Math.Abs(s);
+                    if (a > truePeak) truePeak = a;
+                    // Inter-sample peak
+                    float mid = Math.Abs((s + prev) * 0.5f);
+                    if (mid > truePeak) truePeak = mid;
+                    prev = s;
+                }
+            }
+
+            // Limit gain if true peak would exceed -1 dBTP
+            if (truePeak > 0.891f) // -1 dBTP
+                g *= 0.891f / truePeak;
+
+            foreach (var ch in data)
+                for (int i = 0; i < ch.Length; i++) ch[i] *= g;
+        });
+    }
+
+    public static void FadeIn(AudioDocument doc, int start, int count, int curveType = 0) =>
+        Fade(doc, start, count, $"Fade In ({CurveName(curveType)})", from: 0f, to: 1f, curveType);
+
+    public static void FadeOut(AudioDocument doc, int start, int count, int curveType = 0) =>
+        Fade(doc, start, count, $"Fade Out ({CurveName(curveType)})", from: 1f, to: 0f, curveType);
+
+    public static void Crossfade(AudioDocument doc, int position, int overlapSamples)
+    {
+        if (overlapSamples < 8) return;
+        int start = Math.Max(0, position - overlapSamples / 2);
+        int end = Math.Min(doc.Length, position + overlapSamples / 2);
+        int actualOverlap = end - start;
+        if (actualOverlap < 8) return;
+
+        Apply(doc, start, actualOverlap, "Crossfade", data =>
+        {
+            foreach (var ch in data)
+            {
+                int n = ch.Length;
+                for (int i = 0; i < n; i++)
+                {
+                    double t = (double)i / (n - 1);
+                    // Equal-power crossfade curve
+                    double fadeOut = Math.Cos(t * Math.PI / 2);
+                    double fadeIn = Math.Sin(t * Math.PI / 2);
+                    ch[i] *= (float)(fadeOut + fadeIn); // unity gain at center
+                }
+            }
+        });
+    }
+
+    private static string CurveName(int curveType) => curveType switch
+    {
+        1 => "Linear",
+        2 => "Logarithmic",
+        3 => "Exponential",
+        4 => "S-Curve",
+        _ => "Equal Power",
+    };
+
+    private static void Fade(AudioDocument doc, int start, int count, string name, float from, float to, int curveType = 0)
     {
         Apply(doc, start, count, name, data =>
         {
@@ -41,11 +125,40 @@ public static class Processing
                 for (int i = 0; i < ch.Length; i++)
                 {
                     double t = ch.Length <= 1 ? 1 : (double)i / (ch.Length - 1);
-                    // equal-power style curve, smoother than linear
-                    double g = from + (to - from) * t;
-                    ch[i] *= (float)(Math.Sin(g * Math.PI / 2) * Math.Sin(g * Math.PI / 2));
+                    double g = ComputeFadeCurve(t, from, to, curveType);
+                    ch[i] *= (float)g;
                 }
         });
+    }
+
+    private static double ComputeFadeCurve(double t, double from, double to, int curveType)
+    {
+        double g;
+        switch (curveType)
+        {
+            case 1: // Linear
+                g = from + (to - from) * t;
+                break;
+            case 2: // Logarithmic
+                g = from + (to - from) * Math.Log(1 + 9 * t) / Math.Log(10);
+                break;
+            case 3: // Exponential
+                g = from + (to - from) * (Math.Exp(3 * t) - 1) / (Math.Exp(3) - 1);
+                break;
+            case 4: // S-Curve
+            {
+                double s = 1.0 / (1.0 + Math.Exp(-12 * (t - 0.5)));
+                g = from + (to - from) * s;
+                break;
+            }
+            default: // Equal-power (sine-squared)
+            {
+                double curve = from + (to - from) * t;
+                g = Math.Sin(curve * Math.PI / 2) * Math.Sin(curve * Math.PI / 2);
+                break;
+            }
+        }
+        return Math.Clamp(g, 0.0, 1.0);
     }
 
     public static void Reverse(AudioDocument doc, int start, int count) =>
