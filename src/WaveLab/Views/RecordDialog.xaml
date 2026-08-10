@@ -171,7 +171,8 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel VerticalAlignment="Center">
-                                <ProgressBar Height="5" Minimum="0" Maximum="100" Value="{Binding LevelConfidencePercent}"
+                                <ProgressBar Height="5" Minimum="0" Maximum="100"
+                                             Value="{Binding LevelConfidencePercent, Mode=OneWay}"
                                              Foreground="{StaticResource Accent}"/>
                                 <TextBlock Text="{Binding LevelProgressText}" Margin="0,5,0,0"
                                            FontFamily="{StaticResource MonoFont}" FontSize="9.5" Foreground="#7F918C"/>
