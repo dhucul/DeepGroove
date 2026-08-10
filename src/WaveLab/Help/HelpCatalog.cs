@@ -146,7 +146,7 @@ public static class HelpCatalog
             Section("Signal flow",
                 "Enabled rack effects process from top to bottom. Move buttons change that order, the switch bypasses one effect, reset returns it to defaults, and remove deletes it from the chain. The rack switch bypasses the entire chain without losing individual settings. Add Effect opens the available processors."),
             Section("Presets and analysis",
-                "The preset list loads a stored chain. Save Preset captures the current order, enabled states, and parameters under a name. Reset Chain returns to the default EQ and limiter layout. The sparkle button opens Analyze & Tune for Vinyl Cleanup or Clean Transfer."),
+                "The preset list loads a stored chain. Record to CD - Gentle Clarity is the safest starting point for a dark transfer; Dull Source Rescue applies a stronger presence-and-air lift, while Warm Record Open-Up adds low-end body as well. These tonal presets avoid automatic denoising, reserve headroom before the final true-peak limiter, and leave the source unchanged until rendering. Save Preset captures the current order, enabled states, and parameters under a name. Reset Chain returns to the default EQ and limiter layout. The sparkle button opens Analyze & Tune for Vinyl Cleanup or Clean Transfer."),
             Section("Render in Place",
                 "Processes the current selection, or the whole file when there is no selection, and replaces it in the same tab as one undoable edit. Processing latency is compensated. Save after reviewing the result."),
             Section("Render Copy",

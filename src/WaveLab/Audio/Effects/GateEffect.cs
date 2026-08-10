@@ -40,6 +40,8 @@ public sealed class GateEffect : EffectBase
 
     private void RebuildSidechain()
     {
+        if (_sidechainFilters.Length != ChannelCount) return;
+
         int filterType = (int)GetParam("scFilter");
         double freq = GetParam("scFreq");
         for (int c = 0; c < ChannelCount; c++)

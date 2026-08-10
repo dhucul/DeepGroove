@@ -110,6 +110,8 @@ public static class EffectFactory
     [
         "Default", "Podcast Voice", "Master Bus", "Vocal Space", "Vinyl Cleanup",
         "Mono Record Presence", "Clean Transfer",
+        "Record to CD - Gentle Clarity", "Record to CD - Dull Source Rescue",
+        "Record to CD - Warm Record Open-Up",
     ];
 
     /// <summary>
@@ -151,10 +153,42 @@ public static class EffectFactory
                 [State("channel-balance"),
                  State("dehum", ("amount", 0.65)),
                  State("denoise", ("threshold", -64.0), ("reduction", 6.0), ("hiss", 5.0), ("release", 400.0)),
+                 State("eq", ("lowGain", -0.3), ("lowFreq", 100.0), ("lowQ", 0.707),
+                     ("lmGain", -0.8), ("lmFreq", 300.0), ("lmQ", 0.85),
+                     ("midGain", 0.3), ("midFreq", 1200.0), ("midQ", 0.8),
+                     ("hmGain", 1.0), ("hmFreq", 3500.0), ("hmQ", 0.75),
+                     ("highGain", 1.2), ("highFreq", 9500.0), ("highQ", 0.6)),
                  State("trim"),
                  State("normalizer", ("target", -20.0), ("maxBoost", 3.0), ("maxCut", 6.0),
                      ("gate", -58.0), ("response", 2500.0)),
                  State("limiter", ("ceiling", -1.0))],
+            "Record to CD - Gentle Clarity" =>
+                [TransferHighPass(26.0),
+                 State("eq", ("lowGain", -0.3), ("lowFreq", 100.0), ("lowQ", 0.707),
+                     ("lmGain", -0.8), ("lmFreq", 280.0), ("lmQ", 0.85),
+                     ("midGain", 0.4), ("midFreq", 1100.0), ("midQ", 0.8),
+                     ("hmGain", 1.1), ("hmFreq", 3500.0), ("hmQ", 0.75),
+                     ("highGain", 1.4), ("highFreq", 9500.0), ("highQ", 0.6)),
+                 State("trim", ("gain", -1.5)),
+                 TransferLimiter()],
+            "Record to CD - Dull Source Rescue" =>
+                [TransferHighPass(28.0),
+                 State("eq", ("lowGain", -0.8), ("lowFreq", 110.0), ("lowQ", 0.707),
+                     ("lmGain", -1.8), ("lmFreq", 330.0), ("lmQ", 0.75),
+                     ("midGain", 0.8), ("midFreq", 1300.0), ("midQ", 0.8),
+                     ("hmGain", 2.5), ("hmFreq", 3600.0), ("hmQ", 0.75),
+                     ("highGain", 3.2), ("highFreq", 9000.0), ("highQ", 0.55)),
+                 State("trim", ("gain", -3.0)),
+                 TransferLimiter()],
+            "Record to CD - Warm Record Open-Up" =>
+                [TransferHighPass(24.0),
+                 State("eq", ("lowGain", 1.0), ("lowFreq", 85.0), ("lowQ", 0.707),
+                     ("lmGain", -0.9), ("lmFreq", 260.0), ("lmQ", 0.8),
+                     ("midGain", 0.0), ("midFreq", 1000.0), ("midQ", 0.8),
+                     ("hmGain", 0.8), ("hmFreq", 2800.0), ("hmQ", 0.8),
+                     ("highGain", 2.0), ("highFreq", 10500.0), ("highQ", 0.6)),
+                 State("trim", ("gain", -2.0)),
+                 TransferLimiter()],
             _ => throw new ArgumentException($"Unknown factory preset '{name}'.", nameof(name)),
         };
         return new ChainPreset { Name = name, Effects = effects };
@@ -210,6 +244,16 @@ public static class EffectFactory
         return state;
     }
 
+    private static EffectState TransferHighPass(double cutoff) =>
+        State("filter", ("mode", 1.0), ("cutoff", cutoff), ("q", 0.707), ("slope", 0.0));
+
+    /// <summary>
+    /// The tonal transfer presets reserve headroom with Trim, so the limiter only
+    /// catches unexpected peaks instead of adding loudness or flattening transients.
+    /// </summary>
+    private static EffectState TransferLimiter() =>
+        State("limiter", ("thresh", 0.0), ("ceiling", -1.0), ("oversample", 1.0));
+
     private static void TryUpgradeLegacyFactoryPreset(
         string path,
         string name,
@@ -221,7 +265,9 @@ public static class EffectFactory
             if (existing == null) return;
             ChainPreset legacy = CreateLegacyFactoryPreset(name);
             ChainPreset previous = CreatePreviousFactoryPreset(name);
-            if ((PresetStatesEqual(existing, legacy) || PresetStatesEqual(existing, previous)) &&
+            ChainPreset oldest = CreateOldestFactoryPreset(name);
+            if ((PresetStatesEqual(existing, legacy) || PresetStatesEqual(existing, previous) ||
+                 PresetStatesEqual(existing, oldest)) &&
                 !PresetStatesEqual(existing, currentFactoryPreset))
                 WritePresetAtomically(currentFactoryPreset, path, overwrite: true);
         }
@@ -284,7 +330,23 @@ public static class EffectFactory
             EffectState? limiter = previous.Effects.FirstOrDefault(effect => effect.TypeId == "limiter");
             if (limiter != null) limiter.Enabled = true;
         }
+        if (name == "Clean Transfer")
+        {
+            EffectState? eq = previous.Effects.FirstOrDefault(effect => effect.TypeId == "eq");
+            if (eq != null) previous.Effects.Remove(eq);
+        }
         return previous;
+    }
+
+    private static ChainPreset CreateOldestFactoryPreset(string name)
+    {
+        ChainPreset oldest = CreateLegacyFactoryPreset(name);
+        if (name == "Clean Transfer")
+        {
+            EffectState? eq = oldest.Effects.FirstOrDefault(effect => effect.TypeId == "eq");
+            if (eq != null) oldest.Effects.Remove(eq);
+        }
+        return oldest;
     }
 
     private static bool PresetStatesEqual(ChainPreset left, ChainPreset right)

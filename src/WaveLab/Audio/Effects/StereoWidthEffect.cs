@@ -44,6 +44,8 @@ public sealed class StereoWidthEffect : EffectBase
 
     private void RebuildSplitFilters()
     {
+        if (_splitLowPass.Length != ChannelCount || _splitHighPass.Length != ChannelCount) return;
+
         double splitFreq = GetParam("splitFreq");
         for (int c = 0; c < ChannelCount; c++)
         {

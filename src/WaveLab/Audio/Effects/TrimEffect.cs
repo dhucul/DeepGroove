@@ -50,6 +50,10 @@ public sealed class TrimEffect : EffectBase
 
     private void RebuildPhaseRotator()
     {
+        // Presets set parameters before MasterSection configures the effect. The
+        // filter bank does not exist at that point; OnConfigure will build it.
+        if (_phaseAllPass.Length != ChannelCount) return;
+
         double degrees = GetParam("phaseRotate");
         // Phase rotation via all-pass filter at ~600Hz with Q adjusted for phase shift
         double q = degrees > 1 ? 0.3 + degrees / 180.0 * 1.5 : 0;

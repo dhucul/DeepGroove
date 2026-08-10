@@ -42,6 +42,8 @@ public sealed class DelayEffect : EffectBase
 
     private void RebuildFeedbackFilters()
     {
+        if (_fbFilters.Length != ChannelCount) return;
+
         int filterType = (int)GetParam("fbFilter");
         double freq = GetParam("fbFreq");
         for (int c = 0; c < ChannelCount; c++)

@@ -53,6 +53,8 @@ public sealed class CompressorEffect : EffectBase
 
     private void RebuildSidechain()
     {
+        if (_sidechainHpf.Length != ChannelCount) return;
+
         double hpfFreq = GetParam("scHpf");
         for (int c = 0; c < ChannelCount; c++)
             _sidechainHpf[c] = hpfFreq > 25
