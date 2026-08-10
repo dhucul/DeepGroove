@@ -28,7 +28,10 @@ public static partial class Restoration
         double sensitivityT = (sensitivity - 1.0) / 9.0;
         double sigmaMultiplier = 15.0 - 9.5 * sensitivityT;
         double relativeFloor = 0.008 - 0.0065 * sensitivityT;
+        // Slightly higher default minimum confidence: was 0.58, now 0.60.
+        // This filters the weakest false positives without blocking genuine clicks.
         double minimumConfidence = Math.Clamp(options.MinimumConfidence, 0.0, 1.0);
+        if (minimumConfidence <= 0.58) minimumConfidence = 0.60;
         double maximumClickLengthMs = Math.Clamp(options.MaximumClickLengthMs, 0.05, 2.0);
         int maximumClickSamples = Math.Max(1,
             (int)Math.Round(sampleRate * maximumClickLengthMs / 1000.0));
@@ -135,6 +138,14 @@ public static partial class Restoration
                     nextCandidateSample = Math.Max(nextCandidateSample, end + postCandidateSkipSamples);
                     i = Math.Max(i + 1, nextCandidateSample);
                 }
+
+                // ── Amplitude-based detection pass ──────────────────
+                // Curvature misses low-frequency thumps/pops that don't
+                // produce sharp second differences. Scan for isolated
+                // amplitude outliers in the same block.
+                DetectAmplitudeOutliers(samples, curvature, channelIndex, blockStart, blockEnd,
+                    sampleRate, localRms, maximumPopSamples, maximumClickSamples,
+                    options.PreserveTransients, minimumConfidence, events);
 
                 double fraction = (channelIndex + (double)blockEnd / sampleCount) / channels.Count;
                 long progressTimestamp = Environment.TickCount64;
@@ -548,67 +559,138 @@ public static partial class Restoration
         result = default;
         if (start < 2 || end >= samples.Length - 1 || end <= start) return false;
 
-        int context = Math.Clamp((int)Math.Round(sampleRate * 0.0008), 6, 64);
-        int leftContext = Math.Max(1, start - context);
-        int rightContext = Math.Min(samples.Length - 1, end + context);
-        double neighborCurvatureSquare = 0;
-        int neighborCount = 0;
-        for (int i = leftContext; i < start; i++)
-        {
-            neighborCurvatureSquare += curvature[i] * (double)curvature[i];
-            neighborCount++;
-        }
-        for (int i = end; i < rightContext; i++)
-        {
-            neighborCurvatureSquare += curvature[i] * (double)curvature[i];
-            neighborCount++;
-        }
-        double neighborCurvatureRms = Math.Sqrt(neighborCurvatureSquare /
-            Math.Max(1, neighborCount));
-
+        int spanLength = end - start;
         int left = start - 1;
         int right = end;
-        int span = right - left;
-        double edgeJump = Math.Abs(samples[right] - samples[left]);
-        double leftSlope = EstimateMedianSlopeBefore(samples, left, Math.Min(5, context));
-        double rightSlope = EstimateMedianSlopeAfter(samples, right, Math.Min(5, context));
-        double expectedEdgeChange = (Math.Abs(leftSlope) + Math.Abs(rightSlope)) * span * 0.75 +
-                                    threshold * Math.Sqrt(span) + localRms * 0.015;
-        double returnScore = 1.0 - Math.Clamp((edgeJump - expectedEdgeChange) /
-            Math.Max(1e-7, localRms * 0.18 + expectedEdgeChange), 0.0, 1.0);
 
-        double zScore = 1.0 - Math.Exp(-Math.Max(0.0, peakCurvature - threshold) /
-                                      Math.Max(1e-9, robustScale * 4.0));
-        double isolationRatio = peakCurvature /
-                                Math.Max(1e-8, neighborCurvatureRms + threshold * 0.15);
-        double isolationScore = Math.Clamp((isolationRatio - 1.25) / 5.0, 0.0, 1.0);
+        // ── 1. Duration gate ──────────────────────────────────────
+        // Genuine clicks are extremely short. Anything beyond ~50 samples
+        // (~1ms at 48kHz) is almost certainly musical, not a click.
+        int maxClickSpan = Math.Max(maximumClickSamples, (int)(sampleRate * 0.001));
+        if (spanLength > maxClickSpan * 3) return false;
 
-        double beforeSquare = 0, afterSquare = 0;
-        int beforeCount = 0, afterCount = 0;
-        for (int i = leftContext; i < start; i++)
+        // ── 2. High-frequency energy ratio ────────────────────────
+        // A vinyl click is a broadband impulse with strong HF content.
+        // Musical transients have most energy in lower bands.
+        // Apply a simple first-difference high-pass to isolate click energy.
+        double hfEnergy = 0;
+        double fullEnergy = 0;
+        int energySamples = 0;
+
+        int energyWindow = Math.Max(spanLength * 3, 8);
+        int energyStart = Math.Max(1, start - energyWindow);
+        int energyEnd = Math.Min(samples.Length - 1, end + energyWindow);
+
+        for (int i = energyStart; i < energyEnd; i++)
         {
-            beforeSquare += samples[i] * (double)samples[i];
+            double s = samples[i];
+            fullEnergy += s * s;
+
+            // First-difference = crude high-pass (emphasizes fast changes)
+            if (i > energyStart)
+            {
+                double diff = samples[i] - samples[i - 1];
+                hfEnergy += diff * diff;
+            }
+            energySamples++;
+        }
+
+        double hfRatio = energySamples > 0
+            ? hfEnergy / Math.Max(1e-12, fullEnergy)
+            : 0;
+
+        // Clicks have very high HF ratio (fast change dominates).
+        // Musical transients have lower HF ratio (sustained energy).
+        double hfScore = Math.Clamp((hfRatio - 0.15) / 0.85, 0.0, 1.0);
+
+        // ── 3. Return-to-baseline check ───────────────────────────
+        // After a click, the waveform returns to near the pre-click level.
+        // Musical transients continue to evolve.
+        int recoveryWindow = Math.Max(spanLength * 2, 4);
+        int recoveryEnd = Math.Min(samples.Length - 1, end + recoveryWindow);
+        double preLevel = samples[left];
+        double maxDeviation = 0;
+        for (int i = end; i < recoveryEnd; i++)
+        {
+            double dev = Math.Abs(samples[i] - preLevel);
+            if (dev > maxDeviation) maxDeviation = dev;
+        }
+
+        double clickAmplitude = 0;
+        for (int i = start; i < end; i++)
+            clickAmplitude = Math.Max(clickAmplitude, Math.Abs(samples[i] - preLevel));
+
+        double recoveryRatio = clickAmplitude > 1e-9
+            ? maxDeviation / clickAmplitude
+            : 1.0;
+        double recoveryScore = 1.0 - Math.Clamp(recoveryRatio, 0.0, 1.0);
+
+        // ── 4. Bipolar check ──────────────────────────────────────
+        // Real clicks are often bipolar (positive then negative spike).
+        // Check if the span contains a sign change relative to the baseline.
+        bool hasSignChange = false;
+        double firstSign = Math.Sign(samples[start] - preLevel);
+        for (int i = start + 1; i < end; i++)
+        {
+            if (Math.Sign(samples[i] - preLevel) != firstSign && Math.Abs(samples[i] - preLevel) > clickAmplitude * 0.3)
+            {
+                hasSignChange = true;
+                break;
+            }
+        }
+        double bipolarBonus = hasSignChange ? 0.15 : 0.0;
+
+        // ── 5. Peak-to-RMS ratio in the span ──────────────────────
+        // Clicks have very high peak-to-RMS ratio (single spike).
+        // Musical content has lower ratio (more sustained energy).
+        double spanRms = 0;
+        for (int i = start; i < end; i++)
+            spanRms += samples[i] * (double)samples[i];
+        spanRms = Math.Sqrt(spanRms / Math.Max(1, spanLength));
+        double peakToRms = spanRms > 1e-9 ? clickAmplitude / spanRms : 1.0;
+        double peakScore = Math.Clamp((peakToRms - 1.5) / 6.0, 0.0, 1.0);
+
+        // ── 6. Attack penalty (preserve musical transients) ───────
+        double beforeRms = 0;
+        int beforeCount = 0;
+        int beforeWindow = Math.Min(energyWindow, start);
+        for (int i = Math.Max(0, start - beforeWindow); i < start; i++)
+        {
+            beforeRms += samples[i] * (double)samples[i];
             beforeCount++;
         }
-        for (int i = end; i < rightContext; i++)
+        beforeRms = Math.Sqrt(beforeRms / Math.Max(1, beforeCount));
+
+        double afterRms = 0;
+        int afterCount = 0;
+        int afterWindow = Math.Min(energyWindow, samples.Length - end);
+        for (int i = end; i < Math.Min(samples.Length, end + afterWindow); i++)
         {
-            afterSquare += samples[i] * (double)samples[i];
+            afterRms += samples[i] * (double)samples[i];
             afterCount++;
         }
-        double beforeRms = Math.Sqrt(beforeSquare / Math.Max(1, beforeCount));
-        double afterRms = Math.Sqrt(afterSquare / Math.Max(1, afterCount));
+        afterRms = Math.Sqrt(afterRms / Math.Max(1, afterCount));
+
         double attackRatio = afterRms / Math.Max(1e-6, beforeRms + localRms * 0.01);
         double attackPenalty = preserveTransients
-            ? Math.Clamp((attackRatio - 2.25) / 5.0, 0.0, 0.55)
+            ? Math.Clamp((attackRatio - 2.0) / 4.0, 0.0, 0.5)
             : 0.0;
 
-        double confidence = 0.48 * zScore + 0.27 * isolationScore + 0.25 * returnScore;
+        // ── 7. Combined confidence ────────────────────────────────
+        // Weighted toward HF ratio (best discriminator) and recovery (return to baseline).
+        double confidence = 0.35 * hfScore
+                          + 0.30 * recoveryScore
+                          + 0.20 * peakScore
+                          + bipolarBonus;
         confidence *= 1.0 - attackPenalty;
-        if (preserveTransients && returnScore < 0.12) return false;
 
-        double severityRatio = peakCurvature / Math.Max(1e-6, localRms);
-        float severity = (float)Math.Clamp(1.0 - Math.Exp(-severityRatio), 0.0, 1.0);
-        var kind = end - start <= maximumClickSamples
+        // Hard gates: must have reasonable HF content AND return to baseline
+        if (hfScore < 0.15) return false;
+        if (recoveryScore < 0.2 && spanLength > 3) return false;
+
+        double severityRatio = clickAmplitude / Math.Max(1e-6, localRms);
+        float severity = (float)Math.Clamp(1.0 - Math.Exp(-severityRatio * 0.5), 0.0, 1.0);
+        var kind = spanLength <= maximumClickSamples
             ? ImpulseDefectKind.Click
             : ImpulseDefectKind.Pop;
         result = new ClickEvent(channel, start, end, peak, kind,
@@ -1097,6 +1179,122 @@ public static partial class Restoration
     private static void EnsureScratchCapacity(ref float[] scratch, int required)
     {
         if (scratch.Length < required) scratch = new float[required];
+    }
+
+    /// <summary>
+    /// Detect isolated amplitude outliers that curvature-based detection misses.
+    /// Low-frequency thumps/pops don't produce sharp second differences but are
+    /// clearly visible as amplitude spikes relative to the local envelope.
+    /// </summary>
+    private static void DetectAmplitudeOutliers(float[] samples, float[] curvature,
+        int channel, int blockStart, int blockEnd, int sampleRate, double localRms,
+        int maximumPopSamples, int maximumClickSamples, bool preserveTransients,
+        double minimumConfidence, List<ClickEvent> events)
+    {
+        // Compute a simple moving-average envelope to find amplitude outliers
+        int envelopeWindow = Math.Max(16, sampleRate / 200); // ~5ms
+        int n = samples.Length;
+
+        for (int i = Math.Max(blockStart, envelopeWindow); i < Math.Min(blockEnd, n - envelopeWindow); i++)
+        {
+            // Compute local RMS envelope
+            double envelopeRms = 0;
+            int envCount = 0;
+            for (int j = Math.Max(0, i - envelopeWindow); j < Math.Min(n, i + envelopeWindow); j++)
+            {
+                if (Math.Abs(j - i) > envelopeWindow / 4) // exclude center to avoid self-contamination
+                {
+                    envelopeRms += samples[j] * (double)samples[j];
+                    envCount++;
+                }
+            }
+            envelopeRms = Math.Sqrt(envelopeRms / Math.Max(1, envCount));
+
+            // Look for samples that are extreme outliers vs the envelope
+            double absSample = Math.Abs(samples[i]);
+            double outlierRatio = absSample / Math.Max(1e-9, envelopeRms + localRms * 0.1);
+
+            // Must be at least 8× the local envelope to be considered
+            if (outlierRatio < 8.0) continue;
+
+            // Find the extent of the outlier. Use a lower threshold (1.5× envelope)
+            // to catch the opposite-polarity lobe of bipolar clicks.
+            int start = i;
+            while (start > 1 && Math.Abs(samples[start - 1]) > envelopeRms * 1.5)
+                start--;
+
+            int end = i + 1;
+            while (end < n - 1 && Math.Abs(samples[end]) > envelopeRms * 1.5)
+                end++;
+
+            int spanLength = end - start;
+            if (spanLength < 1 || spanLength > maximumPopSamples) continue;
+
+            // Quick validation: must return to near-baseline after the spike.
+            // Skip a short guard region to allow the opposite-polarity lobe to pass.
+            int recoverySkip = Math.Max(2, spanLength);
+            int recoveryEnd = Math.Min(n - 1, end + recoverySkip + spanLength * 3);
+            double preLevel = start > 0 ? samples[start - 1] : 0;
+            double maxPostDeviation = 0;
+            for (int j = end + recoverySkip; j < recoveryEnd; j++)
+                maxPostDeviation = Math.Max(maxPostDeviation, Math.Abs(samples[j] - preLevel));
+
+            double clickAmp = 0;
+            for (int j = start; j < end; j++)
+                clickAmp = Math.Max(clickAmp, Math.Abs(samples[j] - preLevel));
+
+            double recoveryRatio = clickAmp > 1e-9 ? maxPostDeviation / clickAmp : 1.0;
+            if (recoveryRatio > 0.5) continue; // doesn't return to baseline
+
+            // Check for musical attack: if RMS after is much higher than before, skip
+            double beforeRms = 0;
+            int beforeCount = 0;
+            for (int j = Math.Max(0, start - envelopeWindow); j < start; j++)
+            {
+                beforeRms += samples[j] * (double)samples[j];
+                beforeCount++;
+            }
+            beforeRms = Math.Sqrt(beforeRms / Math.Max(1, beforeCount));
+
+            double afterRms = 0;
+            int afterCount = 0;
+            for (int j = end; j < Math.Min(n, end + envelopeWindow); j++)
+            {
+                afterRms += samples[j] * (double)samples[j];
+                afterCount++;
+            }
+            afterRms = Math.Sqrt(afterRms / Math.Max(1, afterCount));
+
+            if (preserveTransients && afterRms > beforeRms * 2.5) continue;
+
+            // High confidence — amplitude outliers are almost always real defects
+            double confidence = Math.Clamp(0.65 + (outlierRatio - 8.0) / 20.0, 0.0, 1.0);
+            if (confidence < minimumConfidence) continue;
+
+            int peakSample = start;
+            float peakAmp = Math.Abs(samples[start]);
+            for (int j = start; j < end; j++)
+            {
+                if (Math.Abs(samples[j]) > peakAmp)
+                {
+                    peakAmp = Math.Abs(samples[j]);
+                    peakSample = j;
+                }
+            }
+
+            float severity = (float)Math.Clamp((outlierRatio - 5.0) / 15.0, 0.0, 1.0);
+            var kind = spanLength <= maximumClickSamples
+                ? ImpulseDefectKind.Click
+                : ImpulseDefectKind.Pop;
+
+            var clickEvent = new ClickEvent(channel, start, end, peakSample, kind,
+                (float)confidence, severity, samples[peakSample], 0);
+
+            AddOrMergeClickEvent(events, clickEvent, maximumClickSamples);
+
+            // Skip past this event
+            i = end + envelopeWindow;
+        }
     }
 
     private static int ValidateRestorationChannels(IReadOnlyList<float[]> channels,
