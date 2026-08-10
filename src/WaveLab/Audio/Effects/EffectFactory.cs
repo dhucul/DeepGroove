@@ -204,10 +204,12 @@ public static class EffectFactory
     public static void EnsureFactoryPresets(string directory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
-        try
+        try { Directory.CreateDirectory(directory); }
+        catch { return; }
+
+        foreach (string name in FactoryPresetNames)
         {
-            Directory.CreateDirectory(directory);
-            foreach (string name in FactoryPresetNames)
+            try
             {
                 ChainPreset preset = CreateFactoryPreset(name);
                 string path = PresetPath(directory, preset.Name);
@@ -219,8 +221,11 @@ public static class EffectFactory
 
                 TryUpgradeLegacyFactoryPreset(path, name, preset);
             }
+            catch
+            {
+                // One locked or inaccessible preset must not suppress the rest.
+            }
         }
-        catch { }
     }
 
     private static EffectState State(string typeId, params (string Key, double Value)[] overrides)

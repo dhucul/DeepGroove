@@ -127,6 +127,20 @@ public sealed class EffectFactoryPresetTests
     }
 
     [Fact]
+    public void MissingStoredPresetKeepsThePreviousSelectionAndRack()
+    {
+        var master = new MasterSection();
+        var viewModel = new MasterSectionViewModel(master);
+        string[] originalTypes = master.ChainSnapshot.Select(effect => effect.TypeId).ToArray();
+
+        viewModel.SelectedPreset = $"Missing {Guid.NewGuid():N}";
+
+        Assert.Null(viewModel.SelectedPreset);
+        Assert.Equal(originalTypes, master.ChainSnapshot.Select(effect => effect.TypeId));
+        Assert.Contains("unavailable", viewModel.RackStatusText);
+    }
+
+    [Fact]
     public void CleanTransferNowIncludesPresenceEqBeforeGainManagement()
     {
         EffectFactory.ChainPreset preset = EffectFactory.CreateFactoryPreset("Clean Transfer");
@@ -162,7 +176,29 @@ public sealed class EffectFactoryPresetTests
     }
 
     [Fact]
-    public void UntouchedPreEqCleanTransferIsUpgradedWithoutOverwritingCustomPresets()
+    public void OneBlockedFactoryPresetDoesNotSuppressLaterPresets()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string blocker = Path.Combine(directory, "Default.chain.json");
+        Directory.CreateDirectory(blocker);
+        try
+        {
+            EffectFactory.EnsureFactoryPresets(directory);
+
+            Assert.True(File.Exists(Path.Combine(directory, "Podcast Voice.chain.json")));
+            Assert.True(File.Exists(Path.Combine(directory, "Record to CD - Warm Record Open-Up.chain.json")));
+        }
+        finally
+        {
+            Directory.Delete(blocker);
+            foreach (string file in Directory.GetFiles(directory)) File.Delete(file);
+            Directory.Delete(directory);
+        }
+    }
+
+    [Fact]
+    public void UntouchedPreEqCleanTransferIsUpgraded()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
@@ -173,20 +209,35 @@ public sealed class EffectFactoryPresetTests
             string factoryPath = Path.Combine(directory, "Clean Transfer.chain.json");
             File.WriteAllText(factoryPath, System.Text.Json.JsonSerializer.Serialize(previous));
 
-            EffectFactory.ChainPreset customized = EffectFactory.CreateFactoryPreset("Clean Transfer");
-            customized.Effects.Remove(State(customized, "eq"));
-            State(customized, "denoise").Params["reduction"] = 2.5;
-            customized.Name = "My Clean Transfer";
-            string customPath = Path.Combine(directory, "My Clean Transfer.chain.json");
-            File.WriteAllText(customPath, System.Text.Json.JsonSerializer.Serialize(customized));
-
             EffectFactory.EnsureFactoryPresets(directory);
 
             string upgraded = File.ReadAllText(factoryPath);
-            string preserved = File.ReadAllText(customPath);
             Assert.Contains("\"TypeId\": \"eq\"", upgraded);
-            Assert.DoesNotContain("\"TypeId\": \"eq\"", preserved);
-            Assert.Contains("2.5", preserved);
+        }
+        finally
+        {
+            foreach (string file in Directory.GetFiles(directory)) File.Delete(file);
+            Directory.Delete(directory);
+        }
+    }
+
+    [Fact]
+    public void CustomizedFactoryNamedCleanTransferIsPreservedByteForByte()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            EffectFactory.ChainPreset customized = EffectFactory.CreateFactoryPreset("Clean Transfer");
+            customized.Effects.Remove(State(customized, "eq"));
+            State(customized, "denoise").Params["reduction"] = 2.5;
+            string path = Path.Combine(directory, "Clean Transfer.chain.json");
+            string before = System.Text.Json.JsonSerializer.Serialize(customized);
+            File.WriteAllText(path, before);
+
+            EffectFactory.EnsureFactoryPresets(directory);
+
+            Assert.Equal(before, File.ReadAllText(path));
         }
         finally
         {

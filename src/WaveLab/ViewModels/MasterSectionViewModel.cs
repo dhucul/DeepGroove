@@ -86,10 +86,31 @@ public sealed class MasterSectionViewModel : ObservableObject
         get => _selectedPreset;
         set
         {
-            if (!Set(ref _selectedPreset, value) || value == null || _applyingPreset) return;
+            if (_applyingPreset || value == null)
+            {
+                Set(ref _selectedPreset, value);
+                return;
+            }
+            if (string.Equals(_selectedPreset, value, StringComparison.Ordinal)) return;
+
             var preset = EffectFactory.LoadPresets().FirstOrDefault(p => p.Name == value);
-            if (preset == null) return;
-            ApplyStoredPreset(preset);
+            if (preset == null)
+            {
+                RackStatusText = $"Preset ‘{value}’ is unavailable · current rack unchanged.";
+                Raise(nameof(SelectedPreset));
+                return;
+            }
+
+            try
+            {
+                ApplyStoredPreset(preset);
+                Set(ref _selectedPreset, value);
+            }
+            catch (Exception ex)
+            {
+                RackStatusText = $"Could not load preset ‘{value}’: {ex.Message} · current rack unchanged.";
+                Raise(nameof(SelectedPreset));
+            }
         }
     }
 
@@ -101,8 +122,8 @@ public sealed class MasterSectionViewModel : ObservableObject
             throw new ArgumentException("The preset contains no supported effects.", nameof(preset));
 
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
-        _master.RackEnabled = true;
         _master.ReplaceChain(effects);
+        _master.RackEnabled = true;
         Raise(nameof(RackEnabled));
         Raise(nameof(RackStateText));
         SyncFromMaster();
