@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private bool _allowClose;
     private bool _closing;
     private bool _longOperationRunning;
+    private bool _skipNextAutomaticSpectrogramRender;
     private Task _startupTask = Task.CompletedTask;
 
     public MainWindow()
@@ -303,26 +304,38 @@ public partial class MainWindow : Window
 
     // ── analysis pane ────────────────────────────────────────────
 
-    private void RefreshSpectrogram()
+    private void RefreshSpectrogram() => _ = RefreshSpectrogramAsync();
+
+    private Task<bool> RefreshSpectrogramAsync()
     {
         var d = _vm.ActiveDocument;
-        if (d == null) return;
+        if (d == null) return Task.FromResult(false);
         int start = (int)d.ViewStart;
         int end = (int)Math.Min(d.Doc.Length, d.ViewStart + d.SamplesPerPixel * d.ViewWidthPixels);
-        spectrogramView.Render(d.Doc, start, end);
+        return spectrogramView.RenderAsync(d.Doc, start, end);
     }
 
-    private void OnAnalysisTabChanged(object sender, SelectionChangedEventArgs e)
+    private async void OnAnalysisTabChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!ReferenceEquals(e.OriginalSource, analysisTabs)) return;
-        if (analysisTabs.SelectedIndex == 1) RefreshSpectrogram();
+        if (analysisTabs.SelectedIndex != 1) return;
+        if (_skipNextAutomaticSpectrogramRender)
+        {
+            _skipNextAutomaticSpectrogramRender = false;
+            return;
+        }
+        await RefreshSpectrogramAsync();
     }
 
-    private void OnRefreshSpectrogram(object sender, RoutedEventArgs e)
+    private async void OnRefreshSpectrogram(object sender, RoutedEventArgs e)
     {
-        if (analysisTabs.SelectedIndex == 1) RefreshSpectrogram();
-        else analysisTabs.SelectedIndex = 1;
-        _vm.ReportAction("Spectrogram refreshed.");
+        if (analysisTabs.SelectedIndex != 1)
+        {
+            _skipNextAutomaticSpectrogramRender = true;
+            analysisTabs.SelectedIndex = 1;
+        }
+        if (await RefreshSpectrogramAsync())
+            _vm.ReportAction("Spectrogram refreshed.");
     }
 
     // ── tools ────────────────────────────────────────────────────

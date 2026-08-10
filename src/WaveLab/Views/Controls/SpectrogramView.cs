@@ -31,22 +31,22 @@ public sealed class SpectrogramView : Grid
         Unloaded += (_, _) => CancelRender();
     }
 
-    public void Render(AudioDocument? doc, int start, int end)
+    public Task<bool> RenderAsync(AudioDocument? doc, int start, int end)
     {
         CancelRender();
         _image.Source = null;
         _hint.Text = "Select or display at least two FFT windows to render a spectrogram.";
         _hint.Visibility = Visibility.Visible;
-        if (doc == null || doc.Length == 0 || doc.ChannelCount == 0) return;
+        if (doc == null || doc.Length == 0 || doc.ChannelCount == 0) return Task.FromResult(false);
         start = Math.Clamp(start, 0, doc.Length);
         end = Math.Clamp(end, start, doc.Length);
-        if (end - start < FftSize * 2) return;
+        if (end - start < FftSize * 2) return Task.FromResult(false);
 
         var cts = new CancellationTokenSource();
         _renderCts = cts;
         var channels = doc.Channels.ToArray();
         _hint.Text = "Rendering spectrogram…";
-        _ = RenderAsync(cts, channels, start, end - start, doc.SampleRate);
+        return RenderCoreAsync(cts, channels, start, end - start, doc.SampleRate);
     }
 
     private void CancelRender()
@@ -57,7 +57,12 @@ public sealed class SpectrogramView : Grid
         // access and can turn an ordinary cancellation into ObjectDisposedException.
     }
 
-    private async Task RenderAsync(CancellationTokenSource owner, float[][] channels, int start, int count, int sr)
+    private async Task<bool> RenderCoreAsync(
+        CancellationTokenSource owner,
+        float[][] channels,
+        int start,
+        int count,
+        int sr)
     {
         const int cols = 800, rows = 256;
         CancellationToken token = owner.Token;
@@ -65,19 +70,23 @@ public sealed class SpectrogramView : Grid
         {
             byte[] pixels = await Task.Run(() => RenderWorker(
                 channels, start, count, sr, cols, rows, token), token);
-            if (!ReferenceEquals(owner, _renderCts) || token.IsCancellationRequested) return;
+            if (!ReferenceEquals(owner, _renderCts) || token.IsCancellationRequested) return false;
             var bmp = new WriteableBitmap(cols, rows, 96, 96, PixelFormats.Bgra32, null);
             bmp.WritePixels(new Int32Rect(0, 0, cols, rows), pixels, cols * 4, 0);
             bmp.Freeze();
             _image.Source = bmp;
             _hint.Visibility = Visibility.Collapsed;
+            return true;
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { return false; }
         catch (Exception ex)
         {
-            if (!ReferenceEquals(owner, _renderCts)) return;
-            _hint.Text = "Spectrogram failed: " + ex.Message;
-            _hint.Visibility = Visibility.Visible;
+            if (ReferenceEquals(owner, _renderCts))
+            {
+                _hint.Text = "Spectrogram failed: " + ex.Message;
+                _hint.Visibility = Visibility.Visible;
+            }
+            return false;
         }
         finally
         {

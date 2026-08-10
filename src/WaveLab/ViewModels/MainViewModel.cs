@@ -12,7 +12,7 @@ using WaveLab.Util;
 
 namespace WaveLab.ViewModels;
 
-public sealed class MainViewModel : ObservableObject
+public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private static float[][]? _clipboard;
     private static int _clipboardRate;
@@ -59,6 +59,7 @@ public sealed class MainViewModel : ObservableObject
     private string _cpuText = "CPU —";
     private string _ramText = "RAM —";
     private string _actionStatusText = "Ready.";
+    private int _resourcesDisposed;
 
     public MainViewModel()
     {
@@ -1140,6 +1141,9 @@ public sealed class MainViewModel : ObservableObject
         _playbackEditVersion = -1;
         _playbackSession = 0;
         IsPlaying = false;
+        // A paused stream already has IsPlaying == false, so the property setter
+        // cannot notify StopCommand when Engine.Stop clears Engine.IsPaused.
+        StopCommand.RaiseCanExecuteChanged();
         RestorePreviewRackOverride();
     }
 
@@ -1598,12 +1602,40 @@ public sealed class MainViewModel : ObservableObject
         catch (Exception ex) { failure = ex; }
         finally
         {
-            Interlocked.Exchange(ref _expectedTransportRecordingSessionId, 0);
-            try { _transportRecorder.Dispose(); } catch (Exception ex) { failure ??= ex; }
-            try { Engine.Dispose(); } catch (Exception ex) { failure ??= ex; }
-            try { _process.Dispose(); } catch (Exception ex) { failure ??= ex; }
+            failure = DisposeOwnedResources(failure);
         }
         if (failure != null) throw failure;
+    }
+
+    /// <summary>
+    /// Releases timers, event subscriptions, audio engines, and process handles
+    /// without persisting settings or deleting recovery data. Normal application
+    /// shutdown should use <see cref="OnCleanExitAsync"/>; tests and abandoned
+    /// view models can use this method directly.
+    /// </summary>
+    public void Dispose()
+    {
+        DisposeOwnedResources();
+        GC.SuppressFinalize(this);
+    }
+
+    private Exception? DisposeOwnedResources(Exception? failure = null)
+    {
+        if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0) return failure;
+
+        _shuttingDown = true;
+        _autosaveTimer.Stop();
+        _timer.Stop();
+        Master.ProcessingTopologyChanged -= RestartMonoPlaybackForTopologyChange;
+        Master.StatusChanged -= ReportAction;
+        Engine.PlaybackStopped -= OnPlaybackStopped;
+        Engine.PlaybackFailed -= OnPlaybackFailed;
+        _transportRecorder.CaptureStopped -= OnTransportCaptureStopped;
+        Interlocked.Exchange(ref _expectedTransportRecordingSessionId, 0);
+        try { _transportRecorder.Dispose(); } catch (Exception ex) { failure ??= ex; }
+        try { Engine.Dispose(); } catch (Exception ex) { failure ??= ex; }
+        try { _process.Dispose(); } catch (Exception ex) { failure ??= ex; }
+        return failure;
     }
 
     private void OnTick()

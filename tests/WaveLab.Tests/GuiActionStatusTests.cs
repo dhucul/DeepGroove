@@ -15,9 +15,10 @@ public sealed class GuiActionStatusTests
         bool canUndo = false;
         var thread = new Thread(() =>
         {
+            MainViewModel? viewModel = null;
             try
             {
-                var viewModel = new MainViewModel();
+                viewModel = new MainViewModel();
                 var document = new AudioDocument([[0.5f, -0.25f, 0.75f, 0.25f]], 48_000, 32)
                 {
                     Title = "Status test.wav",
@@ -32,6 +33,10 @@ public sealed class GuiActionStatusTests
             catch (Exception ex)
             {
                 failure = ex;
+            }
+            finally
+            {
+                viewModel?.Dispose();
             }
         });
         thread.SetApartmentState(ApartmentState.STA);
