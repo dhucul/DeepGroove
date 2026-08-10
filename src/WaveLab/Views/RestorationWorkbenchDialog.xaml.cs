@@ -308,7 +308,6 @@ public partial class RestorationWorkbenchDialog : Window
             _previewRackBypassed = true;
         }
         var settings = CaptureSettings();
-        RestorationAuditionMode auditionMode = CaptureAuditionMode();
         var processingSettings = settings with { WetAmount = 1.0, Bypass = false };
         float[][]? cachedWet = _previewWetCacheSettings == processingSettings
             ? _previewWetCache
@@ -353,6 +352,10 @@ public partial class RestorationWorkbenchDialog : Window
                 _previewWetCache = result.WetForCache;
             }
             UpdateAnalysisSummary(result.Analyses);
+            // Channel routing does not affect rendering or the wet cache. Read it only
+            // after the background render so a selection made while rendering is the
+            // selection that is actually sent to playback.
+            RestorationAuditionMode auditionMode = CaptureAuditionMode();
             float[][] auditionAudio = RestorationPreview.CreateAudition(result.Audio,
                 auditionMode);
             string auditionDescription = AuditionDescription(auditionMode);
