@@ -24,6 +24,14 @@ public sealed class MasterSection : ISampleProvider
     private int _startRampFrames, _startRampPosition;
     private bool _startRampWaitingForSignal;
 
+    // A/B comparison snapshots
+    private List<IAudioEffect>? _snapshotA;
+    private List<IAudioEffect>? _snapshotB;
+    private bool _isComparingB;
+
+    // M/S processing mode
+    private bool _msMode;
+
     public MasterSection()
     {
         _chain.AddRange(EffectFactory.Instantiate(EffectFactory.CreateFactoryPreset("Default")));
@@ -73,6 +81,114 @@ public sealed class MasterSection : ISampleProvider
                 _rackEnabled = value;
                 foreach (var fx in _chain) fx.ResetState();
             }
+        }
+    }
+
+    /// <summary>
+    /// Mid/Side processing mode. When enabled, stereo input is split into M/S,
+    /// processed through the chain, and recombined to L/R. Mono sources pass through unchanged.
+    /// </summary>
+    public bool MidSideMode
+    {
+        get { lock (_chainLock) return _msMode; }
+        set
+        {
+            lock (_chainLock)
+            {
+                if (_msMode == value) return;
+                _msMode = value;
+                foreach (var fx in _chain) fx.ResetState();
+            }
+        }
+    }
+
+    /// <summary>True when an A/B comparison is active and showing snapshot B.</summary>
+    public bool IsComparingB
+    {
+        get => _isComparingB;
+        private set => _isComparingB = value;
+    }
+
+    /// <summary>True when either snapshot A or B has been captured.</summary>
+    public bool HasSnapshots => _snapshotA != null || _snapshotB != null;
+
+    /// <summary>
+    /// Capture the current chain state as snapshot A. Subsequent changes can be
+    /// compared against this snapshot.
+    /// </summary>
+    public void CaptureSnapshotA()
+    {
+        lock (_chainLock)
+        {
+            _snapshotA = _chain.Select(EffectFactory.Clone).ToList();
+            _snapshotB = null;
+            _isComparingB = false;
+        }
+    }
+
+    /// <summary>
+    /// Capture the current chain state as snapshot B. Use after making changes
+    /// to compare against snapshot A.
+    /// </summary>
+    public void CaptureSnapshotB()
+    {
+        lock (_chainLock)
+        {
+            _snapshotB = _chain.Select(EffectFactory.Clone).ToList();
+            _isComparingB = false;
+        }
+    }
+
+    /// <summary>
+    /// Toggle between snapshot A and the current chain for A/B comparison.
+    /// Returns true if toggling to B (snapshot), false if returning to current.
+    /// </summary>
+    public bool ToggleCompare()
+    {
+        lock (_chainLock)
+        {
+            if (_snapshotA == null) return false;
+
+            if (_isComparingB)
+            {
+                // Restore current chain from snapshot A
+                var current = _chain.Select(EffectFactory.Clone).ToList();
+                _chain.Clear();
+                _chain.AddRange(_snapshotA.Select(EffectFactory.Clone));
+                _snapshotA = current;
+                _isComparingB = false;
+                foreach (var fx in _chain) fx.Configure(_sampleRate, _channels);
+                return false;
+            }
+            else
+            {
+                // Save current as A, show B (or swap if B exists)
+                var current = _chain.Select(EffectFactory.Clone).ToList();
+                if (_snapshotB != null)
+                {
+                    _chain.Clear();
+                    _chain.AddRange(_snapshotB.Select(EffectFactory.Clone));
+                    _snapshotB = current;
+                }
+                else
+                {
+                    _snapshotB = current;
+                }
+                _isComparingB = true;
+                foreach (var fx in _chain) fx.Configure(_sampleRate, _channels);
+                return true;
+            }
+        }
+    }
+
+    /// <summary>Clear all A/B snapshots.</summary>
+    public void ClearSnapshots()
+    {
+        lock (_chainLock)
+        {
+            _snapshotA = null;
+            _snapshotB = null;
+            _isComparingB = false;
         }
     }
 
@@ -178,10 +294,45 @@ public sealed class MasterSection : ISampleProvider
         }
 
         lock (_chainLock)
+        {
             if (_rackEnabled)
-                foreach (var fx in _chain)
-                    if (fx.Enabled)
-                        fx.Process(buffer, offset, read);
+            {
+                if (_msMode && _channels >= 2)
+                {
+                    // M/S processing: convert L/R to M/S, process, convert back
+                    int msFrames = read / _channels;
+                    for (int f = 0; f < msFrames; f++)
+                    {
+                        int idx = offset + f * _channels;
+                        float left = buffer[idx];
+                        float right = buffer[idx + 1];
+                        float mid = (left + right) * 0.5f;
+                        float side = (left - right) * 0.5f;
+                        buffer[idx] = mid;
+                        buffer[idx + 1] = side;
+                    }
+
+                    foreach (var fx in _chain)
+                        if (fx.Enabled)
+                            fx.Process(buffer, offset, read);
+
+                    for (int f = 0; f < msFrames; f++)
+                    {
+                        int idx = offset + f * _channels;
+                        float mid = buffer[idx];
+                        float side = buffer[idx + 1];
+                        buffer[idx] = mid + side;
+                        buffer[idx + 1] = mid - side;
+                    }
+                }
+                else
+                {
+                    foreach (var fx in _chain)
+                        if (fx.Enabled)
+                            fx.Process(buffer, offset, read);
+                }
+            }
+        }
 
         ApplyStartRamp(buffer, offset, read);
         Loudness.Process(buffer, offset, read);

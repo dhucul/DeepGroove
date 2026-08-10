@@ -1119,4 +1119,341 @@ public static partial class Restoration
         }
         return length;
     }
+
+    // ── Advanced click repair: FFT-based spectral interpolation ──
+
+    /// <summary>
+    /// Repair clicks using FFT-based spectral interpolation. Reconstructs the missing
+    /// samples from the surrounding spectral context, preserving harmonic structure
+    /// better than time-domain interpolation for longer pops.
+    /// </summary>
+    public static float[][] RepairClicksSpectral(IReadOnlyList<float[]> channels,
+        IReadOnlyList<ClickEvent> events,
+        int sampleRate,
+        ClickRepairOptions? options = null,
+        CancellationToken cancellationToken = default,
+        IProgress<RestorationProgress>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        ValidateRestorationChannels(channels);
+        var result = RestorationPreview.Clone(channels);
+        RepairClicksSpectralInPlace(result, events, sampleRate, options, cancellationToken, progress);
+        return result;
+    }
+
+    /// <summary>FFT-based spectral click repair in place.</summary>
+    public static int RepairClicksSpectralInPlace(float[][] data,
+        IReadOnlyList<ClickEvent> events,
+        int sampleRate,
+        ClickRepairOptions? options = null,
+        CancellationToken cancellationToken = default,
+        IProgress<RestorationProgress>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentNullException.ThrowIfNull(events);
+        ValidateRestorationChannels(data);
+        options ??= new ClickRepairOptions();
+        float strength = (float)Math.Clamp(options.Strength, 0.0, 1.0);
+        if (strength <= 0f || events.Count == 0) return 0;
+
+        int sampleCount = data.Length == 0 ? 0 : data[0].Length;
+        var ordered = CreateClickRepairPlan(events, data.Length, sampleCount, options.LinkChannels);
+        int repaired = 0;
+        int previousChannel = -1;
+        int previousEnd = -1;
+
+        for (int eventIndex = 0; eventIndex < ordered.Length; eventIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var defect = ordered[eventIndex];
+            if (defect.Channel < 0 || defect.Channel >= data.Length) continue;
+            var samples = data[defect.Channel];
+            if (defect.Channel != previousChannel)
+            {
+                previousChannel = defect.Channel;
+                previousEnd = -1;
+            }
+
+            int start = Math.Max(defect.StartSample, previousEnd);
+            int end = defect.EndSample;
+            if (start < 1 || end >= samples.Length || start >= end) continue;
+
+            SpectralInterpolateImpulse(samples, start, end, strength, sampleRate);
+            previousEnd = end;
+            repaired++;
+
+            if ((eventIndex & 31) == 0 || eventIndex == ordered.Length - 1)
+            {
+                progress?.Report(new RestorationProgress(RestorationStage.RepairingClicks,
+                    (double)(eventIndex + 1) / ordered.Length, defect.Channel, data.Length,
+                    eventIndex + 1, ordered.Length));
+            }
+        }
+        return repaired;
+    }
+
+    private static void SpectralInterpolateImpulse(float[] samples, int start, int end,
+        float strength, int sampleRate)
+    {
+        int gapLength = end - start;
+        if (gapLength <= 0) return;
+
+        // Use a small FFT window centered on the gap
+        int fftSize = 256;
+        while (fftSize < gapLength * 4) fftSize *= 2;
+        fftSize = Math.Min(fftSize, 4096);
+
+        int contextBefore = Math.Min(fftSize / 4, start);
+        int contextAfter = Math.Min(fftSize / 4, samples.Length - end);
+        int totalContext = contextBefore + gapLength + contextAfter;
+
+        if (totalContext < 16) return; // too short for meaningful FFT
+
+        // Build windowed frame with the gap zeroed
+        var window = Fft.HannWindow(fftSize);
+        var re = new float[fftSize];
+        var im = new float[fftSize];
+
+        int frameStart = start - contextBefore;
+        for (int i = 0; i < fftSize; i++)
+        {
+            int srcIdx = frameStart + i;
+            if (srcIdx >= 0 && srcIdx < samples.Length)
+            {
+                // Zero out the gap region
+                if (srcIdx >= start && srcIdx < end)
+                    re[i] = 0;
+                else
+                    re[i] = samples[srcIdx] * window[i];
+            }
+        }
+
+        // Forward FFT
+        Fft.Forward(re, im);
+
+        // Magnitude and phase
+        var mag = new double[fftSize / 2];
+        var phase = new double[fftSize / 2];
+        for (int b = 0; b < fftSize / 2; b++)
+        {
+            mag[b] = Math.Sqrt(re[b] * re[b] + im[b] * im[b]);
+            phase[b] = Math.Atan2(im[b], re[b]);
+        }
+
+        // Simple spectral smoothing: average magnitude across adjacent bins
+        var smoothedMag = new double[fftSize / 2];
+        for (int b = 1; b < fftSize / 2 - 1; b++)
+            smoothedMag[b] = (mag[b - 1] + mag[b] + mag[b + 1]) / 3.0;
+        smoothedMag[0] = mag[0];
+        smoothedMag[fftSize / 2 - 1] = mag[fftSize / 2 - 1];
+
+        // Reconstruct with smoothed magnitude, original phase
+        for (int b = 0; b < fftSize / 2; b++)
+        {
+            re[b] = (float)(smoothedMag[b] * Math.Cos(phase[b]));
+            im[b] = (float)(smoothedMag[b] * Math.Sin(phase[b]));
+            if (b > 0)
+            {
+                re[fftSize - b] = re[b];
+                im[fftSize - b] = -im[b];
+            }
+        }
+
+        // Inverse FFT
+        for (int i = 0; i < fftSize; i++) im[i] = -im[i];
+        Fft.Forward(re, im);
+
+        // Overlap-add the reconstructed gap samples
+        for (int i = start; i < end; i++)
+        {
+            int fftIdx = i - frameStart;
+            if (fftIdx >= 0 && fftIdx < fftSize)
+            {
+                double reconstructed = re[fftIdx] / fftSize;
+                if (double.IsFinite(reconstructed))
+                    samples[i] += ((float)reconstructed - samples[i]) * strength;
+            }
+        }
+    }
+
+    // ── Advanced declipping: cubic spline reconstruction ──
+
+    /// <summary>
+    /// Reconstruct clipped peaks using natural cubic spline interpolation constrained
+    /// by clean boundary samples and their derivatives. Produces smoother, more
+    /// natural waveforms than single-span cubic Hermite interpolation.
+    /// </summary>
+    public static float[][] RepairClippingSpline(IReadOnlyList<float[]> channels,
+        IReadOnlyList<ClippedPeakEvent> events,
+        DeclippingOptions? options = null,
+        CancellationToken cancellationToken = default,
+        IProgress<RestorationProgress>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        ValidateRestorationChannels(channels);
+        var result = RestorationPreview.Clone(channels);
+        RepairClippingSplineInPlace(result, events, options, cancellationToken, progress);
+        return result;
+    }
+
+    /// <summary>Cubic spline declipping in place.</summary>
+    public static int RepairClippingSplineInPlace(float[][] data,
+        IReadOnlyList<ClippedPeakEvent> events,
+        DeclippingOptions? options = null,
+        CancellationToken cancellationToken = default,
+        IProgress<RestorationProgress>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentNullException.ThrowIfNull(events);
+        ValidateRestorationChannels(data);
+        options ??= new DeclippingOptions();
+        float strength = (float)Math.Clamp(options.Strength, 0.0, 1.0);
+        int predictionSamples = Math.Clamp(options.PredictionSamples, 2, 64);
+        double maximumGain = Math.Pow(10.0,
+            Math.Clamp(options.MaximumReconstructionDb, 0.0, 18.0) / 20.0);
+        if (strength <= 0f || events.Count == 0) return 0;
+
+        var ordered = events.OrderBy(e => e.Channel).ThenBy(e => e.StartSample).ToArray();
+        int repaired = 0;
+        int previousChannel = -1;
+        int previousEnd = -1;
+
+        for (int eventIndex = 0; eventIndex < ordered.Length; eventIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var clippedPeak = ordered[eventIndex];
+            if (clippedPeak.Channel < 0 || clippedPeak.Channel >= data.Length) continue;
+            var samples = data[clippedPeak.Channel];
+            if (clippedPeak.Channel != previousChannel)
+            {
+                previousChannel = clippedPeak.Channel;
+                previousEnd = -1;
+            }
+
+            int start = Math.Max(clippedPeak.StartSample, previousEnd);
+            int end = clippedPeak.EndSample;
+            if (start < 1 || end >= samples.Length || start >= end) continue;
+
+            ReconstructClippedPeakSpline(samples, clippedPeak, start, end, strength,
+                predictionSamples, maximumGain);
+            previousEnd = end;
+            repaired++;
+
+            if ((eventIndex & 31) == 0 || eventIndex == ordered.Length - 1)
+            {
+                progress?.Report(new RestorationProgress(RestorationStage.RepairingClipping,
+                    (double)(eventIndex + 1) / ordered.Length, clippedPeak.Channel,
+                    data.Length, eventIndex + 1, ordered.Length));
+            }
+        }
+        return repaired;
+    }
+
+    private static void ReconstructClippedPeakSpline(float[] samples, ClippedPeakEvent clippedPeak,
+        int start, int end, float strength, int predictionSamples, double maximumGain)
+    {
+        int left = start - 1;
+        int right = end;
+        int span = right - left;
+        float sign = clippedPeak.Polarity == ClipPolarity.Positive ? 1f : -1f;
+
+        // Gather clean context points for spline fitting
+        int contextBefore = Math.Min(predictionSamples * 4, left);
+        int contextAfter = Math.Min(predictionSamples * 4, samples.Length - right - 1);
+
+        int totalPoints = contextBefore + 1 + contextAfter + 1; // context before + left anchor + right anchor + context after
+        var xValues = new double[totalPoints];
+        var yValues = new double[totalPoints];
+
+        int idx = 0;
+        for (int i = left - contextBefore; i <= left; i++)
+        {
+            xValues[idx] = i;
+            yValues[idx] = samples[i];
+            idx++;
+        }
+        for (int i = right; i <= right + contextAfter; i++)
+        {
+            xValues[idx] = i;
+            yValues[idx] = samples[i];
+            idx++;
+        }
+
+        // Build natural cubic spline
+        int n = totalPoints - 1;
+        var h = new double[n];
+        var alpha = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            h[i] = xValues[i + 1] - xValues[i];
+            if (h[i] <= 0) h[i] = 1;
+        }
+
+        for (int i = 1; i < n; i++)
+        {
+            alpha[i] = 3.0 / h[i] * (yValues[i + 1] - yValues[i])
+                     - 3.0 / h[i - 1] * (yValues[i] - yValues[i - 1]);
+        }
+
+        var c = new double[n + 1];
+        var l = new double[n + 1];
+        var mu = new double[n + 1];
+        var z = new double[n + 1];
+
+        l[0] = 1;
+        mu[0] = 0;
+        z[0] = 0;
+
+        for (int i = 1; i < n; i++)
+        {
+            l[i] = 2 * (xValues[i + 1] - xValues[i - 1]) - h[i - 1] * mu[i - 1];
+            mu[i] = h[i] / l[i];
+            z[i] = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
+        }
+
+        l[n] = 1;
+        z[n] = 0;
+        c[n] = 0;
+
+        var b = new double[n];
+        var d = new double[n];
+
+        for (int j = n - 1; j >= 0; j--)
+        {
+            c[j] = z[j] - mu[j] * c[j + 1];
+            b[j] = (yValues[j + 1] - yValues[j]) / h[j] - h[j] * (c[j + 1] + 2 * c[j]) / 3.0;
+            d[j] = (c[j + 1] - c[j]) / (3.0 * h[j]);
+        }
+
+        // Evaluate spline over the gap
+        double observedLevel = Math.Max(Math.Abs(clippedPeak.ClipLevel),
+            Math.Max(Math.Abs(samples[left]), Math.Abs(samples[right])));
+        double maximumPeak = Math.Max(observedLevel, observedLevel * maximumGain);
+
+        for (int i = start; i < end; i++)
+        {
+            // Find the correct spline segment
+            int seg = 0;
+            for (int s = 0; s < n; s++)
+            {
+                if (xValues[s] <= i && i <= xValues[s + 1])
+                {
+                    seg = s;
+                    break;
+                }
+            }
+
+            double dx = i - xValues[seg];
+            double value = yValues[seg] + b[seg] * dx + c[seg] * dx * dx + d[seg] * dx * dx * dx;
+
+            if (!double.IsFinite(value))
+            {
+                double t = (double)(i - left) / span;
+                value = samples[left] + (samples[right] - samples[left]) * t;
+            }
+
+            value = Math.Clamp(value, -maximumPeak, maximumPeak);
+            samples[i] += ((float)value - samples[i]) * strength;
+        }
+    }
 }
