@@ -125,7 +125,7 @@ public sealed class RecordingLevelAnalyzerTests
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.Equal(expectedStatus, result.Status);
-        Assert.InRange(result.TruePeakDb, peakDb - 0.01, peakDb + 0.01);
+        Assert.InRange(result.TruePeakDb, peakDb - 0.02, peakDb + 0.02);
         Assert.Equal(result.TruePeakDb + 3, result.ProjectedPeakDb, 10);
         Assert.Equal(expectedGain, result.SuggestedGainDb);
     }
@@ -150,8 +150,16 @@ public sealed class RecordingLevelAnalyzerTests
     public void IntersampleOverIsHotButNotDigitalClipping()
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        var signal = new float[64];
+        for (int frame = 0; frame < signal.Length; frame++)
+        {
+            // The sample points stay below full scale while the underlying
+            // quarter-rate sine reaches 1.05 between them.
+            signal[frame] = (float)(1.05 * Math.Sin(
+                2 * Math.PI * 2_000 * frame / SampleRate + Math.PI / 4));
+        }
 
-        analyzer.Process([-0.9f, 0.9f, 0.9f, -0.9f]);
+        analyzer.Process(signal);
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.Equal(RecordingLevelStatus.Hot, result.Status);
@@ -253,11 +261,11 @@ public sealed class RecordingLevelAnalyzerTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void LowSteadyDcOrHumRemainsWaitingWithoutPositiveGainAdvice(bool hum)
+    public void LoudSteadyDcOrHumRemainsWaitingWithoutPositiveGainAdvice(bool hum)
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
         var second = new float[SampleRate];
-        const double amplitude = 0.01; // -40 dBFS peak
+        const double amplitude = 0.05; // about -26 dBFS peak: above the raw program gate
         for (int frame = 0; frame < second.Length; frame++)
         {
             second[frame] = hum
@@ -274,6 +282,56 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.Equal(0, result.ReserveDb);
         Assert.Equal(0, result.SuggestedGainDb);
         Assert.Equal(0, result.FlatTopCount);
+    }
+
+    [Fact]
+    public void SteadyBroadbandNoiseDoesNotBecomeProgramOrInviteGain()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        var random = new Random(7342);
+        var second = new float[SampleRate];
+        for (int frame = 0; frame < second.Length; frame++)
+            second[frame] = (float)((random.NextDouble() * 2 - 1) * 0.05);
+
+        FeedRepeated(analyzer, second, seconds: 12);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.Equal(RecordingLevelStatus.WaitingForSignal, result.Status);
+        Assert.Equal(0, result.ActiveSeconds);
+        Assert.Equal(0, result.SuggestedGainDb);
+    }
+
+    [Fact]
+    public void FlatTopsOutsideTheEvidenceWindowDoNotAccumulateIntoAWarning()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        for (int occurrence = 0; occurrence < 3; occurrence++)
+        {
+            float[] eventSecond = SineSecond(-12);
+            eventSecond[400] = 0.20f;
+            eventSecond[401] = 0.50f;
+            eventSecond[402] = 0.50f;
+            eventSecond[403] = 0.50f;
+            eventSecond[404] = 0.20f;
+            analyzer.Process(eventSecond);
+            FeedRepeated(analyzer, SineSecond(-12), seconds: 11);
+        }
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.Equal(3, result.FlatTopCount);
+        Assert.NotEqual(RecordingLevelStatus.UpstreamClipping, result.Status);
+    }
+
+    [Fact]
+    public void Bs1770FourPhaseFilterUsesThePublishedDcGain()
+    {
+        var meter = new LoudnessMeter();
+        meter.Configure(48_000, 1);
+        meter.Process(Enumerable.Repeat(0.5f, 64).ToArray(), 0, 64);
+
+        const double maximumPhaseGain = 1.0015869140625;
+        double expected = 20 * Math.Log10(0.5 * maximumPhaseGain);
+        Assert.Equal(expected, meter.TruePeakDb, 10);
     }
 
     [Fact]

@@ -1,6 +1,9 @@
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Threading;
 using WaveLab.Audio;
 using WaveLab.ViewModels;
@@ -9,6 +12,33 @@ namespace WaveLab.Views;
 
 public partial class RecordDialog : Window
 {
+    private const uint MonitorDefaultToNearest = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect Work;
+        public uint Flags;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern nint MonitorFromWindow(nint window, uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
+
     private readonly DispatcherTimer _timer;
     private readonly ClickTrack _click = new();
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -22,7 +52,7 @@ public partial class RecordDialog : Window
     public RecordDialog(bool punchAvailable = false)
     {
         InitializeComponent();
-        MaxHeight = Math.Max(320, SystemParameters.WorkArea.Height - 24);
+        SourceInitialized += (_, _) => ConstrainToOwnerMonitor();
         DataContext = ViewModel;
 
         cmbBars.Items.Add("1 bar (4/4)");
@@ -75,6 +105,33 @@ public partial class RecordDialog : Window
             ViewModel.Dispose();
             _lifetimeCts.Dispose();
         };
+    }
+
+    private void ConstrainToOwnerMonitor()
+    {
+        nint windowHandle = new WindowInteropHelper(this).Handle;
+        nint ownerHandle = Owner == null ? 0 : new WindowInteropHelper(Owner).Handle;
+        nint targetHandle = ownerHandle != 0 ? ownerHandle : windowHandle;
+        nint monitor = MonitorFromWindow(targetHandle, MonitorDefaultToNearest);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+
+        double availableWidth;
+        double availableHeight;
+        if (monitor != 0 && GetMonitorInfo(monitor, ref info))
+        {
+            DpiScale dpi = VisualTreeHelper.GetDpi(Owner ?? this);
+            availableWidth = (info.Work.Right - info.Work.Left) / dpi.DpiScaleX - 24;
+            availableHeight = (info.Work.Bottom - info.Work.Top) / dpi.DpiScaleY - 24;
+        }
+        else
+        {
+            availableWidth = SystemParameters.WorkArea.Width - 24;
+            availableHeight = SystemParameters.WorkArea.Height - 24;
+        }
+
+        MaxWidth = Math.Max(1, availableWidth);
+        MaxHeight = Math.Max(1, availableHeight);
+        Width = Math.Min(720, MaxWidth);
     }
 
     private void OnLevelCheck(object sender, RoutedEventArgs e)

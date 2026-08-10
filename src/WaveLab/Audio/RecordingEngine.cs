@@ -36,34 +36,54 @@ public sealed class RecordingEngine : IDisposable
     private long _nextSessionId;
     private readonly RecordingLevelAnalyzer _levelAnalyzer = new(48000, 2);
 
+    internal sealed class CaptureDataBoundary(bool retainAudio)
+    {
+        // Bit zero is the retention flag; higher bits are the epoch.
+        private long _dataState = retainAudio ? 1 : 0;
+        private long _discardBoundaryState = -1;
+
+        public long DataState => Volatile.Read(ref _dataState);
+        public bool RetainAudio => RetainsAudio(DataState);
+        public static bool RetainsAudio(long dataState) => (dataState & 1) != 0;
+        public bool TryConsumeBoundaryDiscard(long dataState) =>
+            Interlocked.CompareExchange(ref _discardBoundaryState, -1, dataState) == dataState;
+
+        public void Advance(bool retainAudio)
+        {
+            long nextEpoch = (DataState >> 1) + 1;
+            long nextState = (nextEpoch << 1) | (retainAudio ? 1L : 0L);
+            Volatile.Write(ref _discardBoundaryState, nextState);
+            Volatile.Write(ref _dataState, nextState);
+        }
+    }
+
     private sealed class CaptureSession(
         long id,
         WasapiCapture capture,
         TaskCompletionSource<StoppedEventArgs> stopped,
         bool retainAudio)
     {
-        // Epoch and retention mode are one atomic value so a callback cannot
-        // observe the mode from one side of a boundary and the epoch from the
-        // other. Bit zero is the retention flag; higher bits are the epoch.
-        private long _dataState = retainAudio ? 1 : 0;
-
         public long Id { get; } = id;
         public WasapiCapture Capture { get; } = capture;
         public TaskCompletionSource<StoppedEventArgs> Stopped { get; } = stopped;
-        public long DataState => Volatile.Read(ref _dataState);
-        public bool RetainAudio => RetainsAudio(DataState);
-        public static bool RetainsAudio(long dataState) => (dataState & 1) != 0;
+        public CaptureDataBoundary DataBoundary { get; } = new(retainAudio);
+        public long DataState => DataBoundary.DataState;
+        public bool RetainAudio => DataBoundary.RetainAudio;
 
         /// <summary>Call only while holding the owning engine's block and session locks.</summary>
-        public void AdvanceDataState(bool retainAudio)
-        {
-            long nextEpoch = (DataState >> 1) + 1;
-            Volatile.Write(ref _dataState, (nextEpoch << 1) | (retainAudio ? 1L : 0L));
-        }
+        public void AdvanceDataState(bool retainAudio) => DataBoundary.Advance(retainAudio);
 
         /// <summary>Access only while holding the owning engine's session lock.</summary>
         public bool AcceptCallbacks { get; set; } = true;
     }
+
+    internal static bool CanTransitionLevelCheck(
+        bool isCurrentSession,
+        bool acceptsCallbacks,
+        bool stopCompleted,
+        bool engineRunning,
+        bool retainsAudio) =>
+        isCurrentSession && acceptsCallbacks && !stopCompleted && engineRunning && !retainsAudio;
 
     private sealed record CaptureSnapshot(
         long SessionId,
@@ -254,9 +274,12 @@ public sealed class RecordingEngine : IDisposable
             {
                 lock (_sessionLock)
                 {
-                    if (!ReferenceEquals(_session, session)
-                        || !session.AcceptCallbacks
-                        || session.RetainAudio) return false;
+                    if (!CanTransitionLevelCheck(
+                            ReferenceEquals(_session, session),
+                            session.AcceptCallbacks,
+                            session.Stopped.Task.IsCompleted,
+                            IsRecording,
+                            session.RetainAudio)) return false;
                     _blocks.Clear();
                     _pendingSnapshot = null;
                     Interlocked.Exchange(ref _totalSamples, 0);
@@ -283,9 +306,12 @@ public sealed class RecordingEngine : IDisposable
             {
                 lock (_sessionLock)
                 {
-                    if (!ReferenceEquals(_session, session)
-                        || !session.AcceptCallbacks
-                        || session.RetainAudio) return false;
+                    if (!CanTransitionLevelCheck(
+                            ReferenceEquals(_session, session),
+                            session.AcceptCallbacks,
+                            session.Stopped.Task.IsCompleted,
+                            IsRecording,
+                            session.RetainAudio)) return false;
                     Interlocked.Exchange(ref _totalSamples, 0);
                     _levelAnalyzer.Reset();
                     PeakL = PeakR = RmsL = RmsR = 0;
@@ -387,7 +413,7 @@ public sealed class RecordingEngine : IDisposable
     {
         CaptureSession? session = GetSessionFor(sender, out long dataState);
         if (session == null) return;
-        bool retainAudio = CaptureSession.RetainsAudio(dataState);
+        bool retainAudio = CaptureDataBoundary.RetainsAudio(dataState);
         if (retainAudio && CapacityReached) return;
 
         int channels = Volatile.Read(ref _channels);
@@ -428,6 +454,11 @@ public sealed class RecordingEngine : IDisposable
             if (!IsCurrentSession(session)
                 || dataState != session.DataState
                 || (retainAudio && CapacityReached)) return;
+
+            // A packet may have been filled before the UI advanced the epoch but
+            // admitted to OnData afterward. Dropping the first packet at every
+            // monitor boundary guarantees calibration/reset audio cannot cross it.
+            if (session.DataBoundary.TryConsumeBoundaryDiscard(dataState)) return;
 
             if (retainAudio)
             {

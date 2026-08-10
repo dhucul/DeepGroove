@@ -6,9 +6,37 @@ namespace WaveLab.Audio.Dsp;
 /// </summary>
 public sealed class LoudnessMeter
 {
+    private const int TruePeakTapsPerPhase = 12;
+
+    // ITU-R BS.1770 Annex 2: order-48, four-phase FIR interpolator. The
+    // coefficients are arranged by output phase and then by input-sample delay.
+    private static readonly double[][] TruePeakPhaseCoefficients =
+    [
+        [
+            0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000,
+            -0.0594482421875, 0.1373291015625, 0.9721679687500, -0.1022949218750,
+            0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500,
+        ],
+        [
+            -0.0291748046875, 0.0292968750000, -0.0517578125000, 0.0891113281250,
+            -0.1665039062500, 0.4650878906250, 0.7797851562500, -0.2003173828125,
+            0.1015625000000, -0.0582275390625, 0.0330810546875, -0.0189208984375,
+        ],
+        [
+            -0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625000000,
+            -0.2003173828125, 0.7797851562500, 0.4650878906250, -0.1665039062500,
+            0.0891113281250, -0.0517578125000, 0.0292968750000, -0.0291748046875,
+        ],
+        [
+            -0.0083007812500, 0.0148925781250, -0.0266113281250, 0.0476074218750,
+            -0.1022949218750, 0.9721679687500, 0.1373291015625, -0.0594482421875,
+            0.0332031250000, -0.0196533203125, 0.0109863281250, 0.0017089843750,
+        ],
+    ];
+
     private int _sampleRate = 48000, _channels = 2;
     private Biquad[] _stage1 = [], _stage2 = [];
-    private float[] _prev1 = [], _prev2 = [], _prev3 = [];
+    private float[][] _truePeakDelay = [];
     private int[] _truePeakHistory = [];
 
     private int _subBlockSize;           // 100 ms
@@ -51,9 +79,9 @@ public sealed class LoudnessMeter
             _stage1[c] = Biquad.HighShelf(sampleRate, 1681.97, 3.99982, 1.0);
             _stage2[c] = Biquad.HighPass(sampleRate, 38.13, 0.5);
         }
-        _prev1 = new float[channels];
-        _prev2 = new float[channels];
-        _prev3 = new float[channels];
+        _truePeakDelay = Enumerable.Range(0, channels)
+            .Select(_ => new float[TruePeakTapsPerPhase])
+            .ToArray();
         _truePeakHistory = new int[channels];
         _subBlockSize = Math.Max(1, sampleRate / 10);
         Reset();
@@ -65,9 +93,7 @@ public sealed class LoudnessMeter
         {
             for (int channel = 0; channel < _stage1.Length; channel++) _stage1[channel].Reset();
             for (int channel = 0; channel < _stage2.Length; channel++) _stage2[channel].Reset();
-            Array.Clear(_prev1);
-            Array.Clear(_prev2);
-            Array.Clear(_prev3);
+            foreach (float[] delay in _truePeakDelay) Array.Clear(delay);
             Array.Clear(_truePeakHistory);
             _subBlockSumSq = new double[_channels];
             _subBlockFill = 0;
@@ -94,37 +120,22 @@ public sealed class LoudnessMeter
                     {
                         raw = 0;
                         _truePeakHistory[c] = 0;
-                        _prev1[c] = _prev2[c] = _prev3[c] = 0;
+                        Array.Clear(_truePeakDelay[c]);
                     }
                     else
                     {
                         double sampleDb = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(raw)));
                         if (sampleDb > TruePeakDb) TruePeakDb = sampleDb;
 
-                        // Do not interpolate against reset-time zero padding. It
-                        // can invent an overshoot when capture begins on a hot
-                        // waveform phase. Wait for four real samples, and break
-                        // continuity across invalid driver data.
-                        if (_truePeakHistory[c] >= 3)
-                        {
-                            float p0 = _prev3[c], p1 = _prev2[c], p2 = _prev1[c], p3 = raw;
-                            for (int k = 1; k <= 4; k++)
-                            {
-                                float t = k / 4f;
-                                float interp = 0.5f * ((2 * p1) + (-p0 + p2) * t +
-                                               (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
-                                               (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
-                                double db = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(interp)));
-                                if (db > TruePeakDb) TruePeakDb = db;
-                            }
-                        }
-                        else
-                        {
+                        // Capture can begin at an arbitrary waveform phase. Wait
+                        // for a complete real-sample history rather than filtering
+                        // against reset-time zeros, and break continuity at invalid
+                        // driver samples.
+                        PushTruePeakSample(_truePeakDelay[c], raw);
+                        if (_truePeakHistory[c] < TruePeakTapsPerPhase)
                             _truePeakHistory[c]++;
-                        }
-                        _prev3[c] = _prev2[c];
-                        _prev2[c] = _prev1[c];
-                        _prev1[c] = raw;
+                        if (_truePeakHistory[c] == TruePeakTapsPerPhase)
+                            MeasureTruePeak(_truePeakDelay[c]);
                     }
 
                     // K-weighted mean square
@@ -166,18 +177,33 @@ public sealed class LoudnessMeter
             if (_framesProcessed == 0) return;
             for (int c = 0; c < _channels; c++)
             {
-                if (_truePeakHistory[c] < 3) continue;
-                float p0 = _prev3[c], p1 = _prev2[c], p2 = _prev1[c], p3 = p2;
-                for (int k = 1; k <= 4; k++)
+                if (_truePeakHistory[c] < TruePeakTapsPerPhase) continue;
+                var tail = (float[])_truePeakDelay[c].Clone();
+                for (int sample = 0; sample < TruePeakTapsPerPhase - 1; sample++)
                 {
-                    float t = k / 4f;
-                    float interp = 0.5f * ((2 * p1) + (-p0 + p2) * t +
-                                   (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
-                                   (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
-                    double db = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(interp)));
-                    if (db > TruePeakDb) TruePeakDb = db;
+                    PushTruePeakSample(tail, 0);
+                    MeasureTruePeak(tail);
                 }
             }
+        }
+    }
+
+    private static void PushTruePeakSample(float[] delay, float sample)
+    {
+        for (int tap = delay.Length - 1; tap > 0; tap--)
+            delay[tap] = delay[tap - 1];
+        delay[0] = sample;
+    }
+
+    private void MeasureTruePeak(float[] delay)
+    {
+        foreach (double[] phase in TruePeakPhaseCoefficients)
+        {
+            double interpolated = 0;
+            for (int tap = 0; tap < TruePeakTapsPerPhase; tap++)
+                interpolated += phase[tap] * delay[tap];
+            double db = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(interpolated)));
+            if (db > TruePeakDb) TruePeakDb = db;
         }
     }
 

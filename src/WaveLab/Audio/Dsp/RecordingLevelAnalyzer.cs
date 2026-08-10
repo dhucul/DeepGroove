@@ -49,16 +49,25 @@ public sealed class RecordingLevelAnalyzer
     private const double MinimumProgramBlockDb = -55;
     private const double QuietProgramSeparationDb = 10;
     private const double MinimumProgramPeakDb = -35;
+    private const double ActivityHighPassHz = 150;
+    private const double MinimumZeroCrossingsPerSecond = 150;
+    private const double MaximumZeroCrossingFraction = 0.40;
     private const double TargetProjectedPeakDb = -3;
     private const double MinimumActiveSeconds = 10;
     private const long MinimumFlatTopEvents = 3;
+    private const double FlatTopWindowSeconds = 10;
+    private const double FlatTopConsistencyDb = 1;
+    private const double FlatTopPeakProximityDb = 3;
     private const int MaximumAnalysisBlocks = 1200; // most recent two minutes at 100 ms
 
     private readonly object _sync = new();
     private readonly LoudnessMeter _loudness = new();
     private readonly List<BlockSummary> _blocks = [];
     private FlatTopTracker[] _flatTopTrackers = [];
-    private long[] _flatTopCounts = [];
+    private Queue<FlatTopEvent>[] _flatTopEvents = [];
+    private Biquad[] _activityFilters = [];
+    private float[] _previousActivitySamples = [];
+    private bool[] _hasPreviousActivitySample = [];
 
     private int _sampleRate;
     private int _channels;
@@ -68,6 +77,8 @@ public sealed class RecordingLevelAnalyzer
     private double _blockLeftPower;
     private double _blockRightPower;
     private double _blockPeak;
+    private double _blockActivityPower;
+    private long[] _blockZeroCrossings = [];
 
     private long _framesProcessed;
     private long _clippedSamples;
@@ -79,9 +90,13 @@ public sealed class RecordingLevelAnalyzer
 
     private readonly record struct BlockSummary(
         double RmsDb,
+        double ActivityRmsDb,
         double PeakDb,
+        double ZeroCrossingsPerSecond,
         double LeftMeanSquare,
         double RightMeanSquare);
+
+    private readonly record struct FlatTopEvent(long Frame, double Level);
 
     public RecordingLevelAnalyzer(int sampleRate, int channels) => Configure(sampleRate, channels);
 
@@ -110,7 +125,15 @@ public sealed class RecordingLevelAnalyzer
             _flatTopTrackers = Enumerable.Range(0, channels)
                 .Select(_ => new FlatTopTracker())
                 .ToArray();
-            _flatTopCounts = new long[channels];
+            _flatTopEvents = Enumerable.Range(0, channels)
+                .Select(_ => new Queue<FlatTopEvent>())
+                .ToArray();
+            _activityFilters = Enumerable.Range(0, channels)
+                .Select(_ => Biquad.HighPass(sampleRate, ActivityHighPassHz, 0.707))
+                .ToArray();
+            _previousActivitySamples = new float[channels];
+            _hasPreviousActivitySample = new bool[channels];
+            _blockZeroCrossings = new long[channels];
             _loudness.Configure(sampleRate, channels);
             ResetCore(resetLoudness: false);
         }
@@ -152,6 +175,7 @@ public sealed class RecordingLevelAnalyzer
             for (int index = offset; index < end; index += _channels)
             {
                 double framePower = 0;
+                double frameActivityPower = 0;
                 double leftPower = 0;
                 double rightPower = 0;
 
@@ -164,11 +188,33 @@ public sealed class RecordingLevelAnalyzer
                     {
                         _invalidSamples++;
                         _flatTopTrackers[channel].BreakContinuity();
+                        _activityFilters[channel].Reset();
+                        _hasPreviousActivitySample[channel] = false;
                     }
-                    else if (_flatTopTrackers[channel].Process(sample))
+                    else
                     {
-                        _flatTopCount++;
-                        _flatTopCounts[channel]++;
+                        double flatTopLevel = _flatTopTrackers[channel].Process(sample);
+                        if (flatTopLevel > 0)
+                        {
+                            _flatTopCount++;
+                            Queue<FlatTopEvent> events = _flatTopEvents[channel];
+                            events.Enqueue(new FlatTopEvent(_framesProcessed, flatTopLevel));
+                            PruneFlatTopEvents(events);
+                        }
+                    }
+
+                    float activitySample = valid ? _activityFilters[channel].Process(sample) : 0;
+                    if (valid)
+                    {
+                        if (_hasPreviousActivitySample[channel]
+                            && Math.Sign(activitySample) != 0
+                            && Math.Sign(_previousActivitySamples[channel]) != 0
+                            && Math.Sign(activitySample) != Math.Sign(_previousActivitySamples[channel]))
+                        {
+                            _blockZeroCrossings[channel]++;
+                        }
+                        _previousActivitySamples[channel] = activitySample;
+                        _hasPreviousActivitySample[channel] = true;
                     }
 
                     double magnitude = Math.Abs((double)sample);
@@ -180,11 +226,13 @@ public sealed class RecordingLevelAnalyzer
 
                     double power = sample * (double)sample;
                     framePower += power;
+                    frameActivityPower += activitySample * (double)activitySample;
                     if (channel == 0) leftPower = power;
                     else if (channel == 1) rightPower = power;
                 }
 
                 _blockPower += framePower;
+                _blockActivityPower += frameActivityPower;
                 _blockLeftPower += leftPower;
                 _blockRightPower += _channels == 1 ? leftPower : rightPower;
                 _blockFill++;
@@ -199,19 +247,26 @@ public sealed class RecordingLevelAnalyzer
     {
         double frames = Math.Max(1, _blockFill);
         double meanSquare = _blockPower / (frames * _channels);
+        double activityMeanSquare = _blockActivityPower / (frames * _channels);
         double leftMeanSquare = _blockLeftPower / frames;
         double rightMeanSquare = _blockRightPower / frames;
+        double maximumZeroCrossingsPerSecond = _blockZeroCrossings.Length == 0
+            ? 0
+            : _blockZeroCrossings.Max() * _sampleRate / frames;
         _blocks.Add(new BlockSummary(
-            PowerToDb(meanSquare), AmplitudeToDb(_blockPeak),
+            PowerToDb(meanSquare), PowerToDb(activityMeanSquare), AmplitudeToDb(_blockPeak),
+            maximumZeroCrossingsPerSecond,
             leftMeanSquare, rightMeanSquare));
         if (_blocks.Count > MaximumAnalysisBlocks)
             _blocks.RemoveAt(0);
 
         _blockFill = 0;
         _blockPower = 0;
+        _blockActivityPower = 0;
         _blockLeftPower = 0;
         _blockRightPower = 0;
         _blockPeak = 0;
+        Array.Clear(_blockZeroCrossings);
     }
 
     private RecordingLevelSnapshot BuildSnapshot()
@@ -246,7 +301,7 @@ public sealed class RecordingLevelAnalyzer
         RecordingLevelStatus status;
         if (_clippedSamples > 0)
             status = RecordingLevelStatus.Clipping;
-        else if (_flatTopCounts.Any(count => count >= MinimumFlatTopEvents))
+        else if (HasRepeatedFlatTops())
             status = RecordingLevelStatus.UpstreamClipping;
         else if (truePeakDb >= 0)
             // An intersample over is not the same as a sample hitting the
@@ -292,10 +347,10 @@ public sealed class RecordingLevelAnalyzer
             return;
         }
 
-        double p10 = Percentile(_blocks.Select(block => block.RmsDb), 0.10);
-        double p50 = Percentile(_blocks.Select(block => block.RmsDb), 0.50);
-        double p90 = Percentile(_blocks.Select(block => block.RmsDb), 0.90);
-        bool anyEnergy = _blocks.Any(block => double.IsFinite(block.RmsDb));
+        double p10 = Percentile(_blocks.Select(block => block.ActivityRmsDb), 0.10);
+        double p50 = Percentile(_blocks.Select(block => block.ActivityRmsDb), 0.50);
+        double p90 = Percentile(_blocks.Select(block => block.ActivityRmsDb), 0.90);
+        bool anyEnergy = _blocks.Any(block => double.IsFinite(block.ActivityRmsDb));
         if (!anyEnergy)
         {
             noiseFloorDb = double.NegativeInfinity;
@@ -308,8 +363,7 @@ public sealed class RecordingLevelAnalyzer
         {
             noiseFloorDb = p10;
             double threshold = Math.Max(MinimumProgramBlockDb, p10 + QuietProgramSeparationDb);
-            active.AddRange(_blocks.Where(block =>
-                block.RmsDb > threshold && block.PeakDb > MinimumProgramPeakDb));
+            active.AddRange(_blocks.Where(block => IsProgramBlock(block, threshold)));
             return;
         }
 
@@ -317,8 +371,39 @@ public sealed class RecordingLevelAnalyzer
         // noise floor. Treat it as programme when it is plainly above silence.
         noiseFloorDb = double.NaN;
         if (p50 > MinimumProgramBlockDb)
-            active.AddRange(_blocks.Where(block =>
-                block.RmsDb > MinimumProgramBlockDb && block.PeakDb > MinimumProgramPeakDb));
+            active.AddRange(_blocks.Where(block => IsProgramBlock(block, MinimumProgramBlockDb)));
+    }
+
+    private bool IsProgramBlock(BlockSummary block, double activityThresholdDb) =>
+        block.ActivityRmsDb > activityThresholdDb
+        && block.PeakDb > MinimumProgramPeakDb
+        && block.ZeroCrossingsPerSecond >= MinimumZeroCrossingsPerSecond
+        && block.ZeroCrossingsPerSecond <= _sampleRate * MaximumZeroCrossingFraction;
+
+    private bool HasRepeatedFlatTops()
+    {
+        double overallPeakDb = AmplitudeToDb(_overallPeak);
+        foreach (Queue<FlatTopEvent> events in _flatTopEvents)
+        {
+            PruneFlatTopEvents(events);
+            if (events.Count < MinimumFlatTopEvents) continue;
+
+            double maximumLevel = events.Max(entry => entry.Level);
+            if (AmplitudeToDb(maximumLevel) < overallPeakDb - FlatTopPeakProximityDb)
+                continue;
+
+            int consistentEvents = events.Count(entry =>
+                AmplitudeToDb(maximumLevel / entry.Level) <= FlatTopConsistencyDb);
+            if (consistentEvents >= MinimumFlatTopEvents) return true;
+        }
+        return false;
+    }
+
+    private void PruneFlatTopEvents(Queue<FlatTopEvent> events)
+    {
+        long oldestFrame = _framesProcessed - (long)Math.Ceiling(FlatTopWindowSeconds * _sampleRate);
+        while (events.Count > 0 && events.Peek().Frame < oldestFrame)
+            events.Dequeue();
     }
 
     private double MeasureBalance(IReadOnlyList<BlockSummary> active)
@@ -380,14 +465,20 @@ public sealed class RecordingLevelAnalyzer
         _blocks.Clear();
         _blockFill = 0;
         _blockPower = 0;
+        _blockActivityPower = 0;
         _blockLeftPower = 0;
         _blockRightPower = 0;
         _blockPeak = 0;
+        Array.Clear(_blockZeroCrossings);
         _framesProcessed = 0;
         _clippedSamples = 0;
         _invalidSamples = 0;
         _flatTopCount = 0;
-        Array.Clear(_flatTopCounts);
+        foreach (Queue<FlatTopEvent> events in _flatTopEvents) events.Clear();
+        for (int channel = 0; channel < _activityFilters.Length; channel++)
+            _activityFilters[channel].Reset();
+        Array.Clear(_previousActivitySamples);
+        Array.Clear(_hasPreviousActivitySample);
         _peakLeft = 0;
         _peakRight = 0;
         _overallPeak = 0;
@@ -413,9 +504,9 @@ public sealed class RecordingLevelAnalyzer
         private double _shoulderBefore;
         private double _maximumInsideDifference;
 
-        public bool Process(float sample)
+        public double Process(float sample)
         {
-            bool detected = false;
+            double detectedLevel = 0;
             if (_hasPrevious)
             {
                 double previousMagnitude = Math.Abs((double)_previous);
@@ -438,7 +529,8 @@ public sealed class RecordingLevelAnalyzer
                     }
                     else
                     {
-                        detected = FinishRun(Math.Abs(sample - _previous));
+                        if (FinishRun(Math.Abs(sample - _previous)))
+                            detectedLevel = _runLevel;
                         _inRun = false;
                     }
                 }
@@ -467,7 +559,7 @@ public sealed class RecordingLevelAnalyzer
             _hasBeforePrevious = _hasPrevious;
             _previous = sample;
             _hasPrevious = true;
-            return detected;
+            return detectedLevel;
         }
 
         private bool FinishRun(double shoulderAfter)
