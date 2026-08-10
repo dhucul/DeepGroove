@@ -308,6 +308,7 @@ public partial class RestorationWorkbenchDialog : Window
             _previewRackBypassed = true;
         }
         var settings = CaptureSettings();
+        RestorationAuditionMode auditionMode = CaptureAuditionMode();
         var processingSettings = settings with { WetAmount = 1.0, Bypass = false };
         float[][]? cachedWet = _previewWetCacheSettings == processingSettings
             ? _previewWetCache
@@ -352,14 +353,19 @@ public partial class RestorationWorkbenchDialog : Window
                 _previewWetCache = result.WetForCache;
             }
             UpdateAnalysisSummary(result.Analyses);
-            var preview = new AudioDocument(result.Audio, _sampleRate, _sourceBitDepth)
+            float[][] auditionAudio = RestorationPreview.CreateAudition(result.Audio,
+                auditionMode);
+            string auditionDescription = AuditionDescription(auditionMode);
+            var preview = new AudioDocument(auditionAudio, _sampleRate, _sourceBitDepth)
             {
-                Title = settings.Bypass ? "Vinyl restoration · dry" : "Vinyl restoration · preview",
+                Title = settings.Bypass
+                    ? $"Vinyl restoration · dry · {auditionDescription}"
+                    : $"Vinyl restoration · preview · {auditionDescription}",
             };
             _main.PlayPreview(preview, loop: false);
             statusText.Text = settings.Bypass
-                ? $"Bypass A/B · playing {_previewLength / (double)_sampleRate:0.#} seconds of the original source (master rack bypassed)."
-                : $"Live preview · playing {_previewLength / (double)_sampleRate:0.#} seconds at {settings.WetAmount:P0} restored (master rack bypassed).";
+                ? $"Bypass A/B · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds of the original source (master rack bypassed)."
+                : $"Live preview · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds at {settings.WetAmount:P0} restored (master rack bypassed).";
             progressBar.Value = 1;
         }
         catch (OperationCanceledException)
@@ -837,6 +843,27 @@ public partial class RestorationWorkbenchDialog : Window
         QueueParameterRefresh(shortDelay: true);
     }
 
+    private void OnAuditionChannelChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_initialized || !_previewStarted) return;
+        QueueParameterRefresh(shortDelay: true);
+    }
+
+    private RestorationAuditionMode CaptureAuditionMode() =>
+        auditionChannelCombo.SelectedIndex switch
+        {
+            1 when _sourceReferences.Length >= 2 => RestorationAuditionMode.Left,
+            2 when _sourceReferences.Length >= 2 => RestorationAuditionMode.Right,
+            _ => RestorationAuditionMode.Stereo,
+        };
+
+    private static string AuditionDescription(RestorationAuditionMode mode) => mode switch
+    {
+        RestorationAuditionMode.Left => "left channel soloed to both speakers",
+        RestorationAuditionMode.Right => "right channel soloed to both speakers",
+        _ => "stereo",
+    };
+
     private void OnPresetChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_initialized || _suppressControlEvents) return;
@@ -1021,6 +1048,8 @@ public partial class RestorationWorkbenchDialog : Window
         controlsHost.IsEnabled = ready && !_applying;
         presetCombo.IsEnabled = ready && !_applying;
         previewBtn.IsEnabled = ready && !_applying;
+        auditionChannelCombo.IsEnabled = ready && !_applying &&
+                                         _sourceReferences.Length >= 2;
         bool canApply = ready && !_busy && bypassCheck.IsChecked != true;
         applyBtn.IsEnabled = canApply;
         applyCdBtn.IsEnabled = canApply;

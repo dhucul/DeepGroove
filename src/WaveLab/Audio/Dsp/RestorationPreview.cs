@@ -1,5 +1,13 @@
 namespace WaveLab.Audio.Dsp;
 
+/// <summary>Channel routing used only while auditioning restoration output.</summary>
+public enum RestorationAuditionMode
+{
+    Stereo,
+    Left,
+    Right,
+}
+
 /// <summary>Sample-aligned helpers for non-destructive restoration previews.</summary>
 public static class RestorationPreview
 {
@@ -70,6 +78,37 @@ public static class RestorationPreview
             copy[c] = (float[])channels[c].Clone();
         }
         return copy;
+    }
+
+    /// <summary>
+    /// Create monitoring buffers for all channels or for one side of a stereo source.
+    /// A soloed side is duplicated to both output channels so it remains centered and
+    /// easy to inspect. Source buffers are never returned or modified.
+    /// </summary>
+    public static float[][] CreateAudition(IReadOnlyList<float[]> channels,
+        RestorationAuditionMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+        if (channels.Count == 0) return [];
+
+        int length = channels[0]?.Length
+            ?? throw new ArgumentException("Channel buffers cannot be null.", nameof(channels));
+        for (int channel = 1; channel < channels.Count; channel++)
+        {
+            if (channels[channel] is null)
+                throw new ArgumentException("Channel buffers cannot be null.", nameof(channels));
+            if (channels[channel].Length != length)
+                throw new ArgumentException("All channel buffers must have the same length.",
+                    nameof(channels));
+        }
+
+        if (mode == RestorationAuditionMode.Stereo || channels.Count == 1)
+            return Clone(channels);
+
+        int selectedChannel = mode == RestorationAuditionMode.Left ? 0 : 1;
+        float[] selected = channels[selectedChannel];
+        return [(float[])selected.Clone(), (float[])selected.Clone()];
     }
 
     private static void ValidatePair(IReadOnlyList<float[]> dry, IReadOnlyList<float[]> processed)
