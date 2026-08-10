@@ -38,7 +38,7 @@ public sealed class ClickAnalysisOptions
     public double MaximumClickLengthMs { get; init; } = 0.35;
 
     /// <summary>Maximum duration considered repairable as an impulsive pop.</summary>
-    public double MaximumPopLengthMs { get; init; } = 2.5;
+    public double MaximumPopLengthMs { get; init; } = 5.0;
 
     /// <summary>
     /// Protect sustained attacks whose samples do not return to the local trend after
@@ -63,6 +63,13 @@ public sealed class ClickRepairOptions
 {
     /// <summary>Repair amount from 0 (dry) to 1 (fully repaired).</summary>
     public double Strength { get; init; } = 1.0;
+
+    /// <summary>
+    /// Treat coincident defects as one multichannel event. When enabled, a click found
+    /// in any channel repairs the same sample span in every channel, using each channel's
+    /// own clean context for reconstruction. Disable for unrelated multichannel stems.
+    /// </summary>
+    public bool LinkChannels { get; init; } = true;
 
     /// <summary>
     /// Maximum permitted interpolated overshoot relative to the clean local context.

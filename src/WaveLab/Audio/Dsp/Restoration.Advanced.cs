@@ -35,7 +35,12 @@ public static partial class Restoration
         int maximumPopSamples = Math.Max(maximumClickSamples,
             (int)Math.Round(sampleRate * Math.Clamp(options.MaximumPopLengthMs,
                 maximumClickLengthMs, 10.0) / 1000.0));
-        int bridgeSamples = Math.Clamp((int)Math.Round(sampleRate * 0.00018), 1,
+        // A short vinyl pop often has strong curvature only at its leading and
+        // trailing discontinuities, with a comparatively flat or decaying interior.
+        // Search the complete repairable-pop span for the matching edge; the
+        // return-to-trend and attack checks below still reject sustained music.
+        int maximumCandidateSpanSamples = maximumPopSamples;
+        int postCandidateSkipSamples = Math.Clamp((int)Math.Round(sampleRate * 0.00018), 1,
             Math.Max(1, maximumPopSamples / 3));
         int blockSize = Math.Clamp((int)Math.Round(sampleRate * 0.025), 256, 4096);
 
@@ -97,8 +102,8 @@ public static partial class Restoration
                     int lastStrong = i;
                     int peak = i;
                     float peakCurvature = curvature[i];
-                    int scanLimit = Math.Min(sampleCount - 2, i + maximumPopSamples + bridgeSamples);
-                    for (int j = i + 1; j < scanLimit && j - lastStrong <= bridgeSamples; j++)
+                    int scanLimit = Math.Min(sampleCount - 2, i + maximumCandidateSpanSamples);
+                    for (int j = i + 1; j < scanLimit; j++)
                     {
                         if (curvature[j] <= threshold) continue;
                         lastStrong = j;
@@ -127,7 +132,7 @@ public static partial class Restoration
                         AddOrMergeClickEvent(events, clickEvent, maximumClickSamples);
                     }
 
-                    nextCandidateSample = Math.Max(nextCandidateSample, end + bridgeSamples);
+                    nextCandidateSample = Math.Max(nextCandidateSample, end + postCandidateSkipSamples);
                     i = Math.Max(i + 1, nextCandidateSample);
                 }
 
@@ -203,7 +208,14 @@ public static partial class Restoration
         double maximumOvershoot = Math.Clamp(options.MaximumOvershoot, 1.0, 4.0);
         if (strength <= 0f || events.Count == 0) return 0;
 
-        var ordered = events.OrderBy(e => e.Channel).ThenBy(e => e.StartSample).ToArray();
+        // The same physical groove defect normally reaches both stereo channels, but
+        // their different programme material can make the detector choose slightly
+        // different leading/trailing edges or miss the quieter side entirely. Link
+        // temporally coincident detections and use their union for every channel. Each
+        // channel is still reconstructed from its own clean waveform context.
+        int sampleCount = data.Length == 0 ? 0 : data[0].Length;
+        var ordered = CreateClickRepairPlan(events, data.Length, sampleCount,
+            options.LinkChannels);
         int repaired = 0;
         int previousChannel = -1;
         int previousEnd = -1;
@@ -234,6 +246,119 @@ public static partial class Restoration
             }
         }
         return repaired;
+    }
+
+    private static ClickEvent[] CreateClickRepairPlan(
+        IReadOnlyList<ClickEvent> events, int channelCount, int sampleCount,
+        bool linkChannels)
+    {
+        const int alignmentToleranceSamples = 2;
+        var chronological = events
+            .Where(item => item.Channel >= 0 && item.Channel < channelCount &&
+                           item.StartSample >= 1 && item.StartSample < item.EndSample &&
+                           item.EndSample < sampleCount)
+            .OrderBy(item => item.StartSample)
+            .ThenBy(item => item.EndSample)
+            .ToArray();
+        if (chronological.Length == 0) return chronological;
+
+        var linked = new List<ClickEvent>(chronological.Length);
+        int clusterIndex = 0;
+        while (clusterIndex < chronological.Length)
+        {
+            int clusterStart = chronological[clusterIndex].StartSample;
+            int clusterEnd = chronological[clusterIndex].EndSample;
+            int clusterLimit = clusterIndex + 1;
+            while (clusterLimit < chronological.Length &&
+                   chronological[clusterLimit].StartSample <=
+                       clusterEnd + alignmentToleranceSamples)
+            {
+                clusterEnd = Math.Max(clusterEnd,
+                    chronological[clusterLimit].EndSample);
+                clusterLimit++;
+            }
+
+            // Include a small clean-context guard on both sides. Clicks are frequently
+            // bipolar: the louder polarity establishes the detected event while a
+            // quieter opposite-polarity lobe sits just beyond that boundary. Without a
+            // guard, interpolation can remove only half of the visible/audible spike.
+            int clusterLength = clusterEnd - clusterStart;
+            int boundaryGuard = Math.Clamp(
+                (int)Math.Ceiling(clusterLength * 0.25), 8, 32);
+            clusterStart = Math.Max(1, clusterStart - boundaryGuard);
+            clusterEnd = Math.Min(sampleCount - 1, clusterEnd + boundaryGuard);
+
+            var strongestByChannel = new Dictionary<int, ClickEvent>();
+            for (int index = clusterIndex; index < clusterLimit; index++)
+            {
+                var candidate = chronological[index];
+                if (!strongestByChannel.TryGetValue(candidate.Channel, out var strongest) ||
+                    candidate.Severity > strongest.Severity)
+                {
+                    strongestByChannel[candidate.Channel] = candidate;
+                }
+            }
+
+            if (linkChannels)
+            {
+                ClickEvent source = strongestByChannel.Values
+                    .MaxBy(item => item.Severity);
+                for (int channel = 0; channel < channelCount; channel++)
+                {
+                    ClickEvent channelSource = strongestByChannel.TryGetValue(channel,
+                        out var detected) ? detected : source;
+                    linked.Add(channelSource with
+                    {
+                        Channel = channel,
+                        StartSample = clusterStart,
+                        EndSample = clusterEnd,
+                    });
+                }
+            }
+            else
+            {
+                foreach (var pair in strongestByChannel)
+                {
+                    var source = pair.Value;
+                    linked.Add(source with
+                    {
+                        StartSample = clusterStart,
+                        EndSample = clusterEnd,
+                    });
+                }
+            }
+            clusterIndex = clusterLimit;
+        }
+
+        var ordered = linked.OrderBy(item => item.Channel)
+            .ThenBy(item => item.StartSample)
+            .ToArray();
+        if (ordered.Length < 2) return ordered;
+
+        // Expanded guards from nearby impulses can overlap. Reconstruct their union in
+        // one pass so two independently predicted windows cannot introduce a seam.
+        var merged = new List<ClickEvent>(ordered.Length) { ordered[0] };
+        for (int index = 1; index < ordered.Length; index++)
+        {
+            var next = ordered[index];
+            var previous = merged[^1];
+            if (next.Channel != previous.Channel ||
+                next.StartSample > previous.EndSample)
+            {
+                merged.Add(next);
+                continue;
+            }
+
+            bool useNext = next.Severity > previous.Severity;
+            ClickEvent source = useNext ? next : previous;
+            merged[^1] = source with
+            {
+                Channel = previous.Channel,
+                StartSample = Math.Min(previous.StartSample, next.StartSample),
+                EndSample = Math.Max(previous.EndSample, next.EndSample),
+            };
+        }
+        return merged.ToArray();
     }
 
     /// <summary>
@@ -522,32 +647,173 @@ public static partial class Restoration
         int span = right - left;
         float y0 = samples[left];
         float y1 = samples[right];
-        double slope0 = EstimateMedianSlopeBefore(samples, left, 5);
-        double slope1 = EstimateMedianSlopeAfter(samples, right, 5);
 
         float contextPeak = Math.Max(Math.Abs(y0), Math.Abs(y1));
-        int contextStart = Math.Max(0, left - 10);
-        int contextEnd = Math.Min(samples.Length, right + 11);
+        int gapLength = end - start;
+        int contextLength = Math.Clamp(gapLength * 6, 96, 768);
+        int contextStart = Math.Max(0, left - contextLength);
+        int contextEnd = Math.Min(samples.Length, right + contextLength + 1);
         for (int i = contextStart; i < left; i++)
             contextPeak = Math.Max(contextPeak, Math.Abs(samples[i]));
         for (int i = right + 1; i < contextEnd; i++)
             contextPeak = Math.Max(contextPeak, Math.Abs(samples[i]));
         double limit = Math.Max(1e-6, contextPeak * maximumOvershoot);
 
+        double[] reconstruction = gapLength >= 4 &&
+                                  TryBidirectionalLinearPrediction(samples, start, end,
+                                      contextLength, limit, out double[] predicted)
+            ? predicted
+            : CubicImpulseInterpolation(samples, start, end);
+
+        for (int i = start; i < end; i++)
+        {
+            double interpolated = reconstruction[i - start];
+            if (!double.IsFinite(interpolated))
+            {
+                double t = (double)(i - left) / span;
+                interpolated = y0 + (y1 - y0) * t;
+            }
+            interpolated = Math.Clamp(interpolated, -limit, limit);
+            samples[i] += ((float)interpolated - samples[i]) * strength;
+        }
+    }
+
+    /// <summary>
+    /// Reconstruct a missing impulse span from autoregressive models fitted to clean
+    /// audio on both sides. Forward and backward predictions are equal-power blended,
+    /// preserving periodic/complex waveform motion that cubic interpolation flattens.
+    /// </summary>
+    private static bool TryBidirectionalLinearPrediction(float[] samples, int start, int end,
+        int requestedContext, double outputLimit, out double[] reconstruction)
+    {
+        int gapLength = end - start;
+        reconstruction = new double[Math.Max(0, gapLength)];
+        if (gapLength <= 0) return false;
+
+        int leftCount = Math.Min(requestedContext, start);
+        int rightCount = Math.Min(requestedContext, samples.Length - end);
+        int available = Math.Min(leftCount, rightCount);
+        int order = Math.Min(48, Math.Min(Math.Max(12, gapLength / 2), available / 3));
+        if (order < 6) return false;
+
+        if (!TryAutoregressivePrediction(samples, start - leftCount, leftCount,
+                reverse: false, gapLength, order, outputLimit, out double[] forward) ||
+            !TryAutoregressivePrediction(samples, end, rightCount,
+                reverse: true, gapLength, order, outputLimit, out double[] backward))
+            return false;
+
+        for (int offset = 0; offset < gapLength; offset++)
+        {
+            double t = (offset + 1.0) / (gapLength + 1.0);
+            double rightWeight = Math.Sin(t * Math.PI * 0.5);
+            rightWeight *= rightWeight;
+            double leftWeight = 1.0 - rightWeight;
+            double value = forward[offset] * leftWeight +
+                           backward[gapLength - 1 - offset] * rightWeight;
+            if (!double.IsFinite(value) || Math.Abs(value) > outputLimit * 4)
+                return false;
+            reconstruction[offset] = value;
+        }
+        return true;
+    }
+
+    private static bool TryAutoregressivePrediction(float[] samples, int start, int count,
+        bool reverse, int forecastCount, int order, double outputLimit, out double[] forecast)
+    {
+        forecast = new double[forecastCount];
+        if (count <= order || start < 0 || start + count > samples.Length) return false;
+
+        var sequence = new double[count];
+        double mean = 0;
+        for (int index = 0; index < count; index++)
+        {
+            int sourceIndex = reverse ? start + count - 1 - index : start + index;
+            double value = samples[sourceIndex];
+            if (!double.IsFinite(value)) return false;
+            sequence[index] = value;
+            mean += value;
+        }
+        mean /= count;
+        for (int index = 0; index < count; index++) sequence[index] -= mean;
+
+        var autocorrelation = new double[order + 1];
+        for (int lag = 0; lag <= order; lag++)
+        {
+            double sum = 0;
+            for (int index = lag; index < count; index++)
+                sum += sequence[index] * sequence[index - lag];
+            autocorrelation[lag] = sum / count;
+        }
+        if (!double.IsFinite(autocorrelation[0]) || autocorrelation[0] < 1e-12)
+        {
+            Array.Fill(forecast, mean);
+            return true;
+        }
+
+        var coefficients = new double[order + 1];
+        coefficients[0] = 1;
+        double error = autocorrelation[0];
+        int fittedOrder = 0;
+        for (int currentOrder = 1; currentOrder <= order; currentOrder++)
+        {
+            double residual = autocorrelation[currentOrder];
+            for (int index = 1; index < currentOrder; index++)
+                residual += coefficients[index] * autocorrelation[currentOrder - index];
+            double reflection = -residual / Math.Max(1e-18, error);
+            if (!double.IsFinite(reflection)) break;
+            reflection = Math.Clamp(reflection, -0.985, 0.985);
+
+            var updated = (double[])coefficients.Clone();
+            for (int index = 1; index < currentOrder; index++)
+                updated[index] = coefficients[index] +
+                                 reflection * coefficients[currentOrder - index];
+            updated[currentOrder] = reflection;
+            coefficients = updated;
+            error *= Math.Max(1e-6, 1.0 - reflection * reflection);
+            fittedOrder = currentOrder;
+            if (!double.IsFinite(error) || error < autocorrelation[0] * 1e-10) break;
+        }
+        if (fittedOrder < 2) return false;
+
+        var history = new double[count + forecastCount];
+        Array.Copy(sequence, history, count);
+        for (int step = 0; step < forecastCount; step++)
+        {
+            int outputIndex = count + step;
+            double prediction = 0;
+            for (int lag = 1; lag <= fittedOrder; lag++)
+                prediction -= coefficients[lag] * history[outputIndex - lag];
+            double value = prediction + mean;
+            if (!double.IsFinite(value) || Math.Abs(value) > outputLimit * 4)
+                return false;
+            history[outputIndex] = prediction;
+            forecast[step] = value;
+        }
+        return true;
+    }
+
+    private static double[] CubicImpulseInterpolation(float[] samples, int start, int end)
+    {
+        int left = start - 1;
+        int right = end;
+        int span = right - left;
+        double y0 = samples[left];
+        double y1 = samples[right];
+        double slope0 = EstimateMedianSlopeBefore(samples, left, 5);
+        double slope1 = EstimateMedianSlopeAfter(samples, right, 5);
+        var reconstruction = new double[end - start];
         for (int i = start; i < end; i++)
         {
             double t = (double)(i - left) / span;
             double t2 = t * t;
             double t3 = t2 * t;
-            double interpolated = (2 * t3 - 3 * t2 + 1) * y0 +
-                                  (t3 - 2 * t2 + t) * slope0 * span +
-                                  (-2 * t3 + 3 * t2) * y1 +
-                                  (t3 - t2) * slope1 * span;
-            if (!double.IsFinite(interpolated))
-                interpolated = y0 + (y1 - y0) * t;
-            interpolated = Math.Clamp(interpolated, -limit, limit);
-            samples[i] += ((float)interpolated - samples[i]) * strength;
+            reconstruction[i - start] =
+                (2 * t3 - 3 * t2 + 1) * y0 +
+                (t3 - 2 * t2 + t) * slope0 * span +
+                (-2 * t3 + 3 * t2) * y1 +
+                (t3 - t2) * slope1 * span;
         }
+        return reconstruction;
     }
 
     private static void ScanClippedRuns(float[] samples, int channel,

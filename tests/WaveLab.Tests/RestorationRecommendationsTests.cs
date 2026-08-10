@@ -46,11 +46,30 @@ public sealed class RestorationRecommendationsTests
             Cleanup(humEnabled: false, noiseEnabled: false));
 
         Assert.True(result.RepairClicks);
-        Assert.Equal(6.0, result.ClickSensitivity);
-        Assert.InRange(result.ClickStrength, 0.75, 0.90);
+        Assert.Equal(RestorationRecommendations.ExploratoryClickSensitivity,
+            result.ClickSensitivity);
+        Assert.Equal(1.0, result.ClickStrength);
         Assert.True(result.Declip);
         Assert.InRange(result.DeclipStrength, 0.80, 0.90);
         Assert.InRange(result.DeclipHeadroomDb, 2.0, 3.0);
+    }
+
+    [Fact]
+    public void DenseHighConfidenceDamageDoesNotLowerAutoSensitivity()
+    {
+        ClickEvent[] events = Enumerable.Range(0, 180)
+            .Select(index => new ClickEvent(0, index * 12_000 + 2, index * 12_000 + 4,
+                index * 12_000 + 3, ImpulseDefectKind.Click,
+                0.86f, 0.72f, 0.8f, 0.1f))
+            .ToArray();
+
+        RestorationRecommendations.Settings result = RestorationRecommendations.Create(
+            new ClickAnalysisResult(events, SampleRate * 60, 2, SampleRate),
+            new ClippingAnalysisResult([], SampleRate * 60, 2, SampleRate, true),
+            Cleanup(humEnabled: false, noiseEnabled: false));
+
+        Assert.Equal(RestorationRecommendations.ExploratoryClickSensitivity,
+            result.ClickSensitivity);
     }
 
     [Fact]

@@ -40,32 +40,21 @@ internal static class RestorationRecommendations
             (double)Math.Max(1, clicks.SampleRate) / 60.0;
         double eventsPerMinute = clicks.Events.Count / Math.Max(1.0 / 60.0, minutes);
         double averageClickConfidence = Average(clicks.Events, item => item.Confidence);
-        double averageClickSeverity = Average(clicks.Events, item => item.Severity);
-        double popRatio = clicks.Events.Count == 0
-            ? 0
-            : clicks.PopCount / (double)clicks.Events.Count;
+        // A damaged record can legitimately contain hundreds of impulses per minute,
+        // so density alone must never make auto mode less sensitive. Back off only a
+        // half-step when an exceptionally dense population also sits close to the
+        // confidence floor; otherwise retain the exploratory 7/10 pass unchanged.
+        double clickSensitivity = clicks.Events.Count > 0 &&
+                                  eventsPerMinute > 120 &&
+                                  averageClickConfidence < 0.68
+            ? ExploratoryClickSensitivity - 0.5
+            : ExploratoryClickSensitivity;
 
-        // A dense candidate population needs a more conservative detector; a sparse,
-        // high-confidence population can safely retain more sensitivity. The exploratory
-        // pass uses 7/10 so quiet clicks are represented before this choice is made.
-        double clickSensitivity = eventsPerMinute switch
-        {
-            <= 0 => ExploratoryClickSensitivity,
-            > 120 => 4.5,
-            > 45 => 5.5,
-            > 12 => 6.0,
-            > 3 => 6.5,
-            _ => 7.0,
-        };
-        if (clicks.Events.Count > 0 && averageClickConfidence < 0.68)
-            clickSensitivity -= 0.5;
-        clickSensitivity = Quantize(Math.Clamp(clickSensitivity, 4.0, 7.5), 0.5);
-
-        double clickStrength = clicks.Events.Count == 0
-            ? 0.65
-            : Quantize(Math.Clamp(
-                0.52 + averageClickSeverity * 0.34 + popRatio * 0.10,
-                0.55, 0.92), 0.05);
+        // Once an impulse passes the conservative detector, retaining any percentage of
+        // its damaged samples leaves a scaled copy of the click behind. Auto restoration
+        // therefore performs complete reconstruction; the strength control remains
+        // available when the user explicitly wants a partial blend.
+        double clickStrength = clicks.Events.Count == 0 ? 0.65 : 1.0;
 
         double averageClipSeverity = Average(clipping.Events, item => item.Severity);
         double declipStrength = clipping.Events.Count == 0
