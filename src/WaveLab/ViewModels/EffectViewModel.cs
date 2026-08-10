@@ -63,6 +63,29 @@ public sealed class EffectViewModel : ObservableObject
     public string DisplayName => Effect.DisplayName;
     public bool IsEq => Effect is EqEffect;
 
+    /// <summary>Category key used by the rack UI to color-code the slot strip.</summary>
+    public string Category => Effect.TypeId switch
+    {
+        "compressor" or "gate" or "limiter" or "normalizer" => "dynamics",
+        "eq" or "filter" => "eq",
+        "reverb" or "delay" or "chorus" => "time",
+        "denoise" or "dehum" => "restoration",
+        "saturation" => "color",
+        _ => "utility",
+    };
+
+    /// <summary>Small caption shown under the effect name in the rack.</summary>
+    public string CategoryLabel => Category switch
+    {
+        "dynamics" => "DYNAMICS",
+        "eq" => "EQ & FILTER",
+        "time" => "TIME & MOD",
+        "restoration" => "RESTORATION",
+        "color" => "COLOR",
+        _ => "UTILITY",
+    };
+
+
     private string _numberText = "01";
     public string NumberText { get => _numberText; set => Set(ref _numberText, value); }
 

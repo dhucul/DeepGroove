@@ -567,71 +567,100 @@
                             <ItemsControl ItemsSource="{Binding Master.Effects}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource LineSoft}"
-                                                BorderThickness="1" CornerRadius="10" Margin="0,0,0,8" Padding="10,8">
-                                            <StackPanel>
-                                                <DockPanel>
-                                                    <TextBlock Text="{Binding NumberText}" FontFamily="{StaticResource MonoFont}"
-                                                               FontSize="9.5" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
-                                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding MoveUpCommand}" ToolTip="Move up" Content="▲" FontSize="8" AutomationProperties.Name="Move effect up"/>
-                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding MoveDownCommand}" ToolTip="Move down" Content="▼" FontSize="8" AutomationProperties.Name="Move effect down"/>
-                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding ResetCommand}" ToolTip="Set to defaults" Content="↺" FontSize="11" AutomationProperties.Name="Reset effect parameters"/>
-                                                        <ToggleButton Style="{StaticResource Switch}" Margin="4,0" IsChecked="{Binding Enabled}"
-                                                                      ToolTip="Enable or bypass this effect" AutomationProperties.Name="Enable or bypass effect"/>
-                                                        <Button Style="{StaticResource MiniButton}" Command="{Binding RemoveCommand}"
-                                                                ToolTip="Remove from rack and stop processing" Content="✕" FontSize="10" AutomationProperties.Name="Remove effect"/>
+                                        <Border Background="{StaticResource CardFaceplate}" BorderBrush="{StaticResource CardEdge}"
+                                                BorderThickness="1" CornerRadius="10" Margin="0,0,0,8">
+                                            <Grid>
+                                                <Border Style="{StaticResource CategoryStrip}" Margin="5,10,0,10" HorizontalAlignment="Left"/>
+                                                <StackPanel Margin="16,9,10,10">
+                                                    <DockPanel>
+                                                        <Border Background="{StaticResource WellDeep}" BorderBrush="{StaticResource LineSoft}"
+                                                                BorderThickness="1" CornerRadius="4" Padding="6,1.5" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding NumberText}" FontFamily="{StaticResource MonoFont}"
+                                                                       FontSize="9" Foreground="{StaticResource Faint}"/>
+                                                        </Border>
+                                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <ToggleButton Style="{StaticResource PowerLed}" IsChecked="{Binding Enabled}"
+                                                                          ToolTip="Enable or bypass this effect" AutomationProperties.Name="Enable or bypass effect"/>
+                                                            <Button Style="{StaticResource MiniButton}" Margin="4,0,0,0" VerticalAlignment="Center"
+                                                                    Command="{Binding MoveUpCommand}" ToolTip="Move up" Content="▲" FontSize="8" AutomationProperties.Name="Move effect up"/>
+                                                            <Button Style="{StaticResource MiniButton}" VerticalAlignment="Center"
+                                                                    Command="{Binding MoveDownCommand}" ToolTip="Move down" Content="▼" FontSize="8" AutomationProperties.Name="Move effect down"/>
+                                                            <Button Style="{StaticResource MiniButton}" VerticalAlignment="Center"
+                                                                    Command="{Binding ResetCommand}" ToolTip="Set to defaults" Content="↺" FontSize="11" AutomationProperties.Name="Reset effect parameters"/>
+                                                            <Button Style="{StaticResource MiniButton}" VerticalAlignment="Center" Command="{Binding RemoveCommand}"
+                                                                    ToolTip="Remove from rack and stop processing" Content="✕" FontSize="10" AutomationProperties.Name="Remove effect"/>
+                                                        </StackPanel>
+                                                        <StackPanel Margin="9,0,0,0" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding DisplayName}" FontSize="12.5" FontWeight="SemiBold"/>
+                                                            <TextBlock Text="{Binding CategoryLabel}" FontSize="7.5" FontWeight="Bold"
+                                                                       Foreground="{StaticResource Faint}" Margin="0,1.5,0,0"/>
+                                                        </StackPanel>
+                                                    </DockPanel>
+                                                    <Border Height="1" Background="{StaticResource LineSoft}" Margin="0,8,0,0"/>
+                                                    <StackPanel x:Name="body">
+                                                        <Border Background="{StaticResource MeterBg}" BorderBrush="{StaticResource LineSoft}" BorderThickness="1"
+                                                                CornerRadius="6" Padding="4,3" Margin="0,7,0,2"
+                                                                Visibility="{Binding IsEq, Converter={StaticResource BoolToVis}}">
+                                                            <c:EqCurve Height="46"
+                                                                       LowGainDb="{Binding EqLow}" LowMidGainDb="{Binding EqLowMid}" MidGainDb="{Binding EqMid}" HighMidGainDb="{Binding EqHighMid}" HighGainDb="{Binding EqHigh}"/>
+                                                        </Border>
+                                                        <ItemsControl ItemsSource="{Binding Params}" Margin="0,4,0,0">
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Grid Margin="0,2.5">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="82"/>
+                                                                            <ColumnDefinition Width="*"/>
+                                                                            <ColumnDefinition Width="Auto"/>
+                                                                        </Grid.ColumnDefinitions>
+                                                                        <TextBlock Text="{Binding Label}" FontSize="8.5" FontWeight="Bold"
+                                                                                   Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
+                                                                        <Slider Grid.Column="1" Minimum="{Binding Min}" Maximum="{Binding Max}"
+                                                                                Value="{Binding Value}" Margin="2,0,8,0" VerticalAlignment="Center" AutomationProperties.Name="{Binding Label}"/>
+                                                                        <Border Grid.Column="2" Background="{StaticResource WellDeep}" BorderBrush="{StaticResource LineSoft}"
+                                                                                BorderThickness="1" CornerRadius="4" Padding="7,1" MinWidth="58" VerticalAlignment="Center">
+                                                                            <TextBlock Text="{Binding ValueText}" FontFamily="{StaticResource MonoFont}"
+                                                                                       FontSize="9.5" Foreground="#C6CBD1" TextAlignment="Center"/>
+                                                                        </Border>
+                                                                    </Grid>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                        <TextBlock Text="{Binding Readout}" FontFamily="{StaticResource MonoFont}" FontSize="10"
+                                                                   Foreground="{StaticResource Amber}" HorizontalAlignment="Right" Margin="0,4,0,0"
+                                                                   Visibility="{Binding HasReadout, Converter={StaticResource BoolToVis}}"/>
                                                     </StackPanel>
-                                                    <TextBlock Text="{Binding DisplayName}" Margin="8,0,0,0" FontSize="12"
-                                                               FontWeight="SemiBold" VerticalAlignment="Center"/>
-                                                </DockPanel>
-                                                <c:EqCurve Height="44" Margin="0,7,0,2"
-                                                           Visibility="{Binding IsEq, Converter={StaticResource BoolToVis}}"
-                                                           LowGainDb="{Binding EqLow}" LowMidGainDb="{Binding EqLowMid}" MidGainDb="{Binding EqMid}" HighMidGainDb="{Binding EqHighMid}" HighGainDb="{Binding EqHigh}"/>
-                                                <ItemsControl ItemsSource="{Binding Params}" Margin="0,5,0,0">
-                                                    <ItemsControl.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <Grid Margin="0,1.5">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="82"/>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                    <ColumnDefinition Width="60"/>
-                                                                </Grid.ColumnDefinitions>
-                                                                <TextBlock Text="{Binding Label}" FontSize="8.5" FontWeight="Bold"
-                                                                           Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
-                                                                <Slider Grid.Column="1" Minimum="{Binding Min}" Maximum="{Binding Max}"
-                                                                        Value="{Binding Value}" Margin="2,0,6,0" AutomationProperties.Name="{Binding Label}"/>
-                                                                <TextBlock Grid.Column="2" Text="{Binding ValueText}" FontFamily="{StaticResource MonoFont}"
-                                                                           FontSize="9.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                                                           TextAlignment="Right"/>
-                                                            </Grid>
-                                                        </DataTemplate>
-                                                    </ItemsControl.ItemTemplate>
-                                                </ItemsControl>
-                                                <TextBlock Text="{Binding Readout}" FontFamily="{StaticResource MonoFont}" FontSize="10"
-                                                           Foreground="{StaticResource Amber}" HorizontalAlignment="Right" Margin="0,3,0,0"
-                                                           Visibility="{Binding HasReadout, Converter={StaticResource BoolToVis}}"/>
-                                            </StackPanel>
+                                                </StackPanel>
+                                            </Grid>
                                         </Border>
+                                        <DataTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding Enabled}" Value="False">
+                                                <Setter TargetName="body" Property="Opacity" Value="0.4"/>
+                                            </DataTrigger>
+                                        </DataTemplate.Triggers>
                                     </DataTemplate>
+
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                             <Button x:Name="addFxBtn" Click="OnAddEffect" Cursor="Hand" AutomationProperties.Name="Add effect">
                                 <Button.Template>
                                     <ControlTemplate TargetType="Button">
-                                        <Border x:Name="bd" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10"
-                                                Background="Transparent" Padding="0,9">
-                                            <TextBlock Text="＋  Add Effect" FontSize="11.5" Foreground="{StaticResource Faint}"
-                                                       HorizontalAlignment="Center"/>
-                                        </Border>
+                                        <Grid Margin="0,1,0,0">
+                                            <Rectangle x:Name="dash" RadiusX="10" RadiusY="10" Stroke="{StaticResource Line}"
+                                                       StrokeThickness="1.2" StrokeDashArray="5 4"/>
+                                            <TextBlock x:Name="txt" Text="＋  Add Effect" FontSize="11.5" Foreground="{StaticResource Faint}"
+                                                       HorizontalAlignment="Center" Margin="0,10"/>
+                                        </Grid>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="bd" Property="BorderBrush" Value="#2E5A54"/>
+                                                <Setter TargetName="dash" Property="Stroke" Value="#2E5A54"/>
+                                                <Setter TargetName="txt" Property="Foreground" Value="{StaticResource Muted}"/>
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
                                 </Button.Template>
                             </Button>
+
                         </StackPanel>
                     </ScrollViewer>
 

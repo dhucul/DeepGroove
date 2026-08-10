@@ -384,8 +384,9 @@ public sealed class CleanupAnalyzerTests
 
             EffectFactory.ChainPreset migrated = ReadPreset(defaultPath);
             EffectFactory.ChainPreset preserved = ReadPreset(customPath);
-            Assert.Equal(-4.2, Param(State(migrated, "limiter"), "thresh"), 10);
+            Assert.Equal(0, Param(State(migrated, "limiter"), "thresh"), 10);
             Assert.Equal(-1.25, Param(State(preserved, "limiter"), "thresh"), 10);
+
         }
         finally
         {
@@ -416,7 +417,8 @@ public sealed class CleanupAnalyzerTests
             int trimIndex = migrated.Effects.FindIndex(effect => effect.TypeId == "trim");
             normalizer = migrated.Effects.FindIndex(effect => effect.TypeId == "normalizer");
             Assert.True(trimIndex < normalizer);
-            Assert.Equal(-4.2, Param(State(migrated, "limiter"), "thresh"), 10);
+            Assert.Equal(0, Param(State(migrated, "limiter"), "thresh"), 10);
+
         }
         finally
         {

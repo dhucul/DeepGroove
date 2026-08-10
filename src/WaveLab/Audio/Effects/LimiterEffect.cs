@@ -5,15 +5,18 @@ namespace WaveLab.Audio.Effects;
 /// <summary>
 /// Lookahead brickwall limiter with true-peak oversampling, ISP protection,
 /// and program-dependent release (5 ms lookahead, adaptive release).
+/// THRESH drives the program into the fixed ceiling maximizer-style; at the
+/// 0 dB default it is transparent peak protection that only catches overs.
 /// </summary>
 public sealed class LimiterEffect : EffectBase
 {
     private static readonly EffectParam[] P =
     [
-        new("thresh", "THRESH", -24, 0, -4.2, EffectParam.Db),
+        new("thresh", "THRESH", -24, 0, 0, EffectParam.Db),
         new("ceiling", "CEILING", -12, 0, -1, v => $"{v:0.0} dBTP"),
         new("oversample", "TRUE PEAK", 0, 1, 1, v => v > 0.5 ? "ON" : "OFF"),
     ];
+
 
     private readonly Limiter _limiter = new();
 

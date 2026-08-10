@@ -33,7 +33,18 @@
     <SolidColorBrush x:Key="Green" Color="{StaticResource GreenColor}"/>
     <SolidColorBrush x:Key="MeterBg" Color="#0B0D0F"/>
 
+    <!-- rack effect slots -->
+    <SolidColorBrush x:Key="Periwinkle" Color="#8DA4F0"/>
+    <SolidColorBrush x:Key="Coral" Color="#E8836B"/>
+    <SolidColorBrush x:Key="CardEdge" Color="#272E36"/>
+    <SolidColorBrush x:Key="WellDeep" Color="#12151A"/>
+    <LinearGradientBrush x:Key="CardFaceplate" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#1F242B" Offset="0"/>
+        <GradientStop Color="#171B20" Offset="1"/>
+    </LinearGradientBrush>
+
     <FontFamily x:Key="UiFont">pack://application:,,,/Assets/Fonts/#Inter</FontFamily>
+
     <FontFamily x:Key="MonoFont">pack://application:,,,/Assets/Fonts/#JetBrains Mono</FontFamily>
 
     <Style x:Key="KeyboardFocusVisual">
@@ -782,7 +793,71 @@
         </Style.Triggers>
     </Style>
 
+    <!-- ── rack effect power button (LED) ──────────────────── -->
+    <Style x:Key="PowerLed" TargetType="ToggleButton">
+        <Setter Property="Width" Value="26"/>
+        <Setter Property="Height" Value="26"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Grid Background="{TemplateBinding Background}">
+                        <Ellipse x:Name="ring" Width="20" Height="20" Fill="{StaticResource Panel}"
+                                 Stroke="{StaticResource Line}" StrokeThickness="1"/>
+                        <Ellipse x:Name="led" Width="7" Height="7" Fill="{StaticResource Faint}"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="ring" Property="Stroke" Value="#3A424B"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="ring" Property="Fill" Value="#173832"/>
+                            <Setter TargetName="ring" Property="Stroke" Value="#2E5A54"/>
+                            <Setter TargetName="led" Property="Fill" Value="{StaticResource Accent}"/>
+                            <Setter TargetName="led" Property="Effect">
+                                <Setter.Value>
+                                    <DropShadowEffect BlurRadius="6" ShadowDepth="0" Opacity="0.9" Color="{StaticResource AccentColor}"/>
+                                </Setter.Value>
+                            </Setter>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ── rack effect category strip ──────────────────────── -->
+    <Style x:Key="CategoryStrip" TargetType="Border">
+        <Setter Property="Width" Value="3"/>
+        <Setter Property="CornerRadius" Value="1.5"/>
+        <Setter Property="Background" Value="{StaticResource Faint}"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding Category}" Value="dynamics">
+                <Setter Property="Background" Value="{StaticResource Amber}"/>
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Category}" Value="eq">
+                <Setter Property="Background" Value="{StaticResource Accent}"/>
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Category}" Value="time">
+                <Setter Property="Background" Value="{StaticResource Periwinkle}"/>
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Category}" Value="restoration">
+                <Setter Property="Background" Value="{StaticResource Green}"/>
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Category}" Value="color">
+                <Setter Property="Background" Value="{StaticResource Coral}"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
     <!-- ── small icon button (rack header controls) ────────── -->
+
     <Style x:Key="MiniButton" TargetType="ButtonBase">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Foreground" Value="{StaticResource Faint}"/>

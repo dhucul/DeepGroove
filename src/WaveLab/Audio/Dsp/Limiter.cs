@@ -9,10 +9,14 @@ public sealed class Limiter
     private const double LookaheadMs = 5.0, ReleaseMs = 80.0;
     private const int OversampleFactor = 2;
 
+    /// <summary>Linear-range width of the soft knee just above the ceiling.</summary>
+    private const double SoftKneeLinear = 0.05;
+
     private int _sampleRate = 48000, _channels = 2;
     private int _lookahead;
     private float[][] _delay = [];
     private float[] _delayDrive = [];
+    private float[] _prevInput = [];
     private int _delayPos;
     private float[] _maxValues = [];
     private long[] _maxFrames = [];
@@ -76,6 +80,7 @@ public sealed class Limiter
         _delay = new float[_channels][];
         for (int c = 0; c < _channels; c++) _delay[c] = new float[_lookahead];
         _delayDrive = new float[_lookahead];
+        _prevInput = new float[_channels];
         _maxValues = new float[_lookahead + 1];
         _maxFrames = new long[_lookahead + 1];
         _delayPos = 0;
@@ -127,8 +132,8 @@ public sealed class Limiter
                     float a0 = Math.Abs(v0);
                     if (a0 > framePeak) framePeak = a0;
 
-                    // Inter-sample peak: midpoint between current and previous
-                    float prevSample = _delay[c][_delayPos];
+                    // Inter-sample peak: midpoint between current and previous input sample
+                    float prevSample = _prevInput[c];
                     float vMid = (float)((sample + prevSample) * 0.5 * drive);
                     float aMid = Math.Abs(vMid);
                     if (aMid > framePeak) framePeak = aMid;
@@ -139,6 +144,8 @@ public sealed class Limiter
                     float aQ1 = Math.Abs(vQ1), aQ3 = Math.Abs(vQ3);
                     if (aQ1 > framePeak) framePeak = aQ1;
                     if (aQ3 > framePeak) framePeak = aQ3;
+
+                    _prevInput[c] = sample;
                 }
             }
             else
@@ -160,9 +167,10 @@ public sealed class Limiter
             float wmax = PushPeak(framePeak);
             double target = wmax > ceiling ? ceiling / wmax : 1.0;
 
-            // Program-dependent release: faster release for transient material
-            double crestFactor = wmax > 1e-9 ? framePeak / wmax : 1.0;
-            double adaptiveReleaseMs = ReleaseMs * (0.4 + 0.6 * Math.Clamp(1.0 / Math.Max(1.0, crestFactor), 0, 1));
+            // Program-dependent release: gain stays pinned while a peak dominates the
+            // lookahead window, then releases faster over transient material.
+            double peakRatio = wmax > 1e-9 ? Math.Clamp(framePeak / wmax, 0.0, 1.0) : 1.0;
+            double adaptiveReleaseMs = ReleaseMs * (0.4 + 0.6 * peakRatio);
             double adaptiveReleaseCoeff = Math.Exp(-1.0 / (_sampleRate * adaptiveReleaseMs / 1000.0));
 
             if (target < _gain)
@@ -185,9 +193,11 @@ public sealed class Limiter
                 if (enabled)
                 {
                     double outv = delayed * delayedDrive * _gain;
-                    // Soft clip at ceiling for ISP safety
-                    if (Math.Abs(outv) > ceiling)
-                        outv = Math.Sign(outv) * (ceiling - (ceiling * ceiling) / (Math.Abs(outv) + ceiling) * 0.1);
+                    // Soft knee just above the ceiling for ISP safety: continuous at the
+                    // junction (slope 1) and bounded; the clamp below remains the wall.
+                    double overshoot = Math.Abs(outv) - ceiling;
+                    if (overshoot > 0)
+                        outv = Math.Sign(outv) * (ceiling + overshoot / (1.0 + overshoot / SoftKneeLinear));
                     interleaved[idx + c] = (float)Math.Clamp(outv, -ceiling * 1.001, ceiling * 1.001);
                 }
                 else
