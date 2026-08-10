@@ -6,6 +6,7 @@ using Microsoft.Win32;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
+using WaveLab.Help;
 using WaveLab.Util;
 using WaveLab.ViewModels;
 
@@ -222,6 +223,21 @@ public partial class MainWindow : Window
         if (_vm.ActiveDocument == null) return;
         new StatisticsDialog(_vm.ActiveDocument.Doc) { Owner = this }.ShowDialog();
     }
+
+    private void OnHelpCommand(object sender, ExecutedRoutedEventArgs e)
+    {
+        ShowHelp(HelpCatalog.StartTopicId);
+        e.Handled = true;
+    }
+
+    private void OnHelpTopic(object sender, RoutedEventArgs e)
+    {
+        string? topicId = (sender as FrameworkElement)?.Tag as string;
+        ShowHelp(topicId);
+    }
+
+    private void ShowHelp(string? topicId) =>
+        new HelpDialog(topicId) { Owner = this }.ShowDialog();
 
     private void PromptSavePreset()
     {
