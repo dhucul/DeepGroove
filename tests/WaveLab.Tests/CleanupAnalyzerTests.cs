@@ -26,9 +26,10 @@ public sealed class CleanupAnalyzerTests
         Assert.NotNull(result.RecommendedPreset);
         Assert.NotEmpty(result.RecommendedPreset.Effects);
         AssertPresetIsFiniteAndClamped(result.RecommendedPreset);
-        foreach (string typeId in (string[])["hpf", "dehum", "denoise", "eq"])
+        foreach (string typeId in (string[])["filter", "dehum", "denoise", "eq"])
             Assert.False(State(result.RecommendedPreset, typeId).Enabled,
                 $"{typeId} should remain bypassed for digital silence.");
+
         Assert.Equal(0, Param(State(result.RecommendedPreset, "limiter"), "thresh"));
         Assert.Equal(-1, Param(State(result.RecommendedPreset, "limiter"), "ceiling"));
     }
@@ -120,12 +121,14 @@ public sealed class CleanupAnalyzerTests
 
         CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
             input, SampleRate, CleanupProfile.VinylCleanup);
-        EffectFactory.EffectState highPass = State(result.RecommendedPreset, "hpf");
+        EffectFactory.EffectState highPass = State(result.RecommendedPreset, "filter");
 
         Assert.True(highPass.Enabled);
+        Assert.Equal(1, Param(highPass, "mode")); // HP mode of the unified Multi-Mode Filter
         Assert.InRange(Param(highPass, "cutoff"), 28.0, 45.0);
         Assert.InRange(Param(highPass, "q"), 0.65, 0.75);
-        Assert.True(Recommendation(result, "hpf").Confidence >= 0.55);
+        Assert.True(Recommendation(result, "filter").Confidence >= 0.55);
+
     }
 
     [Fact]
@@ -267,7 +270,8 @@ public sealed class CleanupAnalyzerTests
             input, lowSampleRate, CleanupProfile.VinylCleanup);
 
         AssertPresetIsFiniteAndClamped(result.RecommendedPreset);
-        Assert.Equal(0, Param(State(result.RecommendedPreset, "eq"), "high"));
+        Assert.Equal(0, Param(State(result.RecommendedPreset, "eq"), "highGain"));
+
     }
 
     [Fact]
@@ -289,9 +293,10 @@ public sealed class CleanupAnalyzerTests
             input, SampleRate, CleanupProfile.VinylCleanup);
 
         AssertPresetIsFiniteAndClamped(result.RecommendedPreset);
-        foreach (string typeId in (string[])["hpf", "dehum", "denoise", "eq"])
+        foreach (string typeId in (string[])["filter", "dehum", "denoise", "eq"])
             Assert.False(State(result.RecommendedPreset, typeId).Enabled,
                 $"{typeId} should remain bypassed when every input sample is non-finite.");
+
         Assert.Equal(0, Param(State(result.RecommendedPreset, "limiter"), "thresh"));
     }
 
@@ -309,8 +314,9 @@ public sealed class CleanupAnalyzerTests
         EffectFactory.ChainPreset applied = result.BuildSelectedPreset(selected);
 
         Assert.NotEmpty(selected);
-        foreach (string typeId in (string[])["hpf", "dehum", "denoise", "eq"])
+        foreach (string typeId in (string[])["filter", "dehum", "denoise", "eq"])
             Assert.False(State(applied, typeId).Enabled);
+
         Assert.True(State(applied, "limiter").Enabled);
     }
 
@@ -450,18 +456,19 @@ public sealed class CleanupAnalyzerTests
         CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
             input, SampleRate, CleanupProfile.VinylCleanup);
 
-        EffectFactory.ChainPreset selected = result.BuildSelectedPreset(["hpf", "dehum"]);
+        EffectFactory.ChainPreset selected = result.BuildSelectedPreset(["filter", "dehum"]);
 
         Assert.Equal(result.BaselinePreset.Effects.Select(effect => effect.TypeId),
             selected.Effects.Select(effect => effect.TypeId));
         foreach (EffectFactory.EffectState baseline in result.BaselinePreset.Effects)
         {
             EffectFactory.EffectState actual = State(selected, baseline.TypeId);
-            EffectFactory.EffectState expected = baseline.TypeId is "hpf" or "dehum"
+            EffectFactory.EffectState expected = baseline.TypeId is "filter" or "dehum"
                 ? State(result.RecommendedPreset, baseline.TypeId)
                 : baseline;
             AssertStateEqual(expected, actual);
         }
+
     }
 
     [Fact]

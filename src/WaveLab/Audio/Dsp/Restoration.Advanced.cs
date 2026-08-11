@@ -28,6 +28,11 @@ public static partial class Restoration
         double sensitivityT = (sensitivity - 1.0) / 9.0;
         double sigmaMultiplier = 15.0 - 9.5 * sensitivityT;
         double relativeFloor = 0.008 - 0.0065 * sensitivityT;
+        // The amplitude-outlier pass follows sensitivity too: the strict 8x envelope
+        // gate at the bottom of the slider relaxes toward 3x at the top, so
+        // conspicuous flat/decaying pops surface at working sensitivities.
+        double outlierRatioThreshold = 8.0 - 5.0 * sensitivityT;
+
         // Slightly higher default minimum confidence: was 0.58, now 0.60.
         // This filters the weakest false positives without blocking genuine clicks.
         double minimumConfidence = Math.Clamp(options.MinimumConfidence, 0.0, 1.0);
@@ -145,7 +150,8 @@ public static partial class Restoration
                 // amplitude outliers in the same block.
                 DetectAmplitudeOutliers(samples, curvature, channelIndex, blockStart, blockEnd,
                     sampleRate, localRms, maximumPopSamples, maximumClickSamples,
-                    options.PreserveTransients, minimumConfidence, events);
+                    options.PreserveTransients, minimumConfidence, outlierRatioThreshold, events);
+
 
                 double fraction = (channelIndex + (double)blockEnd / sampleCount) / channels.Count;
                 long progressTimestamp = Environment.TickCount64;
@@ -1189,43 +1195,56 @@ public static partial class Restoration
     private static void DetectAmplitudeOutliers(float[] samples, float[] curvature,
         int channel, int blockStart, int blockEnd, int sampleRate, double localRms,
         int maximumPopSamples, int maximumClickSamples, bool preserveTransients,
-        double minimumConfidence, List<ClickEvent> events)
+        double minimumConfidence, double outlierRatioThreshold, List<ClickEvent> events)
+
     {
         // Compute a simple moving-average envelope to find amplitude outliers
         int envelopeWindow = Math.Max(16, sampleRate / 200); // ~5ms
         int n = samples.Length;
 
+        // Robust per-block reference level: the median absolute amplitude. A moving
+        // RMS window inflates itself when a pop is long relative to the window; the
+        // median does not (breakdown point 50%), and for sine-like programme
+        // material it tracks the RMS within a few percent (scaled 1.13x to match).
+        double referenceEnvelope = 0;
+        {
+            int source = Math.Max(0, blockStart);
+            int blockLength = Math.Max(0, Math.Min(blockEnd, n) - source);
+            if (blockLength > 0)
+            {
+                var absBlock = new float[blockLength];
+                for (int j = 0; j < blockLength; j++) absBlock[j] = Math.Abs(samples[source + j]);
+                Array.Sort(absBlock);
+                double median = (blockLength & 1) != 0
+                    ? absBlock[blockLength / 2]
+                    : 0.5 * (absBlock[blockLength / 2 - 1] + absBlock[blockLength / 2]);
+                referenceEnvelope = median * 1.13;
+            }
+        }
+
+
         for (int i = Math.Max(blockStart, envelopeWindow); i < Math.Min(blockEnd, n - envelopeWindow); i++)
         {
-            // Compute local RMS envelope
-            double envelopeRms = 0;
-            int envCount = 0;
-            for (int j = Math.Max(0, i - envelopeWindow); j < Math.Min(n, i + envelopeWindow); j++)
-            {
-                if (Math.Abs(j - i) > envelopeWindow / 4) // exclude center to avoid self-contamination
-                {
-                    envelopeRms += samples[j] * (double)samples[j];
-                    envCount++;
-                }
-            }
-            envelopeRms = Math.Sqrt(envelopeRms / Math.Max(1, envCount));
-
-            // Look for samples that are extreme outliers vs the envelope
+            // Look for samples that are extreme outliers vs the robust block reference
             double absSample = Math.Abs(samples[i]);
-            double outlierRatio = absSample / Math.Max(1e-9, envelopeRms + localRms * 0.1);
+            double outlierRatio = absSample / Math.Max(1e-9, referenceEnvelope + localRms * 0.1);
 
-            // Must be at least 8× the local envelope to be considered
-            if (outlierRatio < 8.0) continue;
 
-            // Find the extent of the outlier. Use a lower threshold (1.5× envelope)
+            // Sensitivity-scaled gate: 8x the local envelope at the lowest
+            // sensitivity, relaxing to 3x at the top of the slider.
+            if (outlierRatio < outlierRatioThreshold) continue;
+
+
+            // Find the extent of the outlier. Use a lower threshold (1.5× reference)
             // to catch the opposite-polarity lobe of bipolar clicks.
             int start = i;
-            while (start > 1 && Math.Abs(samples[start - 1]) > envelopeRms * 1.5)
+            while (start > 1 && Math.Abs(samples[start - 1]) > referenceEnvelope * 1.5)
                 start--;
 
             int end = i + 1;
-            while (end < n - 1 && Math.Abs(samples[end]) > envelopeRms * 1.5)
+            while (end < n - 1 && Math.Abs(samples[end]) > referenceEnvelope * 1.5)
                 end++;
+
 
             int spanLength = end - start;
             if (spanLength < 1 || spanLength > maximumPopSamples) continue;
@@ -1268,7 +1287,8 @@ public static partial class Restoration
             if (preserveTransients && afterRms > beforeRms * 2.5) continue;
 
             // High confidence — amplitude outliers are almost always real defects
-            double confidence = Math.Clamp(0.65 + (outlierRatio - 8.0) / 20.0, 0.0, 1.0);
+            double confidence = Math.Clamp(0.65 + (outlierRatio - outlierRatioThreshold) / 20.0, 0.0, 1.0);
+
             if (confidence < minimumConfidence) continue;
 
             int peakSample = start;
