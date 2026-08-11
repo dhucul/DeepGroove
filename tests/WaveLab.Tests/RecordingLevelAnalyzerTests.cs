@@ -420,6 +420,182 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.Throws<ArgumentException>(() => analyzer.Process(new float[3]));
     }
 
+    [Fact]
+    public void IsolatedClicksDoNotDictateTheGainRecommendation()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] second = SineSecond(-12);
+        // A narrow click once per second: three samples cannot fill a block's
+        // trimmed-peak rank, unlike a musical transient. Kept below the level
+        // whose interpolator ringing would legitimately latch the Hot warning.
+        second[400] = 0.7f;
+        second[401] = -0.7f;
+        second[402] = 0.7f;
+
+        FeedRepeated(analyzer, second, seconds: 60);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.Equal(RecordingLevelStatus.TooLow, result.Status);
+        // The absolute meter still shows the click…
+        Assert.InRange(result.TruePeakDb, -6, 0);
+        // …but the recommendation protects the programme.
+        Assert.InRange(result.ProgramPeakDb, -12.8, -11.3);
+        Assert.InRange(result.SuggestedGainDb, 5, 6);
+    }
+
+    [Fact]
+    public void GenuineTransientsSurviveClickRejection()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        // 5 ms of 1 kHz at -6 dB over a quiet bed, identical every 100 ms block:
+        // wide enough to be music, not a click.
+        var block = new float[SampleRate / 10];
+        for (int frame = 0; frame < block.Length; frame++)
+        {
+            bool burst = frame < SampleRate / 200;
+            double amplitude = Math.Pow(10, (burst ? -6 : -30) / 20.0);
+            block[frame] = (float)(amplitude * Math.Sin(2 * Math.PI * 1_000 * frame / SampleRate));
+        }
+        for (int repeat = 0; repeat < 600; repeat++) analyzer.Process(block);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.InRange(result.ProgramPeakDb, -6.3, -5.7);
+    }
+
+    [Fact]
+    public void DynamicProgrammeEarnsExtraSafetyReserve()
+    {
+        var steady = new RecordingLevelAnalyzer(SampleRate, 1);
+        FeedRepeated(steady, SineSecond(-6), seconds: 60);
+
+        var dynamic = new RecordingLevelAnalyzer(SampleRate, 1);
+        var block = new float[SampleRate / 10];
+        for (int frame = 0; frame < block.Length; frame++)
+        {
+            bool burst = frame < SampleRate / 200;
+            double amplitude = Math.Pow(10, (burst ? -6 : -30) / 20.0);
+            block[frame] = (float)(amplitude * Math.Sin(2 * Math.PI * 1_000 * frame / SampleRate));
+        }
+        for (int repeat = 0; repeat < 600; repeat++) dynamic.Process(block);
+
+        RecordingLevelSnapshot steadyResult = steady.Snapshot;
+        RecordingLevelSnapshot dynamicResult = dynamic.Snapshot;
+        Assert.Equal(3, steadyResult.ReserveDb, 8);
+        Assert.True(dynamicResult.CrestFactorDb > 12,
+            $"Expected a high programme crest, was {dynamicResult.CrestFactorDb:0.0}");
+        Assert.True(dynamicResult.ReserveDb > steadyResult.ReserveDb,
+            $"Dynamic reserve {dynamicResult.ReserveDb:0.00} should exceed steady {steadyResult.ReserveDb:0.00}");
+    }
+
+    [Theory]
+    [InlineData(50)]
+    [InlineData(60)]
+    public void MainsHumDominatingQuietPassagesIsIdentifiedByFrequency(int humHz)
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        var second = new float[SampleRate];
+        for (int frame = 0; frame < second.Length; frame++)
+            second[frame] = (float)(Math.Pow(10, -30 / 20.0) * Math.Sin(2 * Math.PI * humHz * frame / SampleRate));
+
+        FeedRepeated(analyzer, second, seconds: 12);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        // Hum alone is not programme…
+        Assert.Equal(RecordingLevelStatus.WaitingForSignal, result.Status);
+        // …but it is named, with its RMS level (about -33 dBFS for a -30 dB peak sine).
+        Assert.Equal(humHz, result.HumFrequencyHz);
+        Assert.InRange(result.HumLevelDb, -33.5, -32.5);
+    }
+
+    [Fact]
+    public void BroadbandNoiseFloorIsNotReportedAsHum()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        var random = new Random(7342);
+        var second = new float[SampleRate];
+        for (int frame = 0; frame < second.Length; frame++)
+            second[frame] = (float)((random.NextDouble() * 2 - 1) * 0.05);
+
+        FeedRepeated(analyzer, second, seconds: 12);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.Equal(0, result.HumFrequencyHz);
+        Assert.True(double.IsNegativeInfinity(result.HumLevelDb));
+    }
+
+    [Fact]
+    public void DcOffsetIsMeasuredAcrossTheActiveProgramme()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] second = SineSecond(-12);
+        for (int frame = 0; frame < second.Length; frame++) second[frame] += 0.01f;
+
+        FeedRepeated(analyzer, second, seconds: 12);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.InRange(result.DcOffsetDb, -40.3, -39.7);
+    }
+
+    [Fact]
+    public void CleanProgrammeReportsNoDcOffsetOrHum()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 2);
+
+        FeedRepeated(analyzer, SineSecond(-12, -12), seconds: 12);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.True(result.DcOffsetDb < -60, $"Expected no DC, got {result.DcOffsetDb:0.0} dB");
+        Assert.Equal(0, result.HumFrequencyHz);
+    }
+
+    [Fact]
+    public void ProgramLoudnessIsReportedInLufs()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+
+        FeedRepeated(analyzer, SineSecond(-12), seconds: 12);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.True(double.IsFinite(result.ProgramLoudnessLufs));
+        // LUFS sits 0.691 below RMS plus the K-weighting loss at 100 Hz
+        // (the 38 Hz high-pass with Q=0.5 costs about 1.2 dB there).
+        Assert.InRange(result.ProgramLoudnessLufs, result.ProgramRmsDb - 2.5, result.ProgramRmsDb + 0.5);
+    }
+
+    [Fact]
+    public void SnapshotIsReusedUntilNewSamplesArrive()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        analyzer.Process(SineSecond(-9));
+
+        RecordingLevelSnapshot first = analyzer.Snapshot;
+        RecordingLevelSnapshot second = analyzer.Snapshot;
+        Assert.Same(first, second);
+
+        analyzer.Process(SineSecond(-9));
+        RecordingLevelSnapshot third = analyzer.Snapshot;
+        Assert.NotSame(first, third);
+        Assert.NotEqual(first, third);
+    }
+
+    [Fact]
+    public void ResetClearsTheNewDiagnosticsToo()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] second = SineSecond(-12);
+        for (int frame = 0; frame < second.Length; frame++) second[frame] += 0.01f;
+        FeedRepeated(analyzer, second, seconds: 12);
+
+        analyzer.Reset();
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.True(double.IsNegativeInfinity(result.ProgramPeakDb));
+        Assert.True(double.IsNegativeInfinity(result.ProgramLoudnessLufs));
+        Assert.True(double.IsNegativeInfinity(result.DcOffsetDb));
+        Assert.True(double.IsNegativeInfinity(result.HumLevelDb));
+        Assert.Equal(0, result.HumFrequencyHz);
+    }
+
     private static float[] SineSecond(double leftPeakDb, double? rightPeakDb = null)
     {
         double left = Math.Pow(10, leftPeakDb / 20);

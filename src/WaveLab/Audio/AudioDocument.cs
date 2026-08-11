@@ -88,6 +88,13 @@ public sealed class AudioDocument
     public bool RequiresSaveAs { get; set; }
     public string? FilePath { get; set; }
     public string Title { get; set; } = "Untitled";
+
+    /// <summary>
+    /// For captured takes: the level-check outcome that preceded the recording,
+    /// e.g. "Level check: programme peak −8.2 dBTP, suggested input change −4.0 dB".
+    /// Null when the take was not preceded by a settled check.
+    /// </summary>
+    public string? CaptureNote { get; set; }
     public bool Dirty { get; private set; }
 
     /// <summary>Increments on every content change; used to skip redundant autosaves.</summary>

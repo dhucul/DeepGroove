@@ -34,6 +34,7 @@ public sealed class RecordingEngine : IDisposable
     private int _activeFinalizations;
     private int _disposed;
     private long _nextSessionId;
+    private string? _pendingCaptureNote;
     private readonly RecordingLevelAnalyzer _levelAnalyzer = new(48000, 2);
 
     internal sealed class CaptureDataBoundary(bool retainAudio)
@@ -91,7 +92,8 @@ public sealed class RecordingEngine : IDisposable
         long TotalSamples,
         int Channels,
         int SampleRate,
-        DateTime StoppedAt);
+        DateTime StoppedAt,
+        string? CaptureNote);
 
     public bool IsRecording
     {
@@ -284,6 +286,9 @@ public sealed class RecordingEngine : IDisposable
                     _pendingSnapshot = null;
                     Interlocked.Exchange(ref _totalSamples, 0);
                     Volatile.Write(ref _capacityReached, false);
+                    // Read the settled check before resetting so the take can
+                    // carry the calibration outcome into its metadata.
+                    _pendingCaptureNote = BuildCaptureNote(_levelAnalyzer.Snapshot);
                     _levelAnalyzer.Reset();
                     PeakL = PeakR = RmsL = RmsR = 0;
                     session.AdvanceDataState(retainAudio: true);
@@ -322,9 +327,22 @@ public sealed class RecordingEngine : IDisposable
         }
     }
 
+    /// <summary>Summarizes a settled level check for the take's metadata; null when no settled check ran.</summary>
+    private static string? BuildCaptureNote(RecordingLevelSnapshot snapshot)
+    {
+        if (snapshot.ActiveSeconds < 10 || !double.IsFinite(snapshot.ProgramPeakDb)) return null;
+        string gain = snapshot.SuggestedGainDb > 0
+            ? $"+{snapshot.SuggestedGainDb:0.0}"
+            : $"{snapshot.SuggestedGainDb:0.0}";
+        return $"Level check: programme peak {snapshot.ProgramPeakDb:0.0} dBTP, "
+            + $"reserve {snapshot.ReserveDb:0.0} dB, suggested input change {gain} dB "
+            + $"({snapshot.ActiveSeconds:0} s scanned).";
+    }
+
     private long StartCore(string? deviceId, bool retainAudio)
     {
         Stop();
+        _pendingCaptureNote = null;
         using var enumerator = new MMDeviceEnumerator();
         using MMDevice device = deviceId == null
             ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console)
@@ -626,7 +644,8 @@ public sealed class RecordingEngine : IDisposable
                     Interlocked.Read(ref _totalSamples),
                     Volatile.Read(ref _channels),
                     Volatile.Read(ref _sampleRate),
-                    DateTime.Now);
+                    DateTime.Now,
+                    _pendingCaptureNote);
                 _blocks.Clear();
                 _pendingSnapshot = snapshot;
                 return snapshot;
@@ -656,6 +675,7 @@ public sealed class RecordingEngine : IDisposable
         var document = new AudioDocument(channels, snapshot.SampleRate, 32)
         {
             Title = $"Recording {snapshot.StoppedAt:HH-mm-ss}.wav",
+            CaptureNote = snapshot.CaptureNote,
         };
         document.MarkUnsaved();
         return document;
@@ -702,6 +722,7 @@ public sealed class RecordingEngine : IDisposable
                 }
                 PeakL = PeakR = RmsL = RmsR = 0;
                 _levelAnalyzer.Reset();
+                _pendingCaptureNote = null;
                 Volatile.Write(ref _capacityReached, false);
                 LastStopError = null;
             }

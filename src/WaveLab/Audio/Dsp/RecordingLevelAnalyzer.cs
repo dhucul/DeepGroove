@@ -16,7 +16,9 @@ public enum RecordingLevelStatus
 /// Immutable point-in-time result from <see cref="RecordingLevelAnalyzer"/>.
 /// A missing signal level is represented by negative infinity. Noise floor and
 /// crest factor are NaN when the captured programme does not make those values
-/// distinguishable.
+/// distinguishable. <see cref="ProgramPeakDb"/> is the click-resistant programme
+/// peak that drives the gain recommendation; <see cref="TruePeakDb"/> remains the
+/// absolute measurement including isolated artifacts.
 /// </summary>
 public sealed record RecordingLevelSnapshot(
     RecordingLevelStatus Status,
@@ -35,7 +37,12 @@ public sealed record RecordingLevelSnapshot(
     double SuggestedGainDb,
     long ClippedSamples,
     long InvalidSamples,
-    long FlatTopCount);
+    long FlatTopCount,
+    double ProgramPeakDb,
+    double ProgramLoudnessLufs,
+    double DcOffsetDb,
+    double HumLevelDb,
+    int HumFrequencyHz);
 
 /// <summary>
 /// Streaming, linked-channel input-level analysis for a representative passage.
@@ -60,9 +67,32 @@ public sealed class RecordingLevelAnalyzer
     private const double FlatTopPeakProximityDb = 3;
     private const int MaximumAnalysisBlocks = 1200; // most recent two minutes at 100 ms
 
+    // Click rejection: a block whose exact peak sits this far above its trimmed
+    // (top-0.5%) peak is carrying a narrow artifact, not a musical transient.
+    private const double RobustPeakPercentile = 0.99;
+    private const double ClickNarrownessDb = 6;
+    private const double TrimmedPeakFraction = 0.005;
+    private const int PeakHistogramBins = 128; // 0.5 dB per bin over a 64 dB range
+    private const double PeakHistogramDbPerBin = 0.5;
+    private const double MaximumIntersamplePremiumDb = 3;
+
+    // Dynamic programme (high crest factor) is likelier to hide unseen transients,
+    // so it earns up to this much extra reserve beyond the scan-time schedule.
+    private const double CrestReserveReferenceDb = 12;
+    private const double CrestReserveSlopeDb = 0.5;
+    private const double CrestReserveMaximumDb = 3;
+
+    // Hum assessment runs over quiet (non-programme) blocks: a 50/60 Hz component
+    // that both dominates those blocks and clears an absolute floor is reported.
+    private const int MinimumHumQuietBlocks = 10;
+    private const double HumQuietFloorDb = -90;
+    private const double HumMinimumLevelDb = -80;
+    private const double HumDominanceThresholdDb = -3;
+
     private readonly object _sync = new();
     private readonly LoudnessMeter _loudness = new();
     private readonly List<BlockSummary> _blocks = [];
+    private readonly int[] _peakHistogram = new int[PeakHistogramBins];
     private FlatTopTracker[] _flatTopTrackers = [];
     private Queue<FlatTopEvent>[] _flatTopEvents = [];
     private Biquad[] _activityFilters = [];
@@ -78,7 +108,19 @@ public sealed class RecordingLevelAnalyzer
     private double _blockRightPower;
     private double _blockPeak;
     private double _blockActivityPower;
+    private double _blockLeftSum;
+    private double _blockRightSum;
     private long[] _blockZeroCrossings = [];
+
+    // Goertzel resonators at the two mains frequencies, evaluated per block over
+    // the mono mix. A 100 ms block holds exactly 5 and 6 cycles of 50/60 Hz, so
+    // the bins land on whole cycles at any sample rate.
+    private double _humCoeff50;
+    private double _humCoeff60;
+    private double _hum50S1;
+    private double _hum50S2;
+    private double _hum60S1;
+    private double _hum60S2;
 
     private long _framesProcessed;
     private long _clippedSamples;
@@ -88,13 +130,22 @@ public sealed class RecordingLevelAnalyzer
     private double _peakRight;
     private double _overallPeak;
 
+    // Snapshot memoization: the UI polls every ~33 ms while blocks only complete
+    // per 100 ms of audio, so percentile work is cached until new samples arrive.
+    private RecordingLevelSnapshot? _cachedSnapshot;
+
     private readonly record struct BlockSummary(
         double RmsDb,
         double ActivityRmsDb,
         double PeakDb,
+        double TrimmedPeakDb,
+        double Hum50Db,
+        double Hum60Db,
         double ZeroCrossingsPerSecond,
         double LeftMeanSquare,
-        double RightMeanSquare);
+        double RightMeanSquare,
+        double LeftMean,
+        double RightMean);
 
     private readonly record struct FlatTopEvent(long Frame, double Level);
 
@@ -105,7 +156,11 @@ public sealed class RecordingLevelAnalyzer
     {
         get
         {
-            lock (_sync) return BuildSnapshot();
+            lock (_sync)
+            {
+                _cachedSnapshot ??= BuildSnapshot();
+                return _cachedSnapshot;
+            }
         }
     }
 
@@ -122,6 +177,8 @@ public sealed class RecordingLevelAnalyzer
             _sampleRate = sampleRate;
             _channels = channels;
             _blockFrames = Math.Max(1, sampleRate / 10);
+            _humCoeff50 = 2 * Math.Cos(2 * Math.PI * 50.0 / sampleRate);
+            _humCoeff60 = 2 * Math.Cos(2 * Math.PI * 60.0 / sampleRate);
             _flatTopTrackers = Enumerable.Range(0, channels)
                 .Select(_ => new FlatTopTracker())
                 .ToArray();
@@ -176,8 +233,11 @@ public sealed class RecordingLevelAnalyzer
             {
                 double framePower = 0;
                 double frameActivityPower = 0;
+                double frameMix = 0;
                 double leftPower = 0;
                 double rightPower = 0;
+                double leftSample = 0;
+                double rightSample = 0;
 
                 for (int channel = 0; channel < _channels; channel++)
                 {
@@ -221,25 +281,47 @@ public sealed class RecordingLevelAnalyzer
                     if (magnitude >= DigitalClipLevel) _clippedSamples++;
                     if (magnitude > _overallPeak) _overallPeak = magnitude;
                     if (magnitude > _blockPeak) _blockPeak = magnitude;
+                    if (magnitude > 1e-9)
+                    {
+                        int bin = (int)(-20 * Math.Log10(magnitude) / PeakHistogramDbPerBin);
+                        _peakHistogram[Math.Clamp(bin, 0, PeakHistogramBins - 1)]++;
+                    }
                     if (channel == 0 && magnitude > _peakLeft) _peakLeft = magnitude;
                     if (channel == 1 && magnitude > _peakRight) _peakRight = magnitude;
 
                     double power = sample * (double)sample;
                     framePower += power;
                     frameActivityPower += activitySample * (double)activitySample;
-                    if (channel == 0) leftPower = power;
-                    else if (channel == 1) rightPower = power;
+                    frameMix += sample;
+                    if (channel == 0) { leftPower = power; leftSample = sample; }
+                    else if (channel == 1) { rightPower = power; rightSample = sample; }
                 }
+
+                // Mono folds the one channel into both sides, matching the
+                // per-channel power convention used for balance.
+                if (_channels == 1) rightSample = leftSample;
+
+                double mix = frameMix / _channels;
+                double hum50S0 = mix + _humCoeff50 * _hum50S1 - _hum50S2;
+                _hum50S2 = _hum50S1;
+                _hum50S1 = hum50S0;
+                double hum60S0 = mix + _humCoeff60 * _hum60S1 - _hum60S2;
+                _hum60S2 = _hum60S1;
+                _hum60S1 = hum60S0;
 
                 _blockPower += framePower;
                 _blockActivityPower += frameActivityPower;
                 _blockLeftPower += leftPower;
                 _blockRightPower += _channels == 1 ? leftPower : rightPower;
+                _blockLeftSum += leftSample;
+                _blockRightSum += rightSample;
                 _blockFill++;
                 _framesProcessed++;
 
                 if (_blockFill >= _blockFrames) CompleteBlock();
             }
+
+            _cachedSnapshot = null;
         }
     }
 
@@ -255,8 +337,12 @@ public sealed class RecordingLevelAnalyzer
             : _blockZeroCrossings.Max() * _sampleRate / frames;
         _blocks.Add(new BlockSummary(
             PowerToDb(meanSquare), PowerToDb(activityMeanSquare), AmplitudeToDb(_blockPeak),
+            TrimmedPeakDb(),
+            GoertzelPowerDb(_hum50S1, _hum50S2, _humCoeff50, _blockFill),
+            GoertzelPowerDb(_hum60S1, _hum60S2, _humCoeff60, _blockFill),
             maximumZeroCrossingsPerSecond,
-            leftMeanSquare, rightMeanSquare));
+            leftMeanSquare, rightMeanSquare,
+            _blockLeftSum / frames, _blockRightSum / frames));
         if (_blocks.Count > MaximumAnalysisBlocks)
             _blocks.RemoveAt(0);
 
@@ -265,8 +351,40 @@ public sealed class RecordingLevelAnalyzer
         _blockActivityPower = 0;
         _blockLeftPower = 0;
         _blockRightPower = 0;
+        _blockLeftSum = 0;
+        _blockRightSum = 0;
         _blockPeak = 0;
+        _hum50S1 = _hum50S2 = _hum60S1 = _hum60S2 = 0;
         Array.Clear(_blockZeroCrossings);
+        Array.Clear(_peakHistogram);
+    }
+
+    /// <summary>
+    /// Peak of the loudest <see cref="TrimmedPeakFraction"/> of block samples. A
+    /// vinyl click is a handful of samples and never reaches this rank, while a
+    /// genuine musical transient sustains long enough to define it.
+    /// </summary>
+    private double TrimmedPeakDb()
+    {
+        long total = (long)_blockFill * _channels;
+        int target = Math.Max(1, (int)(total * TrimmedPeakFraction));
+        int cumulative = 0;
+        for (int bin = 0; bin < PeakHistogramBins; bin++)
+        {
+            cumulative += _peakHistogram[bin];
+            if (cumulative >= target)
+                return -(bin + 0.5) * PeakHistogramDbPerBin;
+        }
+        return double.NegativeInfinity;
+    }
+
+    /// <summary>RMS level of the resonator's frequency bin, in dBFS.</summary>
+    private static double GoertzelPowerDb(double s1, double s2, double coeff, int frames)
+    {
+        if (frames <= 0) return double.NegativeInfinity;
+        double dftPower = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+        double amplitudeMeanSquare = 2 * dftPower / ((double)frames * frames);
+        return amplitudeMeanSquare > 0 ? 10 * Math.Log10(amplitudeMeanSquare) : double.NegativeInfinity;
     }
 
     private RecordingLevelSnapshot BuildSnapshot()
@@ -278,20 +396,47 @@ public sealed class RecordingLevelAnalyzer
             ? Math.Max(AmplitudeToDb(_overallPeak), _loudness.TruePeakDb)
             : double.NegativeInfinity;
 
-        ClassifyBlocks(out var active, out double noiseFloorDb);
+        ClassifyBlocks(out var active, out var quiet, out double noiseFloorDb);
         double activeSeconds = active.Count * _blockFrames / (double)_sampleRate;
         double programRmsDb = active.Count == 0
             ? double.NegativeInfinity
             : Percentile(active.Select(block => block.RmsDb), 0.5);
-        double crestFactorDb = double.IsFinite(truePeakDb) && double.IsFinite(programRmsDb)
-            ? Math.Max(0, truePeakDb - programRmsDb)
+
+        // The recommendation is based on the programme peak: a high percentile of
+        // per-block peaks after narrow-artifact rejection, plus the material's
+        // (capped) intersample premium. Isolated clicks still show in TruePeakDb
+        // but no longer dictate the gain for the whole side.
+        double programSamplePeakDb = active.Count == 0
+            ? double.NegativeInfinity
+            : Percentile(active.Select(RobustBlockPeakDb), RobustPeakPercentile);
+        double samplePeakDb = AmplitudeToDb(_overallPeak);
+        // The intersample premium only describes the programme when the loudest
+        // sample was programme itself. When a click owns the global peak, its
+        // interpolator ringing says nothing about the music, so no premium is
+        // applied (the unseen-transient reserve covers ordinary overs).
+        bool globalPeakIsClick = double.IsFinite(programSamplePeakDb)
+            && double.IsFinite(samplePeakDb)
+            && samplePeakDb - programSamplePeakDb > ClickNarrownessDb;
+        double intersamplePremiumDb = double.IsFinite(truePeakDb) && _overallPeak > 0 && !globalPeakIsClick
+            ? Math.Clamp(truePeakDb - samplePeakDb, 0, MaximumIntersamplePremiumDb)
+            : 0;
+        double programPeakDb = double.IsFinite(programSamplePeakDb)
+            ? programSamplePeakDb + intersamplePremiumDb
+            : double.NegativeInfinity;
+
+        double crestFactorDb = double.IsFinite(programPeakDb) && double.IsFinite(programRmsDb)
+            ? Math.Max(0, programPeakDb - programRmsDb)
             : double.NaN;
         double balanceDb = MeasureBalance(active);
+        double dcOffsetDb = MeasureDcOffset(active);
+        AssessHum(quiet, out double humLevelDb, out int humFrequencyHz);
 
         bool settled = activeSeconds + 1e-9 >= MinimumActiveSeconds;
-        double reserveDb = settled ? ReserveFor(activeSeconds) : 0;
-        double projectedPeakDb = double.IsFinite(truePeakDb)
-            ? truePeakDb + reserveDb
+        double reserveDb = settled
+            ? ReserveFor(activeSeconds) + CrestReservePremiumDb(crestFactorDb)
+            : 0;
+        double projectedPeakDb = double.IsFinite(programPeakDb)
+            ? programPeakDb + reserveDb
             : double.NegativeInfinity;
         double suggestedGainDb = settled && double.IsFinite(projectedPeakDb)
             ? RoundHalfDb(Math.Clamp(TargetProjectedPeakDb - projectedPeakDb, -18, 6))
@@ -335,12 +480,36 @@ public sealed class RecordingLevelAnalyzer
             suggestedGainDb,
             _clippedSamples,
             _invalidSamples,
-            _flatTopCount);
+            _flatTopCount,
+            programPeakDb,
+            _loudness.IntegratedLufs,
+            dcOffsetDb,
+            humLevelDb,
+            humFrequencyHz);
     }
 
-    private void ClassifyBlocks(out List<BlockSummary> active, out double noiseFloorDb)
+    /// <summary>
+    /// A block whose exact peak towers over its trimmed peak carries a narrow
+    /// spike; substitute the trimmed peak so clicks cannot steer the gain advice.
+    /// </summary>
+    private static double RobustBlockPeakDb(BlockSummary block)
+    {
+        if (double.IsFinite(block.TrimmedPeakDb)
+            && double.IsFinite(block.PeakDb)
+            && block.PeakDb - block.TrimmedPeakDb > ClickNarrownessDb)
+        {
+            return block.TrimmedPeakDb;
+        }
+        return block.PeakDb;
+    }
+
+    private void ClassifyBlocks(
+        out List<BlockSummary> active,
+        out List<BlockSummary> quiet,
+        out double noiseFloorDb)
     {
         active = [];
+        quiet = [];
         if (_blocks.Count == 0)
         {
             noiseFloorDb = double.NaN;
@@ -363,7 +532,7 @@ public sealed class RecordingLevelAnalyzer
         {
             noiseFloorDb = p10;
             double threshold = Math.Max(MinimumProgramBlockDb, p10 + QuietProgramSeparationDb);
-            active.AddRange(_blocks.Where(block => IsProgramBlock(block, threshold)));
+            PartitionBlocks(threshold, active, quiet);
             return;
         }
 
@@ -371,7 +540,18 @@ public sealed class RecordingLevelAnalyzer
         // noise floor. Treat it as programme when it is plainly above silence.
         noiseFloorDb = double.NaN;
         if (p50 > MinimumProgramBlockDb)
-            active.AddRange(_blocks.Where(block => IsProgramBlock(block, MinimumProgramBlockDb)));
+            PartitionBlocks(MinimumProgramBlockDb, active, quiet);
+    }
+
+    private void PartitionBlocks(double activityThresholdDb, List<BlockSummary> active, List<BlockSummary> quiet)
+    {
+        foreach (BlockSummary block in _blocks)
+        {
+            if (IsProgramBlock(block, activityThresholdDb))
+                active.Add(block);
+            else if (double.IsFinite(block.RmsDb) && block.RmsDb > HumQuietFloorDb)
+                quiet.Add(block);
+        }
     }
 
     private bool IsProgramBlock(BlockSummary block, double activityThresholdDb) =>
@@ -379,6 +559,53 @@ public sealed class RecordingLevelAnalyzer
         && block.PeakDb > MinimumProgramPeakDb
         && block.ZeroCrossingsPerSecond >= MinimumZeroCrossingsPerSecond
         && block.ZeroCrossingsPerSecond <= _sampleRate * MaximumZeroCrossingFraction;
+
+    /// <summary>
+    /// Flags mains hum when one frequency dominates the quiet passages (lead-in
+    /// groove, pauses) and is strong enough to matter for a vinyl transfer.
+    /// </summary>
+    private static void AssessHum(List<BlockSummary> quiet, out double humLevelDb, out int humFrequencyHz)
+    {
+        humLevelDb = double.NegativeInfinity;
+        humFrequencyHz = 0;
+        if (quiet.Count < MinimumHumQuietBlocks) return;
+
+        double level50 = Percentile(quiet.Select(block => block.Hum50Db), 0.5);
+        double level60 = Percentile(quiet.Select(block => block.Hum60Db), 0.5);
+        double dominance50 = Percentile(quiet.Select(block => block.Hum50Db - block.RmsDb), 0.5);
+        double dominance60 = Percentile(quiet.Select(block => block.Hum60Db - block.RmsDb), 0.5);
+        bool hum50 = level50 >= HumMinimumLevelDb && dominance50 >= HumDominanceThresholdDb;
+        bool hum60 = level60 >= HumMinimumLevelDb && dominance60 >= HumDominanceThresholdDb;
+
+        if (hum50 && (!hum60 || level50 >= level60))
+        {
+            humFrequencyHz = 50;
+            humLevelDb = level50;
+        }
+        else if (hum60)
+        {
+            humFrequencyHz = 60;
+            humLevelDb = level60;
+        }
+    }
+
+    /// <summary>
+    /// Mean DC across the active programme, worst channel. DC wastes asymmetric
+    /// headroom and usually indicates a cabling or interface fault.
+    /// </summary>
+    private double MeasureDcOffset(IReadOnlyList<BlockSummary> active)
+    {
+        if (active.Count == 0) return double.NegativeInfinity;
+        double left = 0;
+        double right = 0;
+        foreach (var block in active)
+        {
+            left += block.LeftMean;
+            right += block.RightMean;
+        }
+        double dc = Math.Max(Math.Abs(left), Math.Abs(right)) / active.Count;
+        return AmplitudeToDb(dc);
+    }
 
     private bool HasRepeatedFlatTops()
     {
@@ -432,6 +659,11 @@ public sealed class RecordingLevelAnalyzer
         return 2;
     }
 
+    private static double CrestReservePremiumDb(double crestFactorDb) =>
+        double.IsFinite(crestFactorDb)
+            ? Math.Clamp((crestFactorDb - CrestReserveReferenceDb) * CrestReserveSlopeDb, 0, CrestReserveMaximumDb)
+            : 0;
+
     private static double Lerp(double from, double to, double amount) =>
         from + (to - from) * Math.Clamp(amount, 0, 1);
 
@@ -468,8 +700,12 @@ public sealed class RecordingLevelAnalyzer
         _blockActivityPower = 0;
         _blockLeftPower = 0;
         _blockRightPower = 0;
+        _blockLeftSum = 0;
+        _blockRightSum = 0;
         _blockPeak = 0;
+        _hum50S1 = _hum50S2 = _hum60S1 = _hum60S2 = 0;
         Array.Clear(_blockZeroCrossings);
+        Array.Clear(_peakHistogram);
         _framesProcessed = 0;
         _clippedSamples = 0;
         _invalidSamples = 0;
@@ -482,6 +718,7 @@ public sealed class RecordingLevelAnalyzer
         _peakLeft = 0;
         _peakRight = 0;
         _overallPeak = 0;
+        _cachedSnapshot = null;
         foreach (var tracker in _flatTopTrackers) tracker.Reset();
         if (resetLoudness) _loudness.Reset();
     }

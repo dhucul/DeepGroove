@@ -22,6 +22,12 @@ public sealed class AppSettings
     public string? InputDeviceId { get; set; }
     public int BufferMs { get; set; } = 60;
 
+    /// <summary>
+    /// Last settled level-check outcome per capture device id, so the Recording
+    /// Level Assistant can recall what a given input needed previously.
+    /// </summary>
+    public Dictionary<string, InputCalibrationInfo> InputCalibrations { get; set; } = [];
+
     // General
     public bool ReopenLastSession { get; set; } = true;
     public int UndoLimitMb { get; set; } = 512;
@@ -51,6 +57,12 @@ public sealed class AppSettings
     public string? LastSaveError { get; private set; }
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+
+    /// <summary>One remembered level-check outcome for an input device.</summary>
+    public sealed record InputCalibrationInfo(
+        double SuggestedGainDb,
+        double ProgramPeakDb,
+        DateTime CheckedUtc);
 
     public static AppSettings Load()
     {
@@ -115,6 +127,12 @@ public sealed class AppSettings
             : 192;
         settings.RecentFiles = NormalizePaths(settings.RecentFiles, 10);
         settings.LastSessionFiles = NormalizePaths(settings.LastSessionFiles, int.MaxValue);
+        settings.InputCalibrations = (settings.InputCalibrations ?? [])
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Key)
+                && pair.Value != null
+                && double.IsFinite(pair.Value.SuggestedGainDb)
+                && double.IsFinite(pair.Value.ProgramPeakDb))
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
         if (!double.IsFinite(settings.WindowWidth) || settings.WindowWidth < 0) settings.WindowWidth = 0;
         if (!double.IsFinite(settings.WindowHeight) || settings.WindowHeight < 0) settings.WindowHeight = 0;
         if (settings.WindowLeft is not { } left || !double.IsFinite(left)) settings.WindowLeft = null;

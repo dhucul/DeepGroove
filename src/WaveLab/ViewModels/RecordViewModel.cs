@@ -9,6 +9,9 @@ public sealed record CaptureDevice(string Id, string Name);
 
 public sealed class RecordViewModel : ObservableObject, IDisposable
 {
+    private const int LevelHistoryCapacity = 900; // about 30 s at the 33 ms tick
+    private const double DcWarningThresholdDb = -50;
+
     private readonly RecordingEngine _engine = new();
     private RecordingLevelSnapshot _levelSnapshot;
     private CaptureDevice? _selectedDevice;
@@ -20,6 +23,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private double _holdL = -60, _holdR = -60;
     private Task _finalization = Task.CompletedTask;
     private long _expectedRecordingSessionId;
+    private bool _calibrationSaved;
     private bool _disposed;
 
     public RecordViewModel()
@@ -69,8 +73,16 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     public CaptureDevice? SelectedDevice
     {
         get => _selectedDevice;
-        set => Set(ref _selectedDevice, value);
+        set
+        {
+            if (!Set(ref _selectedDevice, value)) return;
+            Raise(nameof(DeviceMemoryText));
+            Raise(nameof(HasDeviceMemory));
+        }
     }
+
+    /// <summary>Recent input RMS (dB), newest last; drives the scrolling history strip.</summary>
+    public ObservableCollection<double> LevelHistory { get; } = [];
 
     public bool IsRecording
     {
@@ -166,32 +178,41 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             if (snapshot.InvalidSamples > 0 && snapshot.Status != RecordingLevelStatus.Clipping)
                 return $"The input driver supplied {snapshot.InvalidSamples:N0} invalid sample(s). They were replaced with silence; restart the check and verify the device before recording.";
 
-            string imbalance = Math.Abs(snapshot.BalanceDb) >= 50
+            string notes = Math.Abs(snapshot.BalanceDb) >= 50
                 ? snapshot.BalanceDb > 0
                     ? " The right channel appears silent; check the cartridge leads, cable, and interface input."
                     : " The left channel appears silent; check the cartridge leads, cable, and interface input."
                 : Math.Abs(snapshot.BalanceDb) >= 3
                     ? $" Channels differ by {Math.Abs(snapshot.BalanceDb):0.0} dB; verify cartridge alignment and interface gain."
                     : "";
+            if (double.IsFinite(snapshot.DcOffsetDb) && snapshot.DcOffsetDb > DcWarningThresholdDb)
+                notes += $" A {snapshot.DcOffsetDb:0.0} dBFS DC offset rides on the input; check cabling and interface grounding.";
+            if (snapshot.HumFrequencyHz > 0)
+                notes += $" A {snapshot.HumFrequencyHz} Hz hum ({snapshot.HumLevelDb:0.0} dBFS) dominates the quiet passages; check the turntable ground lead.";
+            if (snapshot.ActiveSeconds >= 10
+                && double.IsFinite(snapshot.TruePeakDb) && double.IsFinite(snapshot.ProgramPeakDb)
+                && snapshot.TruePeakDb - snapshot.ProgramPeakDb >= 2)
+                notes += $" Isolated clicks run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; the recommendation protects the music, and declicking removes the clicks later.";
             return snapshot.Status switch
             {
                 RecordingLevelStatus.WaitingForSignal =>
-                    "Play the loudest musical passage; lead-in groove, hum, and silence do not count toward the scan.",
+                    "Play the loudest musical passage; lead-in groove, hum, and silence do not count toward the scan."
+                    + (snapshot.HumFrequencyHz > 0 ? notes : ""),
                 RecordingLevelStatus.Analyzing =>
-                    $"Keep it playing — {Math.Max(0, 10 - snapshot.ActiveSeconds):0.0} more active seconds are needed for a settled result." + imbalance,
+                    $"Keep it playing — {Math.Max(0, 10 - snapshot.ActiveSeconds):0.0} more active seconds are needed for a settled result." + notes,
                 RecordingLevelStatus.TooLow =>
-                    $"The capture is usable. Optionally raise the interface input by up to {snapshot.SuggestedGainDb:0.0} dB only if the analogue chain has known headroom; otherwise leave it and normalize after capture." + imbalance,
+                    $"The capture is usable. Optionally raise the interface input by up to {snapshot.SuggestedGainDb:0.0} dB only if the analogue chain has known headroom; otherwise leave it and normalize after capture." + notes,
                 RecordingLevelStatus.Good =>
-                    $"The measured peak plus a {snapshot.ReserveDb:0.0} dB unseen-transient reserve stays near the safe ceiling." + imbalance,
+                    $"The measured peak plus a {snapshot.ReserveDb:0.0} dB unseen-transient reserve stays near the safe ceiling." + notes,
                 RecordingLevelStatus.Hot =>
                     snapshot.SuggestedGainDb < 0
-                        ? $"Reduce the interface or phono-preamp gain by about {Math.Abs(snapshot.SuggestedGainDb):0.0} dB, then restart the check." + imbalance
-                        : "The estimated intersample peak has crossed 0 dBTP. Lower the hardware input gain and restart the check." + imbalance,
+                        ? $"Reduce the interface or phono-preamp gain by about {Math.Abs(snapshot.SuggestedGainDb):0.0} dB, then restart the check." + notes
+                        : "The estimated intersample peak has crossed 0 dBTP. Lower the hardware input gain and restart the check." + notes,
                 RecordingLevelStatus.Clipping =>
                     "Lower the hardware input gain and replay the passage. Digital gain after capture cannot repair clipped peaks."
-                    + (snapshot.InvalidSamples > 0 ? " The input driver also supplied invalid samples." : "") + imbalance,
+                    + (snapshot.InvalidSamples > 0 ? " The input driver also supplied invalid samples." : "") + notes,
                 RecordingLevelStatus.UpstreamClipping =>
-                    "Flat-topped peaks suggest clipping before WaveLab. Lower the preamp/interface gain and check again." + imbalance,
+                    "Flat-topped peaks suggest clipping before WaveLab. Lower the preamp/interface gain and check again." + notes,
                 _ => "Keep playing the loudest passage until the recommendation settles.",
             };
         }
@@ -205,7 +226,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             if (snapshot.Status == RecordingLevelStatus.Clipping) return "LOWER INPUT";
             if (snapshot.InvalidSamples > 0) return "CHECK DEVICE";
             if (snapshot.Status == RecordingLevelStatus.UpstreamClipping) return "CHECK PREAMP";
-            if (snapshot.Status == RecordingLevelStatus.Hot && snapshot.ActiveSeconds < 10)
+            // Hot without a negative programme suggestion means an intersample
+            // over (possibly from a click): the only honest advice is lower input.
+            if (snapshot.Status == RecordingLevelStatus.Hot && snapshot.SuggestedGainDb >= 0)
                 return "LOWER INPUT";
             if (snapshot.ActiveSeconds < 10) return "PROVISIONAL";
             if (snapshot.Status == RecordingLevelStatus.Good) return "NO CHANGE";
@@ -216,13 +239,50 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     }
 
     public string TruePeakText => FormatDb(_levelSnapshot.TruePeakDb, "dBTP");
+    public string ProgramPeakText => FormatDb(_levelSnapshot.ProgramPeakDb, "dBTP");
     public string ProjectedPeakText => _levelSnapshot.ActiveSeconds >= 10
         ? FormatDb(_levelSnapshot.ProjectedPeakDb, "dBTP")
         : "—";
     public string ProgramRmsText => FormatDb(_levelSnapshot.ProgramRmsDb, "dBFS");
+    public string LoudnessText => FormatDb(_levelSnapshot.ProgramLoudnessLufs, "LUFS");
+    public string NoiseFloorText => FormatDb(_levelSnapshot.NoiseFloorDb, "dB");
     public string CrestFactorText => double.IsFinite(_levelSnapshot.CrestFactorDb)
         ? $"{_levelSnapshot.CrestFactorDb:0.0} dB"
         : "—";
+
+    /// <summary>How far the absolute true peak sits above the programme peak — the excluded click margin.</summary>
+    public string ClickMarginText =>
+        double.IsFinite(_levelSnapshot.TruePeakDb) && double.IsFinite(_levelSnapshot.ProgramPeakDb)
+            ? $"+{_levelSnapshot.TruePeakDb - _levelSnapshot.ProgramPeakDb:0.0} dB"
+            : "—";
+
+    public string DcText => !double.IsFinite(_levelSnapshot.DcOffsetDb)
+        ? "—"
+        : _levelSnapshot.DcOffsetDb > DcWarningThresholdDb
+            ? $"{_levelSnapshot.DcOffsetDb:0.0} dB"
+            : "OK";
+
+    public string HumText => _levelSnapshot.HumFrequencyHz > 0
+        ? $"{_levelSnapshot.HumFrequencyHz} Hz"
+        : "NONE";
+
+    /// <summary>One-line recall of the last settled check on the selected input, empty when none.</summary>
+    public string DeviceMemoryText
+    {
+        get
+        {
+            if (_selectedDevice == null) return "";
+            if (!AppSettings.Instance.InputCalibrations.TryGetValue(_selectedDevice.Id, out var info)) return "";
+            string gain = info.SuggestedGainDb > 1
+                ? $"raise up to +{info.SuggestedGainDb:0.0} dB"
+                : info.SuggestedGainDb < -1
+                    ? $"reduce {Math.Abs(info.SuggestedGainDb):0.0} dB"
+                    : "no change needed";
+            return $"Last check {FormatCalibrationAge(info.CheckedUtc)}: {gain} · programme peak {info.ProgramPeakDb:0.0} dBTP";
+        }
+    }
+
+    public bool HasDeviceMemory => DeviceMemoryText.Length > 0;
 
     public string BalanceText
     {
@@ -273,6 +333,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Result = null;
             _levelSnapshot = _engine.LevelSnapshot;
             ResetDisplayedLevels();
+            _calibrationSaved = false;
             IsLevelChecking = true;
             PersistSelectedDevice();
             RaiseLevelProperties();
@@ -293,6 +354,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         if (!_engine.ResetLevelCheck(sessionId)) return false;
         _levelSnapshot = _engine.LevelSnapshot;
         ResetDisplayedLevels();
+        _calibrationSaved = false;
         RaiseLevelProperties();
         return true;
     }
@@ -398,16 +460,50 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             ? target
             : Math.Max(target, current - 1.5);
 
+        double rmsDbL = ToDb(_engine.RmsL);
+        double rmsDbR = ToDb(_engine.RmsR);
         PeakLDb = DecayTo(_peakL, ToDb(_engine.PeakL));
         PeakRDb = DecayTo(_peakR, ToDb(_engine.PeakR));
-        RmsLDb = DecayTo(_rmsL, ToDb(_engine.RmsL));
-        RmsRDb = DecayTo(_rmsR, ToDb(_engine.RmsR));
+        RmsLDb = DecayTo(_rmsL, rmsDbL);
+        RmsRDb = DecayTo(_rmsR, rmsDbR);
         _levelSnapshot = _engine.LevelSnapshot;
         RecordingLevelSnapshot snapshot = _levelSnapshot;
         HoldLDb = ToMeterDb(snapshot.PeakLeftDb);
         HoldRDb = ToMeterDb(snapshot.PeakRightDb);
+        LevelHistory.Add(Math.Max(rmsDbL, rmsDbR));
+        while (LevelHistory.Count > LevelHistoryCapacity) LevelHistory.RemoveAt(0);
+        SaveCalibrationOnceSettled();
         Raise(nameof(ElapsedText));
         RaiseLevelProperties();
+    }
+
+    /// <summary>
+    /// Remembers the first settled verdict of each check on this input, so the
+    /// next session with the same device opens with last time's outcome.
+    /// </summary>
+    private void SaveCalibrationOnceSettled()
+    {
+        if (_calibrationSaved || !IsLevelChecking || _selectedDevice == null) return;
+        RecordingLevelSnapshot snapshot = _levelSnapshot;
+        // Skip a Hot verdict whose programme suggestion is not a reduction: that
+        // combination means an intersample over, which has no stable gain answer
+        // worth remembering for next time.
+        bool settledVerdict = snapshot.ActiveSeconds >= 10
+            && double.IsFinite(snapshot.ProgramPeakDb)
+            && (snapshot.Status is RecordingLevelStatus.TooLow or RecordingLevelStatus.Good
+                || (snapshot.Status == RecordingLevelStatus.Hot && snapshot.SuggestedGainDb < 0));
+        if (!settledVerdict) return;
+        _calibrationSaved = true;
+        try
+        {
+            AppSettings.Instance.InputCalibrations[_selectedDevice.Id] =
+                new AppSettings.InputCalibrationInfo(
+                    snapshot.SuggestedGainDb, snapshot.ProgramPeakDb, DateTime.UtcNow);
+            AppSettings.Instance.Save(); // best effort; a failure just skips the memory
+            Raise(nameof(DeviceMemoryText));
+            Raise(nameof(HasDeviceMemory));
+        }
+        catch { }
     }
 
     private void PersistSelectedDevice()
@@ -431,6 +527,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private void ResetDisplayedLevels()
     {
         PeakLDb = PeakRDb = RmsLDb = RmsRDb = HoldLDb = HoldRDb = -60;
+        LevelHistory.Clear();
     }
 
     private void RaiseLevelProperties()
@@ -443,9 +540,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         Raise(nameof(LevelStatusDetail));
         Raise(nameof(SuggestedGainText));
         Raise(nameof(TruePeakText));
+        Raise(nameof(ProgramPeakText));
         Raise(nameof(ProjectedPeakText));
         Raise(nameof(ProgramRmsText));
+        Raise(nameof(LoudnessText));
+        Raise(nameof(NoiseFloorText));
         Raise(nameof(CrestFactorText));
+        Raise(nameof(ClickMarginText));
+        Raise(nameof(DcText));
+        Raise(nameof(HumText));
         Raise(nameof(BalanceText));
         Raise(nameof(ClippingText));
         Raise(nameof(LevelProgressText));
@@ -460,6 +563,16 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     private static string FormatDb(double value, string suffix) =>
         double.IsFinite(value) ? $"{value:0.0} {suffix}" : "—";
+
+    private static string FormatCalibrationAge(DateTime checkedUtc)
+    {
+        TimeSpan age = DateTime.UtcNow - checkedUtc;
+        if (age.TotalMinutes < 1) return "just now";
+        if (age.TotalHours < 1) return $"{(int)age.TotalMinutes} min ago";
+        if (age.TotalDays < 1) return $"{(int)age.TotalHours} h ago";
+        if (age.TotalDays < 30) return $"{(int)age.TotalDays} d ago";
+        return checkedUtc.ToLocalTime().ToString("yyyy-MM-dd");
+    }
 
     public void Dispose()
     {

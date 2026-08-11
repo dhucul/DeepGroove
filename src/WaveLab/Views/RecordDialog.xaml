@@ -7,6 +7,10 @@
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
 
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+
     <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/>
@@ -35,6 +39,10 @@
                         <DataTemplate><TextBlock Text="{Binding Name}"/></DataTemplate>
                     </ComboBox.ItemTemplate>
                 </ComboBox>
+                <TextBlock Text="{Binding DeviceMemoryText}" Margin="0,5,0,0" FontSize="10.5" Foreground="#7FA69F"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="The last settled level-check outcome remembered for this input"
+                           Visibility="{Binding HasDeviceMemory, Converter={StaticResource BoolToVis}}"/>
 
                 <TextBlock Text="FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
                            Margin="0,13,0,0"/>
@@ -128,24 +136,88 @@
                                 <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Border Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8">
-                                <StackPanel><TextBlock Text="TRUE PEAK" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
+                                <StackPanel><TextBlock Text="TRUE PEAK" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="Absolute 4× oversampled peak, including isolated artifacts"/>
                                     <TextBlock Text="{Binding TruePeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
                             <Border Grid.Column="1" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="PROJECTED" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
-                                    <TextBlock Text="{Binding ProjectedPeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
+                                <StackPanel><TextBlock Text="PROG PEAK" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="Click-resistant programme peak that drives the gain recommendation"/>
+                                    <TextBlock Text="{Binding ProgramPeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
                             <Border Grid.Column="2" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="PROGRAM RMS" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
-                                    <TextBlock Text="{Binding ProgramRmsText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
+                                <StackPanel><TextBlock Text="CLICKS ABOVE" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="How far isolated clicks sit above the programme; excluded from the recommendation"/>
+                                    <TextBlock Text="{Binding ClickMarginText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
                             <Border Grid.Column="3" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="PROJECTED" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="Programme peak plus the unseen-transient safety reserve"/>
+                                    <TextBlock Text="{Binding ProjectedPeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
+                            </Border>
+                            <Border Grid.Column="4" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="PROG RMS" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
+                                    <TextBlock Text="{Binding ProgramRmsText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
+                            </Border>
+                            <Border Grid.Column="5" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="LOUDNESS" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="EBU R128 integrated loudness of the scanned passage"/>
+                                    <TextBlock Text="{Binding LoudnessText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <Grid Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8">
                                 <StackPanel><TextBlock Text="CREST" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
                                     <TextBlock Text="{Binding CrestFactorText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="4" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                            <Border Grid.Column="1" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="NOISE FLOOR" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="Estimated quiet-passage level: surface noise, hiss, and hum floor"/>
+                                    <TextBlock Text="{Binding NoiseFloorText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
+                            </Border>
+                            <Border Grid.Column="2" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
                                 <StackPanel><TextBlock Text="L / R" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
                                     <TextBlock Text="{Binding BalanceText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
+                            </Border>
+                            <Border Grid.Column="3" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="DC OFFSET" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="DC riding on the programme; wastes headroom and suggests a cabling or interface fault"/>
+                                    <TextBlock Text="{Binding DcText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{StaticResource Red}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding DcText}" Value="OK">
+                                                        <Setter Property="Foreground" Value="#73E6AE"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding DcText}" Value="—">
+                                                        <Setter Property="Foreground" Value="#71817C"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock></StackPanel>
+                            </Border>
+                            <Border Grid.Column="4" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="HUM" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="Mains hum dominating the quiet passages; usually a turntable ground-lead issue"/>
+                                    <TextBlock Text="{Binding HumText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{StaticResource Red}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HumText}" Value="NONE">
+                                                        <Setter Property="Foreground" Value="#73E6AE"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock></StackPanel>
                             </Border>
                             <Border Grid.Column="5" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
                                 <StackPanel><TextBlock Text="CLIPPING" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
@@ -163,6 +235,15 @@
                                     </TextBlock></StackPanel>
                             </Border>
                         </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <TextBlock Text="RECENT INPUT LEVEL" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
+                            <TextBlock Text="30 s window" HorizontalAlignment="Right" FontSize="8" Foreground="#71817C"/>
+                        </Grid>
+                        <c:LevelHistoryGraph Margin="0,5,0,0" Height="46"
+                                             Values="{Binding LevelHistory}"
+                                             TargetMinimumDb="{Binding TargetMeterMinimumDb}"
+                                             TargetMaximumDb="{Binding TargetMeterMaximumDb}"/>
 
                         <Grid Margin="0,12,0,0">
                             <Grid.ColumnDefinitions>

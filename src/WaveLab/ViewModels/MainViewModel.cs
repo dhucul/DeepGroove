@@ -467,7 +467,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         doc.MarkUnsaved();
         AddDocument(doc);
-        ReportAction(completedAction ?? $"{doc.Title} created in a new tab.");
+        ReportAction(completedAction ?? (doc.CaptureNote is { } note
+            ? $"{doc.Title} created in a new tab. {note}"
+            : $"{doc.Title} created in a new tab."));
     }
 
     /// <summary>Point-in-time copy sharing the current channel arrays (splices never mutate old arrays).</summary>
@@ -480,6 +482,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             FilePath = doc.FilePath,
             Dither16BitOnSave = doc.Dither16BitOnSave,
             RequiresSaveAs = doc.RequiresSaveAs,
+            CaptureNote = doc.CaptureNote,
         };
     }
 
