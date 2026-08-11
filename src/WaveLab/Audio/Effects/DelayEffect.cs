@@ -81,7 +81,10 @@ public sealed class DelayEffect : EffectBase
         float feedback = (float)GetParam("feedback");
         float mix = (float)GetParam("mix");
         float dry = 1 - mix;
-        bool pingPong = GetParam("pingPong") > 0.5 && ChannelCount >= 2;
+        // c ^ 1 pairs channels 0↔1, 2↔3… — an odd channel count would index past
+        // the delay lines, so ping-pong requires an even channel count.
+        bool pingPong = GetParam("pingPong") > 0.5 && ChannelCount >= 2 && ChannelCount % 2 == 0;
+
         float duckAmount = (float)GetParam("duckAmount");
         double duckAttack = Math.Exp(-1.0 / (SampleRate * 0.005));
         double duckRelease = Math.Exp(-1.0 / (SampleRate * 0.15));

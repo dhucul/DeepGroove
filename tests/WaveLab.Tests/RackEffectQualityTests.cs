@@ -118,8 +118,21 @@ public sealed class RackEffectQualityTests
 
         Assert.True(outputRms < inputRms * 0.35,
             $"Learned noise was barely reduced: {inputRms:0.00000} in, {outputRms:0.00000} out.");
-        Assert.Equal(2048, fx.LatencySamples); // spectral pipeline reports its delay
+
+        // A loud tone well above the learned noise floor must survive subtraction.
+        // Without this check the reduction assertion above also passes on a dead pipeline.
+        float[] tonal = new float[SampleRate];
+        for (int i = 0; i < tonal.Length; i++)
+            tonal[i] = (float)(0.2 * Math.Sin(2 * Math.PI * 1000 * i / SampleRate))
+                     + (float)(rng.NextDouble() * 2 - 1) * 0.01f;
+        fx.Process(tonal, 0, tonal.Length);
+        double tonalRms = Rms(tonal, tonal.Length - 12000);
+        Assert.True(tonalRms > 0.1,
+            $"A 1 kHz tone did not survive spectral NR ({tonalRms:0.00000} RMS) — the pipeline looks dead.");
+
+        Assert.Equal(2560, fx.LatencySamples); // spectral pipeline reports its delay
     }
+
 
     [Fact]
     public void LimiterAtDefaultSettingsIsTransparentToProgramMaterial()

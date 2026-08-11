@@ -75,19 +75,19 @@ public sealed class ReverbEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        double scale = SampleRate / 44100.0;
-
+        // Delay-line lengths are specified in milliseconds — convert to samples.
         _fdnLines = new DelayLine[FdnSize];
         _fdnFilters = new OnePoleLp[FdnSize];
         for (int i = 0; i < FdnSize; i++)
         {
-            _fdnLines[i] = new DelayLine { Buf = new float[Math.Max(4, (int)(BaseDelaysMs[i] * scale))] };
+            _fdnLines[i] = new DelayLine { Buf = new float[Math.Max(4, (int)(BaseDelaysMs[i] * SampleRate / 1000.0))] };
             _fdnFilters[i] = new OnePoleLp();
         }
 
         _erLines = new DelayLine[FdnSize];
         for (int i = 0; i < FdnSize; i++)
-            _erLines[i] = new DelayLine { Buf = new float[Math.Max(4, (int)(ErDelaysMs[i] * scale))] };
+            _erLines[i] = new DelayLine { Buf = new float[Math.Max(4, (int)(ErDelaysMs[i] * SampleRate / 1000.0))] };
+
 
         _preDelayLine = new DelayLine { Buf = new float[Math.Max(4, (int)(SampleRate * 0.15))] };
         _fdnOut = new float[FdnSize];

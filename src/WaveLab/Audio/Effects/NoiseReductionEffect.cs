@@ -50,10 +50,12 @@ public sealed class NoiseReductionEffect : EffectBase
     private int _specInPos;              // shared input ring position
     private int _specInFilled;           // valid samples in the rings (≤ FftSize)
     private int _specSinceFrame;         // input samples since the last processed frame
+    private bool _specPrimed;            // the first frame has been processed
     private int _specOlaRead;            // shared OLA read position
     private int _specOlaWrite;           // shared OLA frame-start position
-    private int _specOutAvail;           // OLA samples ready to read
+    private int _specPipelineDelay;      // countdown before reconstructed output is read
     private int _spectralActive;         // bool as int (Volatile): drives LatencySamples
+
     private float[] _fftRe = [];
     private float[] _fftIm = [];
 
@@ -62,9 +64,10 @@ public sealed class NoiseReductionEffect : EffectBase
     public override IReadOnlyList<EffectParam> Params => P;
     public override string? Readout => $"NR {_reductionReadout:0.0} dB";
 
-    // The spectral path delays the signal by one analysis frame; report it only
-    // while subtraction is actually running so offline renders stay aligned.
-    public override int LatencySamples => Volatile.Read(ref _spectralActive) != 0 ? FftSize : 0;
+    // The spectral path delays the signal by one analysis frame plus one hop;
+    // report it only while subtraction is actually running so renders stay aligned.
+    public override int LatencySamples => Volatile.Read(ref _spectralActive) != 0 ? FftSize + HopSize : 0;
+
 
     protected override void OnConfigure()
     {
@@ -108,12 +111,14 @@ public sealed class NoiseReductionEffect : EffectBase
         _specInPos = 0;
         _specInFilled = 0;
         _specSinceFrame = 0;
+        _specPrimed = false;
         _specOlaRead = 0;
         _specOlaWrite = 0;
-        _specOutAvail = 0;
+        _specPipelineDelay = FftSize + HopSize;
         _noiseProfileFrames = 0;
         _learning = false;
         Volatile.Write(ref _spectralActive, 0);
+
     }
 
     public override void ResetState()
@@ -202,12 +207,15 @@ public sealed class NoiseReductionEffect : EffectBase
             // --- spectral stage (learned profile, per channel, WOLA) ---
             if (spectralActive)
             {
+                // Reads lag writes by the full pipeline delay, so every output
+                // sample is read only after its final contributing frame landed.
+                bool outputReady = _specPipelineDelay <= 0;
                 for (int channel = 0; channel < ChannelCount; channel++)
                 {
                     _specIn[channel][_specInPos] = buffer[index + channel];
 
                     float y = 0;
-                    if (_specOutAvail > 0)
+                    if (outputReady)
                     {
                         y = _specOla[channel][_specOlaRead];
                         _specOla[channel][_specOlaRead] = 0;
@@ -218,18 +226,20 @@ public sealed class NoiseReductionEffect : EffectBase
                 _specInPos = (_specInPos + 1) % FftSize;
                 if (_specInFilled < FftSize) _specInFilled++;
                 _specSinceFrame++;
-                if (_specOutAvail > 0) _specOutAvail--;
-                _specOlaRead = (_specOlaRead + 1) % OlaLength;
+                if (_specPipelineDelay > 0) _specPipelineDelay--;
+                else _specOlaRead = (_specOlaRead + 1) % OlaLength;
 
-                if (_specSinceFrame >= HopSize && _specInFilled >= FftSize)
+                // First frame the moment the analysis ring fills, then every HopSize
+                if (_specInFilled >= FftSize && (!_specPrimed || _specSinceFrame >= HopSize))
                 {
-                    _specSinceFrame -= HopSize;
+                    _specPrimed = true;
+                    _specSinceFrame = 0;
                     for (int channel = 0; channel < ChannelCount; channel++)
                         ProcessSpectralFrame(channel, smoothingFactor);
                     _specOlaWrite = (_specOlaWrite + HopSize) % OlaLength;
-                    _specOutAvail += HopSize;
                 }
             }
+
             else if (_learning)
             {
                 // Accumulate the noise fingerprint from channel 0

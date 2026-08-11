@@ -44,8 +44,12 @@ public sealed class LevelNormalizerEffect : EffectBase
     protected override void OnConfigure()
     {
         _lufsHistory = new double[48]; // ~2 seconds of short-term measurements
+        // Empty slots must read as silence: 0 would pass the noise-floor gate as
+        // 0 LUFS and drag the integrated measurement to full scale at startup.
+        Array.Fill(_lufsHistory, -100.0);
         _lufsHistoryPos = 0;
         _integratedLoudness = -18;
+
         _prevSample = new float[ChannelCount];
         _kStage1 = new Biquad[ChannelCount];
         _kStage2 = new Biquad[ChannelCount];
@@ -66,8 +70,9 @@ public sealed class LevelNormalizerEffect : EffectBase
         _gainReadoutDb = 0;
         _controlCountdown = 0;
         Array.Clear(_prevSample);
-        Array.Clear(_lufsHistory);
+        Array.Fill(_lufsHistory, -100.0); // silence, not 0 LUFS (see OnConfigure)
         _lufsHistoryPos = 0;
+
         _integratedLoudness = -18;
         foreach (var f in _kStage1) f.Reset();
         foreach (var f in _kStage2) f.Reset();
