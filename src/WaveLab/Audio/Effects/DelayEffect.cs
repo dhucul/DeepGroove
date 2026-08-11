@@ -3,8 +3,8 @@ using WaveLab.Audio.Dsp;
 namespace WaveLab.Audio.Effects;
 
 /// <summary>
-/// Advanced stereo delay: ping-pong mode, tempo sync, feedback filter (LP/HP),
-/// and ducking. Supports musical subdivisions when tempo is provided.
+/// Advanced stereo delay: true ping-pong (cross-fed feedback), feedback filter (LP/HP),
+/// ducking, and slew-smoothed delay-time changes that glide instead of clicking.
 /// </summary>
 public sealed class DelayEffect : EffectBase
 {
@@ -25,6 +25,9 @@ public sealed class DelayEffect : EffectBase
     private Biquad[] _fbFilters = [];
     private double _duckEnv;
     private double _duckGain = 1;
+    private double _delaySmoothed;
+    private float[] _delayedScratch = [];
+    private float[] _fbScratch = [];
 
     public override string TypeId => "delay";
     public override string DisplayName => "Stereo Delay";
@@ -36,6 +39,8 @@ public sealed class DelayEffect : EffectBase
         _lines = new float[ChannelCount][];
         for (int c = 0; c < ChannelCount; c++) _lines[c] = new float[_lineLen];
         _fbFilters = new Biquad[ChannelCount];
+        _delayedScratch = new float[ChannelCount];
+        _fbScratch = new float[ChannelCount];
         _pos = 0;
         RebuildFeedbackFilters();
     }
@@ -66,25 +71,35 @@ public sealed class DelayEffect : EffectBase
         _pos = 0;
         _duckEnv = 0;
         _duckGain = 1;
+        _delaySmoothed = GetParam("time") / 1000.0 * SampleRate;
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
         if (_lines.Length == 0) return;
-        int delaySamples = Math.Clamp((int)(GetParam("time") / 1000.0 * SampleRate), 1, _lineLen - 1);
+        double targetDelay = Math.Clamp(GetParam("time") / 1000.0 * SampleRate, 1, _lineLen - 2);
         float feedback = (float)GetParam("feedback");
         float mix = (float)GetParam("mix");
         float dry = 1 - mix;
-        bool pingPong = GetParam("pingPong") > 0.5;
+        bool pingPong = GetParam("pingPong") > 0.5 && ChannelCount >= 2;
         float duckAmount = (float)GetParam("duckAmount");
         double duckAttack = Math.Exp(-1.0 / (SampleRate * 0.005));
         double duckRelease = Math.Exp(-1.0 / (SampleRate * 0.15));
+        // ~40 ms slew: delay-time moves glide like a tape deck instead of clicking
+        double slew = 1.0 / (SampleRate * 0.04);
 
         int frames = count / ChannelCount;
         for (int f = 0; f < frames; f++)
         {
             int idx = offset + f * ChannelCount;
-            int readPos = (_pos - delaySamples + _lineLen) % _lineLen;
+
+            // Smooth the delay time, then read with linear interpolation
+            _delaySmoothed += (targetDelay - _delaySmoothed) * slew;
+            double readOffset = _pos - _delaySmoothed;
+            readOffset -= Math.Floor(readOffset / _lineLen) * _lineLen;
+            int i0 = (int)readOffset;
+            double frac = readOffset - i0;
+            int i1 = (i0 + 1) % _lineLen;
 
             // Ducking: measure dry input level
             float inputPeak = 0;
@@ -101,26 +116,25 @@ public sealed class DelayEffect : EffectBase
 
             for (int c = 0; c < ChannelCount; c++)
             {
-                float delayed = _lines[c][readPos];
+                float delayed = (float)(_lines[c][i0] * (1 - frac) + _lines[c][i1] * frac);
+                _delayedScratch[c] = delayed;
 
                 // Feedback with filter
                 float fbInput = buffer[idx + c] + delayed * feedback;
-                fbInput = _fbFilters[c].Process(fbInput);
-                _lines[c][_pos] = fbInput;
-
-                // Ping-pong: swap channels in feedback
-                if (pingPong && ChannelCount >= 2)
-                {
-                    int otherChannel = c ^ 1;
-                    float otherDelayed = _lines[otherChannel][readPos];
-                    buffer[idx + c] = buffer[idx + c] * dry
-                        + (delayed * 0.7f + otherDelayed * 0.3f) * mix * (float)_duckGain;
-                }
-                else
-                {
-                    buffer[idx + c] = buffer[idx + c] * dry + delayed * mix * (float)_duckGain;
-                }
+                _fbScratch[c] = _fbFilters[c].Process(fbInput);
             }
+
+            // Ping-pong: write each channel's feedback into the opposite delay
+            // line so the repeats genuinely bounce between left and right.
+            for (int c = 0; c < ChannelCount; c++)
+            {
+                int dest = pingPong ? c ^ 1 : c;
+                _lines[dest][_pos] = _fbScratch[c];
+            }
+
+            for (int c = 0; c < ChannelCount; c++)
+                buffer[idx + c] = buffer[idx + c] * dry + _delayedScratch[c] * mix * (float)_duckGain;
+
             if (++_pos >= _lineLen) _pos = 0;
         }
     }

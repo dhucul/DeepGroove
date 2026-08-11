@@ -16,6 +16,17 @@ public struct Biquad
 
     public void Reset() { _z1 = 0; _z2 = 0; }
 
+    /// <summary>
+    /// Copy another biquad's coefficients while preserving the delay-line state,
+    /// so parameter changes don't click or zipper.
+    /// </summary>
+    public void CopyCoefficientsFrom(in Biquad source)
+    {
+        _b0 = source._b0; _b1 = source._b1; _b2 = source._b2;
+        _a1 = source._a1; _a2 = source._a2;
+    }
+
+
     /// <summary>Magnitude response at frequency f (Hz), for drawing curves.</summary>
     public readonly double MagnitudeDb(double f, double fs)
     {

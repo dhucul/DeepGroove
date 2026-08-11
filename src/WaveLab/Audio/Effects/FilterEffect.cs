@@ -32,6 +32,14 @@ public sealed class FilterEffect : EffectBase
     protected override void OnConfigure() => Rebuild();
     protected override void OnParamsChanged() => Rebuild();
 
+    private Biquad BuildStage(int mode, double cutoff, double q) => mode switch
+    {
+        0 => Biquad.LowPass(SampleRate, cutoff, q),
+        1 => Biquad.HighPass(SampleRate, cutoff, q),
+        2 => Biquad.BandPass(SampleRate, cutoff, q),
+        _ => Biquad.BandStop(SampleRate, cutoff, q),
+    };
+
     private void Rebuild()
     {
         double cutoff = Math.Min(GetParam("cutoff"), SampleRate * 0.45);
@@ -42,38 +50,40 @@ public sealed class FilterEffect : EffectBase
         // For 24dB, use two cascaded 12dB stages with adjusted Q
         double q12 = is24Db ? q * 1.3 : q;
 
-        var rebuilt1 = new Biquad[ChannelCount];
-        var rebuilt2 = new Biquad[ChannelCount];
+        if (_filters1.Length != ChannelCount)
+        {
+            _filters1 = new Biquad[ChannelCount];
+            _filters2 = new Biquad[ChannelCount];
+        }
+
+        // Update coefficients in place: preserving delay-line state keeps
+        // cutoff and resonance sweeps free of clicks and zipper noise.
         for (int c = 0; c < ChannelCount; c++)
         {
-            rebuilt1[c] = mode switch
-            {
-                0 => Biquad.LowPass(SampleRate, cutoff, q12),
-                1 => Biquad.HighPass(SampleRate, cutoff, q12),
-                2 => Biquad.BandPass(SampleRate, cutoff, q12),
-                _ => Biquad.BandStop(SampleRate, cutoff, q12),
-            };
+            Biquad stage1 = BuildStage(mode, cutoff, q12);
+            _filters1[c].CopyCoefficientsFrom(stage1);
 
             if (is24Db)
             {
-                rebuilt2[c] = mode switch
-                {
-                    0 => Biquad.LowPass(SampleRate, cutoff, q12),
-                    1 => Biquad.HighPass(SampleRate, cutoff, q12),
-                    2 => Biquad.BandPass(SampleRate, cutoff, q12 * 0.8),
-                    _ => Biquad.BandStop(SampleRate, cutoff, q12 * 0.8),
-                };
+                double q2 = mode >= 2 ? q12 * 0.8 : q12;
+                Biquad stage2 = BuildStage(mode, cutoff, q2);
+                _filters2[c].CopyCoefficientsFrom(stage2);
             }
             else
             {
-                rebuilt2[c] = Biquad.Identity();
+                _filters2[c] = Biquad.Identity();
             }
         }
-        Volatile.Write(ref _filters1, rebuilt1);
-        Volatile.Write(ref _filters2, rebuilt2);
     }
 
-    public override void ResetState() => Rebuild();
+    public override void ResetState()
+    {
+        for (int c = 0; c < _filters1.Length; c++)
+        {
+            _filters1[c].Reset();
+            _filters2[c].Reset();
+        }
+    }
 
     public override void Process(float[] buffer, int offset, int count)
     {

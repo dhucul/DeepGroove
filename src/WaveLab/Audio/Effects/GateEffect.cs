@@ -5,13 +5,14 @@ namespace WaveLab.Audio.Effects;
 /// <summary>
 /// Advanced noise gate: sidechain filter for frequency-conscious gating,
 /// range control (downward expansion instead of full mute), hold time,
-/// and 3 dB hysteresis with attack/release envelope.
+/// and adjustable hysteresis with attack/release envelope.
 /// </summary>
 public sealed class GateEffect : EffectBase
 {
     private static readonly EffectParam[] P =
     [
         new("thresh", "THRESH", -80, -20, -50, EffectParam.Db),
+        new("hyst", "HYSTERESIS", 0, 12, 3, EffectParam.Db),
         new("attack", "ATTACK", 0.1, 50, 1, v => $"{v:0.0} ms"),
         new("release", "RELEASE", 20, 2000, 200, EffectParam.Ms),
         new("hold", "HOLD", 0, 500, 20, EffectParam.Ms),
@@ -69,7 +70,7 @@ public sealed class GateEffect : EffectBase
     public override void Process(float[] buffer, int offset, int count)
     {
         double openLin = Math.Pow(10, GetParam("thresh") / 20.0);
-        double closeLin = Math.Pow(10, (GetParam("thresh") - 3) / 20.0);
+        double closeLin = Math.Pow(10, (GetParam("thresh") - GetParam("hyst")) / 20.0);
         double attCoeff = Math.Exp(-1.0 / (SampleRate * GetParam("attack") / 1000.0));
         double relCoeff = Math.Exp(-1.0 / (SampleRate * GetParam("release") / 1000.0));
         double envCoeff = Math.Exp(-1.0 / (SampleRate * 0.002));

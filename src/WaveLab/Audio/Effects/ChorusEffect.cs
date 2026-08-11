@@ -24,7 +24,7 @@ public sealed class ChorusEffect : EffectBase
     private int _lineLen;
     private int _pos;
     private double[] _phases = [];
-    private float _prevFeedback;
+    private float[] _prevFeedback = []; // per channel: wet feedback must not bleed across L/R
 
     public override string TypeId => "chorus";
     public override string DisplayName => "Chorus";
@@ -39,7 +39,7 @@ public sealed class ChorusEffect : EffectBase
         for (int v = 0; v < MaxVoices; v++)
             _phases[v] = v * Math.PI / MaxVoices; // spread initial phases
         _pos = 0;
-        _prevFeedback = 0;
+        _prevFeedback = new float[ChannelCount];
     }
 
     public override void ResetState()
@@ -48,12 +48,12 @@ public sealed class ChorusEffect : EffectBase
         _pos = 0;
         for (int v = 0; v < MaxVoices; v++)
             _phases[v] = v * Math.PI / MaxVoices;
-        _prevFeedback = 0;
+        Array.Clear(_prevFeedback);
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
-        if (_lines.Length == 0) return;
+        if (_lines.Length == 0 || _prevFeedback.Length != ChannelCount) return;
         double rate = GetParam("rate");
         double depthSamples = GetParam("depth") / 1000.0 * SampleRate;
         double baseSamples = BaseDelayMs / 1000.0 * SampleRate;
@@ -74,7 +74,7 @@ public sealed class ChorusEffect : EffectBase
             int idx = offset + f * ChannelCount;
             for (int c = 0; c < ChannelCount; c++)
             {
-                float input = buffer[idx + c] + _prevFeedback * feedback;
+                float input = buffer[idx + c] + _prevFeedback[c] * feedback;
                 _lines[c][_pos] = input;
 
                 float wetSum = 0;
@@ -107,7 +107,7 @@ public sealed class ChorusEffect : EffectBase
                 wetSum /= voices;
 
                 buffer[idx + c] = buffer[idx + c] * dry + wetSum * mix;
-                _prevFeedback = wetSum;
+                _prevFeedback[c] = wetSum;
             }
 
             for (int v = 0; v < MaxVoices; v++)

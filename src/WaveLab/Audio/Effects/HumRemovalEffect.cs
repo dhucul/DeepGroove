@@ -87,8 +87,9 @@ public sealed class HumRemovalEffect : EffectBase
         bool autoDetect = GetParam("autoDetect") > 0.5;
         bool dynamic = GetParam("dynamic") > 0.5;
 
-        // Adaptive fundamental detection via zero-crossing analysis
+        // Adaptive fundamental detection via energy-gated Goertzel analysis
         if (autoDetect)
+
         {
             DetectFundamental(buffer, offset, count);
         }
@@ -132,40 +133,49 @@ public sealed class HumRemovalEffect : EffectBase
 
     private void DetectFundamental(float[] buffer, int offset, int count)
     {
-        // Simple zero-crossing based frequency detection
-        int zeroCrossings = 0;
-        float prevSample = 0;
-        bool prevPositive = false;
-        double totalSamples = 0;
+        // Goertzel power at 50 and 60 Hz, gated against the total signal power:
+        // a mains fundamental must carry a meaningful share of the energy, so
+        // bass-heavy music (e.g. a 55 Hz A1 note) cannot false-lock the detector.
+        int frames = count / ChannelCount;
+        if (frames < 64) return;
 
-        for (int i = offset; i < offset + count; i += ChannelCount)
+        double w50 = 2 * Math.PI * 50 / SampleRate, w60 = 2 * Math.PI * 60 / SampleRate;
+        double c50 = 2 * Math.Cos(w50), c60 = 2 * Math.Cos(w60);
+        double s50a = 0, s50b = 0, s60a = 0, s60b = 0, total = 0;
+
+        for (int f = 0; f < frames; f++)
         {
-            float sample = buffer[i];
-            bool positive = sample >= 0;
-            if (positive != prevPositive && totalSamples > 0)
-                zeroCrossings++;
-            prevPositive = positive;
-            prevSample = sample;
-            totalSamples++;
+            double x = buffer[offset + f * ChannelCount];
+            double y50 = x + c50 * s50a - s50b;
+            s50b = s50a; s50a = y50;
+            double y60 = x + c60 * s60a - s60b;
+            s60b = s60a; s60a = y60;
+            total += x * x;
         }
+        if (total <= 1e-9) return;
 
-        if (totalSamples > 100 && zeroCrossings > 2)
+        double p50 = s50a * s50a + s50b * s50b - c50 * s50a * s50b;
+        double p60 = s60a * s60a + s60b * s60b - c60 * s60a * s60b;
+
+        // Normalized share of signal energy at each mains candidate (1 = all of it)
+        double share50 = 2 * p50 / (frames * total);
+        double share60 = 2 * p60 / (frames * total);
+        double candidate = share50 > share60 ? 50 : 60;
+        double share = Math.Max(share50, share60);
+
+        // Full confidence once the candidate holds ≳17% of the signal energy
+        double confidence = Math.Clamp((share - 0.02) / 0.15, 0, 1);
+
+        // Smooth the detection
+        if (confidence > 0)
         {
-            double detectedFreq = zeroCrossings * SampleRate / (2 * totalSamples);
-
-            // Check if detected frequency is near 50 or 60 Hz
-            double dist50 = Math.Abs(detectedFreq - 50);
-            double dist60 = Math.Abs(detectedFreq - 60);
-
-            if (dist50 < 10 || dist60 < 10)
-            {
-                double candidate = dist50 < dist60 ? 50 : 60;
-                double confidence = 1.0 - Math.Clamp(Math.Min(dist50, dist60) / 10.0, 0, 1);
-
-                // Smooth the detection
-                _detectedFundamental = 0.9 * _detectedFundamental + 0.1 * candidate;
-                _fundamentalConfidence = 0.9 * _fundamentalConfidence + 0.1 * confidence;
-            }
+            _detectedFundamental = 0.9 * _detectedFundamental + 0.1 * candidate;
+            _fundamentalConfidence = 0.9 * _fundamentalConfidence + 0.1 * confidence;
+        }
+        else
+        {
+            _fundamentalConfidence *= 0.95;
         }
     }
+
 }

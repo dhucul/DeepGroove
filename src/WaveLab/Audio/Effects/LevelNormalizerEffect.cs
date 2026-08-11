@@ -1,14 +1,17 @@
+using WaveLab.Audio.Dsp;
+
 namespace WaveLab.Audio.Effects;
 
 /// <summary>
-/// Advanced automatic level control with LUFS-style loudness measurement,
-/// true-peak awareness, dual-stage (short-term + integrated) loudness targets,
-/// and gain change limiting to prevent audible pumping.
+/// Advanced automatic level control with K-weighted (ITU-R BS.1770) loudness
+/// measurement, true-peak awareness, dual-stage (short-term + integrated) loudness
+/// targets, and gain change limiting to prevent audible pumping.
 /// </summary>
 public sealed class LevelNormalizerEffect : EffectBase
 {
     private const int ControlIntervalFrames = 32;
     private const int LufsIntegrationFrames = 3840; // ~80ms at 48kHz for short-term
+    private const double LufsCalibrationOffset = -0.691; // ITU-R BS.1770 absolute constant
 
     private static readonly EffectParam[] P =
     [
@@ -29,7 +32,9 @@ public sealed class LevelNormalizerEffect : EffectBase
     private double[] _lufsHistory = [];
     private int _lufsHistoryPos;
     private double _integratedLoudness;
-    private double _prevSample;
+    private float[] _prevSample = []; // per channel: inter-sample estimates must not bleed across L/R
+    private Biquad[] _kStage1 = [];   // K-weighting pre-filter (shelf)
+    private Biquad[] _kStage2 = [];   // K-weighting RLB high-pass
 
     public override string TypeId => "normalizer";
     public override string DisplayName => "Level Normalizer";
@@ -41,6 +46,16 @@ public sealed class LevelNormalizerEffect : EffectBase
         _lufsHistory = new double[48]; // ~2 seconds of short-term measurements
         _lufsHistoryPos = 0;
         _integratedLoudness = -18;
+        _prevSample = new float[ChannelCount];
+        _kStage1 = new Biquad[ChannelCount];
+        _kStage2 = new Biquad[ChannelCount];
+        for (int c = 0; c < ChannelCount; c++)
+        {
+            // Same K-weighting as the EBU R128 loudness meter:
+            // high shelf +4 dB @ ~1.68 kHz, then high-pass @ ~38 Hz.
+            _kStage1[c] = Biquad.HighShelf(SampleRate, 1681.97, 3.99982, 1.0);
+            _kStage2[c] = Biquad.HighPass(SampleRate, 38.13, 0.5);
+        }
     }
 
     public override void ResetState()
@@ -50,16 +65,18 @@ public sealed class LevelNormalizerEffect : EffectBase
         _targetGain = 1;
         _gainReadoutDb = 0;
         _controlCountdown = 0;
-        _prevSample = 0;
+        Array.Clear(_prevSample);
         Array.Clear(_lufsHistory);
         _lufsHistoryPos = 0;
         _integratedLoudness = -18;
+        foreach (var f in _kStage1) f.Reset();
+        foreach (var f in _kStage2) f.Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
         int frames = count / ChannelCount;
-        if (frames <= 0) return;
+        if (frames <= 0 || _prevSample.Length != ChannelCount) return;
 
         double detectorCoefficient = Math.Exp(-1.0 / (SampleRate * 0.10));
         double responseSeconds = GetParam("response") / 1000.0;
@@ -73,8 +90,9 @@ public sealed class LevelNormalizerEffect : EffectBase
         double truePeakLimitDb = GetParam("truePeakLimit");
         double truePeakLimit = Math.Pow(10, truePeakLimitDb / 20.0);
 
-        // Max gain change per frame
-        double maxGainChangePerFrame = maxGainChangePerSec / SampleRate * ChannelCount;
+        // Max gain change per frame (the gain is updated once per frame,
+        // and there are SampleRate frames per second — independent of channel count).
+        double maxGainChangePerFrame = maxGainChangePerSec / SampleRate;
 
         for (int frame = 0; frame < frames; frame++)
         {
@@ -84,15 +102,19 @@ public sealed class LevelNormalizerEffect : EffectBase
             for (int channel = 0; channel < ChannelCount; channel++)
             {
                 double sample = buffer[index + channel];
-                power += sample * sample;
+
+                // K-weighted measurement power
+                float w = _kStage2[channel].Process(_kStage1[channel].Process((float)sample));
+                power += w * w;
+
                 double a = Math.Abs(sample);
                 if (a > framePeak) framePeak = a;
 
-                // True-peak check: inter-sample peak
-                double midSample = (sample + _prevSample) * 0.5;
+                // True-peak check: inter-sample peak against this channel's previous sample
+                double midSample = (sample + _prevSample[channel]) * 0.5;
                 double midAbs = Math.Abs(midSample);
                 if (midAbs > framePeak) framePeak = midAbs;
-                _prevSample = sample;
+                _prevSample[channel] = (float)sample;
             }
             power /= ChannelCount;
 
@@ -101,11 +123,9 @@ public sealed class LevelNormalizerEffect : EffectBase
             if (_controlCountdown-- <= 0)
             {
                 _controlCountdown = ControlIntervalFrames - 1;
-                double levelDb = 10 * Math.Log10(Math.Max(1e-12, _meanSquare));
 
-                // K-weighting approximation for LUFS-style measurement
-                // Simple pre-filter: high-pass at ~100Hz to approximate RLB filter
-                double kWeightedDb = levelDb; // simplified
+                // K-weighted loudness in LUFS (absolute-gated scale)
+                double kWeightedDb = 10 * Math.Log10(Math.Max(1e-12, _meanSquare)) + LufsCalibrationOffset;
 
                 // Update short-term loudness history
                 _lufsHistory[_lufsHistoryPos] = kWeightedDb;

@@ -48,15 +48,24 @@ public sealed class EqEffect : EffectBase
     {
         lock (_lock)
         {
-            _filters = new Biquad[BandCount][];
+            if (_filters.Length != BandCount || _filters[0].Length != ChannelCount)
+            {
+                _filters = new Biquad[BandCount][];
+                for (int b = 0; b < BandCount; b++)
+                    _filters[b] = new Biquad[ChannelCount];
+            }
+
+            // Update coefficients in place: preserving each biquad's delay-line
+            // state keeps live sweeps free of clicks and zipper noise.
             for (int b = 0; b < BandCount; b++)
             {
-                _filters[b] = new Biquad[ChannelCount];
+                Biquad updated = BuildBand(b);
                 for (int c = 0; c < ChannelCount; c++)
-                    _filters[b][c] = BuildBand(b);
+                    _filters[b][c].CopyCoefficientsFrom(updated);
             }
         }
     }
+
 
     private Biquad BuildBand(int band)
     {
@@ -70,7 +79,14 @@ public sealed class EqEffect : EffectBase
         };
     }
 
-    public override void ResetState() => OnParamsChanged();
+    public override void ResetState()
+    {
+        lock (_lock)
+            foreach (var band in _filters)
+                for (int c = 0; c < band.Length; c++)
+                    band[c].Reset();
+    }
+
 
     public override void Process(float[] buffer, int offset, int count)
     {

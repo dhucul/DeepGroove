@@ -2,7 +2,7 @@ namespace WaveLab.Audio.Effects;
 
 /// <summary>
 /// Advanced FDN reverb: 8×8 feedback delay network with pre-delay, early reflections,
-/// modulation, and room type presets. Replaces the Freeverb-style comb+allpass cascade.
+/// per-line modulation, and room type presets. Replaces the Freeverb-style comb+allpass cascade.
 /// </summary>
 public sealed class ReverbEffect : EffectBase
 {
@@ -61,6 +61,10 @@ public sealed class ReverbEffect : EffectBase
     private double _modPhase;
     private ReverbParameters _parameters = new(0.5f, 0.4f, 1f, 0.25f, 0.02f, 0.3f, 0.5f, 0.0015f, 2);
 
+    // Scratch buffers allocated at Configure — the audio thread must not allocate per sample.
+    private float[] _fdnOut = [];
+    private float[] _fdnIn = [];
+
     private sealed record ReverbParameters(
         float Size, float Damp, float Width, float Mix,
         float PreDelaySec, float ErLevel, float ModRate, float ModDepthSec, int RoomType);
@@ -72,7 +76,6 @@ public sealed class ReverbEffect : EffectBase
     protected override void OnConfigure()
     {
         double scale = SampleRate / 44100.0;
-        int chans = ChannelCount;
 
         _fdnLines = new DelayLine[FdnSize];
         _fdnFilters = new OnePoleLp[FdnSize];
@@ -87,6 +90,8 @@ public sealed class ReverbEffect : EffectBase
             _erLines[i] = new DelayLine { Buf = new float[Math.Max(4, (int)(ErDelaysMs[i] * scale))] };
 
         _preDelayLine = new DelayLine { Buf = new float[Math.Max(4, (int)(SampleRate * 0.15))] };
+        _fdnOut = new float[FdnSize];
+        _fdnIn = new float[FdnSize];
         _modPhase = 0;
     }
 
@@ -113,6 +118,8 @@ public sealed class ReverbEffect : EffectBase
         foreach (var line in _erLines) { Array.Clear(line.Buf); line.Pos = 0; }
         Array.Clear(_preDelayLine.Buf);
         _preDelayLine.Pos = 0;
+        Array.Clear(_fdnOut);
+        Array.Clear(_fdnIn);
         _modPhase = 0;
     }
 
@@ -126,7 +133,8 @@ public sealed class ReverbEffect : EffectBase
         float dry = 1 - mix;
         float width = parameters.Width;
         float erLevel = parameters.ErLevel;
-        float dampCoeff = parameters.Damp;
+        // DAMP follows convention: higher = darker (stronger absorption in the loop).
+        float dampCoeff = 0.05f + (1 - parameters.Damp) * 0.95f;
         float modRate = parameters.ModRate;
         float modDepthSamples = parameters.ModDepthSec * SampleRate;
         int preDelaySamples = Math.Min((int)(parameters.PreDelaySec * SampleRate), _preDelayLine.Buf.Length - 1);
@@ -144,6 +152,9 @@ public sealed class ReverbEffect : EffectBase
         double modPhaseInc = 2 * Math.PI * modRate / SampleRate;
         const float fdnInputGain = 0.125f; // 1/sqrt(8) for energy conservation
 
+        float[] fdnOut = _fdnOut;
+        float[] fdnIn = _fdnIn;
+
         int frames = count / channels;
         for (int f = 0; f < frames; f++)
         {
@@ -155,10 +166,12 @@ public sealed class ReverbEffect : EffectBase
                 input += buffer[idx + c];
             input /= channels;
 
-            // --- Pre-delay ---
-            // Write input to delay line; Process() reads the delayed output
+            // --- Pre-delay: offset read from the ring ---
+            int preLen = _preDelayLine.Buf.Length;
             _preDelayLine.Buf[_preDelayLine.Pos] = input * 0.5f;
-            float preDelayed = _preDelayLine.Process(0f);
+            int preRead = (_preDelayLine.Pos - preDelaySamples + preLen) % preLen;
+            float preDelayed = _preDelayLine.Buf[preRead];
+            _preDelayLine.Pos = (_preDelayLine.Pos + 1) % preLen;
 
             // --- Early reflections ---
             float erOut = 0;
@@ -169,13 +182,31 @@ public sealed class ReverbEffect : EffectBase
             }
 
             // --- FDN late reverb ---
-            // Read FDN outputs
-            float[] fdnOut = new float[FdnSize];
+            // Read FDN outputs, with per-line modulated (fractional) read positions.
             for (int i = 0; i < FdnSize; i++)
-                fdnOut[i] = _fdnFilters[i].Process(_fdnLines[i].Buf[_fdnLines[i].Pos], dampCoeff);
+            {
+                float[] lineBuf = _fdnLines[i].Buf;
+                int lineLen = lineBuf.Length;
+                float raw;
+                if (modDepthSamples > 0.01f)
+                {
+                    // Stagger each line's LFO phase so the modulated delays decorrelate.
+                    double mod = Math.Sin(_modPhase + i * (Math.PI / FdnSize)) * modDepthSamples * rtScale;
+                    double readPos = _fdnLines[i].Pos + mod;
+                    int i0 = (int)Math.Floor(readPos);
+                    double frac = readPos - i0;
+                    i0 = ((i0 % lineLen) + lineLen) % lineLen;
+                    int i1 = (i0 + 1) % lineLen;
+                    raw = (float)(lineBuf[i0] * (1 - frac) + lineBuf[i1] * frac);
+                }
+                else
+                {
+                    raw = lineBuf[_fdnLines[i].Pos];
+                }
+                fdnOut[i] = _fdnFilters[i].Process(raw, dampCoeff);
+            }
 
             // Hadamard mixing matrix (normalized)
-            float[] fdnIn = new float[FdnSize];
             for (int i = 0; i < FdnSize; i++)
             {
                 float sum = 0;
@@ -189,8 +220,6 @@ public sealed class ReverbEffect : EffectBase
                 fdnIn[i] = sum * 0.3536f; // 1/sqrt(8)
             }
 
-            // Modulation of delay read positions
-            double modOffset = Math.Sin(_modPhase) * modDepthSamples * rtScale;
             _modPhase += modPhaseInc;
             if (_modPhase > 2 * Math.PI) _modPhase -= 2 * Math.PI;
 
@@ -228,11 +257,12 @@ public sealed class ReverbEffect : EffectBase
                     if ((i & 1) == 0) wetL += tap;
                     else wetR += tap;
                 }
-                wetL = wetL * wet1 + wetR * wet2 + erOut * erLevel * 0.5f;
-                wetR = wetR * wet1 + wetL * wet2 + erOut * erLevel * 0.5f;
+                // Symmetric crossmix (uses the unmodified taps for both sides)
+                float l = wetL * wet1 + wetR * wet2 + erOut * erLevel * 0.5f;
+                float r = wetR * wet1 + wetL * wet2 + erOut * erLevel * 0.5f;
 
-                buffer[idx] = buffer[idx] * dry + wetL * mix;
-                buffer[idx + 1] = buffer[idx + 1] * dry + wetR * mix;
+                buffer[idx] = buffer[idx] * dry + l * mix;
+                buffer[idx + 1] = buffer[idx + 1] * dry + r * mix;
 
                 for (int c = 2; c < channels; c++)
                     buffer[idx + c] = buffer[idx + c] * dry + wetMono * mix;

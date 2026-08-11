@@ -4,14 +4,17 @@ namespace WaveLab.Audio.Effects;
 
 /// <summary>
 /// Advanced saturation: multiple distortion curves (tube, tape, transistor, diode),
-/// 2x oversampling for alias reduction, tone tilt, and automatic output compensation.
+/// true 2x oversampling with a windowed-sinc anti-alias filter, tone tilt,
+/// and automatic output compensation.
 /// </summary>
 public sealed class SaturationEffect : EffectBase
 {
+    private const int OsTaps = 16; // power of two for cheap ring wrap
+
     private static readonly EffectParam[] P =
     [
         new("drive", "DRIVE", 0, 36, 12, EffectParam.Db),
-        new("tone", "TONE", 0, 1, 0.5, EffectParam.Plain),
+        new("tone", "TONE", 0, 1, 1.0, EffectParam.Plain),
         new("mix", "MIX", 0, 1, 1, EffectParam.Pct),
         new("curve", "CURVE", 0, 3, 0, v => ((int)v) switch
         {
@@ -26,8 +29,10 @@ public sealed class SaturationEffect : EffectBase
     private Biquad[] _tone = [];
     private double _toneCutoff = double.NaN;
     private SaturationParameters _parameters = new(1f, 1f, 1f, 0, true);
-    private float[] _osBuf = [];
-    private float _prevSample;
+    private double[] _osFir = [];
+    private float[][] _osHist = [];
+    private int _osPos;
+    private float[] _prevIn = [];
 
     private sealed record SaturationParameters(float Drive, float Compensation, float Mix, int Curve, bool Oversample);
 
@@ -37,7 +42,23 @@ public sealed class SaturationEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        _osBuf = new float[ChannelCount * 4];
+        _prevIn = new float[ChannelCount];
+        _osHist = new float[ChannelCount][];
+        for (int c = 0; c < ChannelCount; c++) _osHist[c] = new float[OsTaps];
+        _osPos = 0;
+
+        // 16-tap windowed-sinc anti-alias filter for the 2x path; cutoff sits just
+        // below the original Nyquist, expressed in cycles per 2x-rate sample.
+        const double fc = 0.225; // ≈ 21.6 kHz at a 48 kHz base rate
+        _osFir = new double[OsTaps];
+        for (int n = 0; n < OsTaps; n++)
+        {
+            double m = n - (OsTaps - 1) / 2.0;
+            double sinc = m == 0 ? 1 : Math.Sin(2 * Math.PI * fc * m) / (2 * Math.PI * fc * m);
+            double win = 0.54 - 0.46 * Math.Cos(2 * Math.PI * n / (OsTaps - 1)); // Hamming
+            _osFir[n] = 2 * fc * sinc * win;
+        }
+
         RebuildTone(EffectiveToneCutoff());
     }
 
@@ -75,10 +96,10 @@ public sealed class SaturationEffect : EffectBase
 
     private void RebuildTone(double cutoff)
     {
-        var rebuilt = new Biquad[ChannelCount];
-        for (int c = 0; c < ChannelCount; c++)
-            rebuilt[c] = Biquad.LowPass(SampleRate, cutoff, 0.707);
-        Volatile.Write(ref _tone, rebuilt);
+        if (_tone.Length != ChannelCount) _tone = new Biquad[ChannelCount];
+        // In-place coefficient update: tone sweeps don't reset filter state.
+        Biquad proto = Biquad.LowPass(SampleRate, cutoff, 0.707);
+        for (int c = 0; c < ChannelCount; c++) _tone[c].CopyCoefficientsFrom(proto);
         Volatile.Write(ref _toneCutoff, cutoff);
     }
 
@@ -86,20 +107,22 @@ public sealed class SaturationEffect : EffectBase
     {
         var tone = Volatile.Read(ref _tone);
         for (int c = 0; c < tone.Length; c++) tone[c].Reset();
-        _prevSample = 0;
+        Array.Clear(_prevIn);
+        foreach (var hist in _osHist) Array.Clear(hist);
+        _osPos = 0;
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
         var tone = Volatile.Read(ref _tone);
-        if (tone.Length != ChannelCount) return;
+        if (tone.Length != ChannelCount || _osHist.Length != ChannelCount) return;
         var parameters = Volatile.Read(ref _parameters);
         float drive = parameters.Drive;
         float comp = parameters.Compensation;
         float mix = parameters.Mix;
         float dry = 1 - mix;
         int curve = parameters.Curve;
-        bool oversample = parameters.Oversample;
+        bool oversample = parameters.Oversample && _osFir.Length == OsTaps;
 
         for (int i = offset; i < offset + count; i++)
         {
@@ -109,12 +132,21 @@ public sealed class SaturationEffect : EffectBase
             float shaped;
             if (oversample)
             {
-                // 2x oversampling: process at double rate with linear interpolation
-                float mid = (x + _prevSample) * 0.5f;
-                float s0 = ShapeSample(x * drive, curve) * comp;
-                float sMid = ShapeSample(mid * drive, curve) * comp;
-                shaped = (s0 + sMid) * 0.5f; // simple averaging for anti-aliasing
-                _prevSample = x;
+                // True 2x oversampling: interpolate the intermediate sample, shape
+                // both 2x-rate points, then anti-alias-filter and decimate.
+                float mid = (x + _prevIn[c]) * 0.5f;
+                _prevIn[c] = x;
+
+                float[] hist = _osHist[c];
+                hist[_osPos] = ShapeSample(mid * drive, curve) * comp;
+                _osPos = (_osPos + 1) & (OsTaps - 1);
+                hist[_osPos] = ShapeSample(x * drive, curve) * comp;
+
+                double acc = 0;
+                for (int k = 0; k < OsTaps; k++)
+                    acc += _osFir[k] * hist[(_osPos - k) & (OsTaps - 1)];
+                _osPos = (_osPos + 1) & (OsTaps - 1);
+                shaped = (float)acc;
             }
             else
             {
