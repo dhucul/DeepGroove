@@ -21,6 +21,13 @@ public sealed class AppSettings
     public string? OutputDeviceId { get; set; }
     public string? InputDeviceId { get; set; }
     public int BufferMs { get; set; } = 60;
+    public int CaptureBufferMs { get; set; } = 100;
+    public string OutputShareMode { get; set; } = "shared";
+    public string InputShareMode { get; set; } = "shared";
+    public bool OutputEventSync { get; set; } = true;
+    public bool InputEventSync { get; set; } = true;
+    public string OutputDefaultRole { get; set; } = "multimedia";
+    public string InputDefaultRole { get; set; } = "console";
 
     /// <summary>
     /// Last settled level-check outcome per capture device id, so the Recording
@@ -109,9 +116,16 @@ public sealed class AppSettings
         return false;
     }
 
-    private static AppSettings Normalize(AppSettings settings)
+    internal static AppSettings Normalize(AppSettings settings)
     {
-        settings.BufferMs = Math.Clamp(settings.BufferMs, 20, 200);
+        settings.BufferMs = Math.Clamp(settings.BufferMs, 3, 500);
+        settings.CaptureBufferMs = Math.Clamp(settings.CaptureBufferMs, 3, 500);
+        settings.OutputShareMode = Audio.AudioHardwareOptions.NormalizeShareMode(settings.OutputShareMode);
+        settings.InputShareMode = Audio.AudioHardwareOptions.NormalizeShareMode(settings.InputShareMode);
+        settings.OutputDefaultRole = Audio.AudioHardwareOptions.NormalizeRole(
+            settings.OutputDefaultRole, NAudio.CoreAudioApi.Role.Multimedia);
+        settings.InputDefaultRole = Audio.AudioHardwareOptions.NormalizeRole(
+            settings.InputDefaultRole, NAudio.CoreAudioApi.Role.Console);
         settings.UndoLimitMb = Math.Clamp(settings.UndoLimitMb, 64, 4096);
         settings.AutosaveMinutes = settings.AutosaveMinutes is 1 or 2 or 3 or 5 or 10 or 15
             ? settings.AutosaveMinutes
@@ -153,6 +167,13 @@ public sealed class AppSettings
         OutputDeviceId = d.OutputDeviceId;
         InputDeviceId = d.InputDeviceId;
         BufferMs = d.BufferMs;
+        CaptureBufferMs = d.CaptureBufferMs;
+        OutputShareMode = d.OutputShareMode;
+        InputShareMode = d.InputShareMode;
+        OutputEventSync = d.OutputEventSync;
+        InputEventSync = d.InputEventSync;
+        OutputDefaultRole = d.OutputDefaultRole;
+        InputDefaultRole = d.InputDefaultRole;
         ReopenLastSession = d.ReopenLastSession;
         UndoLimitMb = d.UndoLimitMb;
         AutosaveEnabled = d.AutosaveEnabled;

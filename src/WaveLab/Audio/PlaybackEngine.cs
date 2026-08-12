@@ -56,8 +56,10 @@ public sealed class PlaybackEngine : IDisposable
         {
             using var enumerator = new MMDeviceEnumerator();
             var id = AppSettings.Instance.OutputDeviceId;
+            Role role = AudioHardwareOptions.ParseRole(
+                AppSettings.Instance.OutputDefaultRole, Role.Multimedia);
             using var dev = id != null ? enumerator.GetDevice(id)
-                                       : enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                                       : enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
             return dev.FriendlyName;
         }
         catch { return "Default output"; }
@@ -66,24 +68,35 @@ public sealed class PlaybackEngine : IDisposable
     private static (WasapiOut Output, MMDevice? Device) CreateOut()
     {
         var settings = AppSettings.Instance;
-        int latency = Math.Clamp(settings.BufferMs, 20, 400);
-        if (settings.OutputDeviceId != null)
+        int latency = Math.Clamp(settings.BufferMs, 3, 500);
+        var shareMode = AudioHardwareOptions.ParseShareMode(settings.OutputShareMode);
+        Role role = AudioHardwareOptions.ParseRole(settings.OutputDefaultRole, Role.Multimedia);
+        MMDevice? device = null;
+        try
         {
-            MMDevice? device = null;
+            using var enumerator = new MMDeviceEnumerator();
+            device = settings.OutputDeviceId != null
+                ? enumerator.GetDevice(settings.OutputDeviceId)
+                : enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
+            return (new WasapiOut(device, shareMode, settings.OutputEventSync, latency), device);
+        }
+        catch
+        {
+            try { device?.Dispose(); } catch { }
+            // A saved endpoint may have disappeared. Preserve the chosen engine
+            // mode but retry on the selected Windows default role.
+            using var enumerator = new MMDeviceEnumerator();
+            device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
             try
             {
-                using var enumerator = new MMDeviceEnumerator();
-                device = enumerator.GetDevice(settings.OutputDeviceId);
-                return (new WasapiOut(device, AudioClientShareMode.Shared, true, latency), device);
+                return (new WasapiOut(device, shareMode, settings.OutputEventSync, latency), device);
             }
             catch
             {
-                try { device?.Dispose(); } catch { }
-                // Fall back to the current system default when a saved endpoint
-                // disappeared or cannot be initialized.
+                try { device.Dispose(); } catch { }
+                throw;
             }
         }
-        return (new WasapiOut(AudioClientShareMode.Shared, latency), null);
     }
 
     public long Play(AudioDocument doc, int startSample, int? endSample)

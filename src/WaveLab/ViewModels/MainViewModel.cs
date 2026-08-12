@@ -344,7 +344,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         : HasPendingTransportRecording ? "Retry preserving the buffered recording"
         : IsRecordArmed ? "Record now from the selected input (Ctrl+R)" : "Record setup (Ctrl+R)";
 
-    public string StatusEngine => $"Out: {PlaybackEngine.CurrentOutputName()} · WASAPI · {AppSettings.Instance.BufferMs} ms";
+    public string StatusEngine
+    {
+        get
+        {
+            var settings = AppSettings.Instance;
+            string mode = string.Equals(settings.OutputShareMode, "exclusive", StringComparison.OrdinalIgnoreCase)
+                ? "Exclusive"
+                : "Shared";
+            string scheduler = settings.OutputEventSync ? "event" : "poll";
+            return $"Out: {PlaybackEngine.CurrentOutputName()} · WASAPI {mode} · {settings.BufferMs} ms {scheduler}";
+        }
+    }
     public string StatusSamples => _active == null ? "" : $"{_active.Doc.Length:N0} samples";
     public string ActionStatusText { get => _actionStatusText; private set => Set(ref _actionStatusText, value); }
 

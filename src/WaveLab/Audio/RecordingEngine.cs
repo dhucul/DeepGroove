@@ -2,6 +2,7 @@ using NAudio.CoreAudioApi;
 using NAudio.MediaFoundation;
 using NAudio.Wave;
 using WaveLab.Audio.Dsp;
+using WaveLab.Util;
 
 namespace WaveLab.Audio;
 
@@ -343,23 +344,28 @@ public sealed class RecordingEngine : IDisposable
     {
         Stop();
         _pendingCaptureNote = null;
+        AppSettings settings = AppSettings.Instance;
+        Role role = AudioHardwareOptions.ParseRole(settings.InputDefaultRole, Role.Console);
         using var enumerator = new MMDeviceEnumerator();
         using MMDevice device = deviceId == null
-            ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console)
+            ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, role)
             : enumerator.GetDevice(deviceId);
 
-        var capture = new WasapiCapture(device);
+        var capture = new WasapiCapture(
+            device,
+            settings.InputEventSync,
+            Math.Clamp(settings.CaptureBufferMs, 3, 500))
+        {
+            ShareMode = AudioHardwareOptions.ParseShareMode(settings.InputShareMode),
+        };
         CaptureSession? session = null;
         try
         {
             WaveFormat format = capture.WaveFormat;
-            bool isFloat = format.Encoding == WaveFormatEncoding.IeeeFloat ||
-                           (format is WaveFormatExtensible ext &&
-                            ext.SubFormat == AudioSubtypes.MFAudioFormat_Float);
-            if (!isFloat)
+            if (!AudioHardware.IsSupportedCaptureFormat(format))
             {
                 throw new NotSupportedException(
-                    $"Unsupported capture format ({device.FriendlyName}) — expected 32-bit float shared-mode mix.");
+                    $"Unsupported capture format ({device.FriendlyName}) — expected interleaved 32-bit float audio.");
             }
             Volatile.Write(ref _channels, format.Channels);
             Volatile.Write(ref _sampleRate, format.SampleRate);
