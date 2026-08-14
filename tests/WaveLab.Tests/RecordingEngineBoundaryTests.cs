@@ -24,6 +24,18 @@ public sealed class RecordingEngineBoundaryTests
     }
 
     [Fact]
+    public void CallbackOwnedTransitionKeepsTheFollowingPacket()
+    {
+        var boundary = new RecordingEngine.CaptureDataBoundary(retainAudio: false);
+
+        boundary.Advance(retainAudio: true, discardFirstPacket: false);
+        long recordingState = boundary.DataState;
+
+        Assert.True(boundary.RetainAudio);
+        Assert.False(boundary.TryConsumeBoundaryDiscard(recordingState));
+    }
+
+    [Fact]
     public void CompletedOrInactiveMonitorCannotTransition()
     {
         Assert.True(RecordingEngine.CanTransitionLevelCheck(

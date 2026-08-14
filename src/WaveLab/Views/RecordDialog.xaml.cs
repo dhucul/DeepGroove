@@ -70,6 +70,8 @@ public partial class RecordDialog : Window
         _timer.Start();
         ViewModel.UnexpectedStopCompleted += OnUnexpectedStopCompleted;
         ViewModel.MonitoringStopped += OnMonitoringStopped;
+        ViewModel.NeedleDropMonitoringStopped += OnNeedleDropMonitoringStopped;
+        ViewModel.NeedleDropStarted += OnNeedleDropStarted;
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
         Closing += (_, e) =>
         {
@@ -99,8 +101,11 @@ public partial class RecordDialog : Window
             _click.Dispose();
             ViewModel.UnexpectedStopCompleted -= OnUnexpectedStopCompleted;
             ViewModel.MonitoringStopped -= OnMonitoringStopped;
+            ViewModel.NeedleDropMonitoringStopped -= OnNeedleDropMonitoringStopped;
+            ViewModel.NeedleDropStarted -= OnNeedleDropStarted;
             ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
-            if (ViewModel.IsRecording || ViewModel.IsLevelChecking || ViewModel.HasPendingCapture)
+            if (ViewModel.IsRecording || ViewModel.IsLevelChecking
+                || ViewModel.IsWaitingForNeedleDrop || ViewModel.HasPendingCapture)
                 ViewModel.Cancel();
             ViewModel.Dispose();
             _lifetimeCts.Dispose();
@@ -136,7 +141,8 @@ public partial class RecordDialog : Window
 
     private void OnLevelCheck(object sender, RoutedEventArgs e)
     {
-        if (_starting || ViewModel.IsRecording || ViewModel.IsFinalizing) return;
+        if (_starting || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop
+            || ViewModel.IsFinalizing) return;
         bool started = ViewModel.IsLevelChecking
             ? ViewModel.StopLevelCheck()
             : ViewModel.StartLevelCheck();
@@ -145,13 +151,24 @@ public partial class RecordDialog : Window
 
     private void OnResetLevelCheck(object sender, RoutedEventArgs e)
     {
-        if (_starting || ViewModel.IsRecording || ViewModel.IsFinalizing) return;
+        if (_starting || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop
+            || ViewModel.IsFinalizing) return;
         if (ViewModel.ResetLevelCheck()) SetSetupControlsEnabled(true);
     }
 
     private async void OnStartStop(object sender, RoutedEventArgs e)
     {
         if (_starting || ViewModel.IsFinalizing) return;
+        if (ViewModel.IsWaitingForNeedleDrop)
+        {
+            ViewModel.Cancel();
+            countInText.Visibility = Visibility.Collapsed;
+            startText.Text = chkNeedleDrop.IsChecked == true
+                ? "Arm for Needle Drop"
+                : "Start Recording";
+            SetSetupControlsEnabled(true);
+            return;
+        }
         if (ViewModel.HasPendingCapture)
         {
             await FinalizeAndCloseAsync();
@@ -161,9 +178,10 @@ public partial class RecordDialog : Window
         if (!ViewModel.IsRecording)
         {
             bool transitionFromLevelCheck = ViewModel.IsLevelChecking;
+            bool needleDropStart = chkNeedleDrop.IsChecked == true;
             double bpm = double.TryParse(txtBpm.Text, out var b) ? Math.Clamp(b, 30, 300) : 120;
-            bool countIn = chkCountIn.IsChecked == true;
-            bool metronome = chkMetronome.IsChecked == true;
+            bool countIn = !needleDropStart && chkCountIn.IsChecked == true;
+            bool metronome = !needleDropStart && chkMetronome.IsChecked == true;
             CancellationToken lifetimeToken = _lifetimeCts.Token;
 
             _starting = true;
@@ -193,13 +211,25 @@ public partial class RecordDialog : Window
                     return;
                 }
 
-                if (!ViewModel.Start())
+                bool started = needleDropStart
+                    ? ViewModel.StartOnNeedleDrop()
+                    : ViewModel.Start();
+                if (!started)
                 {
                     _click.Stop();
                     SetSetupControlsEnabled(true);
                     return;
                 }
-                startText.Text = "Stop & Insert";
+                if (needleDropStart)
+                {
+                    countInText.Text = "LOWER THE NEEDLE…";
+                    countInText.Visibility = Visibility.Visible;
+                    startText.Text = "Cancel Auto-Start";
+                }
+                else
+                {
+                    startText.Text = "Stop & Insert";
+                }
                 SetSetupControlsEnabled(false);
             }
             catch (OperationCanceledException) when (lifetimeToken.IsCancellationRequested) { }
@@ -208,7 +238,9 @@ public partial class RecordDialog : Window
                 try { _click.Stop(); } catch { }
                 if (!IsVisible) return;
                 countInText.Visibility = Visibility.Collapsed;
-                startText.Text = "Start Recording";
+                startText.Text = chkNeedleDrop.IsChecked == true
+                    ? "Arm for Needle Drop"
+                    : "Start Recording";
                 SetSetupControlsEnabled(true);
                 MessageBox.Show($"Could not start the metronome or recording:\n{ex.Message}", "Record",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -217,7 +249,8 @@ public partial class RecordDialog : Window
             {
                 _starting = false;
                 startBtn.IsEnabled = !ViewModel.IsFinalizing;
-                if (!ViewModel.IsRecording && !ViewModel.IsFinalizing)
+                if (!ViewModel.IsRecording && !ViewModel.IsWaitingForNeedleDrop
+                    && !ViewModel.IsFinalizing)
                     SetSetupControlsEnabled(true);
             }
         }
@@ -289,6 +322,46 @@ public partial class RecordDialog : Window
         SetSetupControlsEnabled(true);
     }
 
+    private void OnNeedleDropMonitoringStopped(RecordingStoppedInfo info)
+    {
+        if (!IsVisible) return;
+        countInText.Visibility = Visibility.Collapsed;
+        startText.Text = chkNeedleDrop.IsChecked == true
+            ? "Arm for Needle Drop"
+            : "Start Recording";
+        string reason = info.Error != null
+            ? $"The input device stopped while waiting for the needle.\n\n{info.Error.Message}"
+            : "The input device stopped while waiting for the needle.";
+        MessageBox.Show(reason, "Needle-drop recording stopped", MessageBoxButton.OK,
+            info.Error != null ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        SetSetupControlsEnabled(true);
+    }
+
+    private void OnNeedleDropStarted()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke((Action)OnNeedleDropStarted);
+            return;
+        }
+        if (!IsVisible) return;
+        countInText.Visibility = Visibility.Collapsed;
+        startText.Text = "Stop & Insert";
+    }
+
+    private void OnNeedleDropOptionChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop) return;
+        bool enabled = chkNeedleDrop.IsChecked == true;
+        if (enabled)
+        {
+            chkCountIn.IsChecked = false;
+            chkMetronome.IsChecked = false;
+        }
+        startText.Text = enabled ? "Arm for Needle Drop" : "Start Recording";
+        SetSetupControlsEnabled(true);
+    }
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(RecordViewModel.IsLevelChecking)
@@ -318,7 +391,11 @@ public partial class RecordDialog : Window
     private void PrepareAfterFinalizationFailure()
     {
         bool retryable = ViewModel.HasPendingCapture;
-        startText.Text = retryable ? "Retry Finalization" : "Start Recording";
+        startText.Text = retryable
+            ? "Retry Finalization"
+            : chkNeedleDrop.IsChecked == true
+                ? "Arm for Needle Drop"
+                : "Start Recording";
         startBtn.IsEnabled = true;
         cancelBtn.IsEnabled = true;
         if (!retryable) SetSetupControlsEnabled(true);
@@ -331,10 +408,12 @@ public partial class RecordDialog : Window
         resetLevelCheckBtn.IsEnabled = enabled
             && (ViewModel.IsLevelChecking || ViewModel.HasStoppedLevelCheck);
         inputGainControls.IsEnabled = enabled;
-        chkCountIn.IsEnabled = enabled;
-        chkMetronome.IsEnabled = enabled;
-        txtBpm.IsEnabled = enabled;
-        cmbBars.IsEnabled = enabled;
+        chkNeedleDrop.IsEnabled = enabled;
+        bool metronomeEnabled = enabled && chkNeedleDrop.IsChecked != true;
+        chkCountIn.IsEnabled = metronomeEnabled;
+        chkMetronome.IsEnabled = metronomeEnabled;
+        txtBpm.IsEnabled = metronomeEnabled;
+        cmbBars.IsEnabled = metronomeEnabled;
         chkPunch.IsEnabled = enabled;
     }
 

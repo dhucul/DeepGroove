@@ -421,10 +421,12 @@ public sealed class RecordingLevelAnalyzer
         // sample was programme itself. When a click owns the global peak, its
         // interpolator ringing says nothing about the music, so no premium is
         // applied (the unseen-transient reserve covers ordinary overs).
-        bool globalPeakIsClick = double.IsFinite(programSamplePeakDb)
+        bool narrowArtifactOwnsAbsolutePeak = double.IsFinite(programSamplePeakDb)
             && double.IsFinite(samplePeakDb)
             && samplePeakDb - programSamplePeakDb > ClickNarrownessDb;
-        double intersamplePremiumDb = double.IsFinite(truePeakDb) && _overallPeak > 0 && !globalPeakIsClick
+        double intersamplePremiumDb = double.IsFinite(truePeakDb)
+            && _overallPeak > 0
+            && !narrowArtifactOwnsAbsolutePeak
             ? Math.Clamp(truePeakDb - samplePeakDb, 0, MaximumIntersamplePremiumDb)
             : 0;
         double programPeakDb = double.IsFinite(programSamplePeakDb)
@@ -451,11 +453,18 @@ public sealed class RecordingLevelAnalyzer
         double confidence = Math.Min(0.95, 1 - Math.Exp(-activeSeconds / 30.0));
 
         RecordingLevelStatus status;
-        if (_clippedSamples > 0)
+        // A stylus click can touch (or interpolate above) full scale while the
+        // musical programme remains conservative. Lowering the whole side to
+        // preserve a handful of samples that declicking will replace produces a
+        // needlessly quiet transfer. Only let rail hits or true-peak overs latch
+        // the warning when the robust programme peak says they are not a narrow
+        // artifact. Clipping that occupies a meaningful part of a block survives
+        // the trimmed-peak rank and therefore remains an immediate warning.
+        if (_clippedSamples > 0 && !narrowArtifactOwnsAbsolutePeak)
             status = RecordingLevelStatus.Clipping;
-        else if (HasRepeatedFlatTops())
+        else if (HasRepeatedFlatTops() && !narrowArtifactOwnsAbsolutePeak)
             status = RecordingLevelStatus.UpstreamClipping;
-        else if (truePeakDb >= 0)
+        else if (truePeakDb >= 0 && !narrowArtifactOwnsAbsolutePeak)
             // An intersample over is not the same as a sample hitting the
             // converter rail, but it is an immediate headroom warning.
             status = RecordingLevelStatus.Hot;

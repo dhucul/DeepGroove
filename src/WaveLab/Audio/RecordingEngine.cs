@@ -54,11 +54,11 @@ public sealed class RecordingEngine : IDisposable
         public bool TryConsumeBoundaryDiscard(long dataState) =>
             Interlocked.CompareExchange(ref _discardBoundaryState, -1, dataState) == dataState;
 
-        public void Advance(bool retainAudio)
+        public void Advance(bool retainAudio, bool discardFirstPacket = true)
         {
             long nextEpoch = (DataState >> 1) + 1;
             long nextState = (nextEpoch << 1) | (retainAudio ? 1L : 0L);
-            Volatile.Write(ref _discardBoundaryState, nextState);
+            Volatile.Write(ref _discardBoundaryState, discardFirstPacket ? nextState : -1);
             Volatile.Write(ref _dataState, nextState);
         }
     }
@@ -75,9 +75,13 @@ public sealed class RecordingEngine : IDisposable
         public CaptureDataBoundary DataBoundary { get; } = new(retainAudio);
         public long DataState => DataBoundary.DataState;
         public bool RetainAudio => DataBoundary.RetainAudio;
+        public NeedleDropDetector? NeedleDropDetector { get; set; }
+        public Queue<float[]> NeedleDropPreRoll { get; } = new();
+        public int NeedleDropPreRollSamples { get; set; }
 
         /// <summary>Call only while holding the owning engine's block and session locks.</summary>
-        public void AdvanceDataState(bool retainAudio) => DataBoundary.Advance(retainAudio);
+        public void AdvanceDataState(bool retainAudio, bool discardFirstPacket = true) =>
+            DataBoundary.Advance(retainAudio, discardFirstPacket);
 
         /// <summary>Access only while holding the owning engine's session lock.</summary>
         public bool AcceptCallbacks { get; set; } = true;
@@ -177,6 +181,7 @@ public sealed class RecordingEngine : IDisposable
     }
     public bool HasPendingCapture { get { lock (_blocks) return _pendingSnapshot != null; } }
     public event Action<RecordingStoppedInfo>? CaptureStopped;
+    public event Action<long>? NeedleDropTriggered;
 
     /// <summary>
     /// True while <paramref name="sessionId"/> still identifies the session
@@ -296,6 +301,68 @@ public sealed class RecordingEngine : IDisposable
     }
 
     /// <summary>
+    /// Start monitoring without retaining audio until the stylus-contact
+    /// transient is detected. The trigger packet and a short safety pre-roll are
+    /// promoted into the take without reopening the input device.
+    /// </summary>
+    public long StartOnNeedleDrop(string? deviceId)
+    {
+        lock (_lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            long sessionId = StartCore(deviceId, retainAudio: false);
+            if (!ArmNeedleDropCore(sessionId))
+            {
+                Stop();
+                throw new InvalidOperationException("The input stream ended before it could be armed.");
+            }
+            return sessionId;
+        }
+    }
+
+    /// <summary>Arm an already-running level-check stream for stylus contact.</summary>
+    public bool ArmNeedleDrop(long sessionId)
+    {
+        if (sessionId <= 0) return false;
+        lock (_lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            return ArmNeedleDropCore(sessionId);
+        }
+    }
+
+    private bool ArmNeedleDropCore(long sessionId)
+    {
+        CaptureSession? session = GetCurrentSession();
+        if (session == null || session.Id != sessionId) return false;
+        lock (_blocks)
+        {
+            lock (_sessionLock)
+            {
+                if (!CanTransitionLevelCheck(
+                        ReferenceEquals(_session, session),
+                        session.AcceptCallbacks,
+                        session.Stopped.Task.IsCompleted,
+                        IsRecording,
+                        session.RetainAudio)) return false;
+
+                _blocks.Clear();
+                _pendingSnapshot = null;
+                Interlocked.Exchange(ref _totalSamples, 0);
+                Volatile.Write(ref _capacityReached, false);
+                _pendingCaptureNote = BuildCaptureNote(_levelAnalyzer.Snapshot);
+                _levelAnalyzer.Reset();
+                PeakL = PeakR = RmsL = RmsR = 0;
+                session.NeedleDropPreRoll.Clear();
+                session.NeedleDropPreRollSamples = 0;
+                session.NeedleDropDetector = new NeedleDropDetector();
+                session.AdvanceDataState(retainAudio: false);
+                return true;
+            }
+        }
+    }
+
+    /// <summary>
     /// Atomically discard calibration history and begin retaining the current
     /// monitor stream. No device reopen occurs at the take boundary.
     /// </summary>
@@ -326,6 +393,9 @@ public sealed class RecordingEngine : IDisposable
                     _pendingCaptureNote = BuildCaptureNote(_levelAnalyzer.Snapshot);
                     _levelAnalyzer.Reset();
                     PeakL = PeakR = RmsL = RmsR = 0;
+                    session.NeedleDropDetector = null;
+                    session.NeedleDropPreRoll.Clear();
+                    session.NeedleDropPreRollSamples = 0;
                     session.AdvanceDataState(retainAudio: true);
                     return true;
                 }
@@ -521,6 +591,7 @@ public sealed class RecordingEngine : IDisposable
         }
 
         bool capacityRejected = false;
+        bool needleDropTriggered = false;
         lock (_blocks)
         {
             // Unsubscribing does not revoke a delegate invocation that was
@@ -553,11 +624,43 @@ public sealed class RecordingEngine : IDisposable
                 _levelAnalyzer.Process(block, 0, samples, sourceClippedSamples);
                 SanitizeNonFiniteSamples(block);
                 _inputMonitor.Enqueue(block, samples);
-                if (retainAudio)
+                if (!retainAudio && session.NeedleDropDetector != null)
+                {
+                    EnqueueNeedleDropPreRoll(session, block, samples, channels);
+                    if (session.NeedleDropDetector.Process(block, samples, channels,
+                            Volatile.Read(ref _sampleRate)))
+                    {
+                        _blocks.Clear();
+                        long retainedSamples = 0;
+                        foreach (float[] preRollBlock in session.NeedleDropPreRoll)
+                        {
+                            _blocks.Add(preRollBlock);
+                            retainedSamples += preRollBlock.Length;
+                        }
+                        Interlocked.Exchange(ref _totalSamples, retainedSamples);
+                        _levelAnalyzer.Reset();
+                        session.NeedleDropPreRoll.Clear();
+                        session.NeedleDropPreRollSamples = 0;
+                        session.NeedleDropDetector = null;
+                        // This callback already owns the contact packet. Advance
+                        // retention without discarding the following packet.
+                        session.AdvanceDataState(retainAudio: true, discardFirstPacket: false);
+                        needleDropTriggered = true;
+                    }
+                    else
+                    {
+                        Interlocked.Add(ref _totalSamples, samples);
+                    }
+                }
+                else if (retainAudio)
                 {
                     _blocks.Add(block);
+                    Interlocked.Add(ref _totalSamples, samples);
                 }
-                Interlocked.Add(ref _totalSamples, samples);
+                else
+                {
+                    Interlocked.Add(ref _totalSamples, samples);
+                }
                 PeakL = pl;
                 PeakR = channels > 1 ? pr : pl;
                 RmsL = (float)Math.Sqrt(squareL / Math.Max(1, frames));
@@ -572,6 +675,35 @@ public sealed class RecordingEngine : IDisposable
             // Stop capturing but keep the buffered audio for finalization.
             _ = Task.Run(() => { try { session.Capture.StopRecording(); } catch { } });
             return;
+        }
+        if (needleDropTriggered) RaiseNeedleDropTriggered(session.Id);
+    }
+
+    private void EnqueueNeedleDropPreRoll(
+        CaptureSession session,
+        float[] block,
+        int samples,
+        int channels)
+    {
+        session.NeedleDropPreRoll.Enqueue(block);
+        session.NeedleDropPreRollSamples += samples;
+        int maximumSamples = Math.Max(channels,
+            (int)Math.Round(Volatile.Read(ref _sampleRate) * channels * 0.25));
+        while (session.NeedleDropPreRollSamples > maximumSamples
+               && session.NeedleDropPreRoll.Count > 1)
+        {
+            session.NeedleDropPreRollSamples -= session.NeedleDropPreRoll.Dequeue().Length;
+        }
+    }
+
+    private void RaiseNeedleDropTriggered(long sessionId)
+    {
+        var handlers = NeedleDropTriggered;
+        if (handlers == null) return;
+        foreach (Action<long> handler in handlers.GetInvocationList())
+        {
+            try { handler(sessionId); }
+            catch { /* A subscriber must not terminate NAudio's callback thread. */ }
         }
     }
 
@@ -828,6 +960,7 @@ public sealed class RecordingEngine : IDisposable
             finally
             {
                 CaptureStopped = null;
+                NeedleDropTriggered = null;
                 try { _inputMonitor.Dispose(); }
                 finally
                 {

@@ -131,18 +131,18 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Fact]
-    public void DigitalFullScaleSamplesLatchClippingImmediately()
+    public void BroadDigitalFullScaleEventLatchesClippingImmediately()
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
         float[] data = SineSecond(-12);
-        data[401] = 1.0f;
-        data[402] = -1.0f;
+        for (int frame = 400; frame < 900; frame++)
+            data[frame] = frame % 2 == 0 ? 1.0f : -1.0f;
 
         analyzer.Process(data);
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.Equal(RecordingLevelStatus.Clipping, result.Status);
-        Assert.Equal(2, result.ClippedSamples);
+        Assert.Equal(500, result.ClippedSamples);
         Assert.True(result.TruePeakDb >= 0);
     }
 
@@ -453,6 +453,47 @@ public sealed class RecordingLevelAnalyzerTests
         // The absolute meter still shows the click…
         Assert.InRange(result.TruePeakDb, -6, 0);
         // …but the recommendation protects the programme.
+        Assert.InRange(result.ProgramPeakDb, -12.8, -11.3);
+        Assert.InRange(result.SuggestedGainDb, 5, 6);
+    }
+
+    [Fact]
+    public void IsolatedFullScaleClicksDoNotTellUserToLowerTheProgramme()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] second = SineSecond(-12);
+        second[399] = 0.2f;
+        second[400] = 1.0f;
+        second[401] = 1.0f;
+        second[402] = 1.0f;
+        second[403] = 0.2f;
+
+        FeedRepeated(analyzer, second, seconds: 60);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.Equal(RecordingLevelStatus.TooLow, result.Status);
+        Assert.True(result.TruePeakDb >= 0);
+        Assert.Equal(180, result.ClippedSamples);
+        Assert.InRange(result.ProgramPeakDb, -12.8, -11.3);
+        Assert.InRange(result.SuggestedGainDb, 5, 6);
+    }
+
+    [Fact]
+    public void RepeatedNarrowPlateausDoNotMasqueradeAsProgrammeClipping()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] second = SineSecond(-12);
+        second[399] = 0.2f;
+        second[400] = 0.8f;
+        second[401] = 0.8f;
+        second[402] = 0.8f;
+        second[403] = 0.2f;
+
+        FeedRepeated(analyzer, second, seconds: 60);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.True(result.FlatTopCount >= 60);
+        Assert.Equal(RecordingLevelStatus.TooLow, result.Status);
         Assert.InRange(result.ProgramPeakDb, -12.8, -11.3);
         Assert.InRange(result.SuggestedGainDb, 5, 6);
     }

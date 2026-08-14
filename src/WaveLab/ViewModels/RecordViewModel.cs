@@ -17,6 +17,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private CaptureDevice? _selectedDevice;
     private bool _isRecording;
     private bool _isLevelChecking;
+    private bool _isWaitingForNeedleDrop;
     private bool _isFinalizing;
     private bool _levelCheckStopped;
     private double _peakL = -60, _peakR = -60;
@@ -65,13 +66,18 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                     || info.SessionId != Interlocked.Read(ref _expectedRecordingSessionId)
                     || !_engine.IsCurrentSession(info.SessionId)) return;
 
-                if (IsLevelChecking)
+                if (IsLevelChecking || IsWaitingForNeedleDrop)
                 {
+                    bool wasWaitingForNeedleDrop = IsWaitingForNeedleDrop;
                     IsLevelChecking = false;
+                    IsWaitingForNeedleDrop = false;
                     Interlocked.CompareExchange(ref _expectedRecordingSessionId, 0, info.SessionId);
                     _engine.Stop();
                     RaiseLevelProperties();
-                    MonitoringStopped?.Invoke(info);
+                    if (wasWaitingForNeedleDrop)
+                        NeedleDropMonitoringStopped?.Invoke(info);
+                    else
+                        MonitoringStopped?.Invoke(info);
                     return;
                 }
 
@@ -80,6 +86,22 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 try { await StopAndFinishSessionAsync(info.SessionId); }
                 catch (Exception ex) { failure = ex; }
                 UnexpectedStopCompleted?.Invoke(info, failure);
+            });
+        };
+        _engine.NeedleDropTriggered += sessionId =>
+        {
+            if (_disposed
+                || sessionId != Interlocked.Read(ref _expectedRecordingSessionId)
+                || !_engine.IsCurrentSession(sessionId)) return;
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                if (_disposed
+                    || !IsWaitingForNeedleDrop
+                    || sessionId != Interlocked.Read(ref _expectedRecordingSessionId)
+                    || !_engine.IsCurrentSession(sessionId)) return;
+                IsWaitingForNeedleDrop = false;
+                IsRecording = true;
+                NeedleDropStarted?.Invoke();
             });
         };
     }
@@ -129,6 +151,19 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Raise(nameof(LevelCheckButtonText));
             Raise(nameof(LevelStatusTitle));
             Raise(nameof(LevelStatusDetail));
+        }
+    }
+
+    public bool IsWaitingForNeedleDrop
+    {
+        get => _isWaitingForNeedleDrop;
+        private set
+        {
+            if (!Set(ref _isWaitingForNeedleDrop, value)) return;
+            Raise(nameof(FormatText));
+            Raise(nameof(LevelStatusTitle));
+            Raise(nameof(LevelStatusDetail));
+            Raise(nameof(ElapsedText));
         }
     }
 
@@ -237,13 +272,14 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     }
 
     public string ElapsedText => TimeFormat.Position(
-        (long)(_engine.RecordedSeconds * _engine.SampleRate), _engine.SampleRate);
+        IsWaitingForNeedleDrop ? 0 : (long)(_engine.RecordedSeconds * _engine.SampleRate),
+        _engine.SampleRate);
 
     public string FormatText
     {
         get
         {
-            if (!IsRecording && !IsLevelChecking)
+            if (!IsRecording && !IsLevelChecking && !IsWaitingForNeedleDrop)
                 return "Records in the device mix format · saved as 16/24/32-bit WAV";
             string channels = _engine.Channels switch
             {
@@ -268,6 +304,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             if (HasStoppedLevelCheck) return "Level check stopped";
+            if (IsWaitingForNeedleDrop) return "Armed for needle drop";
             if (!IsLevelChecking && !IsRecording) return "Check levels before the take";
             if (_levelSnapshot.Status == RecordingLevelStatus.Clipping)
                 return "Digital clipping detected";
@@ -294,6 +331,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 return _levelSnapshot.ActiveSeconds >= 10
                     ? "Monitoring is stopped and the completed measurements are frozen. Start recording, or run a new check after changing the input level."
                     : "Monitoring is stopped and the provisional measurements are frozen. Run a new check for at least 10 active seconds before recording.";
+            if (IsWaitingForNeedleDrop)
+                return "Lower the stylus onto the lead-in groove. Recording starts from the contact click with a 250 ms safety pre-roll.";
             if (!IsLevelChecking && !IsRecording)
                 return "Cue the loudest passage on the side and play at least 10 seconds. A 30–60 second scan gives a safer recommendation.";
 
@@ -315,7 +354,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             if (snapshot.ActiveSeconds >= 10
                 && double.IsFinite(snapshot.TruePeakDb) && double.IsFinite(snapshot.ProgramPeakDb)
                 && snapshot.TruePeakDb - snapshot.ProgramPeakDb >= 2)
-                notes += $" Isolated clicks run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; the recommendation protects the music, and declicking removes the clicks later.";
+                notes += snapshot.ClippedSamples > 0 && snapshot.Status != RecordingLevelStatus.Clipping
+                    ? $" {snapshot.ClippedSamples:N0} isolated click sample(s) touched digital full scale, but run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; they are excluded from the gain advice because declicking replaces them later."
+                    : $" Isolated clicks run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; the recommendation protects the music, and declicking removes the clicks later.";
             return snapshot.Status switch
             {
                 RecordingLevelStatus.WaitingForSignal =>
@@ -451,13 +492,19 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             RecordingLevelSnapshot snapshot = _levelSnapshot;
-            if (snapshot.ClippedSamples > 0) return $"{snapshot.ClippedSamples:N0} DIGITAL";
+            if (snapshot.ClippedSamples > 0)
+                return snapshot.Status == RecordingLevelStatus.Clipping
+                    ? $"{snapshot.ClippedSamples:N0} DIGITAL"
+                    : $"{snapshot.ClippedSamples:N0} ISOLATED";
             if (snapshot.InvalidSamples > 0) return $"{snapshot.InvalidSamples:N0} INVALID";
             if (snapshot.Status == RecordingLevelStatus.UpstreamClipping)
                 return $"{snapshot.FlatTopCount:N0} FLAT TOP";
             return "NONE";
         }
     }
+
+    public bool HasOnlyIsolatedClipping => _levelSnapshot.ClippedSamples > 0
+        && _levelSnapshot.Status != RecordingLevelStatus.Clipping;
 
     public string LevelProgressText
     {
@@ -471,10 +518,12 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     public AudioDocument? Result { get; private set; }
     public event Action<RecordingStoppedInfo, Exception?>? UnexpectedStopCompleted;
     public event Action<RecordingStoppedInfo>? MonitoringStopped;
+    public event Action<RecordingStoppedInfo>? NeedleDropMonitoringStopped;
+    public event Action? NeedleDropStarted;
 
     public bool StartLevelCheck()
     {
-        if (IsRecording || IsLevelChecking || IsFinalizing || HasPendingCapture) return false;
+        if (IsRecording || IsLevelChecking || IsWaitingForNeedleDrop || IsFinalizing || HasPendingCapture) return false;
         try
         {
             Interlocked.Exchange(ref _expectedRecordingSessionId, 0);
@@ -503,7 +552,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     private bool ResetLevelCheck(bool preserveRecommendation)
     {
-        if (IsRecording || IsFinalizing) return false;
+        if (IsRecording || IsWaitingForNeedleDrop || IsFinalizing) return false;
         if (IsLevelChecking)
         {
             long sessionId = Interlocked.Read(ref _expectedRecordingSessionId);
@@ -524,7 +573,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     public bool StopLevelCheck()
     {
-        if (!IsLevelChecking || IsRecording || IsFinalizing) return false;
+        if (!IsLevelChecking || IsRecording || IsWaitingForNeedleDrop || IsFinalizing) return false;
         RecordingLevelSnapshot stoppedSnapshot = _engine.LevelSnapshot;
         // Capture the last completed analyzer block before the timer stops polling;
         // otherwise a recommendation produced just before Stop Check can be lost.
@@ -540,7 +589,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     public bool Start()
     {
-        if (IsRecording || IsFinalizing || HasPendingCapture) return false;
+        if (IsRecording || IsWaitingForNeedleDrop || IsFinalizing || HasPendingCapture) return false;
         try
         {
             long sessionId;
@@ -588,6 +637,55 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         }
     }
 
+    public bool StartOnNeedleDrop()
+    {
+        if (IsRecording || IsWaitingForNeedleDrop || IsFinalizing || HasPendingCapture) return false;
+        try
+        {
+            long sessionId;
+            if (IsLevelChecking)
+            {
+                sessionId = Interlocked.Read(ref _expectedRecordingSessionId);
+                if (!_engine.ArmNeedleDrop(sessionId))
+                    throw new InvalidOperationException(
+                        "The monitoring session ended before the needle trigger could be armed.");
+            }
+            else
+            {
+                Interlocked.Exchange(ref _expectedRecordingSessionId, 0);
+                sessionId = _engine.StartOnNeedleDrop(_selectedDevice?.Id);
+                Interlocked.Exchange(ref _expectedRecordingSessionId, sessionId);
+            }
+
+            Result = null;
+            _levelSnapshot = _engine.LevelSnapshot;
+            ResetDisplayedLevels();
+            HasStoppedLevelCheck = false;
+            IsLevelChecking = false;
+            IsWaitingForNeedleDrop = true;
+            PersistSelectedDevice();
+            RaiseLevelProperties();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            long monitorSessionId = Interlocked.Read(ref _expectedRecordingSessionId);
+            if (!_engine.IsCurrentSession(monitorSessionId))
+            {
+                Interlocked.CompareExchange(ref _expectedRecordingSessionId, 0, monitorSessionId);
+                _engine.Stop();
+                _levelSnapshot = _engine.LevelSnapshot;
+                IsLevelChecking = false;
+                IsWaitingForNeedleDrop = false;
+                RaiseLevelProperties();
+            }
+            SyncSoftwarePlaythroughState();
+            System.Windows.MessageBox.Show($"Could not arm needle-drop recording:\n{ex.Message}", "Record",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return false;
+        }
+    }
+
     public Task StopAndFinishAsync() => StopAndFinishAsync(sessionId: null);
 
     private Task StopAndFinishSessionAsync(long sessionId) => StopAndFinishAsync(sessionId);
@@ -627,6 +725,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         _levelSnapshot = _engine.LevelSnapshot;
         HasStoppedLevelCheck = false;
         IsLevelChecking = false;
+        IsWaitingForNeedleDrop = false;
         IsRecording = false;
         ResetDisplayedLevels();
         Raise(nameof(HasPendingCapture));
@@ -642,7 +741,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             ? target
             : Math.Max(target, current - 1.5);
 
-        if (!IsRecording && !IsLevelChecking) return;
+        if (!IsRecording && !IsLevelChecking && !IsWaitingForNeedleDrop) return;
 
         double rmsDbL = ToDb(_engine.RmsL);
         double rmsDbR = ToDb(_engine.RmsR);
@@ -846,6 +945,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         Raise(nameof(HumText));
         Raise(nameof(BalanceText));
         Raise(nameof(ClippingText));
+        Raise(nameof(HasOnlyIsolatedClipping));
         Raise(nameof(LevelProgressText));
         Raise(nameof(SoftwarePlaythroughStatusText));
     }

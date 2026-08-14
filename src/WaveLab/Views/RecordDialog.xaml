@@ -277,7 +277,8 @@
                                     </TextBlock></StackPanel>
                             </Border>
                             <Border Grid.Column="5" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="CLIPPING" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
+                                <StackPanel><TextBlock Text="CLIPPING" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                                                       ToolTip="Sustained digital rail hits warn; isolated stylus clicks are labeled but excluded from gain advice"/>
                                     <TextBlock Text="{Binding ClippingText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5">
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">
@@ -285,6 +286,9 @@
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding ClippingText}" Value="NONE">
                                                         <Setter Property="Foreground" Value="#73E6AE"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding HasOnlyIsolatedClipping}" Value="True">
+                                                        <Setter Property="Foreground" Value="{StaticResource Amber}"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -324,6 +328,20 @@
                                     Width="112" Height="32" Margin="8,0,0,0" Style="{StaticResource AccentButton}"
                                     Click="OnLevelCheck" ToolTip="Start or stop monitoring without keeping the calibration audio"/>
                         </Grid>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock Text="AUTOMATIC START" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
+                           Margin="0,14,0,0"/>
+                <Border Background="#101918" BorderBrush="#2D4742" BorderThickness="1" CornerRadius="8"
+                        Padding="12,10" Margin="0,7,0,0">
+                    <StackPanel>
+                        <CheckBox x:Name="chkNeedleDrop" Content="Start when the needle touches the record"
+                                  Checked="OnNeedleDropOptionChanged" Unchecked="OnNeedleDropOptionChanged"
+                                  AutomationProperties.Name="Start recording on needle drop"/>
+                        <TextBlock Text="Listens while armed, then keeps the contact click and 250 ms before it so the opening groove is never clipped."
+                                   Margin="22,4,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"
+                                   TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
 
