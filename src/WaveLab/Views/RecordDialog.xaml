@@ -44,6 +44,59 @@
                            ToolTip="The last settled level-check outcome remembered for this input"
                            Visibility="{Binding HasDeviceMemory, Converter={StaticResource BoolToVis}}"/>
 
+                <StackPanel x:Name="inputGainControls">
+                <Grid Margin="0,13,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="DEVICE INPUT LEVEL" FontSize="10" FontWeight="Bold"
+                               Foreground="{StaticResource Faint}"/>
+                    <TextBlock Grid.Column="1" Text="{Binding InputLevelText}"
+                               FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                               Foreground="{StaticResource Accent}"/>
+                </Grid>
+                <Slider x:Name="inputLevelSlider" Margin="0,6,0,0"
+                        Minimum="{Binding InputLevelMinimumDb}"
+                        Maximum="{Binding InputLevelMaximumDb}"
+                        TickFrequency="{Binding InputLevelStepDb}"
+                        SmallChange="{Binding InputLevelStepDb}"
+                        LargeChange="3"
+                        IsSnapToTickEnabled="True" IsMoveToPointEnabled="True"
+                        IsEnabled="{Binding HasInputLevelControl}"
+                        Value="{Binding InputLevelDb, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        AutomationProperties.Name="Windows device input level in decibels"/>
+                <TextBlock Text="{Binding InputLevelStatusText}" Margin="0,4,0,0" FontSize="10.5"
+                           Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
+
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="WAVELAB FINE TRIM" FontSize="10" FontWeight="Bold"
+                               Foreground="{StaticResource Faint}"/>
+                    <TextBlock Grid.Column="1" Text="{Binding InputFineTrimText}"
+                               FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                               Foreground="{StaticResource Accent}"/>
+                </Grid>
+                <Slider x:Name="fineTrimSlider" Margin="0,6,0,0"
+                        Minimum="-3" Maximum="0" TickFrequency="0.1"
+                        SmallChange="0.1" LargeChange="0.5"
+                        IsSnapToTickEnabled="True" IsMoveToPointEnabled="True"
+                        Value="{Binding InputFineTrimDb, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        AutomationProperties.Name="WaveLab fine input trim in decibels"/>
+                <TextBlock Text="{Binding InputTotalLevelText}" Margin="0,4,0,0" FontSize="10.5"
+                           Foreground="{StaticResource Faint}"
+                           ToolTip="Fine Trim is attenuation after the device input; it cannot repair converter or preamp clipping."/>
+                </StackPanel>
+
+                <CheckBox Content="Software Playthrough (Input Monitoring)" Margin="0,11,0,0"
+                          IsChecked="{Binding SoftwarePlaythroughEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                          ToolTip="Listen to the fine-trimmed input through WaveLab's selected output device"/>
+                <TextBlock Text="{Binding SoftwarePlaythroughStatusText}" Margin="22,4,0,0" FontSize="10.5"
+                           Foreground="{StaticResource Amber}" TextWrapping="Wrap"/>
+
                 <TextBlock Text="FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
                            Margin="0,13,0,0"/>
                 <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1"
@@ -110,7 +163,7 @@
                         <Grid Margin="0,12,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="170"/>
+                                <ColumnDefinition Width="232"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel Margin="0,0,16,0">
                                 <TextBlock Text="{Binding LevelStatusTitle}" FontSize="15" FontWeight="SemiBold"
@@ -119,13 +172,17 @@
                                            Foreground="#95A7A3" FontSize="11.5" LineHeight="17"/>
                             </StackPanel>
                             <Border Grid.Column="1" Background="#172724" BorderBrush="#37675E" BorderThickness="1"
-                                    CornerRadius="8" Padding="11,8" VerticalAlignment="Top">
+                                    CornerRadius="8" Padding="11,8" VerticalAlignment="Top"
+                                    ToolTip="Held conservatively across everything scanned. Play the whole side for a whole-record setting.">
                                 <StackPanel>
-                                    <TextBlock Text="SUGGESTED INPUT CHANGE" FontSize="8.5" FontWeight="Bold"
+                                    <TextBlock Text="SAFE SETTING FOR THIS SIDE" FontSize="8.5" FontWeight="Bold"
                                                Foreground="#77958E" HorizontalAlignment="Right"/>
-                                    <TextBlock Text="{Binding SuggestedGainText}" Margin="0,4,0,0"
-                                               FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Bold"
+                                    <TextBlock Text="{Binding RecommendedInputSettingText}" Margin="0,4,0,0"
+                                               FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Bold"
                                                Foreground="#CFFFF4" HorizontalAlignment="Right"/>
+                                    <TextBlock Text="{Binding RecommendedInputBreakdownText}" Margin="0,4,0,0"
+                                               FontFamily="{StaticResource MonoFont}" FontSize="8.5"
+                                               Foreground="#77958E" TextWrapping="Wrap" TextAlignment="Right"/>
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -258,9 +315,14 @@
                                 <TextBlock Text="{Binding LevelProgressText}" Margin="0,5,0,0"
                                            FontFamily="{StaticResource MonoFont}" FontSize="9.5" Foreground="#7F918C"/>
                             </StackPanel>
+                            <Button Grid.Column="1" x:Name="resetLevelCheckBtn" Content="Reset Check"
+                                    Width="94" Height="32" Margin="14,0,0,0" IsEnabled="False"
+                                    Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"
+                                    Click="OnResetLevelCheck"
+                                    ToolTip="Clear active or frozen level-check measurements"/>
                             <Button Grid.Column="2" x:Name="levelCheckBtn" Content="{Binding LevelCheckButtonText}"
-                                    Width="112" Height="32" Margin="14,0,0,0" Style="{StaticResource AccentButton}"
-                                    Click="OnLevelCheck" ToolTip="Monitor without keeping the calibration audio"/>
+                                    Width="112" Height="32" Margin="8,0,0,0" Style="{StaticResource AccentButton}"
+                                    Click="OnLevelCheck" ToolTip="Start or stop monitoring without keeping the calibration audio"/>
                         </Grid>
                     </StackPanel>
                 </Border>

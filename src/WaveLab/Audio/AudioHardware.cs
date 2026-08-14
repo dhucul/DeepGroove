@@ -61,6 +61,21 @@ public sealed record AudioEndpointInfo(
 
 public sealed record AudioInputTestResult(double PeakDbFs, double RmsDbFs, string Format);
 
+/// <summary>The Windows endpoint-level control exposed by a capture device.</summary>
+public sealed record AudioInputLevelInfo(
+    bool IsAvailable,
+    double LevelDb,
+    double MinimumDb,
+    double MaximumDb,
+    double IncrementDb,
+    bool IsMuted,
+    string? Error = null);
+
+public sealed record AudioInputSettingPlan(
+    double DeviceLevelDb,
+    double FineTrimDb,
+    double TotalLevelDb);
+
 /// <summary>Read-only endpoint diagnostics and a short output-path test.</summary>
 public static class AudioHardware
 {
@@ -150,6 +165,120 @@ public static class AudioHardware
         }
         catch { }
         return (active, disabled, unplugged);
+    }
+
+    /// <summary>Reads the selected capture endpoint's Windows input-level control.</summary>
+    public static AudioInputLevelInfo GetInputLevel(string? deviceId, Role defaultRole) =>
+        AccessInputLevel(deviceId, defaultRole, requestedLevelDb: null);
+
+    /// <summary>
+    /// Changes the selected capture endpoint's Windows input level and returns
+    /// the value accepted by its driver. This does not add post-capture gain.
+    /// </summary>
+    public static AudioInputLevelInfo SetInputLevel(
+        string? deviceId,
+        Role defaultRole,
+        double levelDb) =>
+        AccessInputLevel(deviceId, defaultRole, levelDb);
+
+    private static AudioInputLevelInfo AccessInputLevel(
+        string? deviceId,
+        Role defaultRole,
+        double? requestedLevelDb)
+    {
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            using MMDevice device = deviceId == null
+                ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, defaultRole)
+                : enumerator.GetDevice(deviceId);
+            using AudioEndpointVolume volume = device.AudioEndpointVolume;
+            AudioEndpointVolumeVolumeRange range = volume.VolumeRange;
+            double minimum = range.MinDecibels;
+            double maximum = range.MaxDecibels;
+            double increment = range.IncrementDecibels;
+            if (!double.IsFinite(minimum) || !double.IsFinite(maximum) || maximum <= minimum)
+                throw new InvalidOperationException("The input driver reported an invalid level range.");
+
+            if (requestedLevelDb is double requested)
+                volume.MasterVolumeLevel = (float)NormalizeInputLevelDb(
+                    requested, minimum, maximum, increment);
+
+            return new AudioInputLevelInfo(
+                true,
+                Math.Clamp(volume.MasterVolumeLevel, minimum, maximum),
+                minimum,
+                maximum,
+                double.IsFinite(increment) && increment > 0 ? increment : 0.5,
+                volume.Mute);
+        }
+        catch (Exception ex)
+        {
+            return new AudioInputLevelInfo(false, 0, -96, 0, 0.5, false, ex.Message);
+        }
+    }
+
+    internal static double NormalizeInputLevelDb(
+        double levelDb,
+        double minimumDb,
+        double maximumDb,
+        double incrementDb)
+    {
+        if (!double.IsFinite(levelDb)) levelDb = minimumDb;
+        double normalized = Math.Clamp(levelDb, minimumDb, maximumDb);
+        if (double.IsFinite(incrementDb) && incrementDb > 0)
+        {
+            normalized = minimumDb + Math.Round(
+                (normalized - minimumDb) / incrementDb,
+                MidpointRounding.AwayFromZero) * incrementDb;
+        }
+        return Math.Clamp(normalized, minimumDb, maximumDb);
+    }
+
+    internal static AudioInputSettingPlan PlanInputSetting(
+        double targetTotalDb,
+        double minimumDeviceDb,
+        double maximumDeviceDb,
+        double deviceIncrementDb)
+    {
+        double increment = double.IsFinite(deviceIncrementDb) && deviceIncrementDb > 0
+            ? deviceIncrementDb
+            : 0.5;
+        double target = double.IsFinite(targetTotalDb) ? targetTotalDb : maximumDeviceDb;
+        double steps = Math.Ceiling((target - minimumDeviceDb) / increment - 1e-9);
+        double device = Math.Clamp(
+            minimumDeviceDb + steps * increment,
+            minimumDeviceDb,
+            maximumDeviceDb);
+        double fine = RecordingEngine.NormalizeInputFineTrimDb(target - device);
+        double total = device + fine;
+
+        // Fine Trim rounds to 0.1 dB. Bias a half-step rounding result downward
+        // rather than allowing the displayed "safe" setting to exceed its target.
+        if (total > target + 1e-9 && fine > -3)
+        {
+            fine = RecordingEngine.NormalizeInputFineTrimDb(fine - 0.1);
+            total = device + fine;
+        }
+
+        if (total > target + 1e-9 && device > minimumDeviceDb)
+        {
+            // A driver step can be wider than Fine Trim's 3 dB range. In that
+            // case the next higher device step is unsafe, so use the greatest
+            // hardware step at or below the requested total.
+            double lowerSteps = Math.Floor(
+                (target - minimumDeviceDb) / increment + 1e-9);
+            double lowerDevice = Math.Clamp(
+                minimumDeviceDb + lowerSteps * increment,
+                minimumDeviceDb,
+                maximumDeviceDb);
+            double lowerFine = RecordingEngine.NormalizeInputFineTrimDb(target - lowerDevice);
+            double lowerTotal = lowerDevice + lowerFine;
+            if (lowerTotal <= target + 1e-9)
+                return new AudioInputSettingPlan(lowerDevice, lowerFine, lowerTotal);
+        }
+
+        return new AudioInputSettingPlan(device, fine, total);
     }
 
     public static async Task TestOutputAsync(

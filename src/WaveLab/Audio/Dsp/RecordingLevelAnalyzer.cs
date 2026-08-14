@@ -210,19 +210,26 @@ public sealed class RecordingLevelAnalyzer
     }
 
     /// <summary>Processes complete interleaved sample frames from a buffer range.</summary>
-    public void Process(float[] interleaved, int offset, int count)
+    public void Process(
+        float[] interleaved,
+        int offset,
+        int count,
+        long? sourceClippedSamples = null)
     {
         ArgumentNullException.ThrowIfNull(interleaved);
         if (offset < 0 || offset > interleaved.Length)
             throw new ArgumentOutOfRangeException(nameof(offset));
         if (count < 0 || count > interleaved.Length - offset)
             throw new ArgumentOutOfRangeException(nameof(count));
+        if (sourceClippedSamples < 0)
+            throw new ArgumentOutOfRangeException(nameof(sourceClippedSamples));
 
         lock (_sync)
         {
             if (count % _channels != 0)
                 throw new ArgumentException("Sample count must contain complete channel frames.", nameof(count));
             if (count == 0) return;
+            if (sourceClippedSamples is long clipped) _clippedSamples += clipped;
 
             // LoudnessMeter treats invalid samples as zero and deliberately
             // breaks true-peak interpolation continuity across corrupt data.
@@ -278,7 +285,7 @@ public sealed class RecordingLevelAnalyzer
                     }
 
                     double magnitude = Math.Abs((double)sample);
-                    if (magnitude >= DigitalClipLevel) _clippedSamples++;
+                    if (sourceClippedSamples is null && magnitude >= DigitalClipLevel) _clippedSamples++;
                     if (magnitude > _overallPeak) _overallPeak = magnitude;
                     if (magnitude > _blockPeak) _blockPeak = magnitude;
                     if (magnitude > 1e-9)

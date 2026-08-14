@@ -147,6 +147,20 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Fact]
+    public void SourceClippingRemainsLatchedAfterFineAttenuation()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] attenuated = [0.5f, -0.5f];
+
+        analyzer.Process(attenuated, 0, attenuated.Length, sourceClippedSamples: 2);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.Equal(RecordingLevelStatus.Clipping, result.Status);
+        Assert.Equal(2, result.ClippedSamples);
+        Assert.InRange(result.TruePeakDb, -6.03, -6.01);
+    }
+
+    [Fact]
     public void IntersampleOverIsHotButNotDigitalClipping()
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);

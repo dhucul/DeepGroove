@@ -15,6 +15,7 @@ public sealed class RecordingEngine : IDisposable
     // 768 MiB source cap bounds finalization near 1.5 GiB while retaining roughly
     // 35 minutes of stereo 48 kHz audio—long enough for unusually long LP sides.
     private const long MaxCaptureBytes = 768L * 1024 * 1024;
+    private const float DigitalClipLevel = 0.999969f;
 
     private CaptureSession? _session;
     private readonly object _sessionLock = new();
@@ -27,6 +28,8 @@ public sealed class RecordingEngine : IDisposable
     private float _peakR;
     private float _rmsL;
     private float _rmsR;
+    private double _inputFineTrimDb;
+    private float _inputFineTrimGain = 1;
     private Exception? _lastStopError;
     private readonly SemaphoreSlim _stopGate = new(1, 1);
     private readonly SemaphoreSlim _finalizeGate = new(1, 1);
@@ -37,6 +40,7 @@ public sealed class RecordingEngine : IDisposable
     private long _nextSessionId;
     private string? _pendingCaptureNote;
     private readonly RecordingLevelAnalyzer _levelAnalyzer = new(48000, 2);
+    private readonly SoftwareInputMonitor _inputMonitor = new();
 
     internal sealed class CaptureDataBoundary(bool retainAudio)
     {
@@ -141,6 +145,36 @@ public sealed class RecordingEngine : IDisposable
         private set => Volatile.Write(ref _lastStopError, value);
     }
     public bool CapacityReached => Volatile.Read(ref _capacityReached);
+    public bool SoftwarePlaythroughEnabled
+    {
+        get => _inputMonitor.Enabled;
+        set
+        {
+            lock (_lifecycleLock)
+            {
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+                _inputMonitor.SetEnabled(value);
+                if (value && IsRecording)
+                {
+                    _inputMonitor.Configure(WaveFormat.CreateIeeeFloatWaveFormat(
+                        Volatile.Read(ref _sampleRate),
+                        Volatile.Read(ref _channels)));
+                }
+            }
+        }
+    }
+    public bool IsSoftwarePlaythroughActive => _inputMonitor.IsActive;
+    public string? SoftwarePlaythroughError => _inputMonitor.LastError;
+    public double InputFineTrimDb
+    {
+        get => Volatile.Read(ref _inputFineTrimDb);
+        set
+        {
+            double normalized = NormalizeInputFineTrimDb(value);
+            Volatile.Write(ref _inputFineTrimGain, (float)Math.Pow(10, normalized / 20));
+            Volatile.Write(ref _inputFineTrimDb, normalized);
+        }
+    }
     public bool HasPendingCapture { get { lock (_blocks) return _pendingSnapshot != null; } }
     public event Action<RecordingStoppedInfo>? CaptureStopped;
 
@@ -375,6 +409,8 @@ public sealed class RecordingEngine : IDisposable
             LastStopError = null;
             PeakL = PeakR = RmsL = RmsR = 0;
             _levelAnalyzer.Configure(format.SampleRate, format.Channels);
+            _inputMonitor.Configure(WaveFormat.CreateIeeeFloatWaveFormat(
+                format.SampleRate, format.Channels));
 
             session = new CaptureSession(
                 Interlocked.Increment(ref _nextSessionId),
@@ -400,6 +436,7 @@ public sealed class RecordingEngine : IDisposable
             capture.DataAvailable -= OnData;
             capture.RecordingStopped -= OnRecordingStopped;
             try { capture.Dispose(); } catch { }
+            _inputMonitor.StopStream();
             throw;
         }
     }
@@ -451,6 +488,20 @@ public sealed class RecordingEngine : IDisposable
         var block = new float[samples];
         Buffer.BlockCopy(e.Buffer, 0, block, 0, samples * sizeof(float));
 
+        // The endpoint may only offer 1.5-2 dB hardware steps. A small,
+        // attenuation-only trim fills the gap at 0.1 dB resolution. Count
+        // clipping before applying it so software attenuation can never hide an
+        // overloaded converter from the level assistant.
+        float fineTrimGain = Volatile.Read(ref _inputFineTrimGain);
+        long sourceClippedSamples = 0;
+        for (int sampleIndex = 0; sampleIndex < samples; sampleIndex++)
+        {
+            float sample = block[sampleIndex];
+            if (!float.IsFinite(sample)) continue;
+            if (Math.Abs(sample) >= DigitalClipLevel) sourceClippedSamples++;
+            block[sampleIndex] = sample * fineTrimGain;
+        }
+
         float pl = 0, pr = 0;
         double squareL = 0, squareR = 0;
         int frames = samples / channels;
@@ -496,12 +547,14 @@ public sealed class RecordingEngine : IDisposable
 
             if (!capacityRejected)
             {
-                // Analyze untouched driver data so invalid-sample telemetry is
-                // accurate, then sanitize before the block can enter a document.
-                _levelAnalyzer.Process(block, 0, samples);
+                // Analyze the fine-trimmed data used by the meters/document while
+                // carrying the pre-trim clip count so attenuation cannot hide an
+                // overloaded input. Sanitize only after diagnostic processing.
+                _levelAnalyzer.Process(block, 0, samples, sourceClippedSamples);
+                SanitizeNonFiniteSamples(block);
+                _inputMonitor.Enqueue(block, samples);
                 if (retainAudio)
                 {
-                    SanitizeNonFiniteSamples(block);
                     _blocks.Add(block);
                 }
                 Interlocked.Add(ref _totalSamples, samples);
@@ -528,6 +581,15 @@ public sealed class RecordingEngine : IDisposable
         {
             if (!float.IsFinite(samples[index])) samples[index] = 0;
         }
+    }
+
+    internal static double NormalizeInputFineTrimDb(double value)
+    {
+        if (!double.IsFinite(value)) return 0;
+        return Math.Clamp(
+            Math.Round(value * 10, MidpointRounding.AwayFromZero) / 10,
+            -3,
+            0);
     }
 
     /// <summary>
@@ -632,8 +694,22 @@ public sealed class RecordingEngine : IDisposable
             DeactivateSession(session);
             capture.DataAvailable -= OnData;
             capture.RecordingStopped -= OnRecordingStopped;
-            capture.Dispose();
-            DetachSession(session);
+            try
+            {
+                capture.Dispose();
+            }
+            catch (Exception ex)
+            {
+                // The stream has already been deactivated and its buffered audio
+                // is still recoverable. Record the teardown failure but continue
+                // finalization so it cannot strand the monitor or the recording.
+                if (LastStopError == null) LastStopError = ex;
+            }
+            finally
+            {
+                DetachSession(session);
+                _inputMonitor.StopStream();
+            }
 
             lock (_blocks)
             {
@@ -719,6 +795,7 @@ public sealed class RecordingEngine : IDisposable
                     try { capture.StopRecording(); } catch { }
                     try { capture.Dispose(); } catch { }
                 }
+                _inputMonitor.StopStream();
 
                 lock (_blocks)
                 {
@@ -751,8 +828,12 @@ public sealed class RecordingEngine : IDisposable
             finally
             {
                 CaptureStopped = null;
-                try { _stopGate.Dispose(); }
-                finally { _finalizeGate.Dispose(); }
+                try { _inputMonitor.Dispose(); }
+                finally
+                {
+                    try { _stopGate.Dispose(); }
+                    finally { _finalizeGate.Dispose(); }
+                }
             }
         }
     }
