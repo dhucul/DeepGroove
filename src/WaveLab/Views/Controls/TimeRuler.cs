@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using WaveLab.Util;
 using WaveLab.ViewModels;
 
@@ -10,8 +11,6 @@ namespace WaveLab.Views.Controls;
 /// <summary>Time ruler with adaptive tick spacing; click to place the cursor.</summary>
 public sealed class TimeRuler : FrameworkElement
 {
-    private bool _invalidateQueued;
-
     public static readonly DependencyProperty DocumentProperty = DependencyProperty.Register(
         nameof(Document), typeof(DocumentViewModel), typeof(TimeRuler),
         new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, OnDocumentChanged));
@@ -39,18 +38,19 @@ public sealed class TimeRuler : FrameworkElement
     {
         if (e.PropertyName is nameof(DocumentViewModel.ViewStart) or nameof(DocumentViewModel.SamplesPerPixel)
             or nameof(DocumentViewModel.MarkersVersion))
-            QueueInvalidateVisual();
+            RequestRedraw();
     }
 
-    private void QueueInvalidateVisual()
+    /// <summary>
+    /// Synchronous on the UI thread. The view scrolls from the CompositionTarget.Rendering
+    /// handler, which runs inside the render pass — deferring the invalidate through the
+    /// dispatcher pushed the update into the *next* pass and let the ruler drift a frame
+    /// out of step with the waveform.
+    /// </summary>
+    private void RequestRedraw()
     {
-        if (_invalidateQueued) return;
-        _invalidateQueued = true;
-        Dispatcher.BeginInvoke(() =>
-        {
-            _invalidateQueued = false;
-            InvalidateVisual();
-        });
+        if (Dispatcher.CheckAccess()) InvalidateVisual();
+        else Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(InvalidateVisual));
     }
 
     private static readonly Brush MarkerBrush = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0x54)));

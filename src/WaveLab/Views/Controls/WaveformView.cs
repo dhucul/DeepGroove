@@ -1,16 +1,33 @@
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
-using WaveLab.Audio;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using WaveLab.ViewModels;
 
 namespace WaveLab.Views.Controls;
 
 /// <summary>
-/// The main waveform editor surface. The expensive per-pixel peak geometry is cached and
-/// only rebuilt when the view actually changes (scroll/zoom/edit) — playhead, cursor,
-/// selection and markers are cheap overlays, so playback and dragging stay fluid.
+/// The main waveform editor surface.
+///
+/// Rendering model — deliberately simple, because the previous geometry-cache design
+/// had a cost that varied wildly with zoom:
+///   * The peak/RMS bands are painted per *device pixel column* straight from
+///     <see cref="Audio.PeakStore"/> into a <see cref="WriteableBitmap"/>. There is no
+///     geometry, no path rasterisation, no cache window, no background build queue.
+///     One frame costs one linear pass over the bitmap, which is the same work at every
+///     zoom level — that flatness is the whole point.
+///   * Everything else (grid, centre lines, selection, markers, cursor, playhead) is a
+///     handful of vector primitives drawn on top.
+///   * Invalidation is synchronous. Deferring it through the dispatcher meant the view
+///     update landed *after* the render pass that should have shown it, so the waveform
+///     was always a frame behind and could double-step or drop a step when the
+///     dispatcher and the render loop drifted apart.
+///
+/// Press Ctrl+Shift+D over the waveform for a live frame/cost readout.
 /// </summary>
 public sealed class WaveformView : FrameworkElement
 {
@@ -42,106 +59,56 @@ public sealed class WaveformView : FrameworkElement
         set => SetValue(IsPlaybackActiveProperty, value);
     }
 
+    /// <summary>
+    /// Live frame-timing overlay: frame interval, render/paint cost, playhead advance and
+    /// view scroll, all as avg/min/max over the last 120 frames, plus the render tier.
+    /// Click the waveform and press Ctrl+Shift+D to toggle. Reach for it first whenever
+    /// playback smoothness is in question — it separates "frames are expensive" from
+    /// "frames are uneven", which look identical on screen.
+    /// </summary>
+    public static bool ShowDiagnostics { get; set; }
+
     private bool _dragging;
     private bool _draggingPlayhead;
-    private bool _invalidateQueued;
     private int _dragAnchor;
 
-    // geometry cache — rebuilt only when this key changes
-    private readonly record struct CacheKey(double Spp, double W, double H, double AmpZoom,
-        int PeaksVersion, int Channels, object? Doc);
-    internal readonly record struct GeometryWindow(double StartSample, double EndSample, int PixelWidth);
-    internal enum GeometryBuildDisposition
-    {
-        Reject,
-        RetryForCurrentView,
-        Apply
-    }
+    // ── band bitmap ──────────────────────────────────────────────
+    private WriteableBitmap? _bitmap;
+    private int[] _pixels = [];
+    private int[] _peakTop = [], _peakBottom = [], _rmsTop = [], _rmsBottom = [];
+    private int _pixelWidth, _pixelHeight;
+    private double _bitmapDpiX, _bitmapDpiY;
+    private bool _painted;
+    private PaintKey _paintKey;
 
-    /// <summary>
-    /// Serial latest-wins queue used by the geometry worker. Keeping this state machine
-    /// independent of Dispatcher/Task makes its concurrency contract deterministic to test.
-    /// </summary>
-    internal sealed class LatestBuildQueue<T> where T : class
-    {
-        private readonly IEqualityComparer<T> _comparer;
-        private T? _active;
-        private T? _pending;
-
-        internal LatestBuildQueue(IEqualityComparer<T>? comparer = null) =>
-            _comparer = comparer ?? EqualityComparer<T>.Default;
-
-        internal T? Active => _active;
-        internal T? Pending => _pending;
-
-        internal bool Enqueue(T request)
-        {
-            if ((_active != null && _comparer.Equals(_active, request))
-                || (_pending != null && _comparer.Equals(_pending, request)))
-                return false;
-
-            _pending = request;
-            return true;
-        }
-
-        internal T? TryStartNext()
-        {
-            if (_active != null || _pending == null) return null;
-            _active = _pending;
-            _pending = null;
-            return _active;
-        }
-
-        internal void Complete(T request)
-        {
-            if (!ReferenceEquals(_active, request))
-                throw new InvalidOperationException("Only the active geometry build can complete.");
-            _active = null;
-        }
-
-        internal void ClearPending() => _pending = null;
-    }
-
-    private sealed record GeometryBuildRequest(long Epoch, CacheKey Key, GeometryWindow Window,
-        PeakStore Peaks, int Channels, double ChannelHeight, double SamplesPerPixel, double AmpZoom);
-    private sealed record GeometryBuildResult(CacheKey Key, GeometryWindow Window,
-        StreamGeometry[] Peaks, StreamGeometry[] Rms);
-    private CacheKey _cacheKey;
-    private GeometryWindow _geometryWindow;
-    private bool _geometryCacheValid;
-    private StreamGeometry[] _peakGeos = [];
-    private StreamGeometry[] _rmsGeos = [];
-    private readonly LatestBuildQueue<GeometryBuildRequest> _geometryBuildQueue = new();
-    private bool _geometryBuildRunning;
-    private long _geometryEpoch;
+    private readonly record struct PaintKey(double ViewStart, double Spp, double AmpZoom,
+        int PeaksVersion, int PixelWidth, int PixelHeight, int Channels, object? Doc);
 
     public WaveformView()
     {
         ClipToBounds = true;
         SnapsToDevicePixels = true;
         Focusable = true;
+        RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
         SizeChanged += (_, _) => { if (Document != null) Document.ViewWidthPixels = ActualWidth; };
     }
 
     private static void OnDocumentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var view = (WaveformView)d;
-        view.InvalidateGeometryCache();
+        view._painted = false;
+        view._pendingZoomDocument = null;
+        view._pendingZoomFactor = 1;
+        view._lastPlayhead = -1;
+        view._lastViewStart = double.NaN;
+        view._statCount = 0;
+        view._statIndex = 0;
         if (e.OldValue is DocumentViewModel old) old.PropertyChanged -= view.OnVmChanged;
         if (e.NewValue is DocumentViewModel vm)
         {
             vm.PropertyChanged += view.OnVmChanged;
             vm.ViewWidthPixels = view.ActualWidth;
         }
-    }
-
-    private void InvalidateGeometryCache()
-    {
-        Interlocked.Increment(ref _geometryEpoch);
-        _geometryBuildQueue.ClearPending();
-        _geometryCacheValid = false;
-        _peakGeos = [];
-        _rmsGeos = [];
     }
 
     private void OnVmChanged(object? sender, PropertyChangedEventArgs e)
@@ -151,42 +118,48 @@ public sealed class WaveformView : FrameworkElement
             or nameof(DocumentViewModel.Cursor) or nameof(DocumentViewModel.PlayheadSample)
             or nameof(DocumentViewModel.PeaksVersion) or nameof(DocumentViewModel.MarkersVersion)
             or nameof(DocumentViewModel.AmpZoom))
-            QueueInvalidateVisual();
+            RequestRedraw();
     }
 
-    private void QueueInvalidateVisual()
+    /// <summary>
+    /// Invalidate now when we are already on the UI thread. The playhead is driven from
+    /// <c>CompositionTarget.Rendering</c>, and that handler runs *inside* the render pass —
+    /// invalidating synchronously means the new position is drawn by that same pass instead
+    /// of the next one.
+    /// </summary>
+    private void RequestRedraw()
     {
-        if (_invalidateQueued) return;
-        _invalidateQueued = true;
-        Dispatcher.BeginInvoke(() =>
-        {
-            _invalidateQueued = false;
-            InvalidateVisual();
-        });
+        if (Dispatcher.CheckAccess()) InvalidateVisual();
+        else Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(InvalidateVisual));
     }
+
+    // ── rendering ────────────────────────────────────────────────
 
     protected override void OnRender(DrawingContext dc)
     {
+        long renderStart = Stopwatch.GetTimestamp();
         double w = ActualWidth, h = ActualHeight;
         dc.DrawRectangle(WaveTheme.WaveBg, null, new Rect(0, 0, w, h));
-        var vm = Document;
-        if (vm == null || vm.Doc.Length == 0 || w < 2) return;
 
-        int channels = vm.Doc.ChannelCount;
+        var vm = Document;
+        if (vm == null || vm.Doc.Length == 0 || w < 2 || h < 2)
+        {
+            _painted = false;
+            return;
+        }
+
+        int channels = Math.Max(1, vm.Doc.ChannelCount);
         double chH = h / channels;
         double spp = vm.SamplesPerPixel;
         double viewStart = vm.ViewStart;
-        double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        var dpiInfo = VisualTreeHelper.GetDpi(this);
+        double dpi = dpiInfo.PixelsPerDip;
 
-        double geometryOffsetX = EnsureGeometryCache(vm, w, h, channels, chH, spp, viewStart);
-
+        // amplitude guides sit under the waveform, exactly as before
         for (int c = 0; c < channels; c++)
         {
             double mid = c * chH + chH / 2;
             double amp = chH * 0.46 * vm.AmpZoom;
-
-            dc.PushClip(new RectangleGeometry(new Rect(0, c * chH, w, chH)));
-
             foreach (double levelDb in AmplitudeRuler.MarkerLevelsDb)
             {
                 double offset = AmplitudeRuler.MarkerOffset(levelDb, amp);
@@ -194,28 +167,39 @@ public sealed class WaveformView : FrameworkElement
                 dc.DrawLine(WaveTheme.GridLine, new Point(0, mid - offset), new Point(w, mid - offset));
                 dc.DrawLine(WaveTheme.GridLine, new Point(0, mid + offset), new Point(w, mid + offset));
             }
+        }
 
-            if (c < _peakGeos.Length)
+        long paintStart = Stopwatch.GetTimestamp();
+        bool repainted = false;
+        if (EnsureBitmap(w, h, dpiInfo))
+        {
+            var key = new PaintKey(viewStart, spp, vm.AmpZoom, vm.PeaksVersion,
+                _pixelWidth, _pixelHeight, channels, vm.Doc);
+            if (!_painted || key != _paintKey)
             {
-                dc.PushTransform(new TranslateTransform(geometryOffsetX, 0));
-                dc.DrawGeometry(WaveTheme.WavePeak, null, _peakGeos[c]);
-                dc.DrawGeometry(WaveTheme.WaveRms, null, _rmsGeos[c]);
-                dc.Pop();
+                PaintBands(vm, channels, viewStart, spp, w);
+                _bitmap!.WritePixels(new Int32Rect(0, 0, _pixelWidth, _pixelHeight),
+                    _pixels, _pixelWidth * 4, 0);
+                _paintKey = key;
+                _painted = true;
+                repainted = true;
             }
+            dc.DrawImage(_bitmap!, new Rect(0, 0, w, h));
+        }
+        long paintEnd = Stopwatch.GetTimestamp();
 
+        for (int c = 0; c < channels; c++)
+        {
+            double mid = c * chH + chH / 2;
+            dc.PushClip(new RectangleGeometry(new Rect(0, c * chH, w, chH)));
             dc.DrawLine(WaveTheme.CenterLine, new Point(0, mid), new Point(w, mid));
-
-            var label = WaveTheme.Text(channels == 1 ? "M" : c == 0 ? "L" : c == 1 ? "R" : $"C{c + 1}",
-                WaveTheme.UiFace, 10, WaveTheme.TextMuted, dpi);
-            dc.DrawText(label, new Point(8, c * chH + 6));
-
+            dc.DrawText(WaveTheme.Text(channels == 1 ? "M" : c == 0 ? "L" : c == 1 ? "R" : $"C{c + 1}",
+                WaveTheme.UiFace, 10, WaveTheme.TextMuted, dpi), new Point(8, c * chH + 6));
             dc.Pop();
-
             if (c > 0)
                 dc.DrawLine(WaveTheme.ChannelDivider, new Point(0, c * chH), new Point(w, c * chH));
         }
 
-        // selection overlay (tint + edges — no geometry rebuild needed while dragging)
         if (vm.HasSelection)
         {
             double selX0 = (vm.SelStart - viewStart) / spp;
@@ -227,7 +211,6 @@ public sealed class WaveformView : FrameworkElement
             if (selX1 >= 0 && selX1 <= w) dc.DrawLine(WaveTheme.SelectionEdge, new Point(selX1, 0), new Point(selX1, h));
         }
 
-        // marker lines
         foreach (var marker in vm.Markers)
         {
             double mx = (marker.Position - viewStart) / spp;
@@ -235,12 +218,10 @@ public sealed class WaveformView : FrameworkElement
                 dc.DrawLine(WaveTheme.MarkerLine, new Point(mx, 0), new Point(mx, h));
         }
 
-        // cursor
         double curX = (vm.Cursor - viewStart) / spp;
         if (curX >= 0 && curX <= w && !vm.HasSelection)
             dc.DrawLine(WaveTheme.CursorPen, new Point(curX, 0), new Point(curX, h));
 
-        // playhead
         double phX = (vm.PlayheadSample - viewStart) / spp;
         if (phX >= 0 && phX <= w)
         {
@@ -255,280 +236,230 @@ public sealed class WaveformView : FrameworkElement
             tri.Freeze();
             dc.DrawGeometry(WaveTheme.Playhead.Brush, null, tri);
         }
+
+        RecordFrame(renderStart, paintEnd - paintStart, repainted, vm, viewStart, spp);
+        if (ShowDiagnostics) DrawDiagnostics(dc, w, spp, dpi);
     }
 
-    private double EnsureGeometryCache(DocumentViewModel vm, double w, double h, int channels, double chH,
-        double spp, double viewStart)
+    /// <summary>Allocate (or resize) the band bitmap to match the control's device pixels.</summary>
+    private bool EnsureBitmap(double w, double h, DpiScale dpiInfo)
     {
-        var key = new CacheKey(spp, w, h, vm.AmpZoom, vm.PeaksVersion, channels, vm.Doc);
-        double viewEnd = Math.Min(vm.Doc.Length, viewStart + w * spp);
-        if (_geometryCacheValid
-            && key == _cacheKey
-            && _peakGeos.Length == channels)
-        {
-            if (GeometryWindowCovers(_geometryWindow, viewStart, viewEnd))
-                QueueForwardPrefetchIfNeeded(vm, key, channels, chH, spp, viewStart, viewEnd, w);
-            else
-                QueueGeometryBuild(CreateScrollBuildRequest(
-                    vm, key, channels, chH, spp, viewStart, w,
-                    forward: viewStart >= _geometryWindow.StartSample));
+        double scaleX = dpiInfo.DpiScaleX > 0 ? dpiInfo.DpiScaleX : 1;
+        double scaleY = dpiInfo.DpiScaleY > 0 ? dpiInfo.DpiScaleY : 1;
+        int pw = Math.Clamp((int)Math.Ceiling(w * scaleX), 1, 8192);
+        int ph = Math.Clamp((int)Math.Ceiling(h * scaleY), 1, 8192);
+        double dpiX = 96 * scaleX, dpiY = 96 * scaleY;
 
-            // A scroll miss must never rebuild on the render thread. Keep the old
-            // sample-correct geometry translated while the latest window is built;
-            // any uncovered edge is briefly blank rather than blocking playback.
-            return (_geometryWindow.StartSample - viewStart) / spp;
-        }
+        if (_bitmap != null && pw == _pixelWidth && ph == _pixelHeight
+            && Math.Abs(dpiX - _bitmapDpiX) < 1e-6 && Math.Abs(dpiY - _bitmapDpiY) < 1e-6)
+            return true;
 
-        if (IsPlaybackActive)
-        {
-            long currentEpoch = Volatile.Read(ref _geometryEpoch);
-            bool matchingBuild = BuildCoversCurrentView(
-                    _geometryBuildQueue.Active, currentEpoch, key, viewStart, viewEnd)
-                || BuildCoversCurrentView(
-                    _geometryBuildQueue.Pending, currentEpoch, key, viewStart, viewEnd);
-            if (!matchingBuild)
-            {
-                long asyncEpoch = Interlocked.Increment(ref _geometryEpoch);
-                _geometryBuildQueue.ClearPending();
-                _geometryCacheValid = false;
-                _peakGeos = [];
-                _rmsGeos = [];
-                QueueGeometryBuild(new GeometryBuildRequest(asyncEpoch, key,
-                    CalculateForwardGeometryWindow(vm.Doc.Length, viewStart, spp, w),
-                    vm.Peaks, channels, chH, spp, vm.AmpZoom));
-            }
-
-            // Zoom/resize/peak changes during playback also stay off the render
-            // thread. A short blank waveform is preferable to stalling transport.
-            return 0;
-        }
-
-        // A new document, zoom, size, amplitude, or peak version needs an
-        // immediately correct first frame. It also invalidates any older worker.
-        long epoch = Interlocked.Increment(ref _geometryEpoch);
-        _geometryBuildQueue.ClearPending();
-        var request = new GeometryBuildRequest(epoch, key,
-            CalculateGeometryWindow(vm.Doc.Length, viewStart, spp, w),
-            vm.Peaks, channels, chH, spp, vm.AmpZoom);
-        ApplyGeometry(BuildGeometry(request));
-        QueueForwardPrefetchIfNeeded(vm, key, channels, chH, spp, viewStart, viewEnd, w);
-
-        return (_geometryWindow.StartSample - viewStart) / spp;
-    }
-
-    private static bool BuildCoversCurrentView(
-        GeometryBuildRequest? request,
-        long currentEpoch,
-        CacheKey currentKey,
-        double viewStart,
-        double viewEnd) =>
-        request != null
-        && ClassifyGeometryBuild(
-            request.Epoch,
-            currentEpoch,
-            request.Key == currentKey,
-            request.Window,
-            viewStart,
-            viewEnd) == GeometryBuildDisposition.Apply;
-
-    private void QueueForwardPrefetchIfNeeded(DocumentViewModel vm, CacheKey key, int channels,
-        double chH, double spp, double viewStart, double viewEnd, double viewWidth)
-    {
-        double visibleSpan = Math.Max(1, viewWidth) * spp;
-        double forwardMargin = _geometryWindow.EndSample - viewEnd;
-        if (_geometryWindow.EndSample >= vm.Doc.Length - 1e-6
-            || forwardMargin > visibleSpan * 0.25)
-            return;
-
-        QueueGeometryBuild(CreateScrollBuildRequest(
-            vm, key, channels, chH, spp, viewStart, viewWidth, forward: true));
-    }
-
-    private GeometryBuildRequest CreateScrollBuildRequest(DocumentViewModel vm, CacheKey key,
-        int channels, double chH, double spp, double viewStart, double viewWidth, bool forward)
-    {
-        GeometryWindow window = forward
-            ? CalculateForwardGeometryWindow(vm.Doc.Length, viewStart, spp, viewWidth)
-            : CalculateGeometryWindow(vm.Doc.Length, viewStart, spp, viewWidth);
-        return new GeometryBuildRequest(Volatile.Read(ref _geometryEpoch), key, window,
-            vm.Peaks, channels, chH, spp, vm.AmpZoom);
-    }
-
-    private void QueueGeometryBuild(GeometryBuildRequest request)
-    {
-        if (!_geometryBuildQueue.Enqueue(request)) return;
-        if (!_geometryBuildRunning) DrainGeometryBuildQueue();
-    }
-
-    private async void DrainGeometryBuildQueue()
-    {
-        if (_geometryBuildRunning) return;
-        _geometryBuildRunning = true;
         try
         {
-            while (_geometryBuildQueue.TryStartNext() is { } request)
-            {
-                try
-                {
-                    GeometryBuildResult result = await Task.Run(() => BuildGeometry(request));
-                    var vm = Document;
-                    if (vm == null || vm.Doc.Length == 0 || ActualWidth < 2) continue;
-                    int channels = vm.Doc.ChannelCount;
-                    double chH = ActualHeight / channels;
-                    var currentKey = new CacheKey(vm.SamplesPerPixel, ActualWidth, ActualHeight,
-                        vm.AmpZoom, vm.PeaksVersion, channels, vm.Doc);
-                    double viewStart = vm.ViewStart;
-                    double viewEnd = Math.Min(vm.Doc.Length,
-                        viewStart + ActualWidth * vm.SamplesPerPixel);
-
-                    GeometryBuildDisposition disposition = ClassifyGeometryBuild(
-                        request.Epoch,
-                        Volatile.Read(ref _geometryEpoch),
-                        currentKey == result.Key,
-                        result.Window,
-                        viewStart,
-                        viewEnd);
-                    if (disposition == GeometryBuildDisposition.Reject) continue;
-                    if (disposition == GeometryBuildDisposition.RetryForCurrentView)
-                    {
-                        _geometryBuildQueue.Enqueue(CreateScrollBuildRequest(
-                            vm, currentKey, channels, chH, vm.SamplesPerPixel,
-                            viewStart, ActualWidth,
-                            forward: viewStart >= result.Window.StartSample));
-                        continue;
-                    }
-
-                    double visibleSpan = ActualWidth * vm.SamplesPerPixel;
-                    if (result.Window.EndSample >= vm.Doc.Length - 1e-6
-                        || result.Window.EndSample - viewEnd > visibleSpan * 0.25)
-                        _geometryBuildQueue.ClearPending();
-                    ApplyGeometry(result);
-                    InvalidateVisual();
-                }
-                catch
-                {
-                    // Stale/best-effort cache work must not affect the editor.
-                }
-                finally
-                {
-                    _geometryBuildQueue.Complete(request);
-                }
-            }
+            _bitmap = new WriteableBitmap(pw, ph, dpiX, dpiY, PixelFormats.Pbgra32, null);
         }
-        finally
+        catch
         {
-            _geometryBuildRunning = false;
-            if (_geometryBuildQueue.Pending != null) DrainGeometryBuildQueue();
+            _bitmap = null;
+            _painted = false;
+            return false;
         }
+
+        _pixelWidth = pw;
+        _pixelHeight = ph;
+        _bitmapDpiX = dpiX;
+        _bitmapDpiY = dpiY;
+        _pixels = new int[pw * ph];
+        _peakTop = new int[pw];
+        _peakBottom = new int[pw];
+        _rmsTop = new int[pw];
+        _rmsBottom = new int[pw];
+        _painted = false;
+        return true;
     }
 
-    private static GeometryBuildResult BuildGeometry(GeometryBuildRequest request)
+    /// <summary>
+    /// Paint the visible columns. Transparent background so the grid drawn underneath
+    /// shows through; every waveform pixel is written exactly once in row order.
+    /// </summary>
+    private void PaintBands(DocumentViewModel vm, int channels, double viewStart, double spp, double width)
     {
-        var peakGeos = new StreamGeometry[request.Channels];
-        var rmsGeos = new StreamGeometry[request.Channels];
-        int width = request.Window.PixelWidth;
-        var peakTop = new Point[width];
-        var peakBot = new Point[width];
-        var rmsTop = new Point[width];
-        var rmsBot = new Point[width];
+        Array.Clear(_pixels);
 
-        for (int c = 0; c < request.Channels; c++)
+        int peakArgb = OpaqueArgb(WaveTheme.WavePeak);
+        // The RMS brush is translucent over the peak band; pre-blend it so the bitmap
+        // stays fully opaque per pixel and needs no alpha compositing.
+        int rmsArgb = BlendOver(WaveTheme.WaveRms, WaveTheme.WavePeak);
+
+        // Derive this from the bitmap's own width rather than the DPI scale: if the
+        // bitmap ever hits its size clamp, DrawImage stretches it over the full control
+        // and a scale-derived mapping would slide the waveform off the cursor.
+        double samplesPerDevicePixel = spp * width / _pixelWidth;
+        int documentLength = vm.Doc.Length;
+        int bandHeight = _pixelHeight / channels;
+        if (bandHeight < 1) return;
+
+        for (int c = 0; c < channels; c++)
         {
-            double mid = c * request.ChannelHeight + request.ChannelHeight / 2;
-            double amp = request.ChannelHeight * 0.46 * request.AmpZoom;
-            for (int x = 0; x < width; x++)
+            int bandTop = c * bandHeight;
+            int height = c == channels - 1 ? _pixelHeight - bandTop : bandHeight;
+            if (height < 1) continue;
+            int bandBottom = bandTop + height - 1;
+            double mid = bandTop + height / 2.0;
+            double amp = height * 0.46 * vm.AmpZoom;
+
+            int usedTop = bandBottom, usedBottom = bandTop;
+            for (int x = 0; x < _pixelWidth; x++)
             {
-                int s0 = (int)(request.Window.StartSample + x * request.SamplesPerPixel);
-                int s1 = Math.Max(s0 + 1,
-                    (int)(request.Window.StartSample + (x + 1) * request.SamplesPerPixel));
-                request.Peaks.Query(c, s0, s1, out float mn, out float mx, out float rms);
-                peakTop[x] = new Point(x, mid - Math.Clamp(mx, -1, 1) * amp);
-                peakBot[x] = new Point(x, mid - Math.Clamp(mn, -1, 1) * amp);
+                double columnStart = viewStart + x * samplesPerDevicePixel;
+                int s0 = (int)columnStart;
+                int s1 = Math.Max(s0 + 1, (int)(columnStart + samplesPerDevicePixel));
+                if (s0 < 0 || s0 >= documentLength)
+                {
+                    _peakTop[x] = 1;
+                    _peakBottom[x] = 0; // empty column
+                    continue;
+                }
+
+                vm.Peaks.Query(c, s0, s1, out float mn, out float mx, out float rms);
+                _peakTop[x] = ClampRow(mid - Math.Clamp(mx, -1, 1) * amp, bandTop, bandBottom);
+                _peakBottom[x] = ClampRow(mid - Math.Clamp(mn, -1, 1) * amp, bandTop, bandBottom);
                 float r = Math.Min(rms, Math.Max(Math.Abs(mn), Math.Abs(mx)));
-                rmsTop[x] = new Point(x, mid - r * amp);
-                rmsBot[x] = new Point(x, mid + r * amp);
+                _rmsTop[x] = ClampRow(mid - r * amp, bandTop, bandBottom);
+                _rmsBottom[x] = ClampRow(mid + r * amp, bandTop, bandBottom);
+                if (_peakTop[x] < usedTop) usedTop = _peakTop[x];
+                if (_peakBottom[x] > usedBottom) usedBottom = _peakBottom[x];
             }
-            peakGeos[c] = BuildBand(peakTop, peakBot);
-            rmsGeos[c] = BuildBand(rmsTop, rmsBot);
+
+            // Only sweep the rows some column actually reaches — quiet material and low
+            // amplitude zoom then cost a fraction of the band.
+            for (int y = usedTop; y <= usedBottom; y++)
+            {
+                int row = y * _pixelWidth;
+                for (int x = 0; x < _pixelWidth; x++)
+                {
+                    if (y < _peakTop[x] || y > _peakBottom[x]) continue;
+                    _pixels[row + x] = y >= _rmsTop[x] && y <= _rmsBottom[x] ? rmsArgb : peakArgb;
+                }
+            }
         }
-
-        return new GeometryBuildResult(request.Key, request.Window, peakGeos, rmsGeos);
     }
 
-    private void ApplyGeometry(GeometryBuildResult result)
+    internal static int ClampRow(double y, int top, int bottom) =>
+        (int)Math.Clamp(Math.Round(y), top, bottom);
+
+    internal static int OpaqueArgb(Brush brush)
     {
-        _cacheKey = result.Key;
-        _geometryWindow = result.Window;
-        _peakGeos = result.Peaks;
-        _rmsGeos = result.Rms;
-        _geometryCacheValid = true;
+        Color c = brush is SolidColorBrush solid ? solid.Color : Colors.Gray;
+        return (0xFF << 24) | (c.R << 16) | (c.G << 8) | c.B;
     }
 
-    internal static GeometryWindow CalculateGeometryWindow(
-        int documentLength,
-        double viewStart,
-        double samplesPerPixel,
-        double viewWidth)
+    /// <summary>Composite <paramref name="over"/> onto <paramref name="under"/>, returning an opaque pixel.</summary>
+    internal static int BlendOver(Brush over, Brush under)
     {
-        double visibleSpan = Math.Max(1, viewWidth) * samplesPerPixel;
-        double cacheSpan = Math.Min(Math.Max(0, documentLength), visibleSpan * 2);
-        double maximumStart = Math.Max(0, documentLength - cacheSpan);
-        double start = Math.Clamp(viewStart - (cacheSpan - visibleSpan) / 2, 0, maximumStart);
-        double end = Math.Min(documentLength, start + cacheSpan);
-        int pixels = Math.Max(2, (int)Math.Ceiling((end - start) / samplesPerPixel));
-        return new GeometryWindow(start, end, pixels);
+        Color o = over is SolidColorBrush a ? a.Color : Colors.Gray;
+        Color u = under is SolidColorBrush b ? b.Color : Colors.Black;
+        double alpha = o.A / 255.0;
+        int r = (int)Math.Round(o.R * alpha + u.R * (1 - alpha));
+        int g = (int)Math.Round(o.G * alpha + u.G * (1 - alpha));
+        int bl = (int)Math.Round(o.B * alpha + u.B * (1 - alpha));
+        return (0xFF << 24) | (Math.Clamp(r, 0, 255) << 16) | (Math.Clamp(g, 0, 255) << 8) | Math.Clamp(bl, 0, 255);
     }
 
-    internal static GeometryWindow CalculateForwardGeometryWindow(
-        int documentLength,
-        double viewStart,
-        double samplesPerPixel,
-        double viewWidth)
+    // ── diagnostics ──────────────────────────────────────────────
+
+    private const int StatWindow = 120;
+    private readonly double[] _frameMs = new double[StatWindow];
+    private readonly double[] _renderMs = new double[StatWindow];
+    private readonly double[] _paintMs = new double[StatWindow];
+    private readonly double[] _playheadDelta = new double[StatWindow];
+    private readonly double[] _viewDeltaPx = new double[StatWindow];
+    private int _statCount;
+    private int _statIndex;
+    private int _repaintCount;
+    private long _lastFrameStamp;
+    private int _lastPlayhead = -1;
+    private double _lastViewStart = double.NaN;
+
+    private void RecordFrame(long renderStart, long paintTicks, bool repainted,
+        DocumentViewModel vm, double viewStart, double spp)
     {
-        double visibleSpan = Math.Max(1, viewWidth) * samplesPerPixel;
-        double cacheSpan = Math.Min(Math.Max(0, documentLength), visibleSpan * 2);
-        double maximumStart = Math.Max(0, documentLength - cacheSpan);
-        double start = Math.Clamp(viewStart - visibleSpan * 0.25, 0, maximumStart);
-        double end = Math.Min(documentLength, start + cacheSpan);
-        int pixels = Math.Max(2, (int)Math.Ceiling((end - start) / samplesPerPixel));
-        return new GeometryWindow(start, end, pixels);
+        double toMs = 1000.0 / Stopwatch.Frequency;
+        long now = Stopwatch.GetTimestamp();
+
+        _frameMs[_statIndex] = _lastFrameStamp == 0 ? 0 : (now - _lastFrameStamp) * toMs;
+        _lastFrameStamp = now;
+        _renderMs[_statIndex] = (now - renderStart) * toMs;
+        _paintMs[_statIndex] = paintTicks * toMs;
+        _playheadDelta[_statIndex] = _lastPlayhead < 0 ? 0 : vm.PlayheadSample - _lastPlayhead;
+        _lastPlayhead = vm.PlayheadSample;
+        _viewDeltaPx[_statIndex] = double.IsNaN(_lastViewStart) || spp <= 0
+            ? 0
+            : (viewStart - _lastViewStart) / spp;
+        _lastViewStart = viewStart;
+        if (repainted) _repaintCount++;
+
+        _statIndex = (_statIndex + 1) % StatWindow;
+        if (_statCount < StatWindow) _statCount++;
     }
 
-    internal static bool GeometryWindowCovers(
-        GeometryWindow window,
-        double viewStart,
-        double viewEnd) =>
-        viewStart >= window.StartSample - 1e-6
-        && viewEnd <= window.EndSample + 1e-6;
-
-    internal static GeometryBuildDisposition ClassifyGeometryBuild(
-        long requestEpoch,
-        long currentEpoch,
-        bool keyMatches,
-        GeometryWindow resultWindow,
-        double viewStart,
-        double viewEnd)
+    private void DrawDiagnostics(DrawingContext dc, double w, double spp, double dpi)
     {
-        if (requestEpoch != currentEpoch || !keyMatches)
-            return GeometryBuildDisposition.Reject;
-        return GeometryWindowCovers(resultWindow, viewStart, viewEnd)
-            ? GeometryBuildDisposition.Apply
-            : GeometryBuildDisposition.RetryForCurrentView;
-    }
-
-    internal static StreamGeometry BuildBand(Point[] top, Point[] bot)
-    {
-        var geo = new StreamGeometry();
-        int n = top.Length;
-        if (n > 1)
+        if (_statCount < 2) return;
+        var lines = new[]
         {
-            using var g = geo.Open();
-            g.BeginFigure(top[0], true, true);
-            for (int x = 1; x < n; x++) g.LineTo(top[x], false, false);
-            for (int x = n - 1; x >= 0; x--) g.LineTo(bot[x], false, false);
+            $"tier {RenderCapability.Tier >> 16}   spp {spp:0.###}   repaints {_repaintCount}",
+            Row("frame ms", _frameMs),
+            Row("render ms", _renderMs),
+            Row("paint ms", _paintMs),
+            Row("playhead", _playheadDelta),
+            Row("view px", _viewDeltaPx),
+        };
+
+        double lineHeight = 0, width = 0;
+        var texts = new FormattedText[lines.Length];
+        for (int i = 0; i < lines.Length; i++)
+        {
+            texts[i] = new FormattedText(lines[i], CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                WaveTheme.MonoFace, 11, WaveTheme.TextMuted, dpi);
+            lineHeight = Math.Max(lineHeight, texts[i].Height);
+            width = Math.Max(width, texts[i].Width);
         }
-        geo.Freeze();
-        return geo;
+
+        var box = new Rect(Math.Max(4, w - width - 20), 6, width + 14, lineHeight * lines.Length + 10);
+        dc.DrawRoundedRectangle(WaveTheme.PanelBg, WaveTheme.ChannelDivider, box, 3, 3);
+        for (int i = 0; i < texts.Length; i++)
+            dc.DrawText(texts[i], new Point(box.X + 7, box.Y + 5 + i * lineHeight));
+    }
+
+    private string Row(string label, double[] samples)
+    {
+        double min = double.MaxValue, max = double.MinValue, sum = 0;
+        for (int i = 0; i < _statCount; i++)
+        {
+            double v = samples[i];
+            if (v < min) min = v;
+            if (v > max) max = v;
+            sum += v;
+        }
+        return $"{label,-9} avg {sum / _statCount,8:0.00}  min {min,8:0.00}  max {max,8:0.00}";
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.D
+            && Keyboard.Modifiers.HasFlag(ModifierKeys.Control)
+            && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            ShowDiagnostics = !ShowDiagnostics;
+            _statCount = 0;
+            _statIndex = 0;
+            _repaintCount = 0;
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+        base.OnKeyDown(e);
     }
 
     // ── interaction ──────────────────────────────────────────────
@@ -631,26 +562,49 @@ public sealed class WaveformView : FrameworkElement
             vm.SetCursor(sample, clearSelection: true);
     }
 
+    // A wheel spin arrives as a burst of notches. Fold the burst into one zoom step so
+    // the view is recomputed once per frame instead of once per notch.
+    private double _pendingZoomFactor = 1;
+    private double _pendingZoomX;
+    private bool _zoomQueued;
+    private DocumentViewModel? _pendingZoomDocument;
+
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         var vm = Document;
         if (vm == null) return;
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-        {
             vm.AmpZoom *= e.Delta > 0 ? 1.25 : 1 / 1.25;
-        }
         else if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
-        {
             vm.ScrollBy(-e.Delta * vm.SamplesPerPixel * 0.5);
-        }
         else
-        {
-            double factor = e.Delta > 0 ? 1 / 1.3 : 1.3;
-            if (IsPlaybackActive)
-                vm.ZoomBy(factor, vm.PlayheadSample);
-            else
-                vm.ZoomAt(e.GetPosition(this).X, factor);
-        }
+            QueueZoom(e.Delta > 0 ? 1 / 1.3 : 1.3, e.GetPosition(this).X);
         e.Handled = true;
+    }
+
+    private void QueueZoom(double factor, double anchorX)
+    {
+        var target = Document;
+        if (target == null) return;
+        if (!ReferenceEquals(target, _pendingZoomDocument))
+        {
+            _pendingZoomDocument = target;
+            _pendingZoomFactor = 1;
+        }
+        _pendingZoomFactor *= factor;
+        _pendingZoomX = anchorX;
+        if (_zoomQueued) return;
+        _zoomQueued = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+        {
+            _zoomQueued = false;
+            double factorToApply = _pendingZoomFactor;
+            var vm = _pendingZoomDocument;
+            _pendingZoomFactor = 1;
+            _pendingZoomDocument = null;
+            if (vm == null || factorToApply == 1 || !ReferenceEquals(vm, Document)) return;
+            if (IsPlaybackActive) vm.ZoomBy(factorToApply, vm.PlayheadSample);
+            else vm.ZoomAt(_pendingZoomX, factorToApply);
+        }));
     }
 }

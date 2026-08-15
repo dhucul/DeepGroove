@@ -45,7 +45,39 @@ public static class WaveTheme
         new FontFamily(new Uri("pack://application:,,,/"), "./Assets/Fonts/#Inter"),
         FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
 
-    public static FormattedText Text(string s, Typeface face, double size, Brush brush, double dpi) =>
+    // Glyph layout is the most expensive part of drawing a ruler or meter label,
+    // and the custom-drawn controls redraw their labels on every animation frame
+    // during playback. The label set is tiny and highly repetitive, so lay each
+    // one out once and reuse it. FormattedText is only ever read (Width/Height)
+    // or handed to DrawText, so sharing an instance is safe.
+    // The cache is per-thread so a control rendering off the dispatcher can never
+    // corrupt it, and it is keyed by brush *identity* — so only the frozen shared
+    // brushes above participate. A caller that builds a brush per frame would miss
+    // every time and evict the entries that do hit, so those calls stay uncached.
+    private const int TextCacheLimit = 512;
+
+    [ThreadStatic]
+    private static Dictionary<TextKey, FormattedText>? _textCache;
+
+    private readonly record struct TextKey(string Text, Typeface Face, double Size, Brush Brush, double Dpi);
+
+    public static FormattedText Text(string s, Typeface face, double size, Brush brush, double dpi)
+    {
+        if (!brush.IsFrozen) return Create(s, face, size, brush, dpi);
+
+        var cache = _textCache ??= new Dictionary<TextKey, FormattedText>();
+        var key = new TextKey(s, face, size, brush, dpi);
+        if (cache.TryGetValue(key, out var cached)) return cached;
+
+        var text = Create(s, face, size, brush, dpi);
+        // Ruler labels are absolute timecodes, so scrolling does introduce new
+        // strings. Drop the cache wholesale rather than grow without bound.
+        if (cache.Count >= TextCacheLimit) cache.Clear();
+        cache[key] = text;
+        return text;
+    }
+
+    private static FormattedText Create(string s, Typeface face, double size, Brush brush, double dpi) =>
         new(s, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, face, size, brush, dpi);
 
     private static Brush Freeze(Brush b) { b.Freeze(); return b; }

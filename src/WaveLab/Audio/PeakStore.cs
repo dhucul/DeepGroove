@@ -2,13 +2,20 @@ namespace WaveLab.Audio;
 
 /// <summary>
 /// Multi-resolution min/max/RMS pyramid for fast waveform rendering at any zoom.
-/// Base bin = 256 samples; each level above aggregates 4 bins.
+/// Base bin = 64 samples; each level above aggregates 4 bins.
 /// Rebuild is safe to run on a background thread: it builds into fresh lists from a
 /// channel-array snapshot and swaps the level list atomically at the end.
 /// </summary>
 public sealed class PeakStore
 {
-    public const int BaseBin = 256;
+    /// <summary>
+    /// Samples per base-level bin. This also sets where <see cref="Query"/> stops
+    /// falling back to a per-sample scan: the raw path only runs below
+    /// <c>BaseBin * 2</c> samples per pixel, so a small bin keeps intermediate
+    /// zoom levels (the ones a scrolling playhead spends most of its time at)
+    /// on the pyramid instead of re-reading the PCM for every pixel column.
+    /// </summary>
+    public const int BaseBin = 64;
     private const int LevelFactor = 4;
 
     private sealed record Level(int BinSize, float[][] Min, float[][] Max, float[][] SumSq);
