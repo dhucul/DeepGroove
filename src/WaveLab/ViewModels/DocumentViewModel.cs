@@ -91,7 +91,7 @@ public sealed class DocumentViewModel : ObservableObject
     public double ViewStart
     {
         get => _viewStart;
-        set { if (Set(ref _viewStart, value)) { } }
+        set => Set(ref _viewStart, ClampViewStart(value));
     }
 
     public double SamplesPerPixel
@@ -388,6 +388,14 @@ public sealed class DocumentViewModel : ObservableObject
         ZoomAt(_viewWidthPixels / 2, factor);
     }
 
+    public void ZoomBy(double factor, double anchorSample)
+    {
+        double anchorPixel = (anchorSample - _viewStart) / _spp;
+        if (anchorPixel < 0 || anchorPixel > _viewWidthPixels)
+            anchorPixel = _viewWidthPixels / 2;
+        ZoomAt(anchorPixel, factor);
+    }
+
     public void ScrollBy(double samples)
     {
         ViewStart = _viewStart + samples;
@@ -402,19 +410,36 @@ public sealed class DocumentViewModel : ObservableObject
 
     public void EnsurePlayheadVisible()
     {
-        double viewEnd = _viewStart + _viewWidthPixels * _spp;
-        if (_playhead < _viewStart || _playhead > viewEnd)
+        double viewSpan = _viewWidthPixels * _spp;
+        if (viewSpan <= 0) return;
+
+        // Keep some waveform visible ahead of the transport. Once playback reaches
+        // this anchor, each timer tick advances the view by only the playhead delta.
+        // The previous edge-only behaviour waited for the playhead to leave the
+        // screen and then moved a whole page, which looked like a periodic jump.
+        const double followAnchor = 0.75;
+        double anchorSample = _viewStart + viewSpan * followAnchor;
+        if (_playhead > anchorSample)
+            ViewStart = _playhead - viewSpan * followAnchor;
+        else if (_playhead < _viewStart)
             ViewStart = _playhead;
+        else
+            return;
+
         ClampView();
     }
 
     private double MaxSpp() => Math.Max(1 / 16.0, Doc.Length / Math.Max(100, _viewWidthPixels));
 
-    private void ClampView()
+    private double ClampViewStart(double value)
     {
         double maxStart = Math.Max(0, Doc.Length - _viewWidthPixels * _spp);
-        _viewStart = Math.Clamp(_viewStart, 0, maxStart);
-        Raise(nameof(ViewStart));
+        return Math.Clamp(value, 0, maxStart);
+    }
+
+    private void ClampView()
+    {
+        ViewStart = _viewStart;
     }
 
     private void OnDocChanged(int start, int removed, int inserted)

@@ -113,8 +113,8 @@ public sealed class RecordingLevelAnalyzerTests
     [Theory]
     [InlineData(-12, RecordingLevelStatus.TooLow, 6)]
     [InlineData(-6, RecordingLevelStatus.Good, 0)]
-    [InlineData(-1, RecordingLevelStatus.Hot, -5)]
-    public void SixtySecondScanTargetsAProjectedMinusThreeDbtp(
+    [InlineData(-1, RecordingLevelStatus.Hot, -2)]
+    public void SixtySecondScanKeepsTheMeasuredProgrammeInASafeRange(
         double peakDb,
         RecordingLevelStatus expectedStatus,
         double expectedGain)
@@ -128,6 +128,58 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.InRange(result.TruePeakDb, peakDb - 0.02, peakDb + 0.02);
         Assert.Equal(result.TruePeakDb + 3, result.ProjectedPeakDb, 10);
         Assert.Equal(expectedGain, result.SuggestedGainDb);
+    }
+
+    [Fact]
+    public void SafetyReserveDoesNotForceAnAlreadySafeProgrammeLower()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+
+        FeedRepeated(analyzer, SineSecond(-6), seconds: 12);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.True(result.ReserveDb > 5);
+        Assert.True(result.ProjectedPeakDb > -1);
+        Assert.Equal(RecordingLevelStatus.Good, result.Status);
+        Assert.Equal(0, result.SuggestedGainDb);
+    }
+
+    [Fact]
+    public void FullDurationScanRetainsAnEarlyLoudPassageBeyondTheRollingWindow()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1)
+        {
+            FullDurationScanEnabled = true,
+        };
+
+        analyzer.Process(SineSecond(-3));
+        FeedRepeated(analyzer, SineSecond(-12), seconds: 121);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.Equal(122, result.ElapsedSeconds, 8);
+        Assert.InRange(result.ProgramPeakDb, -3.4, -2.9);
+        Assert.Equal(RecordingLevelStatus.Good, result.Status);
+    }
+
+    [Fact]
+    public void FreshFullDurationSnapshotIncludesASubSecondTail()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1)
+        {
+            FullDurationScanEnabled = true,
+        };
+        FeedRepeated(analyzer, SineSecond(-12), seconds: 12);
+        RecordingLevelSnapshot cached = analyzer.Snapshot;
+
+        float[] loudTail = SineSecond(-1)[..(SampleRate / 2)];
+        analyzer.Process(loudTail);
+
+        Assert.Same(cached, analyzer.Snapshot);
+        RecordingLevelSnapshot final = analyzer.GetFreshSnapshot();
+        Assert.Equal(12.5, final.ElapsedSeconds, 8);
+        Assert.True(final.ProgramPeakDb > -2,
+            $"Expected the final loud tail in the programme peak, got {final.ProgramPeakDb:0.0} dBTP");
+        Assert.Equal(RecordingLevelStatus.Hot, final.Status);
     }
 
     [Fact]

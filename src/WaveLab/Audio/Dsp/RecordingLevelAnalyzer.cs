@@ -60,12 +60,14 @@ public sealed class RecordingLevelAnalyzer
     private const double MinimumZeroCrossingsPerSecond = 150;
     private const double MaximumZeroCrossingFraction = 0.40;
     private const double TargetProjectedPeakDb = -3;
+    private const double TargetMeasuredProgramPeakDb = -3;
     private const double MinimumActiveSeconds = 10;
     private const long MinimumFlatTopEvents = 3;
     private const double FlatTopWindowSeconds = 10;
     private const double FlatTopConsistencyDb = 1;
     private const double FlatTopPeakProximityDb = 3;
     private const int MaximumAnalysisBlocks = 1200; // most recent two minutes at 100 ms
+    private const int MaximumFullScanBlocks = 72_000; // two hours at 100 ms
 
     // Click rejection: a block whose exact peak sits this far above its trimmed
     // (top-0.5%) peak is carrying a narrow artifact, not a musical transient.
@@ -91,7 +93,7 @@ public sealed class RecordingLevelAnalyzer
 
     private readonly object _sync = new();
     private readonly LoudnessMeter _loudness = new();
-    private readonly List<BlockSummary> _blocks = [];
+    private readonly Queue<BlockSummary> _blocks = [];
     private readonly int[] _peakHistogram = new int[PeakHistogramBins];
     private FlatTopTracker[] _flatTopTrackers = [];
     private Queue<FlatTopEvent>[] _flatTopEvents = [];
@@ -129,10 +131,14 @@ public sealed class RecordingLevelAnalyzer
     private double _peakLeft;
     private double _peakRight;
     private double _overallPeak;
+    private bool _fullDurationScanEnabled;
 
     // Snapshot memoization: the UI polls every ~33 ms while blocks only complete
     // per 100 ms of audio, so percentile work is cached until new samples arrive.
     private RecordingLevelSnapshot? _cachedSnapshot;
+    private long _cachedSnapshotFrame;
+    private long _analysisGeneration;
+    private long _snapshotBuildGeneration;
 
     private readonly record struct BlockSummary(
         double RmsDb,
@@ -149,18 +155,147 @@ public sealed class RecordingLevelAnalyzer
 
     private readonly record struct FlatTopEvent(long Frame, double Level);
 
+    private sealed record AnalysisState(
+        long Generation,
+        int SampleRate,
+        int Channels,
+        int BlockFrames,
+        long FramesProcessed,
+        long ClippedSamples,
+        long InvalidSamples,
+        long FlatTopCount,
+        double PeakLeft,
+        double PeakRight,
+        double OverallPeak,
+        double TruePeakDb,
+        double IntegratedLufs,
+        bool FullDurationScanEnabled,
+        bool HasRepeatedFlatTops,
+        BlockSummary[] Blocks);
+
     public RecordingLevelAnalyzer(int sampleRate, int channels) => Configure(sampleRate, channels);
 
-    /// <summary>Returns a consistent immutable view of all samples processed so far.</summary>
-    public RecordingLevelSnapshot Snapshot
+    /// <summary>
+    /// Retain the complete programme history for a deliberate whole-song or
+    /// whole-side pass. Normal checks keep a rolling two-minute window.
+    /// </summary>
+    public bool FullDurationScanEnabled
     {
-        get
+        get { lock (_sync) return _fullDurationScanEnabled; }
+        set
         {
             lock (_sync)
             {
-                _cachedSnapshot ??= BuildSnapshot();
-                return _cachedSnapshot;
+                if (_fullDurationScanEnabled == value) return;
+                _fullDurationScanEnabled = value;
+                if (!value)
+                {
+                    while (_blocks.Count > MaximumAnalysisBlocks)
+                        _blocks.Dequeue();
+                }
+                _cachedSnapshot = null;
+                _cachedSnapshotFrame = 0;
+                _analysisGeneration++;
+                _snapshotBuildGeneration = 0;
             }
+        }
+    }
+
+    /// <summary>Returns a consistent immutable view of all samples processed so far.</summary>
+    public RecordingLevelSnapshot Snapshot => GetSnapshot(forceRefresh: false);
+
+    /// <summary>
+    /// Builds a current result even when full-duration live summaries are being
+    /// throttled. Call this after the capture stream has been quiesced and before
+    /// resetting the analyzer so the final packet cannot be omitted.
+    /// </summary>
+    public RecordingLevelSnapshot GetFreshSnapshot() => GetSnapshot(forceRefresh: true);
+
+    private RecordingLevelSnapshot GetSnapshot(bool forceRefresh)
+    {
+        AnalysisState? synchronousState = null;
+        AnalysisState? backgroundState = null;
+        RecordingLevelSnapshot? result = null;
+
+        lock (_sync)
+        {
+            if (forceRefresh || _cachedSnapshot == null)
+            {
+                synchronousState = CaptureAnalysisStateLocked();
+            }
+            else
+            {
+                result = _cachedSnapshot;
+                bool summaryDue = _fullDurationScanEnabled
+                    && _framesProcessed - _cachedSnapshotFrame >= _sampleRate;
+                if (summaryDue && _snapshotBuildGeneration == 0)
+                {
+                    backgroundState = CaptureAnalysisStateLocked();
+                    _snapshotBuildGeneration = backgroundState.Generation;
+                }
+            }
+        }
+
+        if (backgroundState != null)
+            _ = RebuildCachedSnapshotAsync(backgroundState);
+        if (result != null) return result;
+
+        RecordingLevelSnapshot snapshot = BuildSnapshot(synchronousState!);
+        PublishSnapshot(synchronousState!, snapshot);
+        return snapshot;
+    }
+
+    private AnalysisState CaptureAnalysisStateLocked() => new(
+        _analysisGeneration,
+        _sampleRate,
+        _channels,
+        _blockFrames,
+        _framesProcessed,
+        _clippedSamples,
+        _invalidSamples,
+        _flatTopCount,
+        _peakLeft,
+        _peakRight,
+        _overallPeak,
+        _overallPeak > 0
+            ? Math.Max(AmplitudeToDb(_overallPeak), _loudness.TruePeakDb)
+            : double.NegativeInfinity,
+        _loudness.IntegratedLufs,
+        _fullDurationScanEnabled,
+        HasRepeatedFlatTops(),
+        _blocks.ToArray());
+
+    private async Task RebuildCachedSnapshotAsync(AnalysisState state)
+    {
+        try
+        {
+            RecordingLevelSnapshot snapshot = await Task.Run(() => BuildSnapshot(state))
+                .ConfigureAwait(false);
+            PublishSnapshot(state, snapshot);
+        }
+        catch
+        {
+            // Live summaries are best effort. A forced final snapshot remains
+            // available and will report synchronously before the analyzer resets.
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                if (_snapshotBuildGeneration == state.Generation)
+                    _snapshotBuildGeneration = 0;
+            }
+        }
+    }
+
+    private void PublishSnapshot(AnalysisState state, RecordingLevelSnapshot snapshot)
+    {
+        lock (_sync)
+        {
+            if (state.Generation != _analysisGeneration) return;
+            if (_cachedSnapshot != null && _cachedSnapshotFrame > state.FramesProcessed) return;
+            _cachedSnapshot = snapshot;
+            _cachedSnapshotFrame = state.FramesProcessed;
         }
     }
 
@@ -328,7 +463,11 @@ public sealed class RecordingLevelAnalyzer
                 if (_blockFill >= _blockFrames) CompleteBlock();
             }
 
-            _cachedSnapshot = null;
+            // Normal scans are small enough to summarize on demand. Full-side
+            // scans keep the last completed result while a one-second-cadence
+            // replacement is built off the capture thread.
+            if (!_fullDurationScanEnabled)
+                _cachedSnapshot = null;
         }
     }
 
@@ -342,7 +481,7 @@ public sealed class RecordingLevelAnalyzer
         double maximumZeroCrossingsPerSecond = _blockZeroCrossings.Length == 0
             ? 0
             : _blockZeroCrossings.Max() * _sampleRate / frames;
-        _blocks.Add(new BlockSummary(
+        _blocks.Enqueue(new BlockSummary(
             PowerToDb(meanSquare), PowerToDb(activityMeanSquare), AmplitudeToDb(_blockPeak),
             TrimmedPeakDb(),
             GoertzelPowerDb(_hum50S1, _hum50S2, _humCoeff50, _blockFill),
@@ -350,8 +489,11 @@ public sealed class RecordingLevelAnalyzer
             maximumZeroCrossingsPerSecond,
             leftMeanSquare, rightMeanSquare,
             _blockLeftSum / frames, _blockRightSum / frames));
-        if (_blocks.Count > MaximumAnalysisBlocks)
-            _blocks.RemoveAt(0);
+        int maximumBlocks = _fullDurationScanEnabled
+            ? MaximumFullScanBlocks
+            : MaximumAnalysisBlocks;
+        if (_blocks.Count > maximumBlocks)
+            _blocks.Dequeue();
 
         _blockFill = 0;
         _blockPower = 0;
@@ -394,17 +536,16 @@ public sealed class RecordingLevelAnalyzer
         return amplitudeMeanSquare > 0 ? 10 * Math.Log10(amplitudeMeanSquare) : double.NegativeInfinity;
     }
 
-    private RecordingLevelSnapshot BuildSnapshot()
+    private static RecordingLevelSnapshot BuildSnapshot(AnalysisState state)
     {
-        double elapsed = _framesProcessed / (double)_sampleRate;
-        double peakLeftDb = AmplitudeToDb(_peakLeft);
-        double peakRightDb = _channels == 1 ? peakLeftDb : AmplitudeToDb(_peakRight);
-        double truePeakDb = _overallPeak > 0
-            ? Math.Max(AmplitudeToDb(_overallPeak), _loudness.TruePeakDb)
-            : double.NegativeInfinity;
+        double elapsed = state.FramesProcessed / (double)state.SampleRate;
+        double peakLeftDb = AmplitudeToDb(state.PeakLeft);
+        double peakRightDb = state.Channels == 1 ? peakLeftDb : AmplitudeToDb(state.PeakRight);
+        double truePeakDb = state.TruePeakDb;
 
-        ClassifyBlocks(out var active, out var quiet, out double noiseFloorDb);
-        double activeSeconds = active.Count * _blockFrames / (double)_sampleRate;
+        ClassifyBlocks(state.Blocks, state.SampleRate,
+            out var active, out var quiet, out double noiseFloorDb);
+        double activeSeconds = active.Count * state.BlockFrames / (double)state.SampleRate;
         double programRmsDb = active.Count == 0
             ? double.NegativeInfinity
             : Percentile(active.Select(block => block.RmsDb), 0.5);
@@ -415,8 +556,10 @@ public sealed class RecordingLevelAnalyzer
         // but no longer dictate the gain for the whole side.
         double programSamplePeakDb = active.Count == 0
             ? double.NegativeInfinity
-            : Percentile(active.Select(RobustBlockPeakDb), RobustPeakPercentile);
-        double samplePeakDb = AmplitudeToDb(_overallPeak);
+            : state.FullDurationScanEnabled
+                ? active.Max(RobustBlockPeakDb)
+                : Percentile(active.Select(RobustBlockPeakDb), RobustPeakPercentile);
+        double samplePeakDb = AmplitudeToDb(state.OverallPeak);
         // The intersample premium only describes the programme when the loudest
         // sample was programme itself. When a click owns the global peak, its
         // interpolator ringing says nothing about the music, so no premium is
@@ -425,7 +568,7 @@ public sealed class RecordingLevelAnalyzer
             && double.IsFinite(samplePeakDb)
             && samplePeakDb - programSamplePeakDb > ClickNarrownessDb;
         double intersamplePremiumDb = double.IsFinite(truePeakDb)
-            && _overallPeak > 0
+            && state.OverallPeak > 0
             && !narrowArtifactOwnsAbsolutePeak
             ? Math.Clamp(truePeakDb - samplePeakDb, 0, MaximumIntersamplePremiumDb)
             : 0;
@@ -436,7 +579,7 @@ public sealed class RecordingLevelAnalyzer
         double crestFactorDb = double.IsFinite(programPeakDb) && double.IsFinite(programRmsDb)
             ? Math.Max(0, programPeakDb - programRmsDb)
             : double.NaN;
-        double balanceDb = MeasureBalance(active);
+        double balanceDb = MeasureBalance(active, state.Channels);
         double dcOffsetDb = MeasureDcOffset(active);
         AssessHum(quiet, out double humLevelDb, out int humFrequencyHz);
 
@@ -447,9 +590,22 @@ public sealed class RecordingLevelAnalyzer
         double projectedPeakDb = double.IsFinite(programPeakDb)
             ? programPeakDb + reserveDb
             : double.NegativeInfinity;
-        double suggestedGainDb = settled && double.IsFinite(projectedPeakDb)
-            ? RoundHalfDb(Math.Clamp(TargetProjectedPeakDb - projectedPeakDb, -18, 6))
-            : 0;
+        double suggestedGainDb = 0;
+        if (settled && double.IsFinite(projectedPeakDb))
+        {
+            double projectedAdjustmentDb = TargetProjectedPeakDb - projectedPeakDb;
+            // Reserve protects an optional increase from unseen peaks, but it
+            // must not force an already-safe measured programme even lower.
+            // Required attenuation is based on the programme itself; this keeps
+            // real takes near -3 dB while still leaving optional increases
+            // conservative when only a short passage has been sampled.
+            double adjustmentDb = projectedAdjustmentDb >= 0
+                ? projectedAdjustmentDb
+                : double.IsFinite(programPeakDb) && programPeakDb > TargetMeasuredProgramPeakDb
+                    ? TargetMeasuredProgramPeakDb - programPeakDb
+                    : 0;
+            suggestedGainDb = RoundHalfDb(Math.Clamp(adjustmentDb, -18, 6));
+        }
         double confidence = Math.Min(0.95, 1 - Math.Exp(-activeSeconds / 30.0));
 
         RecordingLevelStatus status;
@@ -460,9 +616,9 @@ public sealed class RecordingLevelAnalyzer
         // the warning when the robust programme peak says they are not a narrow
         // artifact. Clipping that occupies a meaningful part of a block survives
         // the trimmed-peak rank and therefore remains an immediate warning.
-        if (_clippedSamples > 0 && !narrowArtifactOwnsAbsolutePeak)
+        if (state.ClippedSamples > 0 && !narrowArtifactOwnsAbsolutePeak)
             status = RecordingLevelStatus.Clipping;
-        else if (HasRepeatedFlatTops() && !narrowArtifactOwnsAbsolutePeak)
+        else if (state.HasRepeatedFlatTops && !narrowArtifactOwnsAbsolutePeak)
             status = RecordingLevelStatus.UpstreamClipping;
         else if (truePeakDb >= 0 && !narrowArtifactOwnsAbsolutePeak)
             // An intersample over is not the same as a sample hitting the
@@ -494,11 +650,11 @@ public sealed class RecordingLevelAnalyzer
             balanceDb,
             reserveDb,
             suggestedGainDb,
-            _clippedSamples,
-            _invalidSamples,
-            _flatTopCount,
+            state.ClippedSamples,
+            state.InvalidSamples,
+            state.FlatTopCount,
             programPeakDb,
-            _loudness.IntegratedLufs,
+            state.IntegratedLufs,
             dcOffsetDb,
             humLevelDb,
             humFrequencyHz);
@@ -519,23 +675,25 @@ public sealed class RecordingLevelAnalyzer
         return block.PeakDb;
     }
 
-    private void ClassifyBlocks(
+    private static void ClassifyBlocks(
+        IReadOnlyList<BlockSummary> blocks,
+        int sampleRate,
         out List<BlockSummary> active,
         out List<BlockSummary> quiet,
         out double noiseFloorDb)
     {
         active = [];
         quiet = [];
-        if (_blocks.Count == 0)
+        if (blocks.Count == 0)
         {
             noiseFloorDb = double.NaN;
             return;
         }
 
-        double p10 = Percentile(_blocks.Select(block => block.ActivityRmsDb), 0.10);
-        double p50 = Percentile(_blocks.Select(block => block.ActivityRmsDb), 0.50);
-        double p90 = Percentile(_blocks.Select(block => block.ActivityRmsDb), 0.90);
-        bool anyEnergy = _blocks.Any(block => double.IsFinite(block.ActivityRmsDb));
+        double p10 = Percentile(blocks.Select(block => block.ActivityRmsDb), 0.10);
+        double p50 = Percentile(blocks.Select(block => block.ActivityRmsDb), 0.50);
+        double p90 = Percentile(blocks.Select(block => block.ActivityRmsDb), 0.90);
+        bool anyEnergy = blocks.Any(block => double.IsFinite(block.ActivityRmsDb));
         if (!anyEnergy)
         {
             noiseFloorDb = double.NegativeInfinity;
@@ -548,7 +706,7 @@ public sealed class RecordingLevelAnalyzer
         {
             noiseFloorDb = p10;
             double threshold = Math.Max(MinimumProgramBlockDb, p10 + QuietProgramSeparationDb);
-            PartitionBlocks(threshold, active, quiet);
+            PartitionBlocks(blocks, sampleRate, threshold, active, quiet);
             return;
         }
 
@@ -556,25 +714,30 @@ public sealed class RecordingLevelAnalyzer
         // noise floor. Treat it as programme when it is plainly above silence.
         noiseFloorDb = double.NaN;
         if (p50 > MinimumProgramBlockDb)
-            PartitionBlocks(MinimumProgramBlockDb, active, quiet);
+            PartitionBlocks(blocks, sampleRate, MinimumProgramBlockDb, active, quiet);
     }
 
-    private void PartitionBlocks(double activityThresholdDb, List<BlockSummary> active, List<BlockSummary> quiet)
+    private static void PartitionBlocks(
+        IEnumerable<BlockSummary> blocks,
+        int sampleRate,
+        double activityThresholdDb,
+        List<BlockSummary> active,
+        List<BlockSummary> quiet)
     {
-        foreach (BlockSummary block in _blocks)
+        foreach (BlockSummary block in blocks)
         {
-            if (IsProgramBlock(block, activityThresholdDb))
+            if (IsProgramBlock(block, sampleRate, activityThresholdDb))
                 active.Add(block);
             else if (double.IsFinite(block.RmsDb) && block.RmsDb > HumQuietFloorDb)
                 quiet.Add(block);
         }
     }
 
-    private bool IsProgramBlock(BlockSummary block, double activityThresholdDb) =>
+    private static bool IsProgramBlock(BlockSummary block, int sampleRate, double activityThresholdDb) =>
         block.ActivityRmsDb > activityThresholdDb
         && block.PeakDb > MinimumProgramPeakDb
         && block.ZeroCrossingsPerSecond >= MinimumZeroCrossingsPerSecond
-        && block.ZeroCrossingsPerSecond <= _sampleRate * MaximumZeroCrossingFraction;
+        && block.ZeroCrossingsPerSecond <= sampleRate * MaximumZeroCrossingFraction;
 
     /// <summary>
     /// Flags mains hum when one frequency dominates the quiet passages (lead-in
@@ -609,7 +772,7 @@ public sealed class RecordingLevelAnalyzer
     /// Mean DC across the active programme, worst channel. DC wastes asymmetric
     /// headroom and usually indicates a cabling or interface fault.
     /// </summary>
-    private double MeasureDcOffset(IReadOnlyList<BlockSummary> active)
+    private static double MeasureDcOffset(IReadOnlyList<BlockSummary> active)
     {
         if (active.Count == 0) return double.NegativeInfinity;
         double left = 0;
@@ -649,9 +812,9 @@ public sealed class RecordingLevelAnalyzer
             events.Dequeue();
     }
 
-    private double MeasureBalance(IReadOnlyList<BlockSummary> active)
+    private static double MeasureBalance(IReadOnlyList<BlockSummary> active, int channels)
     {
-        if (_channels < 2 || active.Count == 0) return 0;
+        if (channels < 2 || active.Count == 0) return 0;
         double left = 0;
         double right = 0;
         foreach (var block in active)
@@ -735,6 +898,9 @@ public sealed class RecordingLevelAnalyzer
         _peakRight = 0;
         _overallPeak = 0;
         _cachedSnapshot = null;
+        _cachedSnapshotFrame = 0;
+        _analysisGeneration++;
+        _snapshotBuildGeneration = 0;
         foreach (var tracker in _flatTopTrackers) tracker.Reset();
         if (resetLoudness) _loudness.Reset();
     }

@@ -408,6 +408,9 @@ public partial class RecordDialog : Window
         resetLevelCheckBtn.IsEnabled = enabled
             && (ViewModel.IsLevelChecking || ViewModel.HasStoppedLevelCheck);
         inputGainControls.IsEnabled = enabled;
+        wholeRecordCheck.IsEnabled = enabled
+            && !ViewModel.IsLevelChecking
+            && !ViewModel.HasStoppedLevelCheck;
         chkNeedleDrop.IsEnabled = enabled;
         bool metronomeEnabled = enabled && chkNeedleDrop.IsChecked != true;
         chkCountIn.IsEnabled = metronomeEnabled;

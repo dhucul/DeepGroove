@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using WaveLab.Util;
@@ -16,6 +17,9 @@ public sealed class PlaybackEngine : IDisposable
     private readonly object _stateLock = new();
     private readonly object _cleanupLock = new();
     private readonly List<Task> _pendingCleanupTasks = [];
+    private long _positionClockAccumulatedTicks;
+    private long _positionClockStartedAt;
+    private bool _positionClockRunning;
     [ThreadStatic] private static int _playbackCallbackDepth;
 
     public MasterSection Master { get; } = new();
@@ -30,7 +34,77 @@ public sealed class PlaybackEngine : IDisposable
 
     public int PositionSamples
     {
-        get { lock (_stateLock) return _provider?.PositionSamples ?? 0; }
+        get
+        {
+            lock (_stateLock)
+            {
+                if (_provider == null) return 0;
+                long timelineFrames = PositionClockFrames(_provider.WaveFormat.SampleRate);
+                int position = CalculatePresentedPosition(
+                    _provider.StartSample,
+                    _provider.EndSample,
+                    _provider.InitialPreRollFrames,
+                    timelineFrames,
+                    _provider.WaveFormat.SampleRate,
+                    _provider.WaveFormat.SampleRate,
+                    _provider.Loop);
+
+                // Reads normally stay one device buffer ahead of the monotonic
+                // timeline. Capping non-looping playback prevents the UI from
+                // outrunning audio if decoding or an effect temporarily stalls.
+                return _provider.Loop
+                    ? position
+                    : Math.Min(position, _provider.PositionSamples);
+            }
+        }
+    }
+
+    /// <summary>Must be called while holding <see cref="_stateLock"/>.</summary>
+    private long PositionClockFrames(int sampleRate)
+    {
+        long ticks = _positionClockAccumulatedTicks;
+        if (_positionClockRunning)
+            ticks += Math.Max(0, Stopwatch.GetTimestamp() - _positionClockStartedAt);
+        double frames = ticks * (double)sampleRate / Stopwatch.Frequency;
+        return frames >= long.MaxValue ? long.MaxValue : (long)Math.Floor(frames);
+    }
+
+    /// <summary>Must be called while holding <see cref="_stateLock"/>.</summary>
+    private void StartPositionClock()
+    {
+        _positionClockStartedAt = Stopwatch.GetTimestamp();
+        _positionClockRunning = true;
+    }
+
+    /// <summary>Must be called while holding <see cref="_stateLock"/>.</summary>
+    private void FreezePositionClock()
+    {
+        if (!_positionClockRunning) return;
+        _positionClockAccumulatedTicks += Math.Max(
+            0, Stopwatch.GetTimestamp() - _positionClockStartedAt);
+        _positionClockRunning = false;
+    }
+
+    internal static int CalculatePresentedPosition(
+        int start,
+        int end,
+        int preRollFrames,
+        long outputFrames,
+        int outputSampleRate,
+        int sourceSampleRate,
+        bool loop)
+    {
+        if (end <= start || outputSampleRate <= 0 || sourceSampleRate <= 0) return start;
+
+        double convertedFrames = Math.Floor(
+            Math.Max(0, outputFrames) * (double)sourceSampleRate / outputSampleRate);
+        long sourceFrames = convertedFrames >= long.MaxValue
+            ? long.MaxValue
+            : (long)convertedFrames;
+        long elapsed = Math.Max(0, sourceFrames - Math.Max(0, preRollFrames));
+        long span = (long)end - start;
+        if (loop) elapsed %= span;
+        return (int)Math.Clamp((long)start + elapsed, start, end);
     }
 
     public static List<(string Id, string Name)> GetOutputDevices()
@@ -137,10 +211,16 @@ public sealed class PlaybackEngine : IDisposable
                     LastPlaybackError = null;
                     IsPlaying = true;
                     IsPaused = false;
+                    _positionClockAccumulatedTicks = 0;
+                    _positionClockRunning = false;
                     registered = true;
                 }
 
                 output.Play();
+                lock (_stateLock)
+                {
+                    if (ReferenceEquals(_out, output)) StartPositionClock();
+                }
                 return playbackSession;
             }
             catch (Exception error)
@@ -185,6 +265,7 @@ public sealed class PlaybackEngine : IDisposable
             lock (_stateLock)
             {
                 if (!ReferenceEquals(_out, output)) return;
+                FreezePositionClock();
                 IsPlaying = false;
                 IsPaused = true;
             }
@@ -205,6 +286,7 @@ public sealed class PlaybackEngine : IDisposable
             lock (_stateLock)
             {
                 if (!ReferenceEquals(_out, output)) return;
+                StartPositionClock();
                 IsPlaying = true;
                 IsPaused = false;
             }
@@ -327,6 +409,9 @@ public sealed class PlaybackEngine : IDisposable
         _outDevice = null;
         _provider = null;
         _playbackStoppedHandler = null;
+        _positionClockAccumulatedTicks = 0;
+        _positionClockStartedAt = 0;
+        _positionClockRunning = false;
         IsPlaying = false;
         IsPaused = false;
         SourceDocument = null;
@@ -354,6 +439,7 @@ public sealed class PlaybackEngine : IDisposable
         private readonly int _start;
         private readonly int _end;
         private readonly bool _expandMonoToStereo;
+        private readonly int _initialPreRollFrames;
         private int _preRollFrames;
         private int _pos;
 
@@ -372,13 +458,17 @@ public sealed class PlaybackEngine : IDisposable
             _pos = _start;
             // Give WASAPI and the device a silent lead-in before the first signal.
             // Resuming a paused stream does not pass through this path again.
-            _preRollFrames = Math.Max(1, doc.SampleRate / 50); // 20 ms
+            _initialPreRollFrames = Math.Max(1, doc.SampleRate / 50); // 20 ms
+            _preRollFrames = _initialPreRollFrames;
             WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(
                 doc.SampleRate, _expandMonoToStereo ? 2 : _channels.Length);
         }
 
         public bool Loop { get; set; }
         public WaveFormat WaveFormat { get; }
+        public int StartSample => _start;
+        public int EndSample => _end;
+        public int InitialPreRollFrames => _initialPreRollFrames;
         public int PositionSamples => Volatile.Read(ref _pos);
 
         public int Read(float[] buffer, int offset, int count)

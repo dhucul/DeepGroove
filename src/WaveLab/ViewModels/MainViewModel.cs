@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using WaveLab.Audio;
@@ -40,6 +41,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _recordInputName = "Default input";
     private readonly DispatcherTimer _timer;
     private readonly DispatcherTimer _autosaveTimer;
+    private TimeSpan _lastPlaybackRenderTime = TimeSpan.MinValue;
     private DateTime? _lastAutosave;
     private readonly Dictionary<Guid, int> _autosavedVersions = [];
     private readonly HashSet<Guid> _savesInFlight = [];
@@ -80,6 +82,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
         _timer.Tick += (_, _) => OnTick();
         _timer.Start();
+        CompositionTarget.Rendering += OnRendering;
 
         _autosaveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _autosaveTimer.Tick += (_, _) => AutosaveTick();
@@ -109,8 +112,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SeekCommand = new RelayCommand<PlayheadSeekRequest>(HandlePlayheadSeek);
         ToggleLoopCommand = new RelayCommand(() => IsLooping = !IsLooping);
 
-        ZoomInCommand = new RelayCommand(() => WithDoc(d => d.ZoomBy(1 / 1.5)), () => HasAudioDocument);
-        ZoomOutCommand = new RelayCommand(() => WithDoc(d => d.ZoomBy(1.5)), () => HasAudioDocument);
+        ZoomInCommand = new RelayCommand(() => ZoomActiveDocument(1 / 1.5), () => HasAudioDocument);
+        ZoomOutCommand = new RelayCommand(() => ZoomActiveDocument(1.5), () => HasAudioDocument);
         ZoomFitCommand = new RelayCommand(() => WithDoc(d => d.ZoomFull()), () => HasAudioDocument);
         ZoomSelectionCommand = new RelayCommand(() => WithDoc(d => d.ZoomToSelection()),
             () => _active?.HasSelection == true);
@@ -878,6 +881,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_active != null) action(_active);
     }
 
+    private void ZoomActiveDocument(double factor)
+    {
+        WithDoc(document =>
+        {
+            if (IsPlaying && ReferenceEquals(document, _playbackDocument))
+                document.ZoomBy(factor, document.PlayheadSample);
+            else
+                document.ZoomBy(factor);
+        });
+    }
+
     // ── transport ────────────────────────────────────────────────
 
     private void ToggleRecord()
@@ -1638,6 +1652,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0) return failure;
 
         _shuttingDown = true;
+        CompositionTarget.Rendering -= OnRendering;
         _autosaveTimer.Stop();
         _timer.Stop();
         Master.ProcessingTopologyChanged -= RestartMonoPlaybackForTopologyChange;
@@ -1654,12 +1669,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnTick()
     {
-        var playbackDocument = _playbackDocument;
-        if (playbackDocument != null && IsPlaying && Documents.Contains(playbackDocument))
-        {
-            playbackDocument.PlayheadSample = Math.Clamp(Engine.PositionSamples, 0, playbackDocument.Doc.Length);
-            playbackDocument.EnsurePlayheadVisible();
-        }
         Master.Tick(0.033, IsPlaying);
         if (IsTransportRecording)
         {
@@ -1687,5 +1696,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             catch { }
             Raise(nameof(StatusAutosave));
         }
+    }
+
+    private void OnRendering(object? sender, EventArgs e)
+    {
+        if (!IsPlaying || e is not RenderingEventArgs rendering
+            || rendering.RenderingTime == _lastPlaybackRenderTime)
+            return;
+        _lastPlaybackRenderTime = rendering.RenderingTime;
+
+        var playbackDocument = _playbackDocument;
+        if (playbackDocument == null || !Documents.Contains(playbackDocument)) return;
+        playbackDocument.PlayheadSample = Math.Clamp(
+            Engine.PositionSamples, 0, playbackDocument.Doc.Length);
+        playbackDocument.EnsurePlayheadVisible();
     }
 }

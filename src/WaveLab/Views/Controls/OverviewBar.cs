@@ -30,6 +30,7 @@ public sealed class OverviewBar : FrameworkElement
 
     private bool _dragging;
     private bool _draggingPlayhead;
+    private bool _invalidateQueued;
 
     public OverviewBar()
     {
@@ -49,7 +50,18 @@ public sealed class OverviewBar : FrameworkElement
         if (e.PropertyName is nameof(DocumentViewModel.ViewStart) or nameof(DocumentViewModel.SamplesPerPixel)
             or nameof(DocumentViewModel.PeaksVersion) or nameof(DocumentViewModel.ViewWidthPixels)
             or nameof(DocumentViewModel.PlayheadSample))
-            Dispatcher.BeginInvoke(InvalidateVisual);
+            QueueInvalidateVisual();
+    }
+
+    private void QueueInvalidateVisual()
+    {
+        if (_invalidateQueued) return;
+        _invalidateQueued = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _invalidateQueued = false;
+            InvalidateVisual();
+        });
     }
 
     // whole-file geometry cache — rebuilt only on resize or when the peaks change

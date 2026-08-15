@@ -29,6 +29,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private double _inputLevelStepDb = 0.5;
     private double _inputFineTrimDb;
     private double _heldRecommendedTotalDb = double.NaN;
+    private double _heldProgramPeakDb = double.NaN;
     private bool _hasInputLevelControl;
     private bool _inputLevelMuted;
     private string? _inputLevelError;
@@ -39,6 +40,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private Task _finalization = Task.CompletedTask;
     private long _expectedRecordingSessionId;
     private bool _calibrationSaved;
+    private bool _sampleWholeRecord;
+    private bool _stoppedLevelCheckWasWholeRecord;
+    private string? _completedLevelCheckNote;
     private bool _disposed;
 
     public RecordViewModel()
@@ -117,6 +121,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             // A held total is specific to the endpoint that was measured. It can
             // survive gain adjustments on that endpoint, but never a device change.
             HasStoppedLevelCheck = false;
+            _stoppedLevelCheckWasWholeRecord = false;
+            _completedLevelCheckNote = null;
             _levelSnapshot = _engine.LevelSnapshot;
             ResetDisplayedLevels();
             RaiseLevelProperties();
@@ -168,12 +174,26 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     }
 
     public bool IsFinalizing { get => _isFinalizing; private set => Set(ref _isFinalizing, value); }
+    public bool SampleWholeRecord
+    {
+        get => _sampleWholeRecord;
+        set
+        {
+            if (!Set(ref _sampleWholeRecord, value)) return;
+            Raise(nameof(LevelCheckButtonText));
+            Raise(nameof(LevelStatusTitle));
+            Raise(nameof(LevelStatusDetail));
+            Raise(nameof(LevelProgressText));
+        }
+    }
+
     public bool HasStoppedLevelCheck
     {
         get => _levelCheckStopped;
         private set
         {
             if (!Set(ref _levelCheckStopped, value)) return;
+            if (!value) _stoppedLevelCheckWasWholeRecord = false;
             Raise(nameof(LevelStatusTitle));
             Raise(nameof(LevelStatusDetail));
         }
@@ -291,7 +311,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         }
     }
 
-    public string LevelCheckButtonText => IsLevelChecking ? "Stop Check" : "Check Levels";
+    public string LevelCheckButtonText => IsLevelChecking
+        ? SampleWholeRecord ? "Finish Full Scan" : "Stop Check"
+        : SampleWholeRecord ? "Scan Whole Song" : "Check Levels";
     public double LevelConfidencePercent => _levelSnapshot.Confidence * 100;
     public double TargetMeterMinimumDb => -4 - DisplayedReserveDb;
     public double TargetMeterMaximumDb => -2 - DisplayedReserveDb;
@@ -312,7 +334,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             return _levelSnapshot.Status switch
             {
                 RecordingLevelStatus.WaitingForSignal => "Waiting for the record",
-                RecordingLevelStatus.Analyzing => "Learning the loudest passage…",
+                RecordingLevelStatus.Analyzing => SampleWholeRecord
+                    ? "Sampling the whole record side…"
+                    : "Learning the loudest passage…",
                 RecordingLevelStatus.TooLow => "Input level is conservative",
                 RecordingLevelStatus.Good => "Recording level is ready",
                 RecordingLevelStatus.Hot => "Input level is too hot",
@@ -328,9 +352,13 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             if (HasStoppedLevelCheck)
+            {
+                if (_stoppedLevelCheckWasWholeRecord)
+                    return "The whole-side scan is complete and its safest setting is frozen. Rewind the record, adjust to the displayed setting if needed, then start the take.";
                 return _levelSnapshot.ActiveSeconds >= 10
                     ? "Monitoring is stopped and the completed measurements are frozen. Start recording, or run a new check after changing the input level."
                     : "Monitoring is stopped and the provisional measurements are frozen. Run a new check for at least 10 active seconds before recording.";
+            }
             if (IsWaitingForNeedleDrop)
                 return "Lower the stylus onto the lead-in groove. Recording starts from the contact click with a 250 ms safety pre-roll.";
             if (!IsLevelChecking && !IsRecording)
@@ -357,6 +385,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 notes += snapshot.ClippedSamples > 0 && snapshot.Status != RecordingLevelStatus.Clipping
                     ? $" {snapshot.ClippedSamples:N0} isolated click sample(s) touched digital full scale, but run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; they are excluded from the gain advice because declicking replaces them later."
                     : $" Isolated clicks run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; the recommendation protects the music, and declicking removes the clicks later.";
+            if (SampleWholeRecord && IsLevelChecking)
+                notes += " Keep the side playing through the run-out groove; the safest setting encountered anywhere on the side is held.";
             return snapshot.Status switch
             {
                 RecordingLevelStatus.WaitingForSignal =>
@@ -511,6 +541,12 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             RecordingLevelSnapshot snapshot = _levelSnapshot;
+            if ((SampleWholeRecord && IsLevelChecking)
+                || (_stoppedLevelCheckWasWholeRecord && HasStoppedLevelCheck))
+            {
+                TimeSpan scanned = TimeSpan.FromSeconds(snapshot.ElapsedSeconds);
+                return $"{(int)scanned.TotalMinutes:00}:{scanned.Seconds:00} scanned · whole-side safest setting held";
+            }
             return $"{snapshot.ActiveSeconds:0.0} s active · {snapshot.Confidence:P0} scan maturity";
         }
     }
@@ -527,12 +563,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         try
         {
             Interlocked.Exchange(ref _expectedRecordingSessionId, 0);
-            long sessionId = _engine.StartLevelCheck(_selectedDevice?.Id);
+            long sessionId = _engine.StartLevelCheck(
+                _selectedDevice?.Id,
+                fullDurationScan: SampleWholeRecord);
             Interlocked.Exchange(ref _expectedRecordingSessionId, sessionId);
             Result = null;
             _levelSnapshot = _engine.LevelSnapshot;
             ResetDisplayedLevels();
             _calibrationSaved = false;
+            _completedLevelCheckNote = null;
             HasStoppedLevelCheck = false;
             IsLevelChecking = true;
             PersistSelectedDevice();
@@ -565,6 +604,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
         _levelSnapshot = _engine.LevelSnapshot;
         ResetDisplayedLevels(clearRecommendation: !preserveRecommendation);
+        if (!preserveRecommendation) _completedLevelCheckNote = null;
         _calibrationSaved = false;
         HasStoppedLevelCheck = false;
         RaiseLevelProperties();
@@ -574,12 +614,20 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     public bool StopLevelCheck()
     {
         if (!IsLevelChecking || IsRecording || IsWaitingForNeedleDrop || IsFinalizing) return false;
-        RecordingLevelSnapshot stoppedSnapshot = _engine.LevelSnapshot;
-        // Capture the last completed analyzer block before the timer stops polling;
-        // otherwise a recommendation produced just before Stop Check can be lost.
+        long sessionId = Interlocked.Read(ref _expectedRecordingSessionId);
+        RecordingLevelSnapshot? stoppedSnapshot = _engine.StopLevelCheckAndGetSnapshot(sessionId);
+        if (stoppedSnapshot == null) return false;
+
+        // The stream is now quiescent, so this forced snapshot includes the last
+        // completed packet rather than the throttled live-summary cache.
         UpdateHeldRecommendation(stoppedSnapshot);
-        Interlocked.Exchange(ref _expectedRecordingSessionId, 0);
-        _engine.Stop();
+        _stoppedLevelCheckWasWholeRecord = SampleWholeRecord;
+        if (SampleWholeRecord)
+        {
+            SaveWholeRecordCalibration(stoppedSnapshot);
+            _completedLevelCheckNote = BuildWholeRecordCaptureNote(stoppedSnapshot);
+        }
+        Interlocked.CompareExchange(ref _expectedRecordingSessionId, 0, sessionId);
         _levelSnapshot = stoppedSnapshot;
         HasStoppedLevelCheck = true;
         IsLevelChecking = false;
@@ -707,6 +755,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Result = requireSessionMatch
                 ? await _engine.StopSessionAndGetDocumentAsync(ownedSessionId)
                 : await _engine.StopAndGetDocumentAsync();
+            if (Result != null && _completedLevelCheckNote != null)
+                Result.CaptureNote = _completedLevelCheckNote;
         }
         finally
         {
@@ -768,7 +818,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     /// </summary>
     private void SaveCalibrationOnceSettled()
     {
-        if (_calibrationSaved || !IsLevelChecking || _selectedDevice == null) return;
+        if (_calibrationSaved || SampleWholeRecord || !IsLevelChecking || _selectedDevice == null) return;
         RecordingLevelSnapshot snapshot = _levelSnapshot;
         // Skip a Hot verdict whose programme suggestion is not a reduction: that
         // combination means an intersample over, which has no stable gain answer
@@ -789,6 +839,41 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Raise(nameof(HasDeviceMemory));
         }
         catch { }
+    }
+
+    private void SaveWholeRecordCalibration(RecordingLevelSnapshot snapshot)
+    {
+        if (_selectedDevice == null
+            || !double.IsFinite(_heldRecommendedTotalDb)
+            || !double.IsFinite(_heldProgramPeakDb)
+            || snapshot.InvalidSamples > 0
+            || snapshot.Status is RecordingLevelStatus.Clipping
+                or RecordingLevelStatus.UpstreamClipping) return;
+
+        _calibrationSaved = true;
+        try
+        {
+            AppSettings.Instance.InputCalibrations[_selectedDevice.Id] =
+                new AppSettings.InputCalibrationInfo(
+                    HeldSuggestedGainDb, _heldProgramPeakDb, DateTime.UtcNow);
+            AppSettings.Instance.Save();
+            Raise(nameof(DeviceMemoryText));
+            Raise(nameof(HasDeviceMemory));
+        }
+        catch { }
+    }
+
+    private string? BuildWholeRecordCaptureNote(RecordingLevelSnapshot snapshot)
+    {
+        if (!double.IsFinite(_heldRecommendedTotalDb)
+            || !double.IsFinite(_heldProgramPeakDb)) return null;
+
+        double change = HeldSuggestedGainDb;
+        string gain = change > 0 ? $"+{change:0.0}" : $"{change:0.0}";
+        TimeSpan scanned = TimeSpan.FromSeconds(snapshot.ElapsedSeconds);
+        return $"Whole-side level scan: safest programme peak {_heldProgramPeakDb:0.0} dBTP, "
+            + $"suggested input change {gain} dB "
+            + $"({(int)scanned.TotalMinutes}:{scanned.Seconds:00} scanned).";
     }
 
     private void PersistSelectedDevice()
@@ -868,10 +953,14 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 and not RecordingLevelStatus.UpstreamClipping
             && !(snapshot.Status == RecordingLevelStatus.Hot && snapshot.SuggestedGainDb >= 0);
         if (!usable) return;
-        _heldRecommendedTotalDb = HoldSafeInputSetting(
+        double nextSetting = HoldSafeInputSetting(
             _heldRecommendedTotalDb,
             CurrentInputTotalDb,
             snapshot.SuggestedGainDb);
+        if (!double.IsFinite(_heldRecommendedTotalDb)
+            || nextSetting < _heldRecommendedTotalDb - 0.001)
+            _heldProgramPeakDb = snapshot.ProgramPeakDb;
+        _heldRecommendedTotalDb = nextSetting;
     }
 
     internal static double HoldSafeInputSetting(
@@ -917,7 +1006,11 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     private void ResetDisplayedLevels(bool clearRecommendation = true)
     {
-        if (clearRecommendation) _heldRecommendedTotalDb = double.NaN;
+        if (clearRecommendation)
+        {
+            _heldRecommendedTotalDb = double.NaN;
+            _heldProgramPeakDb = double.NaN;
+        }
         PeakLDb = PeakRDb = RmsLDb = RmsRDb = HoldLDb = HoldRDb = -60;
         LevelHistory.Clear();
     }

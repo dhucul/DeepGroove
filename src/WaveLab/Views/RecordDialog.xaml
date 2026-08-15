@@ -306,6 +306,12 @@
                                              TargetMinimumDb="{Binding TargetMeterMinimumDb}"
                                              TargetMaximumDb="{Binding TargetMeterMaximumDb}"/>
 
+                        <CheckBox x:Name="wholeRecordCheck" Margin="0,11,0,0"
+                                  Content="Scan the whole song / record side"
+                                  IsChecked="{Binding SampleWholeRecord, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  ToolTip="Play from lead-in through run-out; WaveLab holds the safest setting found anywhere on the side"
+                                  AutomationProperties.Name="Scan the whole song or record side for recording level"/>
+
                         <Grid Margin="0,12,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>

@@ -10,6 +10,8 @@ namespace WaveLab.Views.Controls;
 /// <summary>Time ruler with adaptive tick spacing; click to place the cursor.</summary>
 public sealed class TimeRuler : FrameworkElement
 {
+    private bool _invalidateQueued;
+
     public static readonly DependencyProperty DocumentProperty = DependencyProperty.Register(
         nameof(Document), typeof(DocumentViewModel), typeof(TimeRuler),
         new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, OnDocumentChanged));
@@ -37,7 +39,18 @@ public sealed class TimeRuler : FrameworkElement
     {
         if (e.PropertyName is nameof(DocumentViewModel.ViewStart) or nameof(DocumentViewModel.SamplesPerPixel)
             or nameof(DocumentViewModel.MarkersVersion))
-            Dispatcher.BeginInvoke(InvalidateVisual);
+            QueueInvalidateVisual();
+    }
+
+    private void QueueInvalidateVisual()
+    {
+        if (_invalidateQueued) return;
+        _invalidateQueued = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _invalidateQueued = false;
+            InvalidateVisual();
+        });
     }
 
     private static readonly Brush MarkerBrush = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0x54)));

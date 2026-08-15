@@ -34,12 +34,16 @@ public sealed class WaveformView : FrameworkElement
 
     private bool _dragging;
     private bool _draggingPlayhead;
+    private bool _invalidateQueued;
     private int _dragAnchor;
 
     // geometry cache — rebuilt only when this key changes
-    private readonly record struct CacheKey(double ViewStart, double Spp, double W, double H, double AmpZoom,
+    private readonly record struct CacheKey(double Spp, double W, double H, double AmpZoom,
         int PeaksVersion, int Channels, object? Doc);
+    internal readonly record struct GeometryWindow(double StartSample, double EndSample, int PixelWidth);
     private CacheKey _cacheKey;
+    private GeometryWindow _geometryWindow;
+    private bool _geometryCacheValid;
     private StreamGeometry[] _peakGeos = [];
     private StreamGeometry[] _rmsGeos = [];
 
@@ -69,7 +73,18 @@ public sealed class WaveformView : FrameworkElement
             or nameof(DocumentViewModel.Cursor) or nameof(DocumentViewModel.PlayheadSample)
             or nameof(DocumentViewModel.PeaksVersion) or nameof(DocumentViewModel.MarkersVersion)
             or nameof(DocumentViewModel.AmpZoom))
-            Dispatcher.BeginInvoke(InvalidateVisual);
+            QueueInvalidateVisual();
+    }
+
+    private void QueueInvalidateVisual()
+    {
+        if (_invalidateQueued) return;
+        _invalidateQueued = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _invalidateQueued = false;
+            InvalidateVisual();
+        });
     }
 
     protected override void OnRender(DrawingContext dc)
@@ -85,7 +100,7 @@ public sealed class WaveformView : FrameworkElement
         double viewStart = vm.ViewStart;
         double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
-        EnsureGeometryCache(vm, w, h, channels, chH, spp, viewStart);
+        double geometryOffsetX = EnsureGeometryCache(vm, w, h, channels, chH, spp, viewStart);
 
         for (int c = 0; c < channels; c++)
         {
@@ -94,16 +109,20 @@ public sealed class WaveformView : FrameworkElement
 
             dc.PushClip(new RectangleGeometry(new Rect(0, c * chH, w, chH)));
 
-            foreach (double frac in (double[])[0.25, 0.5, 0.75])
+            foreach (double levelDb in AmplitudeRuler.MarkerLevelsDb)
             {
-                dc.DrawLine(WaveTheme.GridLine, new Point(0, mid - amp * frac), new Point(w, mid - amp * frac));
-                dc.DrawLine(WaveTheme.GridLine, new Point(0, mid + amp * frac), new Point(w, mid + amp * frac));
+                double offset = AmplitudeRuler.MarkerOffset(levelDb, amp);
+                if (offset > chH / 2 - 2) continue;
+                dc.DrawLine(WaveTheme.GridLine, new Point(0, mid - offset), new Point(w, mid - offset));
+                dc.DrawLine(WaveTheme.GridLine, new Point(0, mid + offset), new Point(w, mid + offset));
             }
 
             if (c < _peakGeos.Length)
             {
+                dc.PushTransform(new TranslateTransform(geometryOffsetX, 0));
                 dc.DrawGeometry(WaveTheme.WavePeak, null, _peakGeos[c]);
                 dc.DrawGeometry(WaveTheme.WaveRms, null, _rmsGeos[c]);
+                dc.Pop();
             }
 
             dc.DrawLine(WaveTheme.CenterLine, new Point(0, mid), new Point(w, mid));
@@ -160,16 +179,26 @@ public sealed class WaveformView : FrameworkElement
         }
     }
 
-    private void EnsureGeometryCache(DocumentViewModel vm, double w, double h, int channels, double chH,
+    private double EnsureGeometryCache(DocumentViewModel vm, double w, double h, int channels, double chH,
         double spp, double viewStart)
     {
-        var key = new CacheKey(viewStart, spp, w, h, vm.AmpZoom, vm.PeaksVersion, channels, vm.Doc);
-        if (key == _cacheKey && _peakGeos.Length == channels) return;
+        var key = new CacheKey(spp, w, h, vm.AmpZoom, vm.PeaksVersion, channels, vm.Doc);
+        double viewEnd = Math.Min(vm.Doc.Length, viewStart + w * spp);
+        if (_geometryCacheValid
+            && key == _cacheKey
+            && _peakGeos.Length == channels
+            && GeometryWindowCovers(_geometryWindow, viewStart, viewEnd))
+        {
+            return (_geometryWindow.StartSample - viewStart) / spp;
+        }
+
         _cacheKey = key;
+        _geometryWindow = CalculateGeometryWindow(vm.Doc.Length, viewStart, spp, w);
+        _geometryCacheValid = true;
 
         _peakGeos = new StreamGeometry[channels];
         _rmsGeos = new StreamGeometry[channels];
-        int width = (int)w;
+        int width = _geometryWindow.PixelWidth;
         var peakTop = new Point[width];
         var peakBot = new Point[width];
         var rmsTop = new Point[width];
@@ -182,8 +211,9 @@ public sealed class WaveformView : FrameworkElement
 
             for (int x = 0; x < width; x++)
             {
-                int s0 = (int)(viewStart + x * spp);
-                int s1 = Math.Max(s0 + 1, (int)(viewStart + (x + 1) * spp));
+                int s0 = (int)(_geometryWindow.StartSample + x * spp);
+                int s1 = Math.Max(s0 + 1,
+                    (int)(_geometryWindow.StartSample + (x + 1) * spp));
                 vm.Peaks.Query(c, s0, s1, out float mn, out float mx, out float rms);
                 peakTop[x] = new Point(x, mid - Math.Clamp(mx, -1, 1) * amp);
                 peakBot[x] = new Point(x, mid - Math.Clamp(mn, -1, 1) * amp);
@@ -195,7 +225,31 @@ public sealed class WaveformView : FrameworkElement
             _peakGeos[c] = BuildBand(peakTop, peakBot);
             _rmsGeos[c] = BuildBand(rmsTop, rmsBot);
         }
+
+        return (_geometryWindow.StartSample - viewStart) / spp;
     }
+
+    internal static GeometryWindow CalculateGeometryWindow(
+        int documentLength,
+        double viewStart,
+        double samplesPerPixel,
+        double viewWidth)
+    {
+        double visibleSpan = Math.Max(1, viewWidth) * samplesPerPixel;
+        double cacheSpan = Math.Min(Math.Max(0, documentLength), visibleSpan * 2);
+        double maximumStart = Math.Max(0, documentLength - cacheSpan);
+        double start = Math.Clamp(viewStart - (cacheSpan - visibleSpan) / 2, 0, maximumStart);
+        double end = Math.Min(documentLength, start + cacheSpan);
+        int pixels = Math.Max(2, (int)Math.Ceiling((end - start) / samplesPerPixel));
+        return new GeometryWindow(start, end, pixels);
+    }
+
+    internal static bool GeometryWindowCovers(
+        GeometryWindow window,
+        double viewStart,
+        double viewEnd) =>
+        viewStart >= window.StartSample - 1e-6
+        && viewEnd <= window.EndSample + 1e-6;
 
     private static StreamGeometry BuildBand(Point[] top, Point[] bot)
     {

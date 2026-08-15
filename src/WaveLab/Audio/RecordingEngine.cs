@@ -283,6 +283,7 @@ public sealed class RecordingEngine : IDisposable
         lock (_lifecycleLock)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            _levelAnalyzer.FullDurationScanEnabled = false;
             return StartCore(deviceId, retainAudio: true);
         }
     }
@@ -291,11 +292,12 @@ public sealed class RecordingEngine : IDisposable
     /// Start the input stream for a level check without retaining calibration
     /// audio or applying the recording memory limit.
     /// </summary>
-    public long StartLevelCheck(string? deviceId)
+    public long StartLevelCheck(string? deviceId, bool fullDurationScan = false)
     {
         lock (_lifecycleLock)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            _levelAnalyzer.FullDurationScanEnabled = fullDurationScan;
             return StartCore(deviceId, retainAudio: false);
         }
     }
@@ -310,6 +312,7 @@ public sealed class RecordingEngine : IDisposable
         lock (_lifecycleLock)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            _levelAnalyzer.FullDurationScanEnabled = false;
             long sessionId = StartCore(deviceId, retainAudio: false);
             if (!ArmNeedleDropCore(sessionId))
             {
@@ -350,7 +353,8 @@ public sealed class RecordingEngine : IDisposable
                 _pendingSnapshot = null;
                 Interlocked.Exchange(ref _totalSamples, 0);
                 Volatile.Write(ref _capacityReached, false);
-                _pendingCaptureNote = BuildCaptureNote(_levelAnalyzer.Snapshot);
+                _pendingCaptureNote = BuildCaptureNote(_levelAnalyzer.GetFreshSnapshot());
+                _levelAnalyzer.FullDurationScanEnabled = false;
                 _levelAnalyzer.Reset();
                 PeakL = PeakR = RmsL = RmsR = 0;
                 session.NeedleDropPreRoll.Clear();
@@ -390,7 +394,8 @@ public sealed class RecordingEngine : IDisposable
                     Volatile.Write(ref _capacityReached, false);
                     // Read the settled check before resetting so the take can
                     // carry the calibration outcome into its metadata.
-                    _pendingCaptureNote = BuildCaptureNote(_levelAnalyzer.Snapshot);
+                    _pendingCaptureNote = BuildCaptureNote(_levelAnalyzer.GetFreshSnapshot());
+                    _levelAnalyzer.FullDurationScanEnabled = false;
                     _levelAnalyzer.Reset();
                     PeakL = PeakR = RmsL = RmsR = 0;
                     session.NeedleDropDetector = null;
@@ -732,6 +737,24 @@ public sealed class RecordingEngine : IDisposable
         StopAndGetDocumentCoreAsync(expectedSessionId: null, cancellationToken);
 
     /// <summary>
+    /// Stop a monitor-only level check and return a summary that includes every
+    /// capture callback completed before stream teardown. The analyzer is reset
+    /// only after this immutable result has been built.
+    /// </summary>
+    public RecordingLevelSnapshot? StopLevelCheckAndGetSnapshot(long sessionId)
+    {
+        if (sessionId <= 0) return null;
+        lock (_lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            CaptureSession? session = GetCurrentSession();
+            if (session == null || session.Id != sessionId || session.RetainAudio)
+                return null;
+            return StopCore(captureLevelSnapshot: true);
+        }
+    }
+
+    /// <summary>
     /// Finalize only the named recording session. A delayed stop notification
     /// therefore cannot stop or consume a newer capture published by Start.
     /// </summary>
@@ -904,8 +927,9 @@ public sealed class RecordingEngine : IDisposable
         }
     }
 
-    private void StopCore()
+    private RecordingLevelSnapshot? StopCore(bool captureLevelSnapshot = false)
     {
+        RecordingLevelSnapshot? finalLevelSnapshot = null;
         _finalizeGate.Wait();
         try
         {
@@ -931,6 +955,8 @@ public sealed class RecordingEngine : IDisposable
 
                 lock (_blocks)
                 {
+                    if (captureLevelSnapshot)
+                        finalLevelSnapshot = _levelAnalyzer.GetFreshSnapshot();
                     _blocks.Clear();
                     _pendingSnapshot = null;
                     Interlocked.Exchange(ref _totalSamples, 0);
@@ -944,6 +970,7 @@ public sealed class RecordingEngine : IDisposable
             finally { _stopGate.Release(); }
         }
         finally { _finalizeGate.Release(); }
+        return finalLevelSnapshot;
     }
 
     public void Dispose()

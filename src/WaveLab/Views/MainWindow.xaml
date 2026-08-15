@@ -444,6 +444,10 @@
 
             <!-- editor column -->
             <Grid Grid.Column="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="48"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="64"/>
                     <RowDefinition Height="26"/>
@@ -451,9 +455,17 @@
                     <RowDefinition Height="252"/>
                 </Grid.RowDefinitions>
 
-                <c:OverviewBar Grid.Row="0" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}"/>
-                <c:TimeRuler Grid.Row="1" Document="{Binding ActiveDocument}"/>
-                <c:WaveformView Grid.Row="2" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}">
+                <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
+                        Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}"
+                        BorderThickness="0,0,1,0">
+                    <TextBlock Text="dBFS" FontFamily="{StaticResource MonoFont}" FontSize="8.5"
+                               Foreground="{StaticResource Faint}" HorizontalAlignment="Center"
+                               VerticalAlignment="Bottom" Margin="0,0,0,6"/>
+                </Border>
+                <c:OverviewBar Grid.Row="0" Grid.Column="1" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}"/>
+                <c:TimeRuler Grid.Row="1" Grid.Column="1" Document="{Binding ActiveDocument}"/>
+                <c:AmplitudeRuler Grid.Row="2" Grid.Column="0" Document="{Binding ActiveDocument}"/>
+                <c:WaveformView Grid.Row="2" Grid.Column="1" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}">
                     <c:WaveformView.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                             <MenuItem Header="Cut" InputGestureText="Ctrl+X" Command="{Binding CutCommand}"/>
@@ -468,7 +480,7 @@
                     </c:WaveformView.ContextMenu>
                 </c:WaveformView>
 
-                <Border Grid.Row="3" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+                <Border Grid.Row="3" Grid.ColumnSpan="2" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
                     <TabControl x:Name="analysisTabs" SelectionChanged="OnAnalysisTabChanged">
                         <TabItem Header="Spectrum">
                             <c:SpectrumView x:Name="spectrumView"/>
