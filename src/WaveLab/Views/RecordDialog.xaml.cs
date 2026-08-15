@@ -6,6 +6,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using WaveLab.Audio;
+using WaveLab.Util;
 using WaveLab.ViewModels;
 
 namespace WaveLab.Views;
@@ -59,6 +60,8 @@ public partial class RecordDialog : Window
         cmbBars.Items.Add("2 bars (4/4)");
         cmbBars.SelectedIndex = 0;
 
+        LoadAutoStopSettings();
+
         if (punchAvailable)
         {
             chkPunch.Visibility = Visibility.Visible;
@@ -72,6 +75,7 @@ public partial class RecordDialog : Window
         ViewModel.MonitoringStopped += OnMonitoringStopped;
         ViewModel.NeedleDropMonitoringStopped += OnNeedleDropMonitoringStopped;
         ViewModel.NeedleDropStarted += OnNeedleDropStarted;
+        ViewModel.AutoStopped += OnAutoStopped;
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
         Closing += (_, e) =>
         {
@@ -103,6 +107,7 @@ public partial class RecordDialog : Window
             ViewModel.MonitoringStopped -= OnMonitoringStopped;
             ViewModel.NeedleDropMonitoringStopped -= OnNeedleDropMonitoringStopped;
             ViewModel.NeedleDropStarted -= OnNeedleDropStarted;
+            ViewModel.AutoStopped -= OnAutoStopped;
             ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
             if (ViewModel.IsRecording || ViewModel.IsLevelChecking
                 || ViewModel.IsWaitingForNeedleDrop || ViewModel.HasPendingCapture)
@@ -177,6 +182,7 @@ public partial class RecordDialog : Window
 
         if (!ViewModel.IsRecording)
         {
+            CommitAutoStopEdits();
             bool transitionFromLevelCheck = ViewModel.IsLevelChecking;
             bool needleDropStart = chkNeedleDrop.IsChecked == true;
             double bpm = double.TryParse(txtBpm.Text, out var b) ? Math.Clamp(b, 30, 300) : 120;
@@ -349,6 +355,118 @@ public partial class RecordDialog : Window
         startText.Text = "Stop & Insert";
     }
 
+    private void LoadAutoStopSettings()
+    {
+        AppSettings settings = AppSettings.Instance;
+        ViewModel.AutoStopOnRunOut = settings.RecordAutoStopOnRunOut;
+        ViewModel.RunOutHoldSeconds = settings.RecordRunOutHoldSeconds;
+        ViewModel.AutoStopOnDuration = settings.RecordAutoStopOnDuration;
+        ViewModel.AutoStopMinutes = settings.RecordAutoStopMinutes;
+        ShowAutoStopValues();
+        // SetSetupControlsEnabled only runs on later state changes, so give the
+        // dependent rows their opening enablement here.
+        runOutHoldRow.IsEnabled = ViewModel.AutoStopOnRunOut;
+        txtAutoStopMinutes.IsEnabled = ViewModel.AutoStopOnDuration;
+    }
+
+    /// <summary>Writes the view model's clamped values back into the two text boxes.</summary>
+    private void ShowAutoStopValues()
+    {
+        txtRunOutHold.Text = ViewModel.RunOutHoldSeconds.ToString("0.#");
+        txtAutoStopMinutes.Text = ViewModel.AutoStopMinutes.ToString();
+    }
+
+    /// <summary>Best effort — a settings write failure must not block a take.</summary>
+    private void SaveAutoStopSettings()
+    {
+        try
+        {
+            AppSettings settings = AppSettings.Instance;
+            settings.RecordAutoStopOnRunOut = ViewModel.AutoStopOnRunOut;
+            settings.RecordRunOutHoldSeconds = ViewModel.RunOutHoldSeconds;
+            settings.RecordAutoStopOnDuration = ViewModel.AutoStopOnDuration;
+            settings.RecordAutoStopMinutes = ViewModel.AutoStopMinutes;
+            settings.Save();
+        }
+        catch { }
+    }
+
+    private void OnAutoStopOptionChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop
+            || ViewModel.IsFinalizing) return;
+        SetSetupControlsEnabled(true);
+        SaveAutoStopSettings();
+    }
+
+    private void OnRunOutHoldChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        if (double.TryParse(txtRunOutHold.Text, out double seconds))
+            ViewModel.RunOutHoldSeconds = seconds;
+        ShowAutoStopValues();
+        SaveAutoStopSettings();
+    }
+
+    private void OnAutoStopMinutesChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        if (int.TryParse(txtAutoStopMinutes.Text, out int minutes))
+            ViewModel.AutoStopMinutes = minutes;
+        ShowAutoStopValues();
+        SaveAutoStopSettings();
+    }
+
+    /// <summary>
+    /// Pull whatever is typed in the auto-stop boxes into the view model even if
+    /// they never lost focus, so Start always uses what the user can see.
+    /// </summary>
+    private void CommitAutoStopEdits()
+    {
+        if (double.TryParse(txtRunOutHold.Text, out double seconds))
+            ViewModel.RunOutHoldSeconds = seconds;
+        if (int.TryParse(txtAutoStopMinutes.Text, out int minutes))
+            ViewModel.AutoStopMinutes = minutes;
+        ShowAutoStopValues();
+        SaveAutoStopSettings();
+    }
+
+    /// <summary>
+    /// The take ended itself. This is an ordinary, expected finish, so it closes
+    /// with the recording exactly as pressing Stop would.
+    /// </summary>
+    private void OnAutoStopped(AutoStopInfo info, Exception? failure)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => OnAutoStopped(info, failure));
+            return;
+        }
+        if (!IsVisible) return;
+        try { _click.Stop(); } catch { }
+
+        if (failure != null)
+        {
+            MessageBox.Show($"Could not finalize the automatically stopped recording:\n{failure.Message}",
+                "Record", MessageBoxButton.OK, MessageBoxImage.Warning);
+            PrepareAfterFinalizationFailure();
+            return;
+        }
+        if (ViewModel.Result == null)
+        {
+            MessageBox.Show(
+                info.Reason == AutoStopReason.RunOut
+                    ? "Recording stopped at the run-out groove, but no audio was captured."
+                    : "Recording stopped at the maximum take length, but no audio was captured.",
+                "Record", MessageBoxButton.OK, MessageBoxImage.Information);
+            PrepareAfterFinalizationFailure();
+            return;
+        }
+
+        DialogResult = true;
+        Close();
+    }
+
     private void OnNeedleDropOptionChanged(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop) return;
@@ -412,6 +530,10 @@ public partial class RecordDialog : Window
             && !ViewModel.IsLevelChecking
             && !ViewModel.HasStoppedLevelCheck;
         chkNeedleDrop.IsEnabled = enabled;
+        chkRunOutStop.IsEnabled = enabled;
+        chkDurationStop.IsEnabled = enabled;
+        runOutHoldRow.IsEnabled = enabled && chkRunOutStop.IsChecked == true;
+        txtAutoStopMinutes.IsEnabled = enabled && chkDurationStop.IsChecked == true;
         bool metronomeEnabled = enabled && chkNeedleDrop.IsChecked != true;
         chkCountIn.IsEnabled = metronomeEnabled;
         chkMetronome.IsEnabled = metronomeEnabled;

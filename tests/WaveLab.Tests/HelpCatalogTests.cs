@@ -46,6 +46,7 @@ public sealed class HelpCatalogTests
     [Theory]
     [InlineData("device mix format", HelpCatalog.RecordingTopicId)]
     [InlineData("TRUE PEAK", HelpCatalog.RecordingTopicId)]
+    [InlineData("run-out groove", HelpCatalog.RecordingTopicId)]
     [InlineData("autosave recovery", "settings")]
     [InlineData("dither 16-bit", "formats")]
     [InlineData("batch normalize", "tools")]

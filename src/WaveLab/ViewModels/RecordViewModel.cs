@@ -12,6 +12,17 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private const int LevelHistoryCapacity = 900; // about 30 s at the 33 ms tick
     private const double DcWarningThresholdDb = -50;
 
+    /// <summary>Comfortably longer than any LP side, so the cap only fires when something went wrong.</summary>
+    public const int DefaultAutoStopMinutes = 30;
+    public const int MinimumAutoStopMinutes = 1;
+    public const int MaximumAutoStopMinutes = 180;
+
+    /// <summary>
+    /// The countdown is hidden until the hold is well under way, so an ordinary
+    /// inter-track gap does not flash a stop warning at the user.
+    /// </summary>
+    private const double CountdownVisibleAfterSeconds = 5;
+
     private readonly RecordingEngine _engine = new();
     private RecordingLevelSnapshot _levelSnapshot;
     private CaptureDevice? _selectedDevice;
@@ -43,6 +54,11 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private bool _sampleWholeRecord;
     private bool _stoppedLevelCheckWasWholeRecord;
     private string? _completedLevelCheckNote;
+    private bool _autoStopOnRunOut;
+    private double _runOutHoldSeconds = RunOutDetector.DefaultHoldSeconds;
+    private bool _autoStopOnDuration;
+    private int _autoStopMinutes = DefaultAutoStopMinutes;
+    private string _autoStopStatusText = "";
     private bool _disposed;
 
     public RecordViewModel()
@@ -108,6 +124,50 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 NeedleDropStarted?.Invoke();
             });
         };
+        _engine.AutoStopTriggered += info =>
+        {
+            if (_disposed
+                || info.SessionId != Interlocked.Read(ref _expectedRecordingSessionId)
+                || !_engine.IsCurrentSession(info.SessionId)) return;
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(async () =>
+            {
+                if (_disposed
+                    || !IsRecording
+                    || IsFinalizing
+                    || info.SessionId != Interlocked.Read(ref _expectedRecordingSessionId)
+                    || !_engine.IsCurrentSession(info.SessionId)) return;
+
+                Exception? failure = null;
+                // Finish through the ordinary stop path so the take is built,
+                // trimmed and handed over exactly as a manual stop would be.
+                try { await StopAndFinishSessionAsync(info.SessionId); }
+                catch (Exception ex) { failure = ex; }
+                if (failure == null) NoteAutoStopReason(info.Reason);
+                AutoStopped?.Invoke(info, failure);
+            });
+        };
+    }
+
+    /// <summary>
+    /// Records why the take ended in the document's capture note. The dialog
+    /// closes on an auto-stop, so this is where the reason survives; a banner
+    /// would vanish with the window.
+    /// </summary>
+    private void NoteAutoStopReason(AutoStopReason reason)
+    {
+        string note = reason switch
+        {
+            AutoStopReason.RunOut =>
+                $"Stopped automatically at the run-out groove; {RunOutDetector.KeepAfterProgramSeconds:0.#} s "
+                + "was kept after the last programme content and the rest of the run-out discarded.",
+            AutoStopReason.DurationLimit =>
+                $"Stopped automatically at the {_autoStopMinutes} minute take limit; all captured audio was kept.",
+            _ => "",
+        };
+        if (Result == null || note.Length == 0) return;
+        Result.CaptureNote = string.IsNullOrWhiteSpace(Result.CaptureNote)
+            ? note
+            : Result.CaptureNote + " " + note;
     }
 
     public ObservableCollection<CaptureDevice> Devices { get; } = [];
@@ -186,6 +246,46 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Raise(nameof(LevelProgressText));
         }
     }
+
+    /// <summary>Watch for the run-out groove and end the take when the side finishes.</summary>
+    public bool AutoStopOnRunOut
+    {
+        get => _autoStopOnRunOut;
+        set => Set(ref _autoStopOnRunOut, value);
+    }
+
+    /// <summary>Seconds of run-out to hear before stopping.</summary>
+    public double RunOutHoldSeconds
+    {
+        get => _runOutHoldSeconds;
+        set => Set(ref _runOutHoldSeconds, RunOutDetector.NormalizeHoldSeconds(value));
+    }
+
+    /// <summary>Stop after <see cref="AutoStopMinutes"/> regardless of what the detector hears.</summary>
+    public bool AutoStopOnDuration
+    {
+        get => _autoStopOnDuration;
+        set => Set(ref _autoStopOnDuration, value);
+    }
+
+    public int AutoStopMinutes
+    {
+        get => _autoStopMinutes;
+        set => Set(ref _autoStopMinutes, Math.Clamp(value, MinimumAutoStopMinutes, MaximumAutoStopMinutes));
+    }
+
+    /// <summary>Live countdown while a run-out hold is under way; empty otherwise.</summary>
+    public string AutoStopStatusText
+    {
+        get => _autoStopStatusText;
+        private set
+        {
+            if (!Set(ref _autoStopStatusText, value)) return;
+            Raise(nameof(HasAutoStopStatus));
+        }
+    }
+
+    public bool HasAutoStopStatus => !string.IsNullOrEmpty(_autoStopStatusText);
 
     public bool HasStoppedLevelCheck
     {
@@ -557,6 +657,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     public event Action<RecordingStoppedInfo>? NeedleDropMonitoringStopped;
     public event Action? NeedleDropStarted;
 
+    /// <summary>Raised after a take ended itself and finished finalizing.</summary>
+    public event Action<AutoStopInfo, Exception?>? AutoStopped;
+
     public bool StartLevelCheck()
     {
         if (IsRecording || IsLevelChecking || IsWaitingForNeedleDrop || IsFinalizing || HasPendingCapture) return false;
@@ -640,6 +743,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         if (IsRecording || IsWaitingForNeedleDrop || IsFinalizing || HasPendingCapture) return false;
         try
         {
+            ApplyAutoStopSettings();
             long sessionId;
             if (IsLevelChecking)
             {
@@ -690,6 +794,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         if (IsRecording || IsWaitingForNeedleDrop || IsFinalizing || HasPendingCapture) return false;
         try
         {
+            ApplyAutoStopSettings();
             long sessionId;
             if (IsLevelChecking)
             {
@@ -734,6 +839,19 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Push the panel's choices into the engine. Called at every start, so a
+    /// take always uses what the dialog shows rather than a stale arming.
+    /// </summary>
+    private void ApplyAutoStopSettings()
+    {
+        AutoStopStatusText = "";
+        _engine.ConfigureAutoStop(
+            _autoStopOnRunOut,
+            _runOutHoldSeconds,
+            _autoStopOnDuration ? _autoStopMinutes : 0);
+    }
+
     public Task StopAndFinishAsync() => StopAndFinishAsync(sessionId: null);
 
     private Task StopAndFinishSessionAsync(long sessionId) => StopAndFinishAsync(sessionId);
@@ -742,6 +860,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     {
         if (IsFinalizing) return _finalization;
         IsRecording = false;
+        // The countdown describes a take that is still running. Clear it here so
+        // it cannot outlive the take if finalization fails and the dialog stays.
+        AutoStopStatusText = "";
         IsFinalizing = true;
         long ownedSessionId = sessionId ?? Interlocked.Read(ref _expectedRecordingSessionId);
         _finalization = FinalizeCoreAsync(ownedSessionId, requireSessionMatch: sessionId.HasValue);
@@ -777,6 +898,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         IsLevelChecking = false;
         IsWaitingForNeedleDrop = false;
         IsRecording = false;
+        AutoStopStatusText = "";
         ResetDisplayedLevels();
         Raise(nameof(HasPendingCapture));
         RaiseLevelProperties();
@@ -807,9 +929,25 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         LevelHistory.Add(Math.Max(rmsDbL, rmsDbR));
         while (LevelHistory.Count > LevelHistoryCapacity) LevelHistory.RemoveAt(0);
         SaveCalibrationOnceSettled();
+        UpdateAutoStopCountdown();
         Raise(nameof(ElapsedText));
         SyncSoftwarePlaythroughState();
         RaiseLevelProperties();
+    }
+
+    /// <summary>
+    /// Mirrors the detector's hold into the dialog. It stays blank for the first
+    /// few seconds of quiet so a gap between tracks does not look like the end.
+    /// </summary>
+    private void UpdateAutoStopCountdown()
+    {
+        if (!IsRecording || !_autoStopOnRunOut) return;
+        double remaining = _engine.AutoStopCountdownSeconds;
+        double elapsed = _runOutHoldSeconds - remaining;
+        double visibleAfter = Math.Min(CountdownVisibleAfterSeconds, _runOutHoldSeconds / 2);
+        AutoStopStatusText = double.IsNaN(remaining) || elapsed < visibleAfter
+            ? ""
+            : $"RUN-OUT DETECTED — STOPPING IN {Math.Max(1, Math.Ceiling(remaining)):0} s";
     }
 
     /// <summary>

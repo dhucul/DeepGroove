@@ -8,6 +8,18 @@ namespace WaveLab.Audio;
 
 public sealed record RecordingStoppedInfo(Exception? Error, bool CapacityReached, long SessionId = 0);
 
+/// <summary>Why a take asked to end itself.</summary>
+public enum AutoStopReason
+{
+    None = 0,
+    /// <summary>Programme content stopped and only the run-out groove was left.</summary>
+    RunOut,
+    /// <summary>The take reached the configured maximum length.</summary>
+    DurationLimit,
+}
+
+public sealed record AutoStopInfo(long SessionId, AutoStopReason Reason);
+
 /// <summary>WASAPI capture into memory; produces a new AudioDocument on stop.</summary>
 public sealed class RecordingEngine : IDisposable
 {
@@ -39,6 +51,9 @@ public sealed class RecordingEngine : IDisposable
     private int _disposed;
     private long _nextSessionId;
     private string? _pendingCaptureNote;
+    private bool _autoStopOnRunOut;
+    private double _autoStopHoldSeconds = RunOutDetector.DefaultHoldSeconds;
+    private double _autoStopLimitSeconds;
     private readonly RecordingLevelAnalyzer _levelAnalyzer = new(48000, 2);
     private readonly SoftwareInputMonitor _inputMonitor = new();
 
@@ -78,6 +93,33 @@ public sealed class RecordingEngine : IDisposable
         public NeedleDropDetector? NeedleDropDetector { get; set; }
         public Queue<float[]> NeedleDropPreRoll { get; } = new();
         public int NeedleDropPreRollSamples { get; set; }
+
+        private RunOutDetector? _runOutDetector;
+        private long _autoStopTrimSamples = -1;
+        private int _autoStopRequested;
+
+        /// <summary>
+        /// Written on the capture thread under the block lock, read by the UI
+        /// thread for the countdown; the reference swap is what must be atomic.
+        /// </summary>
+        public RunOutDetector? RunOut
+        {
+            get => Volatile.Read(ref _runOutDetector);
+            set => Volatile.Write(ref _runOutDetector, value);
+        }
+
+        /// <summary>Retained samples to keep, or -1 to keep everything captured.</summary>
+        public long AutoStopTrimSamples
+        {
+            get => Interlocked.Read(ref _autoStopTrimSamples);
+            set => Interlocked.Exchange(ref _autoStopTrimSamples, value);
+        }
+
+        /// <summary>True once this session has already asked to stop; latches so it asks once.</summary>
+        public bool TryRequestAutoStop() =>
+            Interlocked.CompareExchange(ref _autoStopRequested, 1, 0) == 0;
+
+        public bool AutoStopRequested => Volatile.Read(ref _autoStopRequested) != 0;
 
         /// <summary>Call only while holding the owning engine's block and session locks.</summary>
         public void AdvanceDataState(bool retainAudio, bool discardFirstPacket = true) =>
@@ -182,6 +224,35 @@ public sealed class RecordingEngine : IDisposable
     public bool HasPendingCapture { get { lock (_blocks) return _pendingSnapshot != null; } }
     public event Action<RecordingStoppedInfo>? CaptureStopped;
     public event Action<long>? NeedleDropTriggered;
+
+    /// <summary>
+    /// Raised on the capture thread when a take has decided it should end. The
+    /// engine keeps running: the owner performs the normal stop so the take
+    /// finalizes exactly as a manual stop would.
+    /// </summary>
+    public event Action<AutoStopInfo>? AutoStopTriggered;
+
+    /// <summary>
+    /// Seconds left before run-out auto-stop fires, or NaN when nothing is being
+    /// held — no programme heard yet, music still playing, or already fired.
+    /// </summary>
+    public double AutoStopCountdownSeconds =>
+        GetCurrentSession()?.RunOut?.CountdownSeconds ?? double.NaN;
+
+    /// <summary>
+    /// Configure how a take may end itself. Apply before starting; monitor-only
+    /// level checks ignore it because nothing is being retained.
+    /// </summary>
+    /// <param name="stopOnRunOut">Watch for the run-out groove.</param>
+    /// <param name="runOutHoldSeconds">Seconds of run-out to hear before stopping.</param>
+    /// <param name="limitMinutes">Maximum take length; zero or less disables the cap.</param>
+    public void ConfigureAutoStop(bool stopOnRunOut, double runOutHoldSeconds, double limitMinutes)
+    {
+        Volatile.Write(ref _autoStopOnRunOut, stopOnRunOut);
+        Volatile.Write(ref _autoStopHoldSeconds, RunOutDetector.NormalizeHoldSeconds(runOutHoldSeconds));
+        Volatile.Write(ref _autoStopLimitSeconds,
+            double.IsFinite(limitMinutes) && limitMinutes > 0 ? limitMinutes * 60 : 0);
+    }
 
     /// <summary>
     /// True while <paramref name="sessionId"/> still identifies the session
@@ -360,6 +431,8 @@ public sealed class RecordingEngine : IDisposable
                 session.NeedleDropPreRoll.Clear();
                 session.NeedleDropPreRollSamples = 0;
                 session.NeedleDropDetector = new NeedleDropDetector();
+                session.RunOut = null;
+                session.AutoStopTrimSamples = -1;
                 session.AdvanceDataState(retainAudio: false);
                 return true;
             }
@@ -401,6 +474,10 @@ public sealed class RecordingEngine : IDisposable
                     session.NeedleDropDetector = null;
                     session.NeedleDropPreRoll.Clear();
                     session.NeedleDropPreRollSamples = 0;
+                    // Auto-stop measures the retained take only, so its detector
+                    // is built fresh on the first packet after this boundary.
+                    session.RunOut = null;
+                    session.AutoStopTrimSamples = -1;
                     session.AdvanceDataState(retainAudio: true);
                     return true;
                 }
@@ -597,6 +674,7 @@ public sealed class RecordingEngine : IDisposable
 
         bool capacityRejected = false;
         bool needleDropTriggered = false;
+        AutoStopReason autoStopReason = AutoStopReason.None;
         lock (_blocks)
         {
             // Unsubscribing does not revoke a delegate invocation that was
@@ -647,6 +725,8 @@ public sealed class RecordingEngine : IDisposable
                         session.NeedleDropPreRoll.Clear();
                         session.NeedleDropPreRollSamples = 0;
                         session.NeedleDropDetector = null;
+                        session.RunOut = null;
+                        session.AutoStopTrimSamples = -1;
                         // This callback already owns the contact packet. Advance
                         // retention without discarding the following packet.
                         session.AdvanceDataState(retainAudio: true, discardFirstPacket: false);
@@ -661,6 +741,7 @@ public sealed class RecordingEngine : IDisposable
                 {
                     _blocks.Add(block);
                     Interlocked.Add(ref _totalSamples, samples);
+                    autoStopReason = EvaluateAutoStop(session, block, samples, channels);
                 }
                 else
                 {
@@ -682,6 +763,62 @@ public sealed class RecordingEngine : IDisposable
             return;
         }
         if (needleDropTriggered) RaiseNeedleDropTriggered(session.Id);
+        if (autoStopReason != AutoStopReason.None)
+            RaiseAutoStopTriggered(new AutoStopInfo(session.Id, autoStopReason));
+    }
+
+    /// <summary>
+    /// Decide whether this take should end itself. Called on the capture thread
+    /// while holding the block lock, so it sees a consistent retained total.
+    /// </summary>
+    private AutoStopReason EvaluateAutoStop(
+        CaptureSession session,
+        float[] block,
+        int samples,
+        int channels)
+    {
+        if (session.AutoStopRequested) return AutoStopReason.None;
+        int sampleRate = Volatile.Read(ref _sampleRate);
+        if (sampleRate <= 0) return AutoStopReason.None;
+
+        if (Volatile.Read(ref _autoStopOnRunOut))
+        {
+            // Created on the first retained packet, so it never sees calibration
+            // audio and its sample counts line up with the retained take.
+            RunOutDetector detector = session.RunOut
+                ??= new RunOutDetector(sampleRate, channels, Volatile.Read(ref _autoStopHoldSeconds));
+            if (detector.Process(block, samples, channels) && session.TryRequestAutoStop())
+            {
+                long kept = Interlocked.Read(ref _totalSamples) - detector.TrimBackoffSamples;
+                kept = Math.Max(0, kept);
+                session.AutoStopTrimSamples = kept - kept % channels;
+                return AutoStopReason.RunOut;
+            }
+        }
+
+        double limitSeconds = Volatile.Read(ref _autoStopLimitSeconds);
+        if (limitSeconds > 0)
+        {
+            long limitSamples = (long)(limitSeconds * sampleRate) * channels;
+            if (Interlocked.Read(ref _totalSamples) >= limitSamples && session.TryRequestAutoStop())
+            {
+                // The cap is a safety net, not an edit: keep every sample.
+                session.AutoStopTrimSamples = -1;
+                return AutoStopReason.DurationLimit;
+            }
+        }
+        return AutoStopReason.None;
+    }
+
+    private void RaiseAutoStopTriggered(AutoStopInfo info)
+    {
+        var handlers = AutoStopTriggered;
+        if (handlers == null) return;
+        foreach (Action<AutoStopInfo> handler in handlers.GetInvocationList())
+        {
+            try { handler(info); }
+            catch { /* A subscriber must not terminate NAudio's callback thread. */ }
+        }
     }
 
     private void EnqueueNeedleDropPreRoll(
@@ -875,11 +1012,24 @@ public sealed class RecordingEngine : IDisposable
                     Interlocked.Exchange(ref _totalSamples, 0);
                     return null;
                 }
+                // A run-out auto-stop keeps only what it measured, so the take
+                // ends a couple of seconds past the music instead of carrying
+                // the whole hold period. Trailing blocks stay in the array and
+                // are simply not read: BuildDocument stops at the frame count.
+                // Deliberately independent of whether the owner acted on the
+                // notification: the trim describes what the detector measured,
+                // so it applies to however this session ends up stopping.
+                int snapshotChannels = Volatile.Read(ref _channels);
+                long retainedSamples = Interlocked.Read(ref _totalSamples);
+                long trimSamples = session.AutoStopTrimSamples;
+                if (trimSamples >= 0) retainedSamples = Math.Min(retainedSamples, trimSamples);
+                retainedSamples -= retainedSamples % Math.Max(1, snapshotChannels);
+
                 var snapshot = new CaptureSnapshot(
                     session.Id,
                     _blocks.ToArray(),
-                    Interlocked.Read(ref _totalSamples),
-                    Volatile.Read(ref _channels),
+                    retainedSamples,
+                    snapshotChannels,
                     Volatile.Read(ref _sampleRate),
                     DateTime.Now,
                     _pendingCaptureNote);
@@ -988,6 +1138,7 @@ public sealed class RecordingEngine : IDisposable
             {
                 CaptureStopped = null;
                 NeedleDropTriggered = null;
+                AutoStopTriggered = null;
                 try { _inputMonitor.Dispose(); }
                 finally
                 {

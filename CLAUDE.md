@@ -24,6 +24,7 @@ WaveLab-style audio editor for Windows. C# / WPF / .NET 10 (`net10.0-windows`), 
 - Restoration/stretch/pitch/SRC DSP is in `Audio/Dsp/` (`Restoration`, `TimeStretch`, `Resampler`, `PitchDetect`, `TempoDetect`); tool orchestration (dialogs → `RunRangeTool` → undoable `ReplaceRange`) is in `MainWindow.xaml.cs`.
 - Generic dialogs: `ParamDialog` (combo + sliders), `InfoDialog`, `TextPromptDialog` — reuse these instead of new one-off windows.
 - Export uses `AudioExporter` (custom WAV codec or MediaFoundationEncoder; FLAC only if the MFT exists — check `FlacAvailable`).
+- Recording auto-start/auto-stop are mirror images and both live on the capture thread inside `RecordingEngine.OnData`: `NeedleDropDetector` promotes a monitor stream into a take, `RunOutDetector` ends one. Each raises an event (`NeedleDropTriggered` / `AutoStopTriggered`); `RecordViewModel` marshals to the dispatcher and drives the ordinary start/stop path, so the engine never stops itself. Auto-stop trims by *lowering the snapshot's sample count* in `StopAndSnapshotAsync` — `BuildDocument` stops at that frame count, so trailing blocks need no surgery. Run-out is decided relatively (learned noise floor + the analyzer's 150 Hz activity/zero-crossing tests), never by an absolute dBFS gate, and nothing can fire before programme has been heard once.
 
 ## Threading model (responsiveness)
 

@@ -351,6 +351,51 @@
                     </StackPanel>
                 </Border>
 
+                <TextBlock Text="AUTOMATIC STOP" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
+                           Margin="0,14,0,0"/>
+                <Border Background="#101918" BorderBrush="#2D4742" BorderThickness="1" CornerRadius="8"
+                        Padding="12,10" Margin="0,7,0,0">
+                    <StackPanel>
+                        <CheckBox x:Name="chkRunOutStop" Content="Stop when the side runs out"
+                                  IsChecked="{Binding AutoStopOnRunOut, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  Checked="OnAutoStopOptionChanged" Unchecked="OnAutoStopOptionChanged"
+                                  ToolTip="Listens for the run-out groove — surface noise with no music in it"
+                                  AutomationProperties.Name="Stop recording at the run-out groove"/>
+                        <TextBlock Text="Listens for surface noise with no music in it. Keeps 2 s past the last programme content and trims the rest."
+                                   Margin="22,4,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"
+                                   TextWrapping="Wrap"/>
+                        <StackPanel x:Name="runOutHoldRow" Orientation="Horizontal" Margin="25,10,0,0">
+                            <TextBlock Text="Wait" Foreground="#B7BEC6" FontSize="11.5" VerticalAlignment="Center"/>
+                            <TextBox x:Name="txtRunOutHold" Width="52" Margin="9,0,0,0" Padding="8,5" FontSize="12"
+                                     VerticalAlignment="Center" TextAlignment="Center"
+                                     LostFocus="OnRunOutHoldChanged"
+                                     ToolTip="5 to 60 seconds; 12 is long enough to sit through a gap between tracks"
+                                     AutomationProperties.Name="Seconds of run-out to wait before stopping"/>
+                            <TextBlock Text="s of run-out before stopping" Margin="9,0,0,0" Foreground="#B7BEC6"
+                                       FontSize="11.5" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <Border Height="1" Background="#1E332F" Margin="0,11,0,11"/>
+
+                        <StackPanel Orientation="Horizontal">
+                            <CheckBox x:Name="chkDurationStop" Content="Stop after" VerticalAlignment="Center"
+                                      IsChecked="{Binding AutoStopOnDuration, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      Checked="OnAutoStopOptionChanged" Unchecked="OnAutoStopOptionChanged"
+                                      AutomationProperties.Name="Stop recording after a fixed length"/>
+                            <TextBox x:Name="txtAutoStopMinutes" Width="56" Margin="9,0,0,0" Padding="8,5" FontSize="12"
+                                     VerticalAlignment="Center" TextAlignment="Center"
+                                     LostFocus="OnAutoStopMinutesChanged"
+                                     ToolTip="1 to 180 minutes. A take also ends at WaveLab's in-memory limit — about 35 minutes at 48 kHz stereo, and proportionally less at higher rates."
+                                     AutomationProperties.Name="Maximum take length in minutes"/>
+                            <TextBlock Text="minutes" Margin="9,0,0,0" Foreground="#CDD3D9" FontSize="12"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="Safety limit — fires whether or not the run-out is ever detected."
+                                   Margin="22,4,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
                 <TextBlock Text="METRONOME" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
                            Margin="0,14,0,0"/>
                 <Grid Margin="0,8,0,0">
@@ -373,6 +418,9 @@
                 <TextBlock x:Name="countInText" Text="COUNT-IN…" FontSize="11" FontWeight="Bold"
                            Foreground="{StaticResource Amber}" HorizontalAlignment="Center" Margin="0,9,0,0"
                            Visibility="Collapsed"/>
+                <TextBlock Text="{Binding AutoStopStatusText}" FontSize="11" FontWeight="Bold"
+                           Foreground="{StaticResource Amber}" HorizontalAlignment="Center" Margin="0,9,0,0"
+                           Visibility="{Binding HasAutoStopStatus, Converter={StaticResource BoolToVis}}"/>
                 <TextBlock Text="{Binding ElapsedText}" FontFamily="{StaticResource MonoFont}" FontSize="28"
                            Foreground="{StaticResource Red}" HorizontalAlignment="Center" Margin="0,8,0,2"/>
             </StackPanel>

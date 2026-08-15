@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — Automatic Stop (Record dialog)</title>
+<style>
+  :root{
+    --bg:#0D0F12; --panel:#14171B; --panel2:#191D22; --panel3:#1F242A;
+    --line:#262C33; --lineSoft:#1D2228;
+    --text:#E7EAEE; --muted:#9AA1A9; --faint:#5D646D;
+    --accent:#3FD6C2; --accentDim:#2BA393; --amber:#FFB454; --red:#FF5C5C; --green:#3FD07A;
+    --cardBg:#101918; --cardEdge:#2D4742;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:'Inter','Segoe UI',system-ui,sans-serif; font-size:12.5px;
+    padding:32px 30px 40px; -webkit-font-smoothing:antialiased;
+  }
+  .page-title{font-size:17px;font-weight:600;letter-spacing:.2px}
+  .page-sub{font-size:11.5px;color:var(--faint);margin-top:5px;max-width:1180px;line-height:1.55}
+  .grid{display:flex;gap:22px;margin-top:26px;align-items:flex-start;flex-wrap:wrap}
+  .col{width:376px}
+  .state-tag{
+    font-size:9px;font-weight:700;letter-spacing:1.1px;color:var(--accent);
+    background:#122421;border:1px solid #23423D;border-radius:5px;
+    padding:4px 8px;display:inline-block;margin-bottom:9px;
+  }
+  .state-note{font-size:10.5px;color:var(--faint);margin-bottom:11px;line-height:1.5;min-height:31px}
+
+  /* dialog fragment shell — matches RecordDialog Panel2 + 20px content margin */
+  .dlg{background:var(--panel2);border:1px solid #313841;border-radius:14px;padding:16px 20px 18px}
+
+  .sec{font-size:10px;font-weight:700;letter-spacing:.4px;color:var(--faint)}
+  .sec.mt{margin-top:14px}
+  .card{background:var(--cardBg);border:1px solid var(--cardEdge);border-radius:8px;padding:10px 12px;margin-top:7px}
+  .card.dim{opacity:.5}
+
+  .cb{display:flex;align-items:center;gap:9px;font-size:12px;color:#CDD3D9}
+  .cb .box{
+    width:16px;height:16px;border-radius:4px;background:var(--panel);
+    border:1px solid var(--line);flex:0 0 16px;position:relative;
+  }
+  .cb.on .box{background:#173832;border-color:#2E5A54}
+  .cb.on .box::after{
+    content:"";position:absolute;left:3px;top:4.6px;width:7px;height:3.6px;
+    border-left:1.6px solid var(--accent);border-bottom:1.6px solid var(--accent);
+    transform:rotate(-45deg);border-radius:1px;
+  }
+  .cb.off .box::after{content:none}
+  .hint{margin:4px 0 0 25px;font-size:10.5px;color:var(--faint);line-height:1.5}
+
+  .subrow{display:flex;align-items:center;gap:9px;margin:10px 0 0 25px;font-size:11.5px;color:#B7BEC6}
+  .subrow.disabled{opacity:.38}
+  .num{
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:5px 9px;font-size:12px;color:var(--text);min-width:52px;text-align:center;
+    font-variant-numeric:tabular-nums;
+  }
+  .num.wide{min-width:62px}
+  .divider{height:1px;background:#1E332F;margin:11px 0}
+
+  .inline{display:flex;align-items:center;gap:9px;font-size:12px;color:#CDD3D9}
+
+  .status{
+    text-align:center;font-size:11px;font-weight:700;letter-spacing:.6px;
+    margin-top:11px;color:var(--amber);
+  }
+  .status.accent{color:var(--accent)}
+  .elapsed{
+    text-align:center;font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:26px;color:var(--red);margin-top:9px;letter-spacing:1px;
+  }
+
+  /* run-out visual: history strip showing programme then noise-floor-only */
+  .stripwrap{margin-top:12px}
+  .striphead{display:flex;justify-content:space-between;font-size:8px;font-weight:700;color:#71817C;letter-spacing:.3px}
+  .strip{margin-top:5px;height:46px;width:100%;display:block;background:#0B1211;border:1px solid #1C2C2A;border-radius:5px}
+
+  .legend{display:flex;gap:16px;margin-top:8px;font-size:9.5px;color:var(--faint);flex-wrap:wrap}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+
+  .notes{margin-top:30px;max-width:1180px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .notes h2{font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--accent);margin-bottom:9px}
+  .notes ul{margin-left:16px}
+  .notes li{font-size:11.5px;color:var(--muted);line-height:1.75}
+  .notes code{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;color:#9FE8DD}
+</style>
+</head>
+<body>
+
+<div class="page-title">Record dialog — AUTOMATIC STOP panel</div>
+<div class="page-sub">
+  New panel, placed directly beneath AUTOMATIC START (RecordDialog.xaml:340) and above METRONOME. Same card treatment:
+  <code style="font-family:'JetBrains Mono',monospace;color:#9FE8DD">#101918</code> fill,
+  <code style="font-family:'JetBrains Mono',monospace;color:#9FE8DD">#2D4742</code> border, 8&nbsp;px radius, 12,10 padding.
+  Both options work with any start method — manual, count-in or needle drop.
+</div>
+
+<div class="grid">
+
+  <!-- ── state 1 ─────────────────────────────────────── -->
+  <div class="col">
+    <div class="state-tag">STATE 1 · IDLE, BOTH ARMED</div>
+    <div class="state-note">Default appearance when the dialog opens. Shown with the AUTOMATIC START panel above it for context.</div>
+    <div class="dlg">
+      <div class="sec">AUTOMATIC START</div>
+      <div class="card">
+        <div class="cb on"><span class="box"></span><span>Start when the needle touches the record</span></div>
+        <div class="hint">Listens while armed, then keeps the contact click and 250&nbsp;ms before it so the opening groove is never clipped.</div>
+      </div>
+
+      <div class="sec mt">AUTOMATIC STOP</div>
+      <div class="card">
+        <div class="cb on"><span class="box"></span><span>Stop when the side runs out</span></div>
+        <div class="hint">Listens for surface noise with no music in it. Keeps 2&nbsp;s past the last programme content and trims the rest.</div>
+        <div class="subrow">
+          <span>Wait</span><span class="num">12</span><span>s of run-out before stopping</span>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="inline">
+          <span class="cb on"><span class="box"></span><span>Stop after</span></span>
+          <span class="num">30</span><span style="color:#CDD3D9">minutes</span>
+        </div>
+        <div class="hint">Safety limit — fires whether or not the run-out is ever detected.</div>
+      </div>
+
+      <div class="sec mt">METRONOME</div>
+      <div class="card" style="background:transparent;border:none;padding:0;margin-top:8px">
+        <div class="inline" style="opacity:.45">
+          <span class="cb off"><span class="box"></span><span>Count-in</span></span>
+          <span class="num" style="min-width:60px">120</span>
+          <span style="color:var(--faint);font-size:11px">BPM ·</span>
+          <span class="num wide">2 bars</span>
+        </div>
+      </div>
+      <div class="elapsed">00:00:00.000</div>
+    </div>
+  </div>
+
+  <!-- ── state 2 ─────────────────────────────────────── -->
+  <div class="col">
+    <div class="state-tag">STATE 2 · RECORDING, RUN-OUT DETECTED</div>
+    <div class="state-note">Music has ended; the detector is holding. The panel greys out (options are locked once capture starts) and a countdown appears above the timer.</div>
+    <div class="dlg">
+      <div class="sec">AUTOMATIC STOP</div>
+      <div class="card dim">
+        <div class="cb on"><span class="box"></span><span>Stop when the side runs out</span></div>
+        <div class="hint">Listens for surface noise with no music in it. Keeps 2&nbsp;s past the last programme content and trims the rest.</div>
+        <div class="subrow"><span>Wait</span><span class="num">12</span><span>s of run-out before stopping</span></div>
+        <div class="divider"></div>
+        <div class="inline">
+          <span class="cb on"><span class="box"></span><span>Stop after</span></span>
+          <span class="num">30</span><span style="color:#CDD3D9">minutes</span>
+        </div>
+        <div class="hint">Safety limit — fires whether or not the run-out is ever detected.</div>
+      </div>
+
+      <div class="stripwrap">
+        <div class="striphead"><span>RECENT INPUT LEVEL</span><span>30 s window</span></div>
+        <svg class="strip" viewBox="0 0 340 46" preserveAspectRatio="none" width="100%" height="46">
+          <defs>
+            <linearGradient id="prog" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#3FD6C2" stop-opacity=".85"/>
+              <stop offset="1" stop-color="#3FD6C2" stop-opacity=".18"/>
+            </linearGradient>
+          </defs>
+          <!-- programme -->
+          <path d="M0,46 L0,20 L6,14 L12,22 L18,11 L24,19 L30,9 L36,17 L42,13 L48,21 L54,10 L60,18 L66,12 L72,20 L78,15 L84,9 L90,19 L96,13 L102,22 L108,11 L114,17 L120,14 L126,21 L132,10 L138,18 L144,12 L150,20 L156,16 L162,23 L168,13 L174,19 L180,15 L186,25 L192,18 L198,28 L204,22 L210,31 L216,26 L222,34 L228,30 L228,46 Z" fill="url(#prog)"/>
+          <!-- run-out: noise floor only -->
+          <path d="M228,46 L228,38 L234,37 L240,39 L246,37 L252,38 L258,36 L264,39 L270,37 L276,38 L282,37 L288,39 L294,37 L300,38 L306,37 L312,39 L318,37 L324,38 L330,37 L336,39 L340,38 L340,46 Z" fill="#4A5A57" opacity=".7"/>
+          <line x1="228" y1="0" x2="228" y2="46" stroke="#FFB454" stroke-width="1" stroke-dasharray="3 3"/>
+          <text x="233" y="9" fill="#FFB454" font-family="Inter,sans-serif" font-size="7.5" font-weight="700">LAST MUSIC</text>
+        </svg>
+        <div class="legend">
+          <span><i style="background:#3FD6C2"></i>programme content</span>
+          <span><i style="background:#4A5A57"></i>run-out groove — noise floor only</span>
+        </div>
+      </div>
+
+      <div class="status">RUN-OUT DETECTED — STOPPING IN 7 s</div>
+      <div class="elapsed">00:21:48.512</div>
+    </div>
+  </div>
+
+  <!-- ── state 3 ─────────────────────────────────────── -->
+  <div class="col">
+    <div class="state-tag">STATE 3 · CAP ONLY</div>
+    <div class="state-note">Run-out detection switched off — the hold-time row greys out but stays visible, and the duration cap still stands on its own. Below it, the run-out row off and the cap off is the current behaviour, unchanged.</div>
+    <div class="dlg">
+      <div class="sec">AUTOMATIC STOP</div>
+      <div class="card">
+        <div class="cb off"><span class="box"></span><span>Stop when the side runs out</span></div>
+        <div class="hint">Listens for surface noise with no music in it. Keeps 2&nbsp;s past the last programme content and trims the rest.</div>
+        <div class="subrow disabled"><span>Wait</span><span class="num">12</span><span>s of run-out before stopping</span></div>
+        <div class="divider"></div>
+        <div class="inline">
+          <span class="cb on"><span class="box"></span><span>Stop after</span></span>
+          <span class="num">30</span><span style="color:#CDD3D9">minutes</span>
+        </div>
+        <div class="hint">Safety limit — fires whether or not the run-out is ever detected.</div>
+      </div>
+
+      <div class="sec mt">AUTOMATIC STOP — BOTH OFF</div>
+      <div class="card">
+        <div class="cb off"><span class="box"></span><span>Stop when the side runs out</span></div>
+        <div class="hint">Listens for surface noise with no music in it. Keeps 2&nbsp;s past the last programme content and trims the rest.</div>
+        <div class="subrow disabled"><span>Wait</span><span class="num">12</span><span>s of run-out before stopping</span></div>
+        <div class="divider"></div>
+        <div class="inline" style="opacity:1">
+          <span class="cb off"><span class="box"></span><span>Stop after</span></span>
+          <span class="num" style="opacity:.38">30</span><span style="color:#CDD3D9;opacity:.38">minutes</span>
+        </div>
+        <div class="hint">Safety limit — fires whether or not the run-out is ever detected.</div>
+      </div>
+      <div class="status accent" style="color:var(--faint);font-weight:400;letter-spacing:0">Recording runs until you press Stop — today's behaviour.</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="notes">
+  <h2>BEHAVIOUR THIS MOCKUP ASSUMES</h2>
+  <ul>
+    <li><b>Threshold is relative, not absolute.</b> Run-out is decided by <code>RecordingLevelAnalyzer</code>'s existing programme-vs-noise-floor classifier, learned from the first seconds of the take — not a fixed dBFS gate. Surface noise, hum and rumble therefore do not hold the recording open.</li>
+    <li><b>12 s default hold.</b> Long enough to sit through an inter-track gap or a quiet passage; short enough that the tail is not minutes of run-out. Range 5–60 s.</li>
+    <li><b>The trim point is the last programme block plus 2 s</b>, captured when the hold starts — so the discarded run-out never reaches the document, but a natural fade tail is kept.</li>
+    <li><b>Options lock at capture start.</b> Same rule the needle-drop checkbox already follows; the panel greys out while recording or armed.</li>
+    <li><b>The duration cap is independent.</b> It fires from elapsed capture time alone, so a detector that never triggers still cannot run the disk to the existing <code>MaxCaptureBytes</code> ceiling.</li>
+    <li><b>Both settings persist</b> to <code>%AppData%\WaveLab\settings.json</code> via <code>AppSettings</code>, like the other record options.</li>
+  </ul>
+</div>
+
+</body>
+</html>

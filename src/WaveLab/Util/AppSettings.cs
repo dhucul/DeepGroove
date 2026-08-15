@@ -35,6 +35,12 @@ public sealed class AppSettings
     /// </summary>
     public Dictionary<string, InputCalibrationInfo> InputCalibrations { get; set; } = [];
 
+    // Recording — automatic stop. Bounds live with the code that enforces them.
+    public bool RecordAutoStopOnRunOut { get; set; }
+    public double RecordRunOutHoldSeconds { get; set; } = Audio.RunOutDetector.DefaultHoldSeconds;
+    public bool RecordAutoStopOnDuration { get; set; }
+    public int RecordAutoStopMinutes { get; set; } = ViewModels.RecordViewModel.DefaultAutoStopMinutes;
+
     // General
     public bool ReopenLastSession { get; set; } = true;
     public int UndoLimitMb { get; set; } = 512;
@@ -127,6 +133,12 @@ public sealed class AppSettings
         settings.InputDefaultRole = Audio.AudioHardwareOptions.NormalizeRole(
             settings.InputDefaultRole, NAudio.CoreAudioApi.Role.Console);
         settings.UndoLimitMb = Math.Clamp(settings.UndoLimitMb, 64, 4096);
+        settings.RecordRunOutHoldSeconds =
+            Audio.RunOutDetector.NormalizeHoldSeconds(settings.RecordRunOutHoldSeconds);
+        settings.RecordAutoStopMinutes = Math.Clamp(
+            settings.RecordAutoStopMinutes,
+            ViewModels.RecordViewModel.MinimumAutoStopMinutes,
+            ViewModels.RecordViewModel.MaximumAutoStopMinutes);
         settings.AutosaveMinutes = settings.AutosaveMinutes is 1 or 2 or 3 or 5 or 10 or 15
             ? settings.AutosaveMinutes
             : 3;
@@ -174,6 +186,10 @@ public sealed class AppSettings
         InputEventSync = d.InputEventSync;
         OutputDefaultRole = d.OutputDefaultRole;
         InputDefaultRole = d.InputDefaultRole;
+        RecordAutoStopOnRunOut = d.RecordAutoStopOnRunOut;
+        RecordRunOutHoldSeconds = d.RecordRunOutHoldSeconds;
+        RecordAutoStopOnDuration = d.RecordAutoStopOnDuration;
+        RecordAutoStopMinutes = d.RecordAutoStopMinutes;
         ReopenLastSession = d.ReopenLastSession;
         UndoLimitMb = d.UndoLimitMb;
         AutosaveEnabled = d.AutosaveEnabled;
