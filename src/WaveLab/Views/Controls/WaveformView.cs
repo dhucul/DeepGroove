@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using WaveLab.Audio;
 using WaveLab.ViewModels;
 
 namespace WaveLab.Views.Controls;
@@ -32,6 +33,15 @@ public sealed class WaveformView : FrameworkElement
         set => SetValue(SeekCommandProperty, value);
     }
 
+    public static readonly DependencyProperty IsPlaybackActiveProperty = DependencyProperty.Register(
+        nameof(IsPlaybackActive), typeof(bool), typeof(WaveformView));
+
+    public bool IsPlaybackActive
+    {
+        get => (bool)GetValue(IsPlaybackActiveProperty);
+        set => SetValue(IsPlaybackActiveProperty, value);
+    }
+
     private bool _dragging;
     private bool _draggingPlayhead;
     private bool _invalidateQueued;
@@ -41,11 +51,69 @@ public sealed class WaveformView : FrameworkElement
     private readonly record struct CacheKey(double Spp, double W, double H, double AmpZoom,
         int PeaksVersion, int Channels, object? Doc);
     internal readonly record struct GeometryWindow(double StartSample, double EndSample, int PixelWidth);
+    internal enum GeometryBuildDisposition
+    {
+        Reject,
+        RetryForCurrentView,
+        Apply
+    }
+
+    /// <summary>
+    /// Serial latest-wins queue used by the geometry worker. Keeping this state machine
+    /// independent of Dispatcher/Task makes its concurrency contract deterministic to test.
+    /// </summary>
+    internal sealed class LatestBuildQueue<T> where T : class
+    {
+        private readonly IEqualityComparer<T> _comparer;
+        private T? _active;
+        private T? _pending;
+
+        internal LatestBuildQueue(IEqualityComparer<T>? comparer = null) =>
+            _comparer = comparer ?? EqualityComparer<T>.Default;
+
+        internal T? Active => _active;
+        internal T? Pending => _pending;
+
+        internal bool Enqueue(T request)
+        {
+            if ((_active != null && _comparer.Equals(_active, request))
+                || (_pending != null && _comparer.Equals(_pending, request)))
+                return false;
+
+            _pending = request;
+            return true;
+        }
+
+        internal T? TryStartNext()
+        {
+            if (_active != null || _pending == null) return null;
+            _active = _pending;
+            _pending = null;
+            return _active;
+        }
+
+        internal void Complete(T request)
+        {
+            if (!ReferenceEquals(_active, request))
+                throw new InvalidOperationException("Only the active geometry build can complete.");
+            _active = null;
+        }
+
+        internal void ClearPending() => _pending = null;
+    }
+
+    private sealed record GeometryBuildRequest(long Epoch, CacheKey Key, GeometryWindow Window,
+        PeakStore Peaks, int Channels, double ChannelHeight, double SamplesPerPixel, double AmpZoom);
+    private sealed record GeometryBuildResult(CacheKey Key, GeometryWindow Window,
+        StreamGeometry[] Peaks, StreamGeometry[] Rms);
     private CacheKey _cacheKey;
     private GeometryWindow _geometryWindow;
     private bool _geometryCacheValid;
     private StreamGeometry[] _peakGeos = [];
     private StreamGeometry[] _rmsGeos = [];
+    private readonly LatestBuildQueue<GeometryBuildRequest> _geometryBuildQueue = new();
+    private bool _geometryBuildRunning;
+    private long _geometryEpoch;
 
     public WaveformView()
     {
@@ -58,12 +126,22 @@ public sealed class WaveformView : FrameworkElement
     private static void OnDocumentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var view = (WaveformView)d;
+        view.InvalidateGeometryCache();
         if (e.OldValue is DocumentViewModel old) old.PropertyChanged -= view.OnVmChanged;
         if (e.NewValue is DocumentViewModel vm)
         {
             vm.PropertyChanged += view.OnVmChanged;
             vm.ViewWidthPixels = view.ActualWidth;
         }
+    }
+
+    private void InvalidateGeometryCache()
+    {
+        Interlocked.Increment(ref _geometryEpoch);
+        _geometryBuildQueue.ClearPending();
+        _geometryCacheValid = false;
+        _peakGeos = [];
+        _rmsGeos = [];
     }
 
     private void OnVmChanged(object? sender, PropertyChangedEventArgs e)
@@ -186,47 +264,204 @@ public sealed class WaveformView : FrameworkElement
         double viewEnd = Math.Min(vm.Doc.Length, viewStart + w * spp);
         if (_geometryCacheValid
             && key == _cacheKey
-            && _peakGeos.Length == channels
-            && GeometryWindowCovers(_geometryWindow, viewStart, viewEnd))
+            && _peakGeos.Length == channels)
         {
+            if (GeometryWindowCovers(_geometryWindow, viewStart, viewEnd))
+                QueueForwardPrefetchIfNeeded(vm, key, channels, chH, spp, viewStart, viewEnd, w);
+            else
+                QueueGeometryBuild(CreateScrollBuildRequest(
+                    vm, key, channels, chH, spp, viewStart, w,
+                    forward: viewStart >= _geometryWindow.StartSample));
+
+            // A scroll miss must never rebuild on the render thread. Keep the old
+            // sample-correct geometry translated while the latest window is built;
+            // any uncovered edge is briefly blank rather than blocking playback.
             return (_geometryWindow.StartSample - viewStart) / spp;
         }
 
-        _cacheKey = key;
-        _geometryWindow = CalculateGeometryWindow(vm.Doc.Length, viewStart, spp, w);
-        _geometryCacheValid = true;
+        if (IsPlaybackActive)
+        {
+            long currentEpoch = Volatile.Read(ref _geometryEpoch);
+            bool matchingBuild = BuildCoversCurrentView(
+                    _geometryBuildQueue.Active, currentEpoch, key, viewStart, viewEnd)
+                || BuildCoversCurrentView(
+                    _geometryBuildQueue.Pending, currentEpoch, key, viewStart, viewEnd);
+            if (!matchingBuild)
+            {
+                long asyncEpoch = Interlocked.Increment(ref _geometryEpoch);
+                _geometryBuildQueue.ClearPending();
+                _geometryCacheValid = false;
+                _peakGeos = [];
+                _rmsGeos = [];
+                QueueGeometryBuild(new GeometryBuildRequest(asyncEpoch, key,
+                    CalculateForwardGeometryWindow(vm.Doc.Length, viewStart, spp, w),
+                    vm.Peaks, channels, chH, spp, vm.AmpZoom));
+            }
 
-        _peakGeos = new StreamGeometry[channels];
-        _rmsGeos = new StreamGeometry[channels];
-        int width = _geometryWindow.PixelWidth;
+            // Zoom/resize/peak changes during playback also stay off the render
+            // thread. A short blank waveform is preferable to stalling transport.
+            return 0;
+        }
+
+        // A new document, zoom, size, amplitude, or peak version needs an
+        // immediately correct first frame. It also invalidates any older worker.
+        long epoch = Interlocked.Increment(ref _geometryEpoch);
+        _geometryBuildQueue.ClearPending();
+        var request = new GeometryBuildRequest(epoch, key,
+            CalculateGeometryWindow(vm.Doc.Length, viewStart, spp, w),
+            vm.Peaks, channels, chH, spp, vm.AmpZoom);
+        ApplyGeometry(BuildGeometry(request));
+        QueueForwardPrefetchIfNeeded(vm, key, channels, chH, spp, viewStart, viewEnd, w);
+
+        return (_geometryWindow.StartSample - viewStart) / spp;
+    }
+
+    private static bool BuildCoversCurrentView(
+        GeometryBuildRequest? request,
+        long currentEpoch,
+        CacheKey currentKey,
+        double viewStart,
+        double viewEnd) =>
+        request != null
+        && ClassifyGeometryBuild(
+            request.Epoch,
+            currentEpoch,
+            request.Key == currentKey,
+            request.Window,
+            viewStart,
+            viewEnd) == GeometryBuildDisposition.Apply;
+
+    private void QueueForwardPrefetchIfNeeded(DocumentViewModel vm, CacheKey key, int channels,
+        double chH, double spp, double viewStart, double viewEnd, double viewWidth)
+    {
+        double visibleSpan = Math.Max(1, viewWidth) * spp;
+        double forwardMargin = _geometryWindow.EndSample - viewEnd;
+        if (_geometryWindow.EndSample >= vm.Doc.Length - 1e-6
+            || forwardMargin > visibleSpan * 0.25)
+            return;
+
+        QueueGeometryBuild(CreateScrollBuildRequest(
+            vm, key, channels, chH, spp, viewStart, viewWidth, forward: true));
+    }
+
+    private GeometryBuildRequest CreateScrollBuildRequest(DocumentViewModel vm, CacheKey key,
+        int channels, double chH, double spp, double viewStart, double viewWidth, bool forward)
+    {
+        GeometryWindow window = forward
+            ? CalculateForwardGeometryWindow(vm.Doc.Length, viewStart, spp, viewWidth)
+            : CalculateGeometryWindow(vm.Doc.Length, viewStart, spp, viewWidth);
+        return new GeometryBuildRequest(Volatile.Read(ref _geometryEpoch), key, window,
+            vm.Peaks, channels, chH, spp, vm.AmpZoom);
+    }
+
+    private void QueueGeometryBuild(GeometryBuildRequest request)
+    {
+        if (!_geometryBuildQueue.Enqueue(request)) return;
+        if (!_geometryBuildRunning) DrainGeometryBuildQueue();
+    }
+
+    private async void DrainGeometryBuildQueue()
+    {
+        if (_geometryBuildRunning) return;
+        _geometryBuildRunning = true;
+        try
+        {
+            while (_geometryBuildQueue.TryStartNext() is { } request)
+            {
+                try
+                {
+                    GeometryBuildResult result = await Task.Run(() => BuildGeometry(request));
+                    var vm = Document;
+                    if (vm == null || vm.Doc.Length == 0 || ActualWidth < 2) continue;
+                    int channels = vm.Doc.ChannelCount;
+                    double chH = ActualHeight / channels;
+                    var currentKey = new CacheKey(vm.SamplesPerPixel, ActualWidth, ActualHeight,
+                        vm.AmpZoom, vm.PeaksVersion, channels, vm.Doc);
+                    double viewStart = vm.ViewStart;
+                    double viewEnd = Math.Min(vm.Doc.Length,
+                        viewStart + ActualWidth * vm.SamplesPerPixel);
+
+                    GeometryBuildDisposition disposition = ClassifyGeometryBuild(
+                        request.Epoch,
+                        Volatile.Read(ref _geometryEpoch),
+                        currentKey == result.Key,
+                        result.Window,
+                        viewStart,
+                        viewEnd);
+                    if (disposition == GeometryBuildDisposition.Reject) continue;
+                    if (disposition == GeometryBuildDisposition.RetryForCurrentView)
+                    {
+                        _geometryBuildQueue.Enqueue(CreateScrollBuildRequest(
+                            vm, currentKey, channels, chH, vm.SamplesPerPixel,
+                            viewStart, ActualWidth,
+                            forward: viewStart >= result.Window.StartSample));
+                        continue;
+                    }
+
+                    double visibleSpan = ActualWidth * vm.SamplesPerPixel;
+                    if (result.Window.EndSample >= vm.Doc.Length - 1e-6
+                        || result.Window.EndSample - viewEnd > visibleSpan * 0.25)
+                        _geometryBuildQueue.ClearPending();
+                    ApplyGeometry(result);
+                    InvalidateVisual();
+                }
+                catch
+                {
+                    // Stale/best-effort cache work must not affect the editor.
+                }
+                finally
+                {
+                    _geometryBuildQueue.Complete(request);
+                }
+            }
+        }
+        finally
+        {
+            _geometryBuildRunning = false;
+            if (_geometryBuildQueue.Pending != null) DrainGeometryBuildQueue();
+        }
+    }
+
+    private static GeometryBuildResult BuildGeometry(GeometryBuildRequest request)
+    {
+        var peakGeos = new StreamGeometry[request.Channels];
+        var rmsGeos = new StreamGeometry[request.Channels];
+        int width = request.Window.PixelWidth;
         var peakTop = new Point[width];
         var peakBot = new Point[width];
         var rmsTop = new Point[width];
         var rmsBot = new Point[width];
 
-        for (int c = 0; c < channels; c++)
+        for (int c = 0; c < request.Channels; c++)
         {
-            double mid = c * chH + chH / 2;
-            double amp = chH * 0.46 * vm.AmpZoom;
-
+            double mid = c * request.ChannelHeight + request.ChannelHeight / 2;
+            double amp = request.ChannelHeight * 0.46 * request.AmpZoom;
             for (int x = 0; x < width; x++)
             {
-                int s0 = (int)(_geometryWindow.StartSample + x * spp);
+                int s0 = (int)(request.Window.StartSample + x * request.SamplesPerPixel);
                 int s1 = Math.Max(s0 + 1,
-                    (int)(_geometryWindow.StartSample + (x + 1) * spp));
-                vm.Peaks.Query(c, s0, s1, out float mn, out float mx, out float rms);
+                    (int)(request.Window.StartSample + (x + 1) * request.SamplesPerPixel));
+                request.Peaks.Query(c, s0, s1, out float mn, out float mx, out float rms);
                 peakTop[x] = new Point(x, mid - Math.Clamp(mx, -1, 1) * amp);
                 peakBot[x] = new Point(x, mid - Math.Clamp(mn, -1, 1) * amp);
                 float r = Math.Min(rms, Math.Max(Math.Abs(mn), Math.Abs(mx)));
                 rmsTop[x] = new Point(x, mid - r * amp);
                 rmsBot[x] = new Point(x, mid + r * amp);
             }
-
-            _peakGeos[c] = BuildBand(peakTop, peakBot);
-            _rmsGeos[c] = BuildBand(rmsTop, rmsBot);
+            peakGeos[c] = BuildBand(peakTop, peakBot);
+            rmsGeos[c] = BuildBand(rmsTop, rmsBot);
         }
 
-        return (_geometryWindow.StartSample - viewStart) / spp;
+        return new GeometryBuildResult(request.Key, request.Window, peakGeos, rmsGeos);
+    }
+
+    private void ApplyGeometry(GeometryBuildResult result)
+    {
+        _cacheKey = result.Key;
+        _geometryWindow = result.Window;
+        _peakGeos = result.Peaks;
+        _rmsGeos = result.Rms;
+        _geometryCacheValid = true;
     }
 
     internal static GeometryWindow CalculateGeometryWindow(
@@ -244,6 +479,21 @@ public sealed class WaveformView : FrameworkElement
         return new GeometryWindow(start, end, pixels);
     }
 
+    internal static GeometryWindow CalculateForwardGeometryWindow(
+        int documentLength,
+        double viewStart,
+        double samplesPerPixel,
+        double viewWidth)
+    {
+        double visibleSpan = Math.Max(1, viewWidth) * samplesPerPixel;
+        double cacheSpan = Math.Min(Math.Max(0, documentLength), visibleSpan * 2);
+        double maximumStart = Math.Max(0, documentLength - cacheSpan);
+        double start = Math.Clamp(viewStart - visibleSpan * 0.25, 0, maximumStart);
+        double end = Math.Min(documentLength, start + cacheSpan);
+        int pixels = Math.Max(2, (int)Math.Ceiling((end - start) / samplesPerPixel));
+        return new GeometryWindow(start, end, pixels);
+    }
+
     internal static bool GeometryWindowCovers(
         GeometryWindow window,
         double viewStart,
@@ -251,7 +501,22 @@ public sealed class WaveformView : FrameworkElement
         viewStart >= window.StartSample - 1e-6
         && viewEnd <= window.EndSample + 1e-6;
 
-    private static StreamGeometry BuildBand(Point[] top, Point[] bot)
+    internal static GeometryBuildDisposition ClassifyGeometryBuild(
+        long requestEpoch,
+        long currentEpoch,
+        bool keyMatches,
+        GeometryWindow resultWindow,
+        double viewStart,
+        double viewEnd)
+    {
+        if (requestEpoch != currentEpoch || !keyMatches)
+            return GeometryBuildDisposition.Reject;
+        return GeometryWindowCovers(resultWindow, viewStart, viewEnd)
+            ? GeometryBuildDisposition.Apply
+            : GeometryBuildDisposition.RetryForCurrentView;
+    }
+
+    internal static StreamGeometry BuildBand(Point[] top, Point[] bot)
     {
         var geo = new StreamGeometry();
         int n = top.Length;
@@ -381,7 +646,10 @@ public sealed class WaveformView : FrameworkElement
         else
         {
             double factor = e.Delta > 0 ? 1 / 1.3 : 1.3;
-            vm.ZoomAt(e.GetPosition(this).X, factor);
+            if (IsPlaybackActive)
+                vm.ZoomBy(factor, vm.PlayheadSample);
+            else
+                vm.ZoomAt(e.GetPosition(this).X, factor);
         }
         e.Handled = true;
     }

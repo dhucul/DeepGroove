@@ -253,6 +253,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Raise(nameof(CanAnalyzeCleanup));
             Raise(nameof(WindowTitle));
             Raise(nameof(StatusSamples));
+            Raise(nameof(IsActiveDocumentPlaying));
             RefreshEditCommandStates();
         }
     }
@@ -273,10 +274,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         private set
         {
             if (!Set(ref _isPlaying, value)) return;
+            Raise(nameof(IsActiveDocumentPlaying));
             PlayCommand.RaiseCanExecuteChanged();
             StopCommand.RaiseCanExecuteChanged();
         }
     }
+
+    /// <summary>
+    /// True only when the document shown in the waveform owns the active transport.
+    /// Preview playback and playback continuing in another tab must not change how
+    /// the visible document anchors zoom.
+    /// </summary>
+    public bool IsActiveDocumentPlaying =>
+        IsPlaybackActiveForDocument(_active, _playbackDocument, _isPlaying);
+
+    internal static bool IsPlaybackActiveForDocument(
+        DocumentViewModel? document,
+        DocumentViewModel? playbackDocument,
+        bool isPlaying) =>
+        isPlaying && document != null && ReferenceEquals(document, playbackDocument);
 
     public bool IsLooping
     {
@@ -885,7 +901,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         WithDoc(document =>
         {
-            if (IsPlaying && ReferenceEquals(document, _playbackDocument))
+            if (IsPlaybackActiveForDocument(document, _playbackDocument, IsPlaying))
                 document.ZoomBy(factor, document.PlayheadSample);
             else
                 document.ZoomBy(factor);

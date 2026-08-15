@@ -465,7 +465,8 @@
                 <c:OverviewBar Grid.Row="0" Grid.Column="1" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}"/>
                 <c:TimeRuler Grid.Row="1" Grid.Column="1" Document="{Binding ActiveDocument}"/>
                 <c:AmplitudeRuler Grid.Row="2" Grid.Column="0" Document="{Binding ActiveDocument}"/>
-                <c:WaveformView Grid.Row="2" Grid.Column="1" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}">
+                <c:WaveformView Grid.Row="2" Grid.Column="1" Document="{Binding ActiveDocument}"
+                                SeekCommand="{Binding SeekCommand}" IsPlaybackActive="{Binding IsActiveDocumentPlaying}">
                     <c:WaveformView.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                             <MenuItem Header="Cut" InputGestureText="Ctrl+X" Command="{Binding CutCommand}"/>

@@ -91,6 +91,25 @@ public sealed class DocumentViewModelTests
         Assert.Equal(originalPixel, zoomedPixel, precision: 10);
     }
 
+    [Fact]
+    public void ZoomBy_WithOffscreenAnchorCentersTheRequestedSample()
+    {
+        var vm = CreateDocument(length: 100_000);
+        vm.ViewWidthPixels = 100;
+        vm.SamplesPerPixel = 10;
+        vm.ViewStart = 2_000;
+        vm.PlayheadSample = 8_000;
+
+        vm.ZoomBy(0.5, anchorSample: 8_000);
+
+        double anchorPixel = (8_000 - vm.ViewStart) / vm.SamplesPerPixel;
+        Assert.Equal(50, anchorPixel, precision: 10);
+
+        double zoomedViewStart = vm.ViewStart;
+        vm.EnsurePlayheadVisible();
+        Assert.Equal(zoomedViewStart, vm.ViewStart, precision: 10);
+    }
+
     private static DocumentViewModel CreateDocument(int length) =>
         new(new AudioDocument([new float[length]], 48_000, 32));
 }

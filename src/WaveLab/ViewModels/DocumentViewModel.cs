@@ -391,9 +391,15 @@ public sealed class DocumentViewModel : ObservableObject
     public void ZoomBy(double factor, double anchorSample)
     {
         double anchorPixel = (anchorSample - _viewStart) / _spp;
-        if (anchorPixel < 0 || anchorPixel > _viewWidthPixels)
-            anchorPixel = _viewWidthPixels / 2;
-        ZoomAt(anchorPixel, factor);
+        if (anchorPixel >= 0 && anchorPixel <= _viewWidthPixels)
+        {
+            ZoomAt(anchorPixel, factor);
+            return;
+        }
+
+        SamplesPerPixel = Math.Clamp(_spp * factor, 1 / 16.0, MaxSpp());
+        ViewStart = anchorSample - _viewWidthPixels * _spp / 2;
+        ClampView();
     }
 
     public void ScrollBy(double samples)
