@@ -358,12 +358,20 @@ public partial class MainWindow : Window
             new CdTransferDialog(document, _vm) { Owner = this }.ShowDialog();
     }
 
-    /// <summary>Run a data-transforming op off the UI thread, then commit it as an undoable edit.</summary>
-    private async Task<bool> RunRangeTool(string undoName, Func<float[][], int, float[][]?> transform)
+    /// <summary>
+    /// Run a data-transforming op off the UI thread, then commit it as an undoable edit.
+    /// <paramref name="target"/> is the document the caller validated *before* it showed its
+    /// parameter dialog: a modal dialog pumps a nested dispatcher frame, so an async void
+    /// continuation (MainViewModel.OpenFiles → AddDocument) can change ActiveDocument while the
+    /// dialog is open. Re-reading Doc here applied the tool — and the captured noise profile —
+    /// to whichever file happened to become active.
+    /// </summary>
+    private async Task<bool> RunRangeTool(string undoName, Func<float[][], int, float[][]?> transform,
+        DocumentViewModel? target = null)
     {
         if (_longOperationRunning) return false;
-        var d = Doc;
-        if (d == null || d.Doc.Length == 0) return false;
+        var d = target ?? Doc;
+        if (d == null || d.Doc.Length == 0 || !_vm.Documents.Contains(d)) return false;
         var (start, count) = d.EditRange();
         if (count <= 0) return false;
         var channels = d.Doc.Channels.ToArray();
@@ -473,11 +481,13 @@ public partial class MainWindow : Window
         {
             Restoration.ReduceNoise(data, profile, reduction, sensitivity);
             return data;
-        });
+        }, d);
     }
 
     private async void OnRemoveClicks(object sender, RoutedEventArgs e)
     {
+        var d = Doc;
+        if (d == null || d.Doc.Length == 0) return;
         var dlg = new ParamDialog("Remove Clicks & Pops", "Apply", null, null, 0,
             new ParamDialog.SliderSpec("Sensitivity", 1, 10, 5, v => $"{v:0}", 1)) { Owner = this };
         if (dlg.ShowDialog() != true) return;
@@ -489,7 +499,7 @@ public partial class MainWindow : Window
             // A no-op should not allocate an album-sized undo entry or mark the
             // document dirty merely so the UI can report that nothing was found.
             return repaired > 0 ? data : null;
-        });
+        }, d);
         if (repaired == 0)
         {
             InfoDialog.Show(this, "Remove Clicks & Pops",
@@ -503,6 +513,8 @@ public partial class MainWindow : Window
 
     private void OnRemoveHum(object sender, RoutedEventArgs e)
     {
+        var d = Doc;
+        if (d == null || d.Doc.Length == 0) return;
         var dlg = new ParamDialog("Remove Hum", "Apply", "Mains frequency", ["50 Hz (Europe)", "60 Hz (Americas)"], 1,
             new ParamDialog.SliderSpec("Harmonics", 1, 8, 4, v => $"{v:0}", 1),
             new ParamDialog.SliderSpec("Notch width (Q)", 10, 60, 30, v => $"Q {v:0}")) { Owner = this };
@@ -514,7 +526,7 @@ public partial class MainWindow : Window
         {
             Restoration.RemoveHum(data, sr, baseFreq, harmonics, q);
             return data;
-        });
+        }, d);
     }
 
     // silence
@@ -702,7 +714,7 @@ public partial class MainWindow : Window
             _vm.ReportAction("Time Stretch unchanged · no processing applied.");
             return;
         }
-        _ = RunRangeTool("Time Stretch", (data, sr) => TimeStretch.Stretch(data, sr, factor));
+        _ = RunRangeTool("Time Stretch", (data, sr) => TimeStretch.Stretch(data, sr, factor), d);
     }
 
     private void OnPitchShift(object sender, RoutedEventArgs e)
@@ -719,7 +731,7 @@ public partial class MainWindow : Window
             _vm.ReportAction("Pitch Shift unchanged · no processing applied.");
             return;
         }
-        _ = RunRangeTool("Pitch Shift", (data, sr) => TimeStretch.PitchShift(data, sr, semitones));
+        _ = RunRangeTool("Pitch Shift", (data, sr) => TimeStretch.PitchShift(data, sr, semitones), d);
     }
 
     private async void OnConvertRate(object sender, RoutedEventArgs e)

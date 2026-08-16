@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 using WaveLab.ViewModels;
 
 namespace WaveLab.Views.Controls;
@@ -37,8 +38,23 @@ public sealed class AmplitudeRuler : FrameworkElement
 
     private void OnDocumentPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(DocumentViewModel.AmpZoom))
-            Dispatcher.BeginInvoke(InvalidateVisual);
+        // PeaksVersion is the notification an edit actually raises. The scale is laid out from
+        // Doc.ChannelCount, and ReplaceAllOwned (a rack containing MonoToStereoEffect) changes the
+        // channel topology without changing the Document DP value — so AmpZoom alone left the ruler
+        // drawing a one-channel scale beside a two-channel waveform.
+        if (e.PropertyName is nameof(DocumentViewModel.AmpZoom) or nameof(DocumentViewModel.PeaksVersion))
+            RequestRedraw();
+    }
+
+    /// <summary>
+    /// Synchronous on the UI thread, matching WaveformView/TimeRuler/OverviewBar: a Normal-priority
+    /// BeginInvoke lands in the *next* render pass and outranks the Render-priority meter timers and
+    /// the Input-priority wheel events that produced the zoom change.
+    /// </summary>
+    private void RequestRedraw()
+    {
+        if (Dispatcher.CheckAccess()) InvalidateVisual();
+        else Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(InvalidateVisual));
     }
 
     protected override void OnRender(DrawingContext dc)

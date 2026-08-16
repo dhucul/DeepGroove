@@ -291,6 +291,11 @@ public partial class RecordDialog : Window
     private void OnUnexpectedStopCompleted(RecordingStoppedInfo info, Exception? failure)
     {
         if (!IsVisible) return;
+        // The take is over either way — OnAutoStopped and FinalizeAndCloseAsync both stop the
+        // click here. Without this the metronome kept playing over the error dialog when
+        // finalization failed and the window stayed open.
+        try { _click.Stop(); } catch { }
+
         if (failure != null)
         {
             MessageBox.Show($"Could not preserve the interrupted recording:\n{failure.Message}", "Record",

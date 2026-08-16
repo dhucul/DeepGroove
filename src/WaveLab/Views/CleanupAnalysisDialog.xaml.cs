@@ -255,9 +255,21 @@ public partial class CleanupAnalysisDialog : Window
         bool recommended = _nextPreviewIsRecommended;
         IReadOnlyList<string> selectedTypeIds = SelectedTypeIds();
         string selectionKey = string.Join("\u001f", selectedTypeIds.Order(StringComparer.Ordinal));
-        EffectFactory.ChainPreset? preset = recommended
-            ? _analysis.BuildSelectedPreset(selectedTypeIds)
-            : null;
+        EffectFactory.ChainPreset? preset;
+        try
+        {
+            // Wrapped for the same reason OnApply wraps it: a duplicate TypeId makes the
+            // ToDictionary inside BuildSelectedPreset throw, and this is an async void handler.
+            preset = recommended ? _analysis.BuildSelectedPreset(selectedTypeIds) : null;
+        }
+        catch (Exception ex)
+        {
+            statusText.Text = "The A/B preview could not be prepared.";
+            MessageBox.Show(this, ex.Message, "Preview failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         var operation = BeginOperation();
         statusText.Text = recommended
             ? "Rendering a bounded preview through the recommended rack…"

@@ -17,6 +17,11 @@ public sealed class LoudnessHistoryView : FrameworkElement
     private readonly DispatcherTimer _timer;
     private static readonly Pen MomentaryPen = MakePen(Color.FromArgb(0x70, 0x3F, 0xD6, 0xC2), 1);
     private static readonly Pen ShortTermPen = MakePen(WaveTheme.Accent, 1.8);
+    // The −16 LUFS target line and its label are constant. Rebuilding them per frame put an
+    // unfrozen brush into WaveTheme.Text, whose cache is keyed by brush identity and skips
+    // unfrozen brushes — so a static string was laid out from scratch 10×/s.
+    private static readonly Pen TargetPen = MakeDashedPen(Color.FromArgb(0x50, 0xFF, 0xB4, 0x54), 1);
+    private static readonly Brush TargetLabelBrush = MakeBrush(Color.FromArgb(0x90, 0xFF, 0xB4, 0x54));
 
     /// <summary>Source of the shared history ring.</summary>
     public MasterSectionViewModel? Source { get; set; }
@@ -46,11 +51,10 @@ public sealed class LoudnessHistoryView : FrameworkElement
             dc.DrawText(WaveTheme.Text($"{db:0}", WaveTheme.MonoFace, 9, WaveTheme.TextFaint, dpi), new Point(w - 26, y - 12));
         }
         // −16 LUFS streaming target line
-        var targetPen = new Pen(new SolidColorBrush(Color.FromArgb(0x50, 0xFF, 0xB4, 0x54)), 1) { DashStyle = DashStyles.Dash };
-        targetPen.Freeze();
-        dc.DrawLine(targetPen, new Point(0, YOf(-16)), new Point(w, YOf(-16)));
-        dc.DrawText(WaveTheme.Text("-16 target", WaveTheme.MonoFace, 8.5,
-            new SolidColorBrush(Color.FromArgb(0x90, 0xFF, 0xB4, 0x54)), dpi), new Point(6, YOf(-16) - 13));
+        double targetY = YOf(-16);
+        dc.DrawLine(TargetPen, new Point(0, targetY), new Point(w, targetY));
+        dc.DrawText(WaveTheme.Text("-16 target", WaveTheme.MonoFace, 8.5, TargetLabelBrush, dpi),
+            new Point(6, targetY - 13));
 
         var src = Source;
         if (src == null || src.HistoryCount < 2)
@@ -95,5 +99,19 @@ public sealed class LoudnessHistoryView : FrameworkElement
         var p = new Pen(new SolidColorBrush(c), thickness);
         p.Freeze();
         return p;
+    }
+
+    private static Pen MakeDashedPen(Color c, double thickness)
+    {
+        var p = new Pen(new SolidColorBrush(c), thickness) { DashStyle = DashStyles.Dash };
+        p.Freeze();
+        return p;
+    }
+
+    private static Brush MakeBrush(Color c)
+    {
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
     }
 }

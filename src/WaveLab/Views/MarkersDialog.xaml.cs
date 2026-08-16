@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -18,7 +19,19 @@ public partial class MarkersDialog : Window
     {
         InitializeComponent();
         _doc = doc;
+        _doc.PropertyChanged += OnDocumentPropertyChanged;
+        Closed += (_, _) => _doc.PropertyChanged -= OnDocumentPropertyChanged;
         Refresh();
+    }
+
+    /// <summary>
+    /// This panel is modeless, so edits keep happening in the main window while it is open:
+    /// DocumentViewModel.OnDocChanged re-anchors marker positions and can drop collapsed
+    /// regions. Without this the list showed stale times and Delete acted on a stale object.
+    /// </summary>
+    private void OnDocumentPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DocumentViewModel.MarkersVersion)) Refresh();
     }
 
     private void Refresh()

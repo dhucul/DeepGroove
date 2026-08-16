@@ -121,6 +121,7 @@ public partial class BatchConvertDialog : Window
         var usedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var sourcePaths = queue.Select(item => Path.GetFullPath(item.Path))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var existingOutputs = new List<BatchItem>();
         foreach (var item in queue)
         {
             string output = Path.GetFullPath(Path.Combine(outDir, Path.GetFileNameWithoutExtension(item.Path) + ext));
@@ -134,7 +135,38 @@ public partial class BatchConvertDialog : Window
                 item.Status = "failed: output path collision";
                 item.StatusBrush = RedBrush;
             }
-            else outputPaths[item] = output;
+            else
+            {
+                outputPaths[item] = output;
+                // AudioExporter.Export finishes with File.Move(..., overwrite: true), so an
+                // unrelated file already sitting on the output path is destroyed silently.
+                if (File.Exists(output)) existingOutputs.Add(item);
+            }
+        }
+
+        int failed = queue.Length - outputPaths.Count;
+        int skipped = 0;
+        if (existingOutputs.Count > 0)
+        {
+            // One prompt for the whole batch — prompting per file is unusable on a long queue.
+            const int listLimit = 8;
+            string names = string.Join(Environment.NewLine,
+                existingOutputs.Take(listLimit).Select(i => "    " + Path.GetFileName(outputPaths[i])));
+            if (existingOutputs.Count > listLimit)
+                names += $"{Environment.NewLine}    …and {existingOutputs.Count - listLimit} more";
+            var answer = MessageBox.Show(this,
+                $"{existingOutputs.Count} file(s) in the output folder would be overwritten:{Environment.NewLine}{Environment.NewLine}"
+                + names + Environment.NewLine + Environment.NewLine
+                + "Overwrite them? Choose No to skip these files and convert the rest of the queue.",
+                "Batch Converter", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes)
+                foreach (var item in existingOutputs)
+                {
+                    item.Status = "skipped: file already exists";
+                    item.StatusBrush = FaintBrush;
+                    outputPaths.Remove(item);
+                    skipped++;
+                }
         }
 
         var operation = new CancellationTokenSource();
@@ -146,7 +178,8 @@ public partial class BatchConvertDialog : Window
         progress.Value = 0;
 
         var token = operation.Token;
-        int done = 0, failed = queue.Length - outputPaths.Count;
+        int done = 0;
+        string skippedText = skipped > 0 ? $" · {skipped} skipped" : "";
 
         try
         {
@@ -197,7 +230,7 @@ public partial class BatchConvertDialog : Window
                 failed++;
             }
             progress.Value++;
-            statusText.Text = $"{done} done · {failed} failed — output to {outDir}";
+            statusText.Text = $"{done} done · {failed} failed{skippedText} — output to {outDir}";
           }
         }
         finally

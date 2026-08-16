@@ -106,6 +106,7 @@ public partial class RestorationWorkbenchDialog : Window
     private bool _previewRackBypassed;
     private bool _suppressControlEvents;
     private bool _closed;
+    private bool _closeWhenFinished;
 
     public RestorationWorkbenchDialog(DocumentViewModel document, MainViewModel main)
     {
@@ -365,10 +366,15 @@ public partial class RestorationWorkbenchDialog : Window
                     ? $"Vinyl restoration · dry · {auditionDescription}"
                     : $"Vinyl restoration · preview · {auditionDescription}",
             };
-            _main.PlayPreview(preview, loop: false);
-            statusText.Text = settings.Bypass
-                ? $"Bypass A/B · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds of the original source (master rack bypassed)."
-                : $"Live preview · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds at {settings.WetAmount:P0} restored (master rack bypassed).";
+            // PlayPreview returns false when a transport recording is active/pending or the
+            // engine is awaiting recovery. Claiming the A/B is audible then makes the user
+            // compare against silence and commit settings they never heard.
+            if (!_main.PlayPreview(preview, loop: false))
+                statusText.Text = "Preview is unavailable while recording audio is active or awaiting recovery.";
+            else
+                statusText.Text = settings.Bypass
+                    ? $"Bypass A/B · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds of the original source (master rack bypassed)."
+                    : $"Live preview · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds at {settings.WetAmount:P0} restored (master rack bypassed).";
             progressBar.Value = 1;
         }
         catch (OperationCanceledException)
@@ -1032,6 +1038,11 @@ public partial class RestorationWorkbenchDialog : Window
             UpdateUiState();
         }
         operation.Dispose();
+        if (!_busy && _closeWhenFinished && !_closed)
+        {
+            _closeWhenFinished = false;
+            Close();
+        }
     }
 
     private bool IsCurrent(CancellationTokenSource operation) =>
@@ -1077,6 +1088,9 @@ public partial class RestorationWorkbenchDialog : Window
         if (_busy)
         {
             e.Cancel = true;
+            // Remember the request: CompleteOperation re-issues the close once the work
+            // unwinds, otherwise the user has to click X a second time.
+            _closeWhenFinished = true;
             _operation?.Cancel();
             statusText.Text = "Cancelling…";
             return;

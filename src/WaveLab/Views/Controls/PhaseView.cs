@@ -18,6 +18,10 @@ public sealed class PhaseView : FrameworkElement
     private static readonly Pen CirclePen = MakePen(Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF), 1);
     private static readonly Pen NeedlePen = MakePen(Colors.White, 2);
     private static readonly Brush BalanceDot = Make(WaveTheme.Amber);
+    // Frozen so WaveTheme.Text can cache the readout's glyph layout — its cache is keyed by
+    // brush identity and skips unfrozen brushes, so a per-frame brush relaid out every glyph.
+    private static readonly Brush CorrPositive = Make(WaveTheme.Accent);
+    private static readonly Brush CorrNegative = Make(Color.FromRgb(0xFF, 0x5C, 0x5C));
 
     public MasterSection? Tap { get; set; }
 
@@ -88,7 +92,7 @@ public sealed class PhaseView : FrameworkElement
         dc.DrawText(WaveTheme.Text("+1", WaveTheme.MonoFace, 8.5, WaveTheme.TextFaint, dpi), new Point(barRect.Right - 12, barRect.Bottom + 4));
 
         var corrText = WaveTheme.Text($"{corr:+0.00;-0.00;0.00}", WaveTheme.MonoFace, 20,
-            corr >= 0 ? new SolidColorBrush(WaveTheme.Accent) : new SolidColorBrush(Color.FromRgb(0xFF, 0x5C, 0x5C)), dpi);
+            corr >= 0 ? CorrPositive : CorrNegative, dpi);
         dc.DrawText(corrText, new Point(colX, cy + 2));
         string hint = corr > 0.5 ? "mono-compatible" : corr > 0 ? "wide" : "phase issues";
         dc.DrawText(WaveTheme.Text(hint, WaveTheme.UiFace, 9.5, WaveTheme.TextFaint, dpi), new Point(colX + 84, cy + 12));

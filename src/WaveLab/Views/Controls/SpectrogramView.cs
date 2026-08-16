@@ -98,28 +98,29 @@ public sealed class SpectrogramView : Grid
     private static byte[] RenderWorker(float[][] channels, int start, int count, int sr,
         int cols, int rows, CancellationToken token)
     {
-        var mono = new float[count];
-        for (int i = 0; i < count; i++)
-        {
-            if ((i & 0x3fff) == 0) token.ThrowIfCancellationRequested();
-            float value = 0;
-            for (int c = 0; c < channels.Length; c++) value += channels[c][start + i];
-            mono[i] = value / channels.Length;
-        }
-
         var window = Fft.HannWindow(FftSize);
         var magDb = new float[FftSize / 2];
         var pixels = new byte[cols * rows * 4];
         double fMax = Math.Min(20000, sr / 2.0);
         double hop = Math.Max(1, (count - FftSize) / (double)cols);
         var frame = new float[FftSize];
+        int channelCount = channels.Length;
 
         for (int x = 0; x < cols; x++)
         {
             token.ThrowIfCancellationRequested();
             int s0 = (int)(x * hop);
+            // Downmix only the window this column reads. The visible range can be hundreds of
+            // millions of samples, but the columns together only ever touch cols * FftSize of
+            // them — buffering the whole range cost a ~635 MB transient on a long file.
             for (int i = 0; i < FftSize; i++)
-                frame[i] = s0 + i < count ? mono[s0 + i] : 0;
+            {
+                int s = s0 + i;
+                if (s >= count) { frame[i] = 0; continue; }
+                float value = 0;
+                for (int c = 0; c < channelCount; c++) value += channels[c][start + s];
+                frame[i] = value / channelCount;
+            }
             Fft.MagnitudeDb(frame, window, magDb);
 
             for (int y = 0; y < rows; y++)

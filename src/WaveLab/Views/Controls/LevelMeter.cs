@@ -74,6 +74,10 @@ public sealed class LevelMeter : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         double w = ActualWidth, h = ActualHeight;
+        // Below this the inner rects (w - 2 / h - 2) go negative and Rect's ctor throws
+        // from inside the render pass. Nothing legible fits at that size anyway.
+        if (w < 4 || h < 4 || double.IsNaN(w) || double.IsNaN(h)) return;
+
         var rect = new Rect(0.5, 0.5, Math.Max(0, w - 1), Math.Max(0, h - 1));
         dc.DrawRoundedRectangle(Bg, Border, rect, 3, 3);
 
@@ -83,26 +87,29 @@ public sealed class LevelMeter : FrameworkElement
             return;
         }
 
+        double innerWidth = Math.Max(0, w - 2);
+        double innerHeight = Math.Max(0, h - 2);
+
         double peakFrac = Frac(PeakDb);
         if (peakFrac > 0)
         {
-            double fh = (h - 2) * peakFrac;
-            dc.PushClip(new RectangleGeometry(new Rect(1, h - 1 - fh, w - 2, fh)));
-            dc.DrawRectangle(VerticalFill, null, new Rect(1, 1, w - 2, h - 2));
+            double fh = Math.Max(0, innerHeight * peakFrac);
+            dc.PushClip(new RectangleGeometry(new Rect(1, h - 1 - fh, innerWidth, fh)));
+            dc.DrawRectangle(VerticalFill, null, new Rect(1, 1, innerWidth, innerHeight));
             dc.Pop();
         }
 
         double rmsFrac = Frac(RmsDb);
         if (rmsFrac > 0)
         {
-            double fh = (h - 2) * rmsFrac;
+            double fh = Math.Max(0, innerHeight * rmsFrac);
             dc.DrawRectangle(RmsFill, null, new Rect(w * 0.25, h - 1 - fh, w * 0.5, fh));
         }
 
         double holdFrac = Frac(PeakHoldDb);
         if (holdFrac > 0.005)
         {
-            double y = h - 1 - (h - 2) * holdFrac;
+            double y = h - 1 - innerHeight * holdFrac;
             dc.DrawLine(HoldPen, new Point(1, y), new Point(w - 1, y));
         }
     }

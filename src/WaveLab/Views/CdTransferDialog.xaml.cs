@@ -60,6 +60,7 @@ public partial class CdTransferDialog : Window
     private readonly bool _rackWasEnabled;
     private CancellationTokenSource? _operation;
     private bool _busy;
+    private bool _closeWhenFinished;
     private bool _dialogReady;
     private bool _restoringRack;
 
@@ -391,10 +392,14 @@ public partial class CdTransferDialog : Window
             };
             // The rack render is already baked into this transient document. Bypass
             // the live rack during playback so the audition is not processed twice.
-            _main.PlayPreview(preview, loop: false, bypassRack: true);
-            statusText.Text = renderRack
-                ? $"Previewing {plan.Title} from the same continuous rack render used for export."
-                : $"Previewing the dry source for {plan.Title}; export will also remain dry.";
+            // PlayPreview returns false when a transport recording is active/pending or the
+            // engine is awaiting recovery — reporting "Previewing…" then would be a lie.
+            if (!_main.PlayPreview(preview, loop: false, bypassRack: true))
+                statusText.Text = "Preview is unavailable while recording audio is active or awaiting recovery.";
+            else
+                statusText.Text = renderRack
+                    ? $"Previewing {plan.Title} from the same continuous rack render used for export."
+                    : $"Previewing the dry source for {plan.Title}; export will also remain dry.";
         }
         catch (OperationCanceledException) { statusText.Text = "Preview preparation cancelled."; }
         catch (Exception ex) { statusText.Text = ex.Message; }
@@ -518,6 +523,11 @@ public partial class CdTransferDialog : Window
         statusText.Text = status;
         UpdatePlan();
         if (!busy) progressBar.Value = 0;
+        if (!busy && _closeWhenFinished)
+        {
+            _closeWhenFinished = false;
+            Close();
+        }
     }
 
     private void OnTrackSelected(object sender, SelectionChangedEventArgs e)
@@ -558,6 +568,9 @@ public partial class CdTransferDialog : Window
     {
         if (!_busy) return;
         e.Cancel = true;
+        // Remember the request: SetBusy re-issues the close once the work unwinds,
+        // otherwise the user has to click X a second time.
+        _closeWhenFinished = true;
         _operation?.Cancel();
         statusText.Text = "Cancelling the current operation...";
     }

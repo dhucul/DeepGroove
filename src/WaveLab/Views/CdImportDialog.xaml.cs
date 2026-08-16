@@ -43,6 +43,7 @@ public partial class CdImportDialog : Window
     private CancellationTokenSource? _operation;
     private bool _busy;
     private bool _allowClose;
+    private bool _closeWhenFinished;
 
     public IReadOnlyList<CdAudioTrackImport> Imports { get; private set; } = [];
 
@@ -56,6 +57,9 @@ public partial class CdImportDialog : Window
         {
             if (!_busy || _allowClose) return;
             e.Cancel = true;
+            // Remember the request: SetBusy re-issues the close once the work unwinds,
+            // otherwise the user has to click X a second time.
+            _closeWhenFinished = true;
             _operation?.Cancel();
             statusText.Text = "Cancelling the current CD operation…";
         };
@@ -171,6 +175,11 @@ public partial class CdImportDialog : Window
                               driveCombo.SelectedItem is DriveRow { Drive.Status: CdAudioDriveStatus.Ready };
         statusText.Text = status;
         if (!busy) progressBar.Value = 0;
+        if (!busy && _closeWhenFinished && !_allowClose)
+        {
+            _allowClose = true;
+            Close();
+        }
     }
 
     private void UpdateSelectionSummary()
