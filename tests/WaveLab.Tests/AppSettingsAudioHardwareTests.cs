@@ -1,5 +1,6 @@
 using NAudio.Wave;
 using WaveLab.Audio;
+using WaveLab.Audio.Dsp;
 using WaveLab.Util;
 using WaveLab.ViewModels;
 using Xunit;
@@ -187,6 +188,210 @@ public sealed class AppSettingsAudioHardwareTests
         Assert.True(settings.InputEventSync);
         Assert.Equal("multimedia", settings.OutputDefaultRole);
         Assert.Equal("console", settings.InputDefaultRole);
+    }
+
+    [Theory]
+    // Plan attenuates further than the current trim: drop the trim first.
+    [InlineData(0.0, -1.5, true)]
+    [InlineData(-1.0, -2.5, true)]
+    // Plan relaxes or keeps the trim: the device step is the safe one to move first.
+    [InlineData(-2.5, -1.0, false)]
+    [InlineData(-1.5, -1.5, false)]
+    public void ApplyOrderAttenuatesBeforeItRelaxes(
+        double currentFineDb,
+        double plannedFineDb,
+        bool expectFineFirst)
+    {
+        var plan = new AudioInputSettingPlan(-12, plannedFineDb, -12 + plannedFineDb);
+
+        Assert.Equal(expectFineFirst, AudioHardware.ApplyFineTrimFirst(currentFineDb, plan));
+    }
+
+    [Theory]
+    [InlineData(-17.3, 0.5)]
+    [InlineData(-6.0, 0.5)]
+    [InlineData(-17.24, 2)]
+    public void ApplyingThePlanLeavesNothingFurtherToSuggest(double target, double increment)
+    {
+        AudioInputSettingPlan plan = AudioHardware.PlanInputSetting(target, -96, 0, increment);
+
+        // Never hotter than asked for, and once applied the ratchet has converged.
+        Assert.True(plan.TotalLevelDb <= target + 1e-9);
+        Assert.Equal(
+            plan.TotalLevelDb,
+            RecordViewModel.HoldSafeInputSetting(plan.TotalLevelDb, plan.TotalLevelDb, 0),
+            6);
+    }
+
+    [Fact]
+    public void CoarseDriverStepsLeaveAResidualOnTheSafeSide()
+    {
+        // A 6 dB endpoint step is wider than Fine Trim's 3 dB range, so the plan
+        // cannot land exactly on the target — it must undershoot, never overshoot.
+        AudioInputSettingPlan plan = AudioHardware.PlanInputSetting(-17.3, -96, 0, 6);
+
+        double residual = plan.TotalLevelDb - (-17.3);
+        Assert.True(residual < 0);
+        Assert.True(Math.Abs(residual) > 0.05);
+    }
+
+    [Fact]
+    public void CalibrationMemoryDropsStaleAndInvalidEntries()
+    {
+        DateTime now = DateTime.UtcNow;
+        var settings = new AppSettings
+        {
+            InputCalibrations = new Dictionary<string, AppSettings.InputCalibrationInfo>
+            {
+                ["fresh"] = new(-2.5, -5.4, now.AddDays(-3)),
+                ["stale"] = new(-2.5, -5.4, now.AddDays(-AppSettings.CalibrationMemoryDays - 1)),
+                ["future"] = new(-2.5, -5.4, now.AddDays(3)),
+                ["undated"] = new(-2.5, -5.4, default),
+                ["notFinite"] = new(double.NaN, -5.4, now),
+                ["  "] = new(-2.5, -5.4, now),
+            },
+        };
+
+        AppSettings normalized = AppSettings.Normalize(settings);
+
+        Assert.Equal(["fresh"], normalized.InputCalibrations.Keys);
+    }
+
+    [Fact]
+    public void CalibrationMemoryIsCappedToTheMostRecentEntries()
+    {
+        DateTime now = DateTime.UtcNow;
+        var settings = new AppSettings();
+        for (int index = 0; index < AppSettings.MaximumRememberedCalibrations + 8; index++)
+        {
+            settings.InputCalibrations[$"device{index}"] =
+                new AppSettings.InputCalibrationInfo(-2.5, -5.4, now.AddDays(-index));
+        }
+
+        AppSettings normalized = AppSettings.Normalize(settings);
+
+        Assert.Equal(AppSettings.MaximumRememberedCalibrations, normalized.InputCalibrations.Count);
+        Assert.Contains("device0", normalized.InputCalibrations.Keys);
+        Assert.DoesNotContain(
+            $"device{AppSettings.MaximumRememberedCalibrations}",
+            normalized.InputCalibrations.Keys);
+    }
+
+    [Fact]
+    public void LegacyCalibrationEntriesSurviveNormalizationWithoutAnAppliedSetting()
+    {
+        var settings = new AppSettings
+        {
+            InputCalibrations = new Dictionary<string, AppSettings.InputCalibrationInfo>
+            {
+                // As written before the applied-setting fields existed.
+                ["legacy"] = new(-2.5, -5.4, DateTime.UtcNow.AddDays(-1)),
+                // Half-written: a device level with no trim cannot be replayed.
+                ["partial"] = new(-2.5, -5.4, DateTime.UtcNow, DeviceLevelDb: -12),
+                ["applied"] = new(-2.5, -5.4, DateTime.UtcNow, -12, -0.44, -12.44),
+            },
+        };
+
+        AppSettings normalized = AppSettings.Normalize(settings);
+
+        Assert.False(normalized.InputCalibrations["legacy"].HasAppliedSetting);
+        Assert.Null(normalized.InputCalibrations["legacy"].DeviceLevelDb);
+        Assert.Equal(-2.5, normalized.InputCalibrations["legacy"].SuggestedGainDb, 6);
+        Assert.False(normalized.InputCalibrations["partial"].HasAppliedSetting);
+
+        AppSettings.InputCalibrationInfo applied = normalized.InputCalibrations["applied"];
+        Assert.True(applied.HasAppliedSetting);
+        // Fine trim is re-normalized to the tenth-dB grid the engine accepts.
+        Assert.Equal(-0.4, applied.FineTrimDb!.Value, 6);
+        Assert.Equal(
+            applied.DeviceLevelDb!.Value + applied.FineTrimDb!.Value, applied.TotalLevelDb!.Value, 6);
+    }
+
+    /// <summary>
+    /// An NTP correction or a clock set backwards leaves recent entries stamped in the
+    /// future. Discarding them would throw away a valid calibration permanently, since
+    /// Normalize rewrites the dictionary it filters.
+    /// </summary>
+    [Fact]
+    public void ACalibrationStampedSlightlyAheadOfNowSurvivesAndIsPulledBack()
+    {
+        var settings = new AppSettings();
+        settings.InputCalibrations["skewed"] =
+            new AppSettings.InputCalibrationInfo(-2.5, -5.4, DateTime.UtcNow.AddMinutes(90));
+
+        AppSettings normalized = AppSettings.Normalize(settings);
+
+        Assert.True(normalized.InputCalibrations.ContainsKey("skewed"));
+        // Pulled back to the scan's "now", so nothing downstream sees a negative age.
+        Assert.True(normalized.InputCalibrations["skewed"].CheckedUtc <= DateTime.UtcNow);
+    }
+
+    [Fact]
+    public void ACalibrationStampedFarInTheFutureIsStillDiscarded()
+    {
+        var settings = new AppSettings();
+        settings.InputCalibrations["bogus"] = new AppSettings.InputCalibrationInfo(
+            -2.5, -5.4, DateTime.UtcNow.AddDays(AppSettings.CalibrationClockSkewDays + 2));
+
+        Assert.Empty(AppSettings.Normalize(settings).InputCalibrations);
+    }
+
+    [Theory]
+    // The landmarks, and any value between them, are all kept as given.
+    [InlineData(-3.0, -3.0)]
+    [InlineData(-6.0, -6.0)]
+    [InlineData(-10.0, -10.0)]
+    [InlineData(-4.5, -4.5)]
+    [InlineData(-7.5, -7.5)]
+    // Below the slider's floor but inside the analyzer's range: honoured, not raised.
+    [InlineData(-18.0, -18.0)]
+    // Off the half-decibel grid: snapped rather than discarded.
+    [InlineData(-7.3, -7.5)]
+    [InlineData(-7.2, -7.0)]
+    // Outside the analyzer's range: clamped to the nearest end.
+    [InlineData(-40.0, -24.0)]
+    [InlineData(-0.25, -1.0)]
+    [InlineData(3.0, -1.0)]
+    // Only a value that is not a number has nothing to clamp, so it falls back.
+    [InlineData(double.NaN, AppSettings.DefaultRecordingTargetCeilingDb)]
+    [InlineData(double.PositiveInfinity, AppSettings.DefaultRecordingTargetCeilingDb)]
+    public void RecordingTargetCeilingIsClampedAndSnappedRatherThanDiscarded(
+        double stored,
+        double expected)
+    {
+        var settings = new AppSettings { RecordingTargetCeilingDb = stored };
+
+        Assert.Equal(expected, AppSettings.Normalize(settings).RecordingTargetCeilingDb, 6);
+        // Normalize must agree with the helper the dialogs write through.
+        Assert.Equal(expected, AppSettings.NormalizeTargetCeilingDb(stored), 6);
+    }
+
+    [Fact]
+    public void RecordingTargetCeilingLandmarksAreInsideTheAdjustableRange()
+    {
+        foreach (double landmark in AppSettings.RecordingTargetCeilingLandmarksDb)
+        {
+            Assert.InRange(
+                landmark,
+                AppSettings.AdjustableRecordingTargetCeilingFloorDb,
+                RecordingLevelAnalyzer.MaximumTargetCeilingDb);
+            // A landmark the slider cannot land on would be a mark you can never hit.
+            Assert.Equal(landmark, AppSettings.NormalizeTargetCeilingDb(landmark), 6);
+        }
+    }
+
+    [Fact]
+    public void RestoreDefaultsForgetsRememberedInputCalibrationsAndTheTargetCeiling()
+    {
+        var settings = new AppSettings { RecordingTargetCeilingDb = -3 };
+        settings.InputCalibrations["device"] =
+            new AppSettings.InputCalibrationInfo(-2.5, -5.4, DateTime.UtcNow);
+
+        settings.RestoreDefaults();
+
+        Assert.Empty(settings.InputCalibrations);
+        Assert.Equal(
+            AppSettings.DefaultRecordingTargetCeilingDb, settings.RecordingTargetCeilingDb, 6);
     }
 
     private sealed class ArraySampleProvider(float[] samples, int channels) : ISampleProvider

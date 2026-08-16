@@ -76,37 +76,64 @@ public sealed class LevelHistoryGraph : FrameworkElement
             return;
         }
 
-        int count = values.Count;
-        double step = count > 1 ? innerWidth / (count - 1) : 0;
-        var geometry = new StreamGeometry();
-        using (StreamGeometryContext ctx = geometry.Open())
+        // One vertex per device-pixel column, carrying that column's loudest
+        // sample. The ring holds 900 entries but the strip is only a few hundred
+        // pixels wide, and this repaints on every 33 ms append — drawing sub-pixel
+        // detail twice (fill and stroke) is work nobody can see.
+        Point[] points = BuildTrace(values, innerWidth, innerHeight);
+        if (points.Length == 0) return;
+
+        double baseline = 1 + innerHeight;
+        var fill = new StreamGeometry();
+        using (StreamGeometryContext ctx = fill.Open())
         {
-            double firstY = 1 + innerHeight * (1 - Frac(values[0]));
-            ctx.BeginFigure(new Point(1, 1 + innerHeight), isFilled: true, isClosed: true);
-            ctx.LineTo(new Point(1, firstY), isStroked: false, isSmoothJoin: false);
-            for (int i = 1; i < count; i++)
-            {
-                double y = 1 + innerHeight * (1 - Frac(values[i]));
-                ctx.LineTo(new Point(1 + i * step, y), isStroked: false, isSmoothJoin: true);
-            }
-            ctx.LineTo(new Point(1 + (count - 1) * step, 1 + innerHeight), isStroked: false, isSmoothJoin: false);
+            ctx.BeginFigure(new Point(points[0].X, baseline), isFilled: true, isClosed: true);
+            foreach (Point point in points)
+                ctx.LineTo(point, isStroked: false, isSmoothJoin: true);
+            ctx.LineTo(new Point(points[^1].X, baseline), isStroked: false, isSmoothJoin: false);
         }
-        geometry.Freeze();
-        dc.DrawGeometry(TraceFill, null, geometry);
+        fill.Freeze();
+        dc.DrawGeometry(TraceFill, null, fill);
 
         // Crisp top edge over the fill.
         var line = new StreamGeometry();
         using (StreamGeometryContext ctx = line.Open())
         {
-            double firstY = 1 + innerHeight * (1 - Frac(values[0]));
-            ctx.BeginFigure(new Point(1, firstY), isFilled: false, isClosed: false);
-            for (int i = 1; i < count; i++)
-            {
-                double y = 1 + innerHeight * (1 - Frac(values[i]));
-                ctx.LineTo(new Point(1 + i * step, y), isStroked: true, isSmoothJoin: true);
-            }
+            ctx.BeginFigure(points[0], isFilled: false, isClosed: false);
+            for (int index = 1; index < points.Length; index++)
+                ctx.LineTo(points[index], isStroked: true, isSmoothJoin: true);
         }
         line.Freeze();
         dc.DrawGeometry(null, TracePen, line);
+    }
+
+    private Point[] BuildTrace(IList<double> values, double innerWidth, double innerHeight)
+    {
+        int count = values.Count;
+        if (count == 0) return [];
+        if (count == 1)
+            return [new Point(1, 1 + innerHeight * (1 - Frac(values[0])))];
+
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        int columns = Math.Clamp((int)Math.Ceiling(innerWidth * scale), 2, count);
+        var loudest = new double[columns];
+        Array.Fill(loudest, double.NegativeInfinity);
+        for (int index = 0; index < count; index++)
+        {
+            int column = (int)((long)index * (columns - 1) / (count - 1));
+            if (values[index] > loudest[column]) loudest[column] = values[index];
+        }
+
+        var points = new Point[columns];
+        double step = innerWidth / (columns - 1);
+        double carried = FloorDb;
+        for (int column = 0; column < columns; column++)
+        {
+            // A column can be empty when the ring is shorter than the strip is
+            // wide; hold the previous level rather than dropping to the floor.
+            if (double.IsFinite(loudest[column])) carried = loudest[column];
+            points[column] = new Point(1 + column * step, 1 + innerHeight * (1 - Frac(carried)));
+        }
+        return points;
     }
 }

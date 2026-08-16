@@ -191,6 +191,13 @@ public sealed class RecordingEngine : IDisposable
         private set => Volatile.Write(ref _rmsR, value);
     }
     public RecordingLevelSnapshot LevelSnapshot => _levelAnalyzer.Snapshot;
+
+    /// <summary>Peak the level recommendation aims the programme at, in dBTP.</summary>
+    public double LevelTargetCeilingDb
+    {
+        get => _levelAnalyzer.TargetCeilingDb;
+        set => _levelAnalyzer.TargetCeilingDb = value;
+    }
     public double RecordedSeconds
     {
         get
@@ -729,7 +736,10 @@ public sealed class RecordingEngine : IDisposable
                 // Analyze the fine-trimmed data used by the meters/document while
                 // carrying the pre-trim clip count so attenuation cannot hide an
                 // overloaded input. Sanitize only after diagnostic processing.
-                _levelAnalyzer.Process(block, 0, samples, sourceClippedSamples);
+                // The buffer has already been trimmed, so the analyzer is told the
+                // gain as well as the count: it re-detects the rail per sample at
+                // the scaled threshold to get the per-block distribution right.
+                _levelAnalyzer.Process(block, 0, samples, sourceClippedSamples, fineTrimGain);
                 SanitizeNonFiniteSamples(block);
                 _inputMonitor.Enqueue(block, samples);
                 if (!retainAudio && session.NeedleDropDetector != null)

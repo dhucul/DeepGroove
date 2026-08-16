@@ -57,6 +57,7 @@
                     <StackPanel>
                         <RadioButton x:Name="navGeneral" Content="General" IsChecked="True" Checked="OnNavChanged" Style="{StaticResource NavItem}"/>
                         <RadioButton x:Name="navAudio" Content="Audio Hardware" Checked="OnNavChanged" Style="{StaticResource NavItem}"/>
+                        <RadioButton x:Name="navRecording" Content="Recording" Checked="OnNavChanged" Style="{StaticResource NavItem}"/>
                         <RadioButton x:Name="navAutosave" Content="Autosave" Checked="OnNavChanged" Style="{StaticResource NavItem}"/>
                         <RadioButton x:Name="navExport" Content="Export" Checked="OnNavChanged" Style="{StaticResource NavItem}"/>
                     </StackPanel>
@@ -232,6 +233,23 @@
                             </Border>
                         </StackPanel>
                     </ScrollViewer>
+
+                    <!-- Recording -->
+                    <StackPanel x:Name="pageRecording" Visibility="Collapsed" Margin="0,0,8,0">
+                        <TextBlock Text="RECORDING" Style="{StaticResource SettingsCaption}" Margin="0,0,0,14"/>
+                        <TextBlock Text="TARGET CEILING" Style="{StaticResource SettingsCaption}"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Slider x:Name="sldTargetCeiling" Width="300"
+                                    AutomationProperties.Name="Recording level assistant target ceiling"
+                                    ValueChanged="OnTargetCeilingSliderChanged"/>
+                            <TextBlock x:Name="lblTargetCeiling" Margin="12,0,0,0" FontFamily="{StaticResource MonoFont}"
+                                       FontSize="11.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <Canvas x:Name="ceilingLandmarks" Width="300" Height="16" Margin="0,1,0,0"
+                                HorizontalAlignment="Left"/>
+                        <TextBlock Margin="0,8,0,0" Style="{StaticResource SettingsHint}"
+                                   Text="Peak the Recording Level Assistant aims a transfer at. −6 dBTP suits vinyl and tape transfers that will be declicked or restored afterwards: repairing a click or a flat top can put the reconstructed peak back above what was captured, and −3 dBTP leaves almost no room for that. Go lower for sources you expect to need heavy repair. The same slider sits on the level-check card, so a ceiling found mid-transfer lands here."/>
+                    </StackPanel>
 
                     <!-- Autosave -->
                     <StackPanel x:Name="pageAutosave" Visibility="Collapsed" Margin="0,0,8,0">

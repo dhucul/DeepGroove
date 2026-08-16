@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — Custom target ceiling</title>
+<style>
+  :root{
+    --bg:#0D0F12; --panel:#14171B; --panel2:#191D22; --panel3:#1F242A;
+    --line:#262C33; --lineSoft:#1D2228;
+    --text:#E7EAEE; --muted:#9AA1A9; --faint:#5D646D;
+    --accent:#3FD6C2; --accentDim:#2BA393; --amber:#FFB454; --red:#FF5C5C; --green:#3FD07A;
+    --assistBg:#111C1B; --assistEdge:#2D514B;
+    --recBg:#172724; --recEdge:#37675E;
+    --tileBg:#0F1715; --tileEdge:#293532;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:'Inter','Segoe UI',system-ui,sans-serif; font-size:12.5px;
+    padding:32px 30px 44px; -webkit-font-smoothing:antialiased;
+  }
+  .page-title{font-size:17px;font-weight:600;letter-spacing:.2px}
+  .page-sub{font-size:11.5px;color:var(--faint);margin-top:5px;max-width:1180px;line-height:1.55}
+  .mono{font-family:'JetBrains Mono','Consolas',monospace;font-variant-numeric:tabular-nums}
+
+  h2.section{
+    font-size:11px;font-weight:700;letter-spacing:1.1px;color:var(--muted);
+    margin:34px 0 4px; text-transform:uppercase;
+  }
+  .section-sub{font-size:11px;color:var(--faint);margin-bottom:16px;max-width:1180px;line-height:1.55}
+
+  .pick{
+    display:inline-block;font-size:8.5px;font-weight:700;letter-spacing:1px;
+    color:#0D0F12;background:var(--accent);border-radius:4px;padding:2px 7px;
+    vertical-align:3px;margin-left:9px;
+  }
+  .pick.alt{color:var(--muted);background:#232830}
+
+  /* ── settings page shell ───────────────────────────────────────────── */
+  .settings{
+    background:var(--panel);border:1px solid var(--line);border-radius:11px;
+    width:760px;display:flex;overflow:hidden;
+  }
+  .nav{width:172px;background:#101317;border-right:1px solid var(--lineSoft);padding:16px 0}
+  .nav div{font-size:12px;color:var(--muted);padding:8px 20px}
+  .nav div.on{color:var(--accent);background:#131E1D;box-shadow:inset 2px 0 0 var(--accent)}
+  .pane{flex:1;padding:20px 22px 24px}
+  .cap{font-size:10px;font-weight:700;color:var(--faint);letter-spacing:.3px}
+  .hint{font-size:10.5px;color:var(--faint);line-height:1.6;margin-top:8px;max-width:520px}
+
+  /* ── slider ────────────────────────────────────────────────────────── */
+  .sliderrow{display:flex;align-items:center;margin-top:12px}
+  .sl{position:relative;width:300px;height:20px}
+  .sl .track{position:absolute;top:8px;left:0;right:0;height:4px;border-radius:2px;background:#232A30}
+  .sl .fill{position:absolute;top:8px;left:0;height:4px;border-radius:2px;background:var(--accentDim)}
+  .sl .thumb{
+    position:absolute;top:3px;width:13px;height:13px;border-radius:50%;
+    background:var(--accent);border:2px solid #0D1614;margin-left:-6.5px;
+  }
+  .sl .tick{position:absolute;top:14px;width:1px;height:5px;background:#39424A}
+  .sl .tlab{position:absolute;top:21px;font-size:8.5px;color:var(--faint);transform:translateX(-50%);white-space:nowrap}
+  .sl .end{position:absolute;top:21px;font-size:8.5px;color:#454C54}
+  .readout{margin-left:14px;font-size:11.5px;color:var(--muted);min-width:74px}
+  .readout b{color:var(--text);font-weight:400}
+  .scale-pad{height:16px}
+
+  .stateline{font-size:10px;color:var(--faint);margin-top:2px;letter-spacing:.3px}
+  .stateline b{color:var(--accent);font-weight:600}
+
+  /* ── record dialog assistant card ──────────────────────────────────── */
+  .assist{
+    background:var(--assistBg);border:1px solid var(--assistEdge);border-radius:10px;
+    padding:15px; width:760px;
+  }
+  .assist-head{display:flex;align-items:center;justify-content:space-between;gap:16px}
+  .assist-title{display:flex;align-items:center;gap:8px;font-weight:600;color:#D7F8F2;font-size:12.5px;white-space:nowrap}
+  .star{color:var(--accent);font-size:15px}
+  .assist-target{font-size:9.5px;color:#7FA69F;letter-spacing:.2px}
+
+  /* inline mini slider living in the card header */
+  .mini{display:flex;align-items:center;gap:9px}
+  .mini .lab{font-size:8.5px;font-weight:700;letter-spacing:.9px;color:#5F7E78}
+  .misl{position:relative;width:104px;height:14px}
+  .misl .track{position:absolute;top:5px;left:0;right:0;height:3px;border-radius:2px;background:#1E332F}
+  .misl .fill{position:absolute;top:5px;left:0;height:3px;border-radius:2px;background:#2F6F65}
+  .misl .thumb{position:absolute;top:1px;width:11px;height:11px;border-radius:50%;background:var(--accent);border:2px solid #0F1C1A;margin-left:-5.5px}
+  .misl .tick{position:absolute;top:0;width:1px;height:13px;background:#28453F}
+
+  /* chip + popup variant */
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;font-size:9.5px;color:#9FD8CF;
+    background:#152724;border:1px solid #2E5A52;border-radius:6px;padding:4px 9px;cursor:pointer;
+  }
+  .chip .car{font-size:8px;color:#6E9A92}
+  .popwrap{position:relative;width:760px}
+  .pop{
+    position:absolute;right:0;top:6px;z-index:5;width:318px;
+    background:#141E1D;border:1px solid #336057;border-radius:9px;padding:14px 15px 16px;
+    box-shadow:0 12px 34px rgba(0,0,0,.62);
+  }
+  .pop h4{font-size:9px;font-weight:700;letter-spacing:1px;color:#7FA69F;margin-bottom:2px}
+  .pop .pophint{font-size:9.5px;color:#6E8B86;line-height:1.55;margin-top:12px}
+  .pop .popfoot{display:flex;justify-content:space-between;align-items:center;margin-top:13px}
+  .linkbtn{font-size:10px;color:var(--accent);border:1px solid #2C4F49;border-radius:5px;padding:3px 9px;background:#132321}
+  .linkbtn.quiet{color:#7E8890;border-color:#2A3037;background:#171B1F}
+
+  .assist-body{display:flex;gap:16px;margin-top:12px}
+  .assist-copy{flex:1}
+  .assist-status{font-size:15px;font-weight:600;color:#DDF5EF}
+  .assist-detail{font-size:11.5px;color:#95A7A3;line-height:1.5;margin-top:4px}
+  .rec{background:var(--recBg);border:1px solid var(--recEdge);border-radius:8px;padding:11px;width:232px}
+  .rec .label{font-size:8.5px;font-weight:700;letter-spacing:.5px;color:#77958E;text-align:right}
+  .rec .value{font-size:14px;font-weight:700;color:#CFFFF4;text-align:right;margin-top:4px}
+  .rec .breakdown{font-size:8.5px;color:#77958E;text-align:right;margin-top:4px;line-height:1.45}
+  .btn{display:block;width:100%;margin-top:9px;height:26px;line-height:24px;border-radius:6px;
+       text-align:center;font-size:11px;font-weight:600;background:#1D4F47;border:1px solid #37766B;color:#D7F8F2}
+
+  .tiles{display:flex;gap:6px;margin-top:13px}
+  .tile{flex:1;background:var(--tileBg);border:1px solid var(--tileEdge);border-radius:7px;padding:8px}
+  .tile .k{font-size:8px;font-weight:700;color:#71817C;letter-spacing:.2px}
+  .tile .v{font-size:10.5px;margin-top:4px}
+  .tile.changed{border-color:#3D6A61;background:#122220}
+  .tile.changed .k{color:#8FBFB6}
+
+  /* meter target band strip */
+  .meter{width:760px;background:#0F1715;border:1px solid var(--tileEdge);border-radius:8px;padding:11px 13px 9px;margin-top:12px}
+  .mbar{position:relative;height:15px;background:#151B19;border-radius:3px;overflow:hidden}
+  .mbar .lvl{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#1E6F62,#3FD6C2)}
+  .mbar .band{position:absolute;top:0;bottom:0;background:rgba(63,214,194,.16);border-left:1px solid var(--accent);border-right:1px solid var(--accent)}
+  .mscale{position:relative;height:13px;margin-top:3px}
+  .mscale span{position:absolute;font-size:8px;color:var(--faint);transform:translateX(-50%)}
+
+  .callout{
+    width:760px;background:#12181C;border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:8px;padding:13px 15px;margin-top:14px;font-size:11px;color:var(--muted);line-height:1.65;
+  }
+  .callout b{color:var(--text);font-weight:600}
+  .callout code{font-family:'JetBrains Mono','Consolas',monospace;font-size:10px;color:#9FD8CF}
+  .row{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<div class="page-title">Custom target ceiling</div>
+<div class="page-sub">
+  The ceiling stops being a three-item list and becomes a value you set: a slider over the analyzer's real range,
+  <span class="mono">−1.0</span> to <span class="mono">−24.0 dBTP</span> in 0.5 dB steps. It is settable in Settings and,
+  because the analyzer re-derives a recommendation from blocks it has already stored, directly on the level-check card
+  mid-transfer — with no rescan.
+</div>
+
+<h2 class="section">1 · Settings ▸ Recording</h2>
+<div class="section-sub">
+  Same shape as the undo-history slider on the General page: 300 px slider, mono readout on the right.
+  Landmark ticks mark the three values that used to be the whole list, so the guidance survives the change.
+  Note the direction — minimum on the left, as with every other slider in the app, so <i>right is hotter</i>.
+</div>
+
+<div class="settings">
+  <div class="nav">
+    <div>General</div>
+    <div>Audio Hardware</div>
+    <div class="on">Recording</div>
+    <div>Autosave</div>
+    <div>Export</div>
+  </div>
+  <div class="pane">
+    <div class="cap" style="margin-bottom:14px">RECORDING</div>
+    <div class="cap">TARGET CEILING</div>
+    <div class="sliderrow">
+      <div class="sl">
+        <div class="track"></div>
+        <div class="fill" style="width:78.3%"></div>
+        <div class="tick" style="left:60.9%"></div><div class="tlab" style="left:60.9%">−10</div>
+        <div class="tick" style="left:78.3%"></div><div class="tlab" style="left:78.3%">−6</div>
+        <div class="tick" style="left:91.3%"></div><div class="tlab" style="left:91.3%">−3</div>
+        <div class="end" style="left:0">−24</div>
+        <div class="end" style="right:0">−1</div>
+        <div class="thumb" style="left:78.3%"></div>
+      </div>
+      <div class="readout mono"><b>−6.0</b> dBTP</div>
+    </div>
+    <div class="scale-pad"></div>
+    <div class="hint">
+      Peak the Recording Level Assistant aims a transfer at. −6 dBTP suits vinyl and tape transfers that will be
+      declicked or restored afterwards: repairing a click or a flat top can put the reconstructed peak back above what
+      was captured, and −3 dBTP leaves almost no room for that. Go lower for sources you expect to need heavy repair.
+    </div>
+  </div>
+</div>
+
+<h2 class="section">2 · Any value, not three</h2>
+<div class="section-sub">
+  Three positions of the same control. A stored value is now clamped into range and snapped to the nearest 0.5 dB
+  rather than being thrown away for not matching the list — so a hand-edited settings.json survives.
+</div>
+
+<div class="row">
+  <div>
+    <div class="stateline">DEFAULT · <b>the landmark</b></div>
+    <div class="sliderrow">
+      <div class="sl">
+        <div class="track"></div><div class="fill" style="width:78.3%"></div>
+        <div class="tick" style="left:60.9%"></div><div class="tick" style="left:78.3%"></div><div class="tick" style="left:91.3%"></div>
+        <div class="thumb" style="left:78.3%"></div>
+      </div>
+      <div class="readout mono"><b>−6.0</b> dBTP</div>
+    </div>
+  </div>
+  <div>
+    <div class="stateline">CUSTOM · <b>between the old presets</b></div>
+    <div class="sliderrow">
+      <div class="sl">
+        <div class="track"></div><div class="fill" style="width:71.7%"></div>
+        <div class="tick" style="left:60.9%"></div><div class="tick" style="left:78.3%"></div><div class="tick" style="left:91.3%"></div>
+        <div class="thumb" style="left:71.7%"></div>
+      </div>
+      <div class="readout mono"><b>−7.5</b> dBTP</div>
+    </div>
+  </div>
+  <div>
+    <div class="stateline">CUSTOM · <b>heavy restoration</b></div>
+    <div class="sliderrow">
+      <div class="sl">
+        <div class="track"></div><div class="fill" style="width:45.7%"></div>
+        <div class="tick" style="left:60.9%"></div><div class="tick" style="left:78.3%"></div><div class="tick" style="left:91.3%"></div>
+        <div class="thumb" style="left:45.7%"></div>
+      </div>
+      <div class="readout mono"><b>−13.5</b> dBTP</div>
+    </div>
+  </div>
+</div>
+
+<h2 class="section">3 · On the level-check card — variant A: inline<span class="pick">PICK ONE</span></h2>
+<div class="section-sub">
+  The header readout <span class="mono">TARGET CEILING −6 dBTP · 3.5 dB SAFETY RESERVE</span> becomes half control,
+  half readout: a 104 px slider replaces the fixed number, the reserve stays a readout because it is derived, not set.
+  Cheapest to reach — but 104 px over 47 half-decibel stops is coarse to drag, so it leans on arrow keys for exact values.
+</div>
+
+<div class="assist">
+  <div class="assist-head">
+    <div class="assist-title"><span class="star">✦</span> Recording Level Assistant</div>
+    <div class="mini">
+      <div class="lab">CEILING</div>
+      <div class="misl">
+        <div class="track"></div><div class="fill" style="width:78.3%"></div>
+        <div class="tick" style="left:60.9%"></div><div class="tick" style="left:78.3%"></div><div class="tick" style="left:91.3%"></div>
+        <div class="thumb" style="left:78.3%"></div>
+      </div>
+      <div class="assist-target mono">−6.0 dBTP · 3.5 dB RESERVE</div>
+    </div>
+  </div>
+  <div class="assist-body">
+    <div class="assist-copy">
+      <div class="assist-status">Good level</div>
+      <div class="assist-detail">
+        Programme peaks −8.1 dBTP with 3.5 dB of reserve held back for transients this scan has not seen yet.
+        Nudging the ceiling re-derives this from what has already been measured — the scan keeps running.
+      </div>
+    </div>
+    <div class="rec">
+      <div class="label">SAFE SETTING FOR THIS SIDE</div>
+      <div class="value mono">REDUCE 2.5 dB</div>
+      <div class="breakdown mono">Windows −12.0 dB<br>+ fine trim −0.5 dB</div>
+      <div class="btn">Apply −2.5 dB</div>
+    </div>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="k">TRUE PEAK</div><div class="v mono">−1.2 dBTP</div></div>
+    <div class="tile"><div class="k">PROG PEAK</div><div class="v mono">−8.1 dBTP</div></div>
+    <div class="tile"><div class="k">CLICKS ABOVE</div><div class="v mono">6.9 dB</div></div>
+    <div class="tile changed"><div class="k">PROJECTED</div><div class="v mono">−4.6 dBTP</div></div>
+    <div class="tile"><div class="k">PROG RMS</div><div class="v mono">−19.4 dB</div></div>
+    <div class="tile"><div class="k">LOUDNESS</div><div class="v mono">−18.7 LUFS</div></div>
+  </div>
+</div>
+
+<h2 class="section">4 · On the level-check card — variant B: chip opens the full slider<span class="pick alt">PICK ONE</span></h2>
+<div class="section-sub">
+  The ceiling half of the header becomes a chip; clicking it drops a small panel with the full-width slider, the
+  landmark ticks, the hint, and a reset. Costs one click, but gives the same precision as Settings and keeps the
+  header a readout at rest.
+</div>
+
+<div class="popwrap">
+  <div class="assist">
+    <div class="assist-head">
+      <div class="assist-title"><span class="star">✦</span> Recording Level Assistant</div>
+      <div class="mini">
+        <div class="chip mono">TARGET CEILING −6.0 dBTP <span class="car">▾</span></div>
+        <div class="assist-target mono">· 3.5 dB SAFETY RESERVE</div>
+      </div>
+    </div>
+    <div class="assist-body">
+      <div class="assist-copy">
+        <div class="assist-status">Good level</div>
+        <div class="assist-detail">
+          Programme peaks −8.1 dBTP with 3.5 dB of reserve held back for transients this scan has not seen yet.
+        </div>
+      </div>
+      <div class="rec">
+        <div class="label">SAFE SETTING FOR THIS SIDE</div>
+        <div class="value mono">REDUCE 2.5 dB</div>
+        <div class="breakdown mono">Windows −12.0 dB<br>+ fine trim −0.5 dB</div>
+        <div class="btn">Apply −2.5 dB</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="k">TRUE PEAK</div><div class="v mono">−1.2 dBTP</div></div>
+      <div class="tile"><div class="k">PROG PEAK</div><div class="v mono">−8.1 dBTP</div></div>
+      <div class="tile"><div class="k">CLICKS ABOVE</div><div class="v mono">6.9 dB</div></div>
+      <div class="tile changed"><div class="k">PROJECTED</div><div class="v mono">−4.6 dBTP</div></div>
+      <div class="tile"><div class="k">PROG RMS</div><div class="v mono">−19.4 dB</div></div>
+      <div class="tile"><div class="k">LOUDNESS</div><div class="v mono">−18.7 LUFS</div></div>
+    </div>
+  </div>
+
+  <div class="pop">
+    <h4>TARGET CEILING</h4>
+    <div class="sliderrow" style="margin-top:14px">
+      <div class="sl" style="width:186px">
+        <div class="track"></div><div class="fill" style="width:78.3%"></div>
+        <div class="tick" style="left:60.9%"></div><div class="tlab" style="left:60.9%">−10</div>
+        <div class="tick" style="left:78.3%"></div><div class="tlab" style="left:78.3%">−6</div>
+        <div class="tick" style="left:91.3%"></div><div class="tlab" style="left:91.3%">−3</div>
+        <div class="thumb" style="left:78.3%"></div>
+      </div>
+      <div class="readout mono" style="margin-left:12px"><b>−6.0</b> dBTP</div>
+    </div>
+    <div class="scale-pad"></div>
+    <div class="pophint">
+      Lower leaves more room for the declicking and peak reconstruction that follow a transfer. The recommendation
+      re-derives from the blocks already scanned — nothing restarts.
+    </div>
+    <div class="popfoot">
+      <div class="linkbtn quiet">Reset to −6.0</div>
+      <div class="linkbtn">Done</div>
+    </div>
+  </div>
+</div>
+
+<h2 class="section">5 · What moves when the ceiling moves</h2>
+<div class="section-sub">
+  Everything downstream is derived, so one drag re-paints all of it — this is the reason it is worth having on the card
+  at all rather than only in Settings.
+</div>
+
+<div class="meter">
+  <div class="cap" style="margin-bottom:7px">INPUT METER · TARGET BAND FOLLOWS THE CEILING</div>
+  <div class="mbar">
+    <div class="lvl" style="width:73%"></div>
+    <div class="band" style="left:80.5%;width:3.4%"></div>
+  </div>
+  <div class="mscale mono">
+    <span style="left:0%">−60</span><span style="left:40%">−36</span><span style="left:60%">−24</span>
+    <span style="left:70%">−18</span><span style="left:80%">−12</span><span style="left:90%">−6</span>
+    <span style="left:99%">0</span>
+  </div>
+  <div class="hint" style="margin-top:9px">
+    The band sits at <span class="mono">ceiling − reserve ± 1 dB</span>, so it slides as either changes.
+  </div>
+</div>
+
+<div class="callout">
+  <b>Re-derived on the spot</b> — <code>RecordingLevelAnalyzer.TargetCeilingDb</code> already clears the cached
+  snapshot and bumps the analysis generation when it is set, so a new recommendation, projected peak, reserve and
+  meter band all come back from blocks already in history. No rescan, no capture-thread work.<br>
+  <b>Persistence</b> — the fixed <code>RecordingTargetCeilingChoicesDb</code> list stops being the validator.
+  <code>AppSettings.Normalize</code> clamps to −1…−24 and snaps to 0.5 dB, keeping −6 only for a value that is
+  missing or not a number.<br>
+  <b>Two owners, one value</b> — the card writes back to <code>AppSettings</code>, so a ceiling found mid-transfer
+  is the one the next session opens with, and the Settings slider shows it.
+</div>
+
+</body>
+</html>

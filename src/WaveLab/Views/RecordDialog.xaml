@@ -9,6 +9,31 @@
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- The target-ceiling chip: a readout at rest, a button on approach. -->
+        <Style x:Key="CeilingChip" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="#9FD8CF"/>
+            <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+            <Setter Property="FontSize" Value="9.5"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="#152724" BorderBrush="#2E5A52" BorderThickness="1"
+                                CornerRadius="6" Padding="8,3">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#1B3531"/>
+                                <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
@@ -39,10 +64,29 @@
                         <DataTemplate><TextBlock Text="{Binding Name}"/></DataTemplate>
                     </ComboBox.ItemTemplate>
                 </ComboBox>
-                <TextBlock Text="{Binding DeviceMemoryText}" Margin="0,5,0,0" FontSize="10.5" Foreground="#7FA69F"
-                           TextTrimming="CharacterEllipsis"
-                           ToolTip="The last settled level-check outcome remembered for this input"
-                           Visibility="{Binding HasDeviceMemory, Converter={StaticResource BoolToVis}}"/>
+                <Grid Margin="0,5,0,0"
+                      Visibility="{Binding HasDeviceMemory, Converter={StaticResource BoolToVis}}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding DeviceMemoryText}" FontSize="10.5" Foreground="#7FA69F"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                               ToolTip="The safest level-check outcome remembered for this input"/>
+                    <Button Grid.Column="1" x:Name="useRememberedBtn" Content="Use last setting"
+                            Margin="8,0,0,0" FontSize="10" Style="{StaticResource MiniButton}"
+                            Foreground="{StaticResource Accent}"
+                            IsEnabled="{Binding CanUseRememberedSetting}" Click="OnUseRememberedSetting"
+                            AutomationProperties.Name="Restore the input setting remembered for this device"
+                            ToolTip="Sets the device level and fine trim back to what this input used last time"/>
+                    <Button Grid.Column="2" x:Name="forgetMemoryBtn" Content="Forget"
+                            Margin="6,0,0,0" FontSize="10" Style="{StaticResource MiniButton}"
+                            IsEnabled="{Binding CanForgetDeviceMemory}"
+                            Click="OnForgetDeviceMemory"
+                            AutomationProperties.Name="Forget the remembered setting for this device"
+                            ToolTip="Discards this input's remembered calibration"/>
+                </Grid>
 
                 <StackPanel x:Name="inputGainControls">
                 <Grid Margin="0,13,0,0">
@@ -151,14 +195,66 @@
                         Padding="15" Margin="0,15,0,0">
                     <StackPanel>
                         <DockPanel LastChildFill="True">
-                            <TextBlock DockPanel.Dock="Right" Text="{Binding LevelTargetText}" FontFamily="{StaticResource MonoFont}"
-                                       FontSize="9.5" Foreground="#7FA69F" VerticalAlignment="Center"/>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="ceilingChipBtn" Style="{StaticResource CeilingChip}"
+                                        Click="OnOpenTargetCeiling"
+                                        AutomationProperties.Name="Change the recording level assistant target ceiling"
+                                        ToolTip="Peak this transfer is aimed at — click to change it without leaving the dialog">
+                                    <TextBlock><Run Text="{Binding TargetCeilingText, Mode=OneWay}"/><Run Text=" ▾" FontSize="7.5"/></TextBlock>
+                                </Button>
+                                <TextBlock Text="{Binding SafetyReserveText}" Margin="7,0,0,0"
+                                           FontFamily="{StaticResource MonoFont}" FontSize="9.5" Foreground="#7FA69F"
+                                           VerticalAlignment="Center"
+                                           ToolTip="Held back for transients the scan has not seen yet — derived, not set"/>
+                            </StackPanel>
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="✦" Foreground="{StaticResource Accent}" FontSize="15" VerticalAlignment="Center"/>
                                 <TextBlock Text="Recording Level Assistant" Margin="8,0,0,0" FontWeight="SemiBold"
                                            Foreground="#D7F8F2" VerticalAlignment="Center"/>
                             </StackPanel>
                         </DockPanel>
+
+                        <Popup x:Name="ceilingPopup" PlacementTarget="{Binding ElementName=ceilingChipBtn}"
+                               Placement="Bottom" HorizontalOffset="-104" VerticalOffset="4"
+                               StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"
+                               Opened="OnTargetCeilingOpened" Closed="OnTargetCeilingClosed">
+                            <Border Background="#141E1D" BorderBrush="#336057" BorderThickness="1" CornerRadius="9"
+                                    Padding="14,12,15,14" Margin="14">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="30" ShadowDepth="8" Opacity="0.62" Color="#000000"/>
+                                </Border.Effect>
+                                <StackPanel Width="290">
+                                    <TextBlock Text="TARGET CEILING" FontSize="9" FontWeight="Bold"
+                                               Foreground="#7FA69F"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                        <Slider x:Name="sldCardCeiling" Width="186" VerticalAlignment="Center"
+                                                AutomationProperties.Name="Target ceiling"
+                                                ValueChanged="OnCardCeilingChanged"
+                                                Thumb.DragCompleted="OnCeilingDragCompleted"/>
+                                        <TextBlock x:Name="lblCardCeiling" Margin="12,0,0,0"
+                                                   FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                                                   Foreground="#CFFFF4" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <Canvas x:Name="cardCeilingLandmarks" Width="186" Height="16" Margin="0,1,0,0"
+                                            HorizontalAlignment="Left"/>
+                                    <TextBlock Margin="0,6,0,0" FontSize="9.5" Foreground="#6E8B86" TextWrapping="Wrap"
+                                               LineHeight="15"
+                                               Text="Lower leaves more room for the declicking and peak reconstruction that follow a transfer. A running scan re-derives from what it has already measured — nothing restarts."/>
+                                    <TextBlock Margin="0,7,0,0" FontSize="9.5" Foreground="{StaticResource Amber}"
+                                               TextWrapping="Wrap" LineHeight="15"
+                                               Visibility="{Binding CeilingChangeDiscardsHeldCheck, Converter={StaticResource BoolToVis}}"
+                                               Text="The finished check was measured against the current ceiling and will be discarded — run it again afterwards."/>
+                                    <DockPanel Margin="0,13,0,0">
+                                        <Button DockPanel.Dock="Right" Content="Done" FontSize="10"
+                                                Style="{StaticResource MiniButton}" Foreground="{StaticResource Accent}"
+                                                Click="OnCloseTargetCeiling"/>
+                                        <Button x:Name="resetCeilingBtn" HorizontalAlignment="Left" FontSize="10"
+                                                Style="{StaticResource MiniButton}" Click="OnResetTargetCeiling"
+                                                AutomationProperties.Name="Reset the target ceiling to the default"/>
+                                    </DockPanel>
+                                </StackPanel>
+                            </Border>
+                        </Popup>
 
                         <Grid Margin="0,12,0,0">
                             <Grid.ColumnDefinitions>
@@ -181,6 +277,16 @@
                                                FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Bold"
                                                Foreground="#CFFFF4" HorizontalAlignment="Right"/>
                                     <TextBlock Text="{Binding RecommendedInputBreakdownText}" Margin="0,4,0,0"
+                                               FontFamily="{StaticResource MonoFont}" FontSize="8.5"
+                                               Foreground="#77958E" TextWrapping="Wrap" TextAlignment="Right"/>
+                                    <Button x:Name="applyRecommendationBtn" Margin="0,9,0,0" Height="27"
+                                            Style="{StaticResource AccentButton}" FontSize="11"
+                                            Content="{Binding ApplyRecommendationText}"
+                                            IsEnabled="{Binding CanApplyRecommendedInputSetting}"
+                                            Click="OnApplyRecommendation"
+                                            AutomationProperties.Name="Apply the recommended device level and fine trim"
+                                            ToolTip="Sets the Windows device level and WaveLab fine trim to the safe setting, then restarts the measurement"/>
+                                    <TextBlock Text="{Binding ApplyRecommendationStatusText}" Margin="0,5,0,0"
                                                FontFamily="{StaticResource MonoFont}" FontSize="8.5"
                                                Foreground="#77958E" TextWrapping="Wrap" TextAlignment="Right"/>
                                 </StackPanel>
@@ -234,7 +340,7 @@
                             </Border>
                             <Border Grid.Column="1" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
                                 <StackPanel><TextBlock Text="NOISE FLOOR" FontSize="8" FontWeight="Bold" Foreground="#71817C"
-                                                       ToolTip="Estimated quiet-passage level: surface noise, hiss, and hum floor"/>
+                                                       ToolTip="Quiet-passage level above 150 Hz — surface noise and hiss. Rumble and mains hum are excluded; see the HUM tile. Shown as — when the passage is too steady to have a separate floor."/>
                                     <TextBlock Text="{Binding NoiseFloorText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
                             <Border Grid.Column="2" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">

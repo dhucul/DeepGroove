@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -8,6 +9,7 @@ using System.Windows.Threading;
 using WaveLab.Audio;
 using WaveLab.Util;
 using WaveLab.ViewModels;
+using WaveLab.Views.Controls;
 
 namespace WaveLab.Views;
 
@@ -60,6 +62,9 @@ public partial class RecordDialog : Window
         cmbBars.Items.Add("2 bars (4/4)");
         cmbBars.SelectedIndex = 0;
 
+        resetCeilingBtn.Content =
+            $"Reset to {TargetCeilingScale.Format(AppSettings.DefaultRecordingTargetCeilingDb)}";
+
         LoadAutoStopSettings();
 
         if (punchAvailable)
@@ -84,6 +89,10 @@ public partial class RecordDialog : Window
                 e.Cancel = true;
                 return;
             }
+
+            // Belt and braces: a popup torn down with its window does not reliably
+            // raise Closed, and a ceiling nudged but never committed would be lost.
+            ViewModel.CommitTargetCeiling();
 
             if (ViewModel.HasPendingCapture)
             {
@@ -148,10 +157,110 @@ public partial class RecordDialog : Window
     {
         if (_starting || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop
             || ViewModel.IsFinalizing) return;
-        bool started = ViewModel.IsLevelChecking
-            ? ViewModel.StopLevelCheck()
-            : ViewModel.StartLevelCheck();
-        if (started) SetSetupControlsEnabled(true);
+        bool wasChecking = ViewModel.IsLevelChecking;
+        bool started = wasChecking ? ViewModel.StopLevelCheck() : ViewModel.StartLevelCheck();
+        if (started)
+        {
+            SetSetupControlsEnabled(true);
+        }
+        else if (wasChecking && ViewModel.IsLevelChecking)
+        {
+            // The stop gate was held by a finalizing capture. Say so rather than
+            // letting the button appear to do nothing.
+            MessageBox.Show(
+                "The level check is still finishing. Try again in a moment.", "Record",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private void OnApplyRecommendation(object sender, RoutedEventArgs e)
+    {
+        if (_starting || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop
+            || ViewModel.IsFinalizing) return;
+        if (ViewModel.ApplyRecommendedInputSetting()) SetSetupControlsEnabled(true);
+    }
+
+    private void OnUseRememberedSetting(object sender, RoutedEventArgs e)
+    {
+        if (_starting || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop
+            || ViewModel.IsFinalizing) return;
+        if (ViewModel.UseRememberedSetting()) SetSetupControlsEnabled(true);
+    }
+
+    private void OnForgetDeviceMemory(object sender, RoutedEventArgs e)
+    {
+        if (_starting || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop
+            || ViewModel.IsFinalizing) return;
+        // Only a genuine save failure is worth a dialog: having nothing to forget is
+        // not an error, and the button is disabled in that state anyway.
+        if (ViewModel.ForgetDeviceMemory() == RecordViewModel.ForgetMemoryOutcome.SaveFailed)
+        {
+            MessageBox.Show(
+                "The remembered setting could not be cleared:\n"
+                + (AppSettings.Instance.LastSaveError ?? "unknown error"), "Record",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>
+    /// Guards the slider against the view model while the popup is being set up:
+    /// ranging the slider moves its value, and that must not read back as the user
+    /// choosing a ceiling.
+    /// </summary>
+    private bool _rangingCeiling;
+
+    /// <summary>Frozen: the landmarks are rebuilt every time the popup opens.</summary>
+    private static readonly SolidColorBrush CeilingLandmarkBrush = new(Color.FromRgb(0x6E, 0x8B, 0x86));
+
+    static RecordDialog() => CeilingLandmarkBrush.Freeze();
+
+    private void OnOpenTargetCeiling(object sender, RoutedEventArgs e) => ceilingPopup.IsOpen = true;
+
+    // Ranging lives on the popup rather than on the chip's click so that the slider is
+    // never shown holding WPF's default 0–10 range, whatever opened it.
+    private void OnTargetCeilingOpened(object? sender, EventArgs e)
+    {
+        _rangingCeiling = true;
+        try
+        {
+            TargetCeilingScale.Range(sldCardCeiling, ViewModel.TargetCeilingDb);
+            TargetCeilingScale.DrawLandmarks(
+                cardCeilingLandmarks, sldCardCeiling, CeilingLandmarkBrush, withLabels: true);
+            lblCardCeiling.Text = TargetCeilingScale.Format(sldCardCeiling.Value);
+        }
+        finally { _rangingCeiling = false; }
+
+        sldCardCeiling.Focus();
+    }
+
+    private void OnCardCeilingChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (lblCardCeiling == null) return;
+        lblCardCeiling.Text = TargetCeilingScale.Format(e.NewValue);
+        if (_rangingCeiling) return;
+        // Cheap during the gesture; the analyzer and settings file are retargeted once
+        // it ends. See RecordViewModel.CommitTargetCeiling.
+        ViewModel.TargetCeilingDb = e.NewValue;
+    }
+
+    /// <summary>
+    /// End of a drag. Keyboard and Reset changes commit when the popup closes instead,
+    /// which is the same gesture boundary for a control that is not being dragged.
+    /// </summary>
+    private void OnCeilingDragCompleted(object sender, DragCompletedEventArgs e) =>
+        ViewModel.CommitTargetCeiling();
+
+    private void OnResetTargetCeiling(object sender, RoutedEventArgs e) =>
+        sldCardCeiling.Value = AppSettings.DefaultRecordingTargetCeilingDb;
+
+    private void OnCloseTargetCeiling(object sender, RoutedEventArgs e) => ceilingPopup.IsOpen = false;
+
+    // The chip is what the popup came from, so that is where the keyboard belongs
+    // once it closes — otherwise focus is left inside a popup that no longer exists.
+    private void OnTargetCeilingClosed(object? sender, EventArgs e)
+    {
+        ViewModel.CommitTargetCeiling();
+        ceilingChipBtn.Focus();
     }
 
     private void OnResetLevelCheck(object sender, RoutedEventArgs e)
@@ -530,6 +639,10 @@ public partial class RecordDialog : Window
         levelCheckBtn.IsEnabled = enabled && !ViewModel.IsRecording;
         resetLevelCheckBtn.IsEnabled = enabled
             && (ViewModel.IsLevelChecking || ViewModel.HasStoppedLevelCheck);
+        // Apply and the two memory buttons sit outside inputGainControls, and their
+        // enablement changes mid-scan rather than only on a state transition, so
+        // they stay bound to view-model predicates instead of being set here.
+        // Assigning IsEnabled locally would clobber those bindings.
         inputGainControls.IsEnabled = enabled;
         wholeRecordCheck.IsEnabled = enabled
             && !ViewModel.IsLevelChecking

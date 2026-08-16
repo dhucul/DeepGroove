@@ -24,12 +24,13 @@ internal sealed class RunOutDetector
     private const double SubBlockSeconds = 0.01;
     private const int SubBlocksPerBlock = 10;
     private const double BlockSeconds = SubBlockSeconds * SubBlocksPerBlock;
-    private const double ActivityHighPassHz = 150;
-    private const double MinimumProgramBlockDb = -55;
+    // Classification rules live in ProgramBlockClassifier, shared with the offline
+    // RecordingLevelAnalyzer. Only the minimum peak is local: this detector merely
+    // has to notice that the music stopped, so it accepts quieter programme than
+    // the analyzer will build a gain recommendation from.
+    private const double ActivityHighPassHz = ProgramBlockClassifier.ActivityHighPassHz;
+    private const double MinimumProgramBlockDb = ProgramBlockClassifier.MinimumProgramBlockDb;
     private const double MinimumProgramPeakDb = -60;
-    private const double QuietProgramSeparationDb = 10;
-    private const double MinimumZeroCrossingsPerSecond = 150;
-    private const double MaximumZeroCrossingFraction = 0.40;
 
     /// <summary>The floor is read as a low percentile of the recent window, as the offline analyzer does.</summary>
     private const double NoiseFloorPercentile = 0.10;
@@ -243,10 +244,10 @@ internal sealed class RunOutDetector
     }
 
     private bool IsProgram(double activityDb, double peakDb, double crossingsPerSecond) =>
-        activityDb > ActivityThresholdDb()
-        && peakDb > MinimumProgramPeakDb
-        && crossingsPerSecond >= MinimumZeroCrossingsPerSecond
-        && crossingsPerSecond <= _sampleRate * MaximumZeroCrossingFraction;
+        ProgramBlockClassifier.IsProgram(
+            activityDb, ActivityThresholdDb(),
+            peakDb, MinimumProgramPeakDb,
+            crossingsPerSecond, _sampleRate);
 
     /// <summary>
     /// Mirrors the offline classifier: when the recent window separates into a
@@ -262,14 +263,7 @@ internal sealed class RunOutDetector
         Array.Sort(_windowScratch, 0, _windowCount);
         double low = Percentile(_windowScratch, _windowCount, NoiseFloorPercentile);
         double high = Percentile(_windowScratch, _windowCount, ProgramPercentile);
-        double spread = high - low;
-
-        if (double.IsPositiveInfinity(spread)
-            || (double.IsFinite(spread) && spread >= QuietProgramSeparationDb))
-        {
-            return Math.Max(MinimumProgramBlockDb, low + QuietProgramSeparationDb);
-        }
-        return MinimumProgramBlockDb;
+        return ProgramBlockClassifier.ActivityThresholdDb(low, high);
     }
 
     private void PushWindow(double activityDb)

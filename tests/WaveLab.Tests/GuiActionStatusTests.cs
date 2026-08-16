@@ -6,6 +6,7 @@ using Xunit;
 
 namespace WaveLab.Tests;
 
+[Collection(AppSettingsCollection.Name)]
 public sealed class GuiActionStatusTests : IDisposable
 {
     // MainViewModel loads AppSettings and publishes factory presets, and

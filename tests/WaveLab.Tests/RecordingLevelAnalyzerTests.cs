@@ -663,10 +663,10 @@ public sealed class RecordingLevelAnalyzerTests
         FeedRepeated(analyzer, SineSecond(-12), seconds: 12);
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
-        Assert.True(double.IsFinite(result.ProgramLoudnessLufs));
+        Assert.True(double.IsFinite(result.IntegratedLufs));
         // LUFS sits 0.691 below RMS plus the K-weighting loss at 100 Hz
         // (the 38 Hz high-pass with Q=0.5 costs about 1.2 dB there).
-        Assert.InRange(result.ProgramLoudnessLufs, result.ProgramRmsDb - 2.5, result.ProgramRmsDb + 0.5);
+        Assert.InRange(result.IntegratedLufs, result.ProgramRmsDb - 2.5, result.ProgramRmsDb + 0.5);
     }
 
     [Fact]
@@ -697,10 +697,319 @@ public sealed class RecordingLevelAnalyzerTests
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.True(double.IsNegativeInfinity(result.ProgramPeakDb));
-        Assert.True(double.IsNegativeInfinity(result.ProgramLoudnessLufs));
+        Assert.True(double.IsNegativeInfinity(result.IntegratedLufs));
         Assert.True(double.IsNegativeInfinity(result.DcOffsetDb));
         Assert.True(double.IsNegativeInfinity(result.HumLevelDb));
         Assert.Equal(0, result.HumFrequencyHz);
+    }
+
+    [Fact]
+    public void FinalSnapshotFlushesTheTruePeakInterpolatorTail()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] tail = SineSecond(-6);
+        // Alternating near-full-scale samples at the very end: the interpolator
+        // phases that straddle them are only evaluated once the tail is rung out.
+        for (int frame = tail.Length - 12; frame < tail.Length; frame++)
+            tail[frame] = frame % 2 == 0 ? 0.95f : -0.95f;
+
+        FeedRepeated(analyzer, SineSecond(-12), seconds: 12);
+        analyzer.Process(tail);
+
+        var reference = new LoudnessMeter();
+        reference.Configure(SampleRate, 1);
+        float[] quiet = SineSecond(-12);
+        for (int second = 0; second < 12; second++) reference.Process(quiet, 0, quiet.Length);
+        reference.Process(tail, 0, tail.Length);
+        double beforeFlush = reference.TruePeakDb;
+        reference.FlushTruePeak();
+        double afterFlush = reference.TruePeakDb;
+
+        double live = analyzer.Snapshot.TruePeakDb;
+        double final = analyzer.GetFreshSnapshot().TruePeakDb;
+
+        // Guard against a vacuous test: the flush must actually find something.
+        Assert.True(afterFlush > beforeFlush);
+        Assert.True(final >= live);
+        Assert.Equal(afterFlush, final, 9);
+    }
+
+    [Fact]
+    public void FinalSnapshotIncludesAPartialTrailingBlockCountedInRealFrames()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        FeedRepeated(analyzer, SineSecond(-12), seconds: 12);
+        Assert.Equal(12, analyzer.Snapshot.ActiveSeconds, 8);
+
+        analyzer.Process(SineSecond(-12), 0, SampleRate * 6 / 100); // 60 ms
+
+        // The live snapshot only advances when a block completes.
+        Assert.Equal(12, analyzer.Snapshot.ActiveSeconds, 8);
+        // 12.06, not the 12.1 that counting whole blocks would report.
+        Assert.Equal(12.06, analyzer.GetFreshSnapshot().ActiveSeconds, 8);
+    }
+
+    [Fact]
+    public void PartialTailShorterThanAQuarterBlockIsIgnored()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        FeedRepeated(analyzer, SineSecond(-12), seconds: 12);
+
+        analyzer.Process(SineSecond(-12), 0, SampleRate / 100); // 10 ms
+
+        Assert.Equal(12, analyzer.GetFreshSnapshot().ActiveSeconds, 8);
+    }
+
+    [Fact]
+    public void SustainedConverterOverloadIsNotHiddenByALouderIsolatedClick()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] clicked = SineSecond(-12);
+        for (int frame = 100; frame < 103; frame++) clicked[frame] = 1f;
+
+        float[] overloaded = SineSecond(-12);
+        for (int frame = 0; frame < SampleRate * 15 / 100; frame++) // 150 ms
+        {
+            double wave = Math.Sin(2 * Math.PI * 100 * frame / SampleRate) * 2;
+            overloaded[frame] = (float)Math.Clamp(wave, -1, 1);
+        }
+
+        for (int second = 0; second < 60; second++)
+            analyzer.Process(second == 30 ? overloaded : clicked);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        // The clicks still own the absolute peak by a wide margin over the
+        // programme, so the narrow-artifact amnesty would otherwise apply.
+        Assert.True(result.TruePeakDb - result.ProgramPeakDb > 6);
+        Assert.Equal(RecordingLevelStatus.Clipping, result.Status);
+    }
+
+    [Fact]
+    public void IsolatedClicksStillDoNotLatchClippingAfterTheEvidenceRule()
+    {
+        const int HighRate = 48_000;
+        var analyzer = new RecordingLevelAnalyzer(HighRate, 2);
+        var second = new float[HighRate * 2];
+        double amplitude = Math.Pow(10, -12 / 20.0);
+        for (int frame = 0; frame < HighRate; frame++)
+        {
+            var wave = (float)(Math.Sin(2 * Math.PI * 100 * frame / HighRate) * amplitude);
+            second[frame * 2] = wave;
+            second[frame * 2 + 1] = wave;
+        }
+        for (int frame = 600; frame < 603; frame++)
+        {
+            second[frame * 2] = 1f;
+            second[frame * 2 + 1] = 1f;
+        }
+
+        for (int index = 0; index < 12; index++) analyzer.Process(second);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        // Six clipped samples in a 4800-frame stereo block is far below the
+        // trimmed-peak fraction, so this stays a stylus click, not overload.
+        Assert.True(result.ClippedSamples > 0);
+        Assert.NotEqual(RecordingLevelStatus.Clipping, result.Status);
+        Assert.Equal(RecordingLevelStatus.TooLow, result.Status);
+    }
+
+    [Fact]
+    public void ClicksSpreadAcrossALargeCaptureBufferAreNotReadAsSustainedOverload()
+    {
+        // A 500 ms capture buffer spans five blocks. The caller reports one clip
+        // total for the whole packet, so the per-block split has to be measured
+        // here rather than credited to whichever block happened to be open.
+        const int HighRate = 48_000;
+        const int PacketFrames = HighRate / 2;
+        var analyzer = new RecordingLevelAnalyzer(HighRate, 2);
+
+        var packet = new float[PacketFrames * 2];
+        double amplitude = Math.Pow(10, -12 / 20.0);
+        for (int frame = 0; frame < PacketFrames; frame++)
+        {
+            var wave = (float)(Math.Sin(2 * Math.PI * 100 * frame / HighRate) * amplitude);
+            packet[frame * 2] = wave;
+            packet[frame * 2 + 1] = wave;
+        }
+        long clipped = 0;
+        for (int click = 0; click < 20; click++)
+        {
+            for (int frame = click * 1200; frame < click * 1200 + 3; frame++)
+            {
+                packet[frame * 2] = 1f;
+                packet[frame * 2 + 1] = 1f;
+                clipped += 2;
+            }
+        }
+
+        for (int index = 0; index < 24; index++)
+            analyzer.Process(packet, 0, packet.Length, clipped);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.True(result.ClippedSamples > 0);
+        Assert.NotEqual(RecordingLevelStatus.Clipping, result.Status);
+    }
+
+    [Fact]
+    public void SustainedOverloadIsStillDetectedThroughSoftwareAttenuation()
+    {
+        // The engine trims before the analyzer sees the audio, so the rail moves
+        // down with the gain. Detecting at full scale would miss it entirely.
+        const double Gain = 0.5;
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] quiet = SineSecond(-12);
+        for (int frame = 0; frame < quiet.Length; frame++) quiet[frame] *= (float)Gain;
+
+        float[] overloaded = (float[])quiet.Clone();
+        for (int frame = 0; frame < SampleRate * 15 / 100; frame++)
+        {
+            double wave = Math.Sin(2 * Math.PI * 100 * frame / SampleRate) * 2;
+            overloaded[frame] = (float)(Math.Clamp(wave, -1, 1) * Gain);
+        }
+
+        for (int second = 0; second < 20; second++)
+        {
+            float[] buffer = second == 10 ? overloaded : quiet;
+            // 3 clipped samples per second upstream, as an isolated stylus click.
+            analyzer.Process(buffer, 0, buffer.Length, sourceClippedSamples: 3, sourceGain: Gain);
+        }
+
+        Assert.Equal(RecordingLevelStatus.Clipping, analyzer.Snapshot.Status);
+    }
+
+    [Fact]
+    public void TargetCeilingIsClampedToASensibleRange()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        Assert.Equal(RecordingLevelAnalyzer.DefaultTargetCeilingDb, analyzer.TargetCeilingDb);
+
+        analyzer.TargetCeilingDb = 5;
+        Assert.Equal(-1, analyzer.TargetCeilingDb);
+        analyzer.TargetCeilingDb = -100;
+        Assert.Equal(-24, analyzer.TargetCeilingDb);
+        analyzer.TargetCeilingDb = double.NaN;
+        Assert.Equal(RecordingLevelAnalyzer.DefaultTargetCeilingDb, analyzer.TargetCeilingDb);
+    }
+
+    [Theory]
+    [InlineData(-3, 3.0)]
+    [InlineData(-6, 0.0)]
+    [InlineData(-10, -1.0)]
+    public void RecommendationTracksTheConfiguredTargetCeiling(
+        double ceilingDb,
+        double expectedSuggestionDb)
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1) { TargetCeilingDb = ceilingDb };
+
+        FeedRepeated(analyzer, SineSecond(-9), seconds: 60);
+
+        RecordingLevelSnapshot result = analyzer.Snapshot;
+        Assert.Equal(3, result.ReserveDb, 8);
+        Assert.Equal(expectedSuggestionDb, result.SuggestedGainDb, 8);
+    }
+
+    /// <summary>
+    /// The ceiling is a continuous setting, not three presets wearing a slider: a
+    /// value between two landmarks has to land the recommendation between their two
+    /// recommendations rather than snapping to either.
+    /// </summary>
+    [Fact]
+    public void ARecommendationFollowsACeilingBetweenTheLandmarks()
+    {
+        double SuggestionAt(double ceilingDb)
+        {
+            var analyzer = new RecordingLevelAnalyzer(SampleRate, 1) { TargetCeilingDb = ceilingDb };
+            FeedRepeated(analyzer, SineSecond(-9), seconds: 60);
+            return analyzer.Snapshot.SuggestedGainDb;
+        }
+
+        double lower = SuggestionAt(-6);
+        double between = SuggestionAt(-4.5);
+        double upper = SuggestionAt(-3);
+
+        Assert.True(
+            lower < between && between < upper,
+            $"expected a −4.5 dBTP ceiling to sit between the landmarks, got "
+            + $"{lower:0.###} / {between:0.###} / {upper:0.###}");
+    }
+
+    /// <summary>
+    /// Changing the ceiling mid-scan must re-derive from blocks already measured. The
+    /// analyzer's own cache is what makes the level card's slider cheap, so a stale
+    /// snapshot here would show as a readout that ignores the control.
+    /// </summary>
+    [Fact]
+    public void ChangingTheCeilingReDerivesWithoutFurtherAudio()
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1) { TargetCeilingDb = -6 };
+        FeedRepeated(analyzer, SineSecond(-9), seconds: 60);
+        double before = analyzer.Snapshot.SuggestedGainDb;
+
+        analyzer.TargetCeilingDb = -4.5;
+        double after = analyzer.Snapshot.SuggestedGainDb;
+
+        Assert.NotEqual(before, after, 6);
+    }
+
+    [Fact]
+    public void SparseLoudPassagesEarnMoreReserveThanSteadyMaterial()
+    {
+        var steady = new RecordingLevelAnalyzer(SampleRate, 1);
+        FeedRepeated(steady, SineSecond(-12), seconds: 60);
+
+        var peaky = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] quiet = SineSecond(-12);
+        float[] burst = SineSecond(-12);
+        double loud = Math.Pow(10, -4 / 20.0);
+        for (int frame = 0; frame < SampleRate / 100; frame++) // 10 ms, far wider than a click
+            burst[frame] = (float)(Math.Sin(2 * Math.PI * 100 * frame / SampleRate) * loud);
+        for (int second = 0; second < 60; second++)
+            peaky.Process(second % 20 == 0 ? burst : quiet);
+
+        // The recommendation is built on the 99th percentile, which the three
+        // bursts never reach — so the reserve has to cover the gap to the maximum.
+        Assert.Equal(3, steady.Snapshot.ReserveDb, 8);
+        Assert.InRange(peaky.Snapshot.ReserveDb, 7.5, 8.5);
+    }
+
+    [Theory]
+    [InlineData(10, 6)]
+    [InlineData(30, 4)]
+    [InlineData(60, 3)]
+    [InlineData(120, 2)]
+    public void ReserveNeverFallsBelowTheTimeSchedule(int seconds, double scheduledReserve)
+    {
+        var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
+        float[] quiet = SineSecond(-12);
+        float[] burst = SineSecond(-4);
+
+        for (int second = 0; second < seconds; second++)
+            analyzer.Process(second % 20 == 0 ? burst : quiet);
+
+        Assert.True(analyzer.Snapshot.ReserveDb >= scheduledReserve);
+    }
+
+    [Fact]
+    public void AStillRisingProgrammeMaximumHoldsExtraReserveAndLowersConfidence()
+    {
+        float[] quiet = SineSecond(-18);
+        float[] loud = SineSecond(-6);
+
+        var rising = new RecordingLevelAnalyzer(SampleRate, 1);
+        for (int second = 0; second < 120; second++)
+            rising.Process(second < 108 ? quiet : loud);
+
+        var settledEarly = new RecordingLevelAnalyzer(SampleRate, 1);
+        for (int second = 0; second < 120; second++)
+            settledEarly.Process(second < 12 ? loud : quiet);
+
+        RecordingLevelSnapshot risingResult = rising.Snapshot;
+        RecordingLevelSnapshot settledResult = settledEarly.Snapshot;
+
+        // Identical block populations, opposite order: only the novelty term moves.
+        Assert.Equal(risingResult.ProgramPeakDb, settledResult.ProgramPeakDb, 8);
+        Assert.Equal(1.0, risingResult.ReserveDb - settledResult.ReserveDb, 6);
+        Assert.True(risingResult.Confidence < settledResult.Confidence);
     }
 
     private static float[] SineSecond(double leftPeakDb, double? rightPeakDb = null)

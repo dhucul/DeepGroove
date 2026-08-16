@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — Apply recommended input setting (Record dialog)</title>
+<style>
+  :root{
+    --bg:#0D0F12; --panel:#14171B; --panel2:#191D22; --panel3:#1F242A;
+    --line:#262C33; --lineSoft:#1D2228;
+    --text:#E7EAEE; --muted:#9AA1A9; --faint:#5D646D;
+    --accent:#3FD6C2; --accentDim:#2BA393; --amber:#FFB454; --red:#FF5C5C; --green:#3FD07A;
+    --assistBg:#111C1B; --assistEdge:#2D514B;
+    --recBg:#172724; --recEdge:#37675E;
+    --tileBg:#0F1715; --tileEdge:#293532;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:'Inter','Segoe UI',system-ui,sans-serif; font-size:12.5px;
+    padding:32px 30px 44px; -webkit-font-smoothing:antialiased;
+  }
+  .page-title{font-size:17px;font-weight:600;letter-spacing:.2px}
+  .page-sub{font-size:11.5px;color:var(--faint);margin-top:5px;max-width:1180px;line-height:1.55}
+  .mono{font-family:'JetBrains Mono','Consolas',monospace;font-variant-numeric:tabular-nums}
+
+  h2.section{
+    font-size:11px;font-weight:700;letter-spacing:1.1px;color:var(--muted);
+    margin:34px 0 4px; text-transform:uppercase;
+  }
+  .section-sub{font-size:11px;color:var(--faint);margin-bottom:16px;max-width:1180px;line-height:1.55}
+
+  .grid{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+  .col{width:272px}
+  .state-tag{
+    font-size:9px;font-weight:700;letter-spacing:1.1px;color:var(--accent);
+    background:#122421;border:1px solid #23423D;border-radius:5px;
+    padding:4px 8px;display:inline-block;margin-bottom:9px;
+  }
+  .state-tag.muted{color:var(--faint);background:#161A1E;border-color:#242A30}
+  .state-note{font-size:10.5px;color:var(--faint);margin-bottom:11px;line-height:1.5;min-height:76px}
+
+  /* ── the SAFE SETTING box, RecordDialog.xaml:174-187 ───────────────── */
+  .rec{
+    background:var(--recBg);border:1px solid var(--recEdge);border-radius:8px;
+    padding:11px 11px 12px; width:232px;
+  }
+  .rec .label{font-size:8.5px;font-weight:700;letter-spacing:.5px;color:#77958E;text-align:right}
+  .rec .value{font-size:14px;font-weight:700;color:#CFFFF4;text-align:right;margin-top:4px}
+  .rec .value.none{color:#8FB3AC}
+  .rec .breakdown{font-size:8.5px;color:#77958E;text-align:right;margin-top:4px;line-height:1.45}
+
+  .btn{
+    display:block;width:100%;margin-top:9px;height:26px;line-height:24px;
+    border-radius:6px;text-align:center;font-size:11px;font-weight:600;
+    background:#1D4F47;border:1px solid #37766B;color:#D7F8F2;
+  }
+  .btn.applied{background:#16241F;border-color:#2C4A40;color:#6E8F86;font-weight:500}
+  .btn.hidden{visibility:hidden}
+  .apply-status{
+    font-size:8.5px;color:#77958E;text-align:right;margin-top:5px;line-height:1.45;min-height:24px;
+  }
+  .apply-status.warn{color:var(--amber)}
+
+  /* ── full assistant card ───────────────────────────────────────────── */
+  .assist{
+    background:var(--assistBg);border:1px solid var(--assistEdge);border-radius:10px;
+    padding:15px; width:760px;
+  }
+  .assist-head{display:flex;align-items:center;justify-content:space-between}
+  .assist-title{display:flex;align-items:center;gap:8px;font-weight:600;color:#D7F8F2;font-size:12.5px}
+  .assist-title .star{color:var(--accent);font-size:15px}
+  .assist-target{font-size:9.5px;color:#7FA69F}
+  .assist-body{display:flex;gap:16px;margin-top:12px;align-items:flex-start}
+  .assist-copy{flex:1}
+  .assist-copy h3{font-size:15px;font-weight:600;color:#DDF5EF}
+  .assist-copy p{font-size:11.5px;color:#95A7A3;line-height:1.5;margin-top:4px}
+
+  .tiles{display:flex;gap:6px;margin-top:13px}
+  .tile{
+    flex:1;background:var(--tileBg);border:1px solid var(--tileEdge);
+    border-radius:7px;padding:8px;min-width:0;
+  }
+  .tile .k{font-size:8px;font-weight:700;letter-spacing:.3px;color:#71817C;white-space:nowrap}
+  .tile .v{font-size:10.5px;margin-top:4px;color:var(--text)}
+  .tile .v.good{color:#73E6AE}
+  .tile .v.warn{color:var(--amber)}
+  .tile .v.bad{color:var(--red)}
+  .tile.changed{border-color:#3E6E64;background:#122320}
+
+  /* ── device memory row, RecordDialog.xaml:42-45 ────────────────────── */
+  .memrow{
+    display:flex;align-items:center;gap:10px;width:520px;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+  }
+  .memrow .text{flex:1;font-size:10.5px;color:var(--muted);line-height:1.5}
+  .linkbtn{
+    font-size:10px;font-weight:600;color:var(--accent);background:#132523;
+    border:1px solid #2B4E48;border-radius:5px;padding:4px 9px;white-space:nowrap;
+  }
+  .linkbtn.quiet{color:var(--faint);background:#161A1E;border-color:#242A30}
+
+  /* ── settings row ──────────────────────────────────────────────────── */
+  .setrow{width:520px;background:var(--panel2);border:1px solid #313841;border-radius:10px;padding:14px 16px}
+  .setrow .k{font-size:10px;font-weight:700;letter-spacing:.4px;color:var(--faint)}
+  .seg{display:flex;gap:6px;margin-top:8px}
+  .seg span{
+    flex:1;text-align:center;font-size:11.5px;padding:6px 0;border-radius:6px;
+    background:var(--panel);border:1px solid var(--line);color:#B7BEC6;
+  }
+  .seg span.on{background:#173832;border-color:#2E5A54;color:#CFFFF4;font-weight:600}
+  .setrow .hint{font-size:10.5px;color:var(--faint);margin-top:9px;line-height:1.55}
+
+  .callout{
+    margin-top:14px;width:760px;background:#131A19;border:1px solid #24352F;
+    border-left:3px solid var(--accent);border-radius:7px;padding:11px 13px;
+    font-size:11px;color:var(--muted);line-height:1.6;
+  }
+  .callout b{color:#CFE9E3;font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="page-title">Recording Level Assistant — one-click Apply, target ceiling, device memory</div>
+<div class="page-sub">
+  The assistant already computes an exact device-level + fine-trim plan; today it only prints it and you match two sliders by hand.
+  These are the visible changes: an <b>Apply</b> button inside the existing SAFE SETTING box, a configurable target ceiling
+  (replacing the hard-coded −3 dBTP), and a device-memory row you can act on instead of only read.
+  Nothing else in the Record dialog moves.
+</div>
+
+<h2 class="section">1 · The SAFE SETTING box — four states</h2>
+<div class="section-sub">
+  232 px wide, unchanged. The button and status line add ~48 px below the existing breakdown text; the status column to its
+  left is taller, so the card does not grow.
+</div>
+
+<div class="grid">
+
+  <div class="col">
+    <div class="state-tag">Recommendation available</div>
+    <div class="state-note">The measurement has settled and the plan differs from what the input is set to now. This is the normal case after a 30–60 s check.</div>
+    <div class="rec">
+      <div class="label">SAFE SETTING FOR THIS SIDE</div>
+      <div class="value mono">REDUCE 2.5 dB</div>
+      <div class="breakdown mono">Windows −12.0 dB<br>+ fine trim −0.5 dB</div>
+      <div class="btn">Apply −2.5 dB</div>
+      <div class="apply-status mono"></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="state-tag muted">Already correct</div>
+    <div class="state-note">The input is already within 0.05 dB of the plan. The button is disabled rather than hidden, so the box does not change height as the scan settles.</div>
+    <div class="rec">
+      <div class="label">SAFE SETTING FOR THIS SIDE</div>
+      <div class="value mono none">NO CHANGE</div>
+      <div class="breakdown mono">Windows −12.0 dB<br>+ fine trim −0.5 dB</div>
+      <div class="btn applied">Nothing to apply</div>
+      <div class="apply-status mono"></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="state-tag">Applied</div>
+    <div class="state-note">Both controls were set and the measurement restarted at the new gain. The status line says what to do next, because a restarted check otherwise looks like nothing happened.</div>
+    <div class="rec">
+      <div class="label">SAFE SETTING FOR THIS SIDE</div>
+      <div class="value mono none">NO CHANGE</div>
+      <div class="breakdown mono">Windows −14.0 dB<br>+ fine trim −0.5 dB</div>
+      <div class="btn applied">Applied</div>
+      <div class="apply-status mono">Applied — play the loudest passage again to confirm.</div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="state-tag">Driver residual</div>
+    <div class="state-note">Some endpoints only step in 6 dB. The plan always undershoots rather than overshoots, and now says so instead of leaving you to spot the gap.</div>
+    <div class="rec">
+      <div class="label">SAFE SETTING FOR THIS SIDE</div>
+      <div class="value mono none">NO CHANGE</div>
+      <div class="breakdown mono">Windows −18.0 dB<br>+ fine trim 0.0 dB</div>
+      <div class="btn applied">Applied</div>
+      <div class="apply-status mono warn">Driver accepted −18.0 dB of the −17.3 dB plan (6 dB steps).</div>
+    </div>
+  </div>
+
+</div>
+
+<h2 class="section">2 · The assistant card in context</h2>
+<div class="section-sub">
+  Only two things change here: the header now names the configured ceiling, and the NOISE FLOOR tooltip stops claiming to
+  include hum. The tile grid, meters and history strip are untouched.
+</div>
+
+<div class="assist">
+  <div class="assist-head">
+    <div class="assist-title"><span class="star">✦</span> Recording Level Assistant</div>
+    <div class="assist-target mono">TARGET CEILING −6 dBTP · 3.5 dB SAFETY RESERVE</div>
+  </div>
+  <div class="assist-body">
+    <div class="assist-copy">
+      <h3>Recording level is ready</h3>
+      <p>Measured across 48 seconds of programme. The reserve now reflects how peaky this side actually is, not just how long the scan ran.</p>
+    </div>
+    <div class="rec">
+      <div class="label">SAFE SETTING FOR THIS SIDE</div>
+      <div class="value mono">REDUCE 2.5 dB</div>
+      <div class="breakdown mono">Windows −12.0 dB<br>+ fine trim −0.5 dB</div>
+      <div class="btn">Apply −2.5 dB</div>
+      <div class="apply-status mono"></div>
+    </div>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="k">TRUE PEAK</div><div class="v mono">−1.2 dBTP</div></div>
+    <div class="tile"><div class="k">PROG PEAK</div><div class="v mono">−8.1 dBTP</div></div>
+    <div class="tile"><div class="k">CLICKS ABOVE</div><div class="v mono">6.9 dB</div></div>
+    <div class="tile changed"><div class="k">PROJECTED</div><div class="v mono">−4.6 dBTP</div></div>
+    <div class="tile"><div class="k">PROG RMS</div><div class="v mono">−19.4 dB</div></div>
+    <div class="tile"><div class="k">LOUDNESS</div><div class="v mono">−18.7 LUFS</div></div>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="k">CREST</div><div class="v mono">11.3 dB</div></div>
+    <div class="tile changed"><div class="k">NOISE FLOOR</div><div class="v mono">−61.5 dB</div></div>
+    <div class="tile"><div class="k">L / R</div><div class="v mono">+0.3 dB</div></div>
+    <div class="tile"><div class="k">DC OFFSET</div><div class="v mono good">OK</div></div>
+    <div class="tile"><div class="k">HUM</div><div class="v mono good">NONE</div></div>
+    <div class="tile"><div class="k">CLIPPING</div><div class="v mono warn">ISOLATED ×14</div></div>
+  </div>
+</div>
+
+<div class="callout">
+  <b>NOISE FLOOR tooltip, corrected.</b> It reads “Estimated quiet-passage level: surface noise, hiss, and hum floor” today, but the
+  measurement is taken above 150 Hz — rumble and mains hum are filtered out of it, and hum has its own tile. New text:
+  “Quiet-passage level above 150 Hz — surface noise and hiss. Rumble and mains hum are excluded; see the HUM tile.
+  Shown as — when the passage is too steady to have a separate floor.”
+</div>
+
+<h2 class="section">3 · Device memory — now actionable</h2>
+<div class="section-sub">
+  Sits under the input picker where the memory sentence already is. Today it tells you what this input needed last time and
+  gives you no way to use it. Both buttons appear only when a memory exists; “Use last setting” additionally needs an entry
+  recorded since the applied setting was stored (older entries remember the suggestion but not the setting that produced it).
+</div>
+
+<div class="memrow">
+  <div class="text">Last check 3 h ago: reduce 2.5 dB · programme peak −5.4 dBTP</div>
+  <div class="linkbtn">Use last setting</div>
+  <div class="linkbtn quiet">Forget</div>
+</div>
+
+<h2 class="section">4 · Target ceiling — Settings ▸ Recording</h2>
+<div class="section-sub">
+  Replaces the hard-coded −3 dBTP. Default moves to −6 for transfer work: declicking and peak reconstruction can put repaired
+  peaks back <i>above</i> what was captured, and −3 leaves almost nothing for that. Existing users see recommendations about
+  3 dB more conservative than before.
+</div>
+
+<div class="setrow">
+  <div class="k">RECORDING TARGET CEILING</div>
+  <div class="seg">
+    <span>−3 dBTP</span>
+    <span class="on">−6 dBTP</span>
+    <span>−10 dBTP</span>
+  </div>
+  <div class="hint">
+    Peak the Recording Level Assistant aims a transfer at. −6 dBTP suits vinyl and tape transfers that will be declicked or
+    restored afterwards. −3 dBTP is the previous behaviour. −10 dBTP is for sources you expect to need heavy repair.
+  </div>
+</div>
+
+</body>
+</html>

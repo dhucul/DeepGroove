@@ -25,6 +25,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     /// </summary>
     private const double CountdownVisibleAfterSeconds = 5;
 
+    /// <summary>Floor on how often a settling check may rewrite settings.json.</summary>
+    private static readonly TimeSpan CalibrationWriteInterval = TimeSpan.FromSeconds(5);
+
     private readonly RecordingEngine _engine = new();
     private RecordingLevelSnapshot _levelSnapshot;
     private CaptureDevice? _selectedDevice;
@@ -41,6 +44,10 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private double _inputLevelMaximumDb;
     private double _inputLevelStepDb = 0.5;
     private double _inputFineTrimDb;
+    private double _targetCeilingDb;
+    // What the analyzer and settings file actually hold, so a drag that ends where it
+    // started costs nothing.
+    private double _committedTargetCeilingDb;
     private double _heldRecommendedTotalDb = double.NaN;
     private double _heldProgramPeakDb = double.NaN;
     private bool _hasInputLevelControl;
@@ -52,7 +59,11 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private string _softwarePlaythroughOutputName = "selected output";
     private Task _finalization = Task.CompletedTask;
     private long _expectedRecordingSessionId;
-    private bool _calibrationSaved;
+    private DateTime _calibrationSavedUtc = DateTime.MinValue;
+    private double _calibrationSavedTotalDb = double.NaN;
+    private bool _applyingRecommendation;
+    private bool _recommendationApplied;
+    private string _applyRecommendationStatusText = "";
     private bool _sampleWholeRecord;
     private bool _stoppedLevelCheckWasWholeRecord;
     private string? _completedLevelCheckNote;
@@ -74,6 +85,10 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 Devices.Add(new CaptureDevice(id, name));
         }
         catch { }
+
+        _engine.LevelTargetCeilingDb = AppSettings.Instance.RecordingTargetCeilingDb;
+        // Read back rather than trusting the setting: the analyzer clamps it.
+        _targetCeilingDb = _committedTargetCeilingDb = _engine.LevelTargetCeilingDb;
 
         string? preferred = AppSettings.Instance.InputDeviceId;
         _selectedDevice = Devices.FirstOrDefault(d => d.Id == preferred)
@@ -192,6 +207,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             RaiseLevelProperties();
             Raise(nameof(DeviceMemoryText));
             Raise(nameof(HasDeviceMemory));
+            Raise(nameof(CanForgetDeviceMemory));
             RefreshInputLevel();
         }
     }
@@ -208,6 +224,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Raise(nameof(FormatText));
             Raise(nameof(LevelStatusTitle));
             Raise(nameof(LevelStatusDetail));
+            RaiseInputActionAvailability();
         }
     }
 
@@ -237,7 +254,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         }
     }
 
-    public bool IsFinalizing { get => _isFinalizing; private set => Set(ref _isFinalizing, value); }
+    public bool IsFinalizing
+    {
+        get => _isFinalizing;
+        private set
+        {
+            if (!Set(ref _isFinalizing, value)) return;
+            RaiseInputActionAvailability();
+        }
+    }
     public bool SampleWholeRecord
     {
         get => _sampleWholeRecord;
@@ -300,6 +325,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             if (!value) _stoppedLevelCheckWasWholeRecord = false;
             Raise(nameof(LevelStatusTitle));
             Raise(nameof(LevelStatusDetail));
+            Raise(nameof(CeilingChangeDiscardsHeldCheck));
         }
     }
     public bool HasPendingCapture => _engine.HasPendingCapture;
@@ -419,11 +445,94 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         ? SampleWholeRecord ? "Finish Full Scan" : "Stop Check"
         : SampleWholeRecord ? "Scan Whole Song" : "Check Levels";
     public double LevelConfidencePercent => _levelSnapshot.Confidence * 100;
-    public double TargetMeterMinimumDb => -4 - DisplayedReserveDb;
-    public double TargetMeterMaximumDb => -2 - DisplayedReserveDb;
 
-    public string LevelTargetText =>
-        $"ESTIMATED CEILING −3 dBTP · {DisplayedReserveDb:0.#} dB SAFETY RESERVE";
+    /// <summary>
+    /// Peak the recommendation aims at; a user preference, settable here as well as in
+    /// Settings so a ceiling can be found mid-transfer.
+    ///
+    /// Cached rather than read through to the analyzer: three bound properties read
+    /// this on every meter tick, and the analyzer's accessor takes the same lock the
+    /// capture callback holds for a whole packet. The UI thread has no business
+    /// waiting on that to paint a value it already knows.
+    /// </summary>
+    public double TargetCeilingDb
+    {
+        get => _targetCeilingDb;
+        set
+        {
+            double ceiling = AppSettings.NormalizeTargetCeilingDb(value);
+            if (_targetCeilingDb.Equals(ceiling)) return;
+
+            // Moving the value is deliberately cheap: the chip, the readout and the
+            // meter's target band follow the drag, while the analyzer and the settings
+            // file wait for CommitTargetCeiling. See there for why.
+            _targetCeilingDb = ceiling;
+            Raise(nameof(TargetCeilingDb));
+            Raise(nameof(TargetCeilingText));
+            Raise(nameof(TargetMeterMinimumDb));
+            Raise(nameof(TargetMeterMaximumDb));
+        }
+    }
+
+    /// <summary>
+    /// Retargets the analysis and stores the ceiling. Kept out of the setter because a
+    /// drag moves the value once per half decibel: each retarget drops the analyzer's
+    /// cached snapshot, and the next UI tick would then rebuild the whole history
+    /// <em>synchronously on the dispatcher</em> — up to two hours of blocks during a
+    /// whole-side scan — besides rewriting settings.json every step. Call it when the
+    /// gesture ends.
+    /// </summary>
+    public void CommitTargetCeiling()
+    {
+        if (_committedTargetCeilingDb.Equals(_targetCeilingDb)) return;
+
+        _engine.LevelTargetCeilingDb = _targetCeilingDb;
+        // Read back rather than trusting the setting: the analyzer clamps it.
+        _targetCeilingDb = _engine.LevelTargetCeilingDb;
+        _committedTargetCeilingDb = _targetCeilingDb;
+
+        // A finished check measured the programme against the old ceiling, and its
+        // blocks are gone — the analyzer is reset on stop — so the held result cannot
+        // be re-derived and must not be shown as if it still applied. A running check
+        // needs nothing: setting the ceiling drops the analyzer's cached snapshot, so
+        // the next tick arrives already re-derived.
+        if (HasStoppedLevelCheck)
+        {
+            HasStoppedLevelCheck = false;
+            _completedLevelCheckNote = null;
+            _levelSnapshot = _engine.LevelSnapshot;
+            ResetDisplayedLevels();
+        }
+
+        PersistTargetCeiling();
+        Raise(nameof(TargetCeilingDb));
+        Raise(nameof(TargetCeilingText));
+        RaiseLevelProperties();
+    }
+
+    /// <summary>
+    /// Best-effort: a ceiling that cannot be written is still the one this session
+    /// measures against, and the level card is the wrong place to interrupt with a
+    /// settings-file error.
+    /// </summary>
+    private void PersistTargetCeiling()
+    {
+        double previous = AppSettings.Instance.RecordingTargetCeilingDb;
+        AppSettings.Instance.RecordingTargetCeilingDb = _targetCeilingDb;
+        if (!AppSettings.Instance.Save())
+            AppSettings.Instance.RecordingTargetCeilingDb = previous;
+    }
+
+    /// <summary>True while a finished check is on screen, which changing the ceiling discards.</summary>
+    public bool CeilingChangeDiscardsHeldCheck => HasStoppedLevelCheck;
+
+    public double TargetMeterMinimumDb => TargetCeilingDb - 1 - DisplayedReserveDb;
+    public double TargetMeterMaximumDb => TargetCeilingDb + 1 - DisplayedReserveDb;
+
+    // The ceiling is always negative, so the typographic minus is written out
+    // rather than left to the format string's ASCII hyphen.
+    public string TargetCeilingText => $"TARGET CEILING −{Math.Abs(TargetCeilingDb):0.0} dBTP";
+    public string SafetyReserveText => $"· {DisplayedReserveDb:0.#} dB SAFETY RESERVE";
 
     public string LevelStatusTitle
     {
@@ -569,7 +678,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         ? FormatDb(_levelSnapshot.ProjectedPeakDb, "dBTP")
         : "—";
     public string ProgramRmsText => FormatDb(_levelSnapshot.ProgramRmsDb, "dBFS");
-    public string LoudnessText => FormatDb(_levelSnapshot.ProgramLoudnessLufs, "LUFS");
+    public string LoudnessText => FormatDb(_levelSnapshot.IntegratedLufs, "LUFS");
     public string NoiseFloorText => FormatDb(_levelSnapshot.NoiseFloorDb, "dB");
     public string CrestFactorText => double.IsFinite(_levelSnapshot.CrestFactorDb)
         ? $"{_levelSnapshot.CrestFactorDb:0.0} dB"
@@ -608,6 +717,211 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     }
 
     public bool HasDeviceMemory => DeviceMemoryText.Length > 0;
+
+    /// <summary>The remembered entry for the selected input, or null.</summary>
+    private AppSettings.InputCalibrationInfo? RememberedCalibration =>
+        _selectedDevice != null
+        && AppSettings.Instance.InputCalibrations.TryGetValue(_selectedDevice.Id, out var info)
+            ? info
+            : null;
+
+    /// <summary>
+    /// Only entries recorded since applied settings were stored can be replayed;
+    /// older ones remember the suggestion but not the setting that produced it.
+    /// </summary>
+    public bool CanUseRememberedSetting =>
+        !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing
+        && _hasInputLevelControl && !_inputLevelMuted
+        && RememberedCalibration is { HasAppliedSetting: true } info
+        && Math.Abs(info.TotalLevelDb!.Value - CurrentInputTotalDb) > 0.05;
+
+    public bool CanForgetDeviceMemory =>
+        !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing && RememberedCalibration != null;
+
+    public bool CanApplyRecommendedInputSetting =>
+        !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing
+        && _hasInputLevelControl && !_inputLevelMuted
+        && !HasImmediateInputWarning()
+        && TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)
+        && Math.Abs(plan.TotalLevelDb - CurrentInputTotalDb) > 0.05;
+
+    public string ApplyRecommendationText
+    {
+        get
+        {
+            if (_recommendationApplied && !CanApplyRecommendedInputSetting) return "Applied";
+            if (!TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)) return "Nothing to apply";
+            double change = plan.TotalLevelDb - CurrentInputTotalDb;
+            if (Math.Abs(change) <= 0.05) return "Nothing to apply";
+            return change > 0 ? $"Apply +{change:0.0} dB" : $"Apply −{Math.Abs(change):0.0} dB";
+        }
+    }
+
+    public string ApplyRecommendationStatusText => _applyRecommendationStatusText;
+
+    /// <summary>
+    /// Sets the Windows device level and WaveLab fine trim to the recommended plan,
+    /// then restarts the measurement so the next reading describes the new gain.
+    /// Returns false and reports why when the driver refuses.
+    /// </summary>
+    public bool ApplyRecommendedInputSetting()
+    {
+        if (!CanApplyRecommendedInputSetting) return false;
+        if (!TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)) return false;
+        return ApplyInputSetting(
+            plan, "Applied — play the loudest passage again to confirm.", fromRecommendation: true);
+    }
+
+    /// <summary>Restores the setting remembered for this input from a previous session.</summary>
+    public bool UseRememberedSetting()
+    {
+        if (!CanUseRememberedSetting) return false;
+        if (RememberedCalibration is not { HasAppliedSetting: true } info) return false;
+        var plan = new AudioInputSettingPlan(
+            info.DeviceLevelDb!.Value, info.FineTrimDb!.Value, info.TotalLevelDb!.Value);
+        return ApplyInputSetting(
+            plan, "Restored the setting remembered for this input.", fromRecommendation: false);
+    }
+
+    /// <summary>What became of a request to forget an input's remembered calibration.</summary>
+    public enum ForgetMemoryOutcome
+    {
+        /// <summary>There was no entry to remove — nothing failed.</summary>
+        NothingRemembered,
+        Forgotten,
+        SaveFailed,
+    }
+
+    /// <summary>Discards the remembered calibration for the selected input.</summary>
+    public ForgetMemoryOutcome ForgetDeviceMemory()
+    {
+        if (_selectedDevice == null) return ForgetMemoryOutcome.NothingRemembered;
+        if (!AppSettings.Instance.InputCalibrations.Remove(
+                _selectedDevice.Id, out AppSettings.InputCalibrationInfo? removed))
+            return ForgetMemoryOutcome.NothingRemembered;
+
+        if (!AppSettings.Instance.Save())
+        {
+            // Put it back. Reporting a failure while the live dictionary has already
+            // dropped the entry would tell the user the memory survived and then let
+            // the next unrelated Save() persist its removal anyway.
+            AppSettings.Instance.InputCalibrations[_selectedDevice.Id] = removed;
+            RaiseDeviceMemoryProperties();
+            return ForgetMemoryOutcome.SaveFailed;
+        }
+
+        _calibrationSavedUtc = DateTime.MinValue;
+        _calibrationSavedTotalDb = double.NaN;
+        RaiseDeviceMemoryProperties();
+        return ForgetMemoryOutcome.Forgotten;
+    }
+
+    private void RaiseDeviceMemoryProperties()
+    {
+        Raise(nameof(DeviceMemoryText));
+        Raise(nameof(HasDeviceMemory));
+        Raise(nameof(CanUseRememberedSetting));
+        Raise(nameof(CanForgetDeviceMemory));
+    }
+
+    /// <param name="fromRecommendation">
+    /// True only for Apply. Restoring a remembered setting lands a plan that may differ
+    /// from the current recommendation, so it must not relabel Apply as "Applied".
+    /// </param>
+    private bool ApplyInputSetting(
+        AudioInputSettingPlan plan, string successStatus, bool fromRecommendation)
+    {
+        if (_selectedDevice == null) return false;
+        double previousFineTrimDb = _inputFineTrimDb;
+        bool changed = true;
+
+        // One reset, not one per control: both setters would otherwise restart the
+        // analysis, and the first restart would measure the half-applied setting.
+        _applyingRecommendation = true;
+        try
+        {
+            bool fineFirst = AudioHardware.ApplyFineTrimFirst(previousFineTrimDb, plan);
+            if (fineFirst) InputFineTrimDb = plan.FineTrimDb;
+
+            AudioInputLevelInfo result = AudioHardware.SetInputLevel(
+                _selectedDevice.Id,
+                AudioHardwareOptions.ParseRole(
+                    AppSettings.Instance.InputDefaultRole, NAudio.CoreAudioApi.Role.Console),
+                plan.DeviceLevelDb);
+            if (!result.IsAvailable)
+            {
+                InputFineTrimDb = previousFineTrimDb;
+                // "Unavailable" is not proof that nothing reached the device:
+                // SetInputLevel writes the level and only then reads it back, so an
+                // endpoint that disappears between the two reports a failure for a
+                // write that landed. Re-read instead of assuming, or every later
+                // reading and the recommendation would keep describing gain the
+                // hardware no longer has.
+                double totalBeforeRereadDb = CurrentInputTotalDb;
+                RefreshInputLevel();
+                // Only restart the measurement if something actually moved; a plain
+                // driver refusal should not cost the user the scan they have played.
+                changed = fineFirst || Math.Abs(CurrentInputTotalDb - totalBeforeRereadDb) > 0.05;
+                _applyRecommendationStatusText = string.IsNullOrWhiteSpace(result.Error)
+                    ? "The input level could not be set."
+                    : $"The input level could not be set: {result.Error}";
+                return false;
+            }
+            ApplyInputLevelInfo(result);
+            if (!fineFirst) InputFineTrimDb = plan.FineTrimDb;
+
+            // A driver step wider than Fine Trim's range cannot land exactly on the
+            // plan. PlanInputSetting always undershoots, so say so rather than
+            // leaving the user to notice a stubborn residual suggestion.
+            double residualDb = CurrentInputTotalDb - plan.TotalLevelDb;
+            _applyRecommendationStatusText = Math.Abs(residualDb) > 0.05
+                ? $"Driver accepted {CurrentInputTotalDb:0.0} dB of the {plan.TotalLevelDb:0.0} dB plan."
+                : successStatus;
+            if (fromRecommendation) _recommendationApplied = true;
+
+            // The whole-side note quotes a gain that no longer applies.
+            _completedLevelCheckNote = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            InputFineTrimDb = previousFineTrimDb;
+            // Re-read rather than assume: the endpoint may have taken part of it.
+            RefreshInputLevel();
+            _applyRecommendationStatusText = $"The input level could not be set: {ex.Message}";
+            return false;
+        }
+        finally
+        {
+            _applyingRecommendation = false;
+            if (changed) ResetLevelAnalysisAfterInputChange();
+            RaiseApplyProperties();
+        }
+    }
+
+    /// <summary>
+    /// Apply, Use Last Setting and Forget sit outside <c>inputGainControls</c>, so
+    /// nothing else disables them when a take starts — their bound predicates have
+    /// to be re-evaluated on every state transition that gates them.
+    /// </summary>
+    private void RaiseInputActionAvailability()
+    {
+        Raise(nameof(CanApplyRecommendedInputSetting));
+        Raise(nameof(CanUseRememberedSetting));
+        Raise(nameof(CanForgetDeviceMemory));
+        Raise(nameof(ApplyRecommendationText));
+    }
+
+    private void RaiseApplyProperties()
+    {
+        Raise(nameof(ApplyRecommendationText));
+        Raise(nameof(ApplyRecommendationStatusText));
+        Raise(nameof(CanApplyRecommendedInputSetting));
+        Raise(nameof(CanUseRememberedSetting));
+        Raise(nameof(CanForgetDeviceMemory));
+        Raise(nameof(DeviceMemoryText));
+        Raise(nameof(HasDeviceMemory));
+    }
 
     public string BalanceText
     {
@@ -677,12 +991,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Result = null;
             _levelSnapshot = _engine.LevelSnapshot;
             ResetDisplayedLevels();
-            _calibrationSaved = false;
+            ResetCalibrationWriteThrottle();
             _completedLevelCheckNote = null;
+            _recommendationApplied = false;
+            _applyRecommendationStatusText = "";
             HasStoppedLevelCheck = false;
             IsLevelChecking = true;
             PersistSelectedDevice();
             RaiseLevelProperties();
+            RaiseApplyProperties();
             return true;
         }
         catch (Exception ex)
@@ -712,7 +1029,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         _levelSnapshot = _engine.LevelSnapshot;
         ResetDisplayedLevels(clearRecommendation: !preserveRecommendation);
         if (!preserveRecommendation) _completedLevelCheckNote = null;
-        _calibrationSaved = false;
+        ResetCalibrationWriteThrottle();
         HasStoppedLevelCheck = false;
         RaiseLevelProperties();
         return true;
@@ -734,6 +1051,12 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             SaveWholeRecordCalibration(stoppedSnapshot);
             _completedLevelCheckNote = BuildWholeRecordCaptureNote(stoppedSnapshot);
         }
+        else
+        {
+            // Last chance to persist this check: nothing writes calibrations once
+            // the check has stopped.
+            SaveCalibrationOnceSettled(stoppedSnapshot, force: true);
+        }
         Interlocked.CompareExchange(ref _expectedRecordingSessionId, 0, sessionId);
         _levelSnapshot = stoppedSnapshot;
         HasStoppedLevelCheck = true;
@@ -751,6 +1074,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             long sessionId;
             if (IsLevelChecking)
             {
+                // Going straight from a check into the take: persist what the check
+                // learned before the analyzer is reset for the retained stream.
+                SaveCalibrationOnceSettled(_levelSnapshot, force: true);
                 sessionId = Interlocked.Read(ref _expectedRecordingSessionId);
                 if (!_engine.BeginRetainedCapture(sessionId))
                     throw new InvalidOperationException(
@@ -880,8 +1206,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Result = requireSessionMatch
                 ? await _engine.StopSessionAndGetDocumentAsync(ownedSessionId)
                 : await _engine.StopAndGetDocumentAsync();
+            // Append rather than replace: the engine may already have written a
+            // note at the monitor-to-take boundary, and losing it would discard the
+            // level check that actually preceded this take.
             if (Result != null && _completedLevelCheckNote != null)
-                Result.CaptureNote = _completedLevelCheckNote;
+            {
+                Result.CaptureNote = string.IsNullOrWhiteSpace(Result.CaptureNote)
+                    ? _completedLevelCheckNote
+                    : $"{Result.CaptureNote} {_completedLevelCheckNote}";
+            }
         }
         finally
         {
@@ -931,7 +1264,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         HoldLDb = ToMeterDb(snapshot.PeakLeftDb);
         HoldRDb = ToMeterDb(snapshot.PeakRightDb);
         LevelHistory.Append(Math.Max(rmsDbL, rmsDbR));
-        SaveCalibrationOnceSettled();
+        SaveCalibrationOnceSettled(snapshot, force: false);
         UpdateAutoStopCountdown();
         Raise(nameof(ElapsedText));
         SyncSoftwarePlaythroughState();
@@ -953,14 +1286,23 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             : $"RUN-OUT DETECTED — STOPPING IN {Math.Max(1, Math.Ceiling(remaining)):0} s";
     }
 
-    /// <summary>
-    /// Remembers the first settled verdict of each check on this input, so the
-    /// next session with the same device opens with last time's outcome.
-    /// </summary>
-    private void SaveCalibrationOnceSettled()
+    private void ResetCalibrationWriteThrottle()
     {
-        if (_calibrationSaved || SampleWholeRecord || !IsLevelChecking || _selectedDevice == null) return;
-        RecordingLevelSnapshot snapshot = _levelSnapshot;
+        _calibrationSavedUtc = DateTime.MinValue;
+        _calibrationSavedTotalDb = double.NaN;
+    }
+
+    /// <summary>
+    /// Remembers the <em>safest</em> verdict of each check on this input, so the
+    /// next session with the same device opens with what it actually needed rather
+    /// than whatever the first ten seconds happened to say. The held recommendation
+    /// only ever moves down, so re-writing whenever it does converges on the safest
+    /// value; the throttle keeps the 30 Hz tick from rewriting settings.json.
+    /// </summary>
+    private void SaveCalibrationOnceSettled(RecordingLevelSnapshot snapshot, bool force)
+    {
+        if (SampleWholeRecord || _selectedDevice == null) return;
+        if (!force && !IsLevelChecking) return;
         // Skip a Hot verdict whose programme suggestion is not a reduction: that
         // combination means an intersample over, which has no stable gain answer
         // worth remembering for next time.
@@ -968,18 +1310,22 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             && double.IsFinite(snapshot.ProgramPeakDb)
             && (snapshot.Status is RecordingLevelStatus.TooLow or RecordingLevelStatus.Good
                 || (snapshot.Status == RecordingLevelStatus.Hot && snapshot.SuggestedGainDb < 0));
-        if (!settledVerdict) return;
-        _calibrationSaved = true;
-        try
-        {
-            AppSettings.Instance.InputCalibrations[_selectedDevice.Id] =
-                new AppSettings.InputCalibrationInfo(
-                    snapshot.SuggestedGainDb, snapshot.ProgramPeakDb, DateTime.UtcNow);
-            AppSettings.Instance.Save(); // best effort; a failure just skips the memory
-            Raise(nameof(DeviceMemoryText));
-            Raise(nameof(HasDeviceMemory));
-        }
-        catch { }
+        if (!settledVerdict || !double.IsFinite(_heldRecommendedTotalDb)) return;
+
+        // Nothing new to record unless the held setting got safer.
+        if (double.IsFinite(_calibrationSavedTotalDb)
+            && _heldRecommendedTotalDb >= _calibrationSavedTotalDb - 0.001) return;
+        // The throttle only rate-limits the *live* writes. The final write always
+        // goes through, otherwise a last decrease landing inside the throttle
+        // window would leave a remembered setting hotter than what was measured —
+        // the opposite of what this memory is for.
+        //
+        // It deliberately does not require a *successful* previous write: a failing
+        // save leaves the total unstamped, and gating on that would turn an
+        // unwritable settings file into one write attempt per tick.
+        if (!force && DateTime.UtcNow - _calibrationSavedUtc < CalibrationWriteInterval) return;
+
+        WriteCalibration(HeldSuggestedGainDb, _heldProgramPeakDb);
     }
 
     private void SaveWholeRecordCalibration(RecordingLevelSnapshot snapshot)
@@ -991,17 +1337,48 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             || snapshot.Status is RecordingLevelStatus.Clipping
                 or RecordingLevelStatus.UpstreamClipping) return;
 
-        _calibrationSaved = true;
+        WriteCalibration(HeldSuggestedGainDb, _heldProgramPeakDb);
+    }
+
+    /// <summary>
+    /// Records the outcome together with the setting that would realize it, so a
+    /// later session can replay it rather than only read about it.
+    /// </summary>
+    private void WriteCalibration(double suggestedGainDb, double programPeakDb)
+    {
+        if (_selectedDevice == null
+            || !double.IsFinite(suggestedGainDb)
+            || !double.IsFinite(programPeakDb)) return;
+
+        AudioInputSettingPlan? plan =
+            TryGetRecommendedInputSetting(out AudioInputSettingPlan candidate) ? candidate : null;
         try
         {
             AppSettings.Instance.InputCalibrations[_selectedDevice.Id] =
                 new AppSettings.InputCalibrationInfo(
-                    HeldSuggestedGainDb, _heldProgramPeakDb, DateTime.UtcNow);
-            AppSettings.Instance.Save();
+                    suggestedGainDb,
+                    programPeakDb,
+                    DateTime.UtcNow,
+                    plan?.DeviceLevelDb,
+                    plan?.FineTrimDb,
+                    plan?.TotalLevelDb);
+            // Only claim the memory once it is actually on disk — but still stamp the
+            // attempt. The throttle keys off this timestamp, so leaving it unset while
+            // the file is unwritable (locked by a second instance, read-only profile,
+            // full disk) would put a full serialize and write on every 33 ms tick.
+            if (!AppSettings.Instance.Save())
+            {
+                _calibrationSavedUtc = DateTime.UtcNow;
+                return;
+            }
+            _calibrationSavedUtc = DateTime.UtcNow;
+            _calibrationSavedTotalDb = _heldRecommendedTotalDb;
             Raise(nameof(DeviceMemoryText));
             Raise(nameof(HasDeviceMemory));
+            Raise(nameof(CanUseRememberedSetting));
+            Raise(nameof(CanForgetDeviceMemory));
         }
-        catch { }
+        catch { } // best effort; a failure just skips the memory
     }
 
     private string? BuildWholeRecordCaptureNote(RecordingLevelSnapshot snapshot)
@@ -1071,8 +1448,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         finally { _refreshingInputLevel = false; }
     }
 
+    /// <summary>
+    /// Restarts the measurement after the input gain moves, keeping the held
+    /// recommendation. Suppressed while a plan is being applied: that path moves
+    /// two controls and resets once at the end, so the analysis never measures a
+    /// half-applied setting.
+    /// </summary>
     private void ResetLevelAnalysisAfterInputChange()
     {
+        if (_applyingRecommendation) return;
         if (IsLevelChecking || HasStoppedLevelCheck)
             ResetLevelCheck(preserveRecommendation: true);
     }
@@ -1161,7 +1545,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         Raise(nameof(LevelConfidencePercent));
         Raise(nameof(TargetMeterMinimumDb));
         Raise(nameof(TargetMeterMaximumDb));
-        Raise(nameof(LevelTargetText));
+        Raise(nameof(SafetyReserveText));
+        Raise(nameof(CeilingChangeDiscardsHeldCheck));
         Raise(nameof(LevelStatusTitle));
         Raise(nameof(LevelStatusDetail));
         Raise(nameof(SuggestedGainText));
@@ -1182,6 +1567,12 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         Raise(nameof(HasOnlyIsolatedClipping));
         Raise(nameof(LevelProgressText));
         Raise(nameof(SoftwarePlaythroughStatusText));
+        // The recommendation can appear or converge mid-scan, so the Apply button's
+        // enablement has to track the readout rather than only state transitions.
+        Raise(nameof(ApplyRecommendationText));
+        Raise(nameof(CanApplyRecommendedInputSetting));
+        Raise(nameof(CanUseRememberedSetting));
+        Raise(nameof(CanForgetDeviceMemory));
     }
 
     private static double ToMeterDb(double value) =>

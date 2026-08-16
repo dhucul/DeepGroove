@@ -49,10 +49,65 @@ public sealed class AppSettings
     public string InputDefaultRole { get; set; } = "console";
 
     /// <summary>
-    /// Last settled level-check outcome per capture device id, so the Recording
-    /// Level Assistant can recall what a given input needed previously.
+    /// Peak the Recording Level Assistant aims a transfer at, in dBTP. Lower
+    /// leaves more room for the restoration stages that follow — declicking and
+    /// peak reconstruction can put repaired peaks back above what was captured.
+    /// </summary>
+    public double RecordingTargetCeilingDb { get; set; } = DefaultRecordingTargetCeilingDb;
+
+    /// <summary>
+    /// Safest level-check outcome per capture device id, so the Recording Level
+    /// Assistant can recall — and replay — what a given input needed previously.
     /// </summary>
     public Dictionary<string, InputCalibrationInfo> InputCalibrations { get; set; } = [];
+
+    /// <summary>−6 dBTP: a transfer default, not a mastering one. See the property.</summary>
+    public const double DefaultRecordingTargetCeilingDb = -6;
+
+    /// <summary>
+    /// Marked on the ceiling slider. These were the whole choice before it became a
+    /// continuous value, and they are still the three worth aiming at deliberately:
+    /// −3 the old behaviour, −6 the transfer default, −10 heavy repair expected.
+    /// </summary>
+    public static readonly double[] RecordingTargetCeilingLandmarksDb = [-3, -6, -10];
+
+    /// <summary>
+    /// Deepest ceiling the slider reaches. The analyzer accepts down to −24 dBTP and
+    /// a settings file holding one is honoured — the slider simply extends to meet it
+    /// — but nothing below −12 is worth the track space by default.
+    /// </summary>
+    public const double AdjustableRecordingTargetCeilingFloorDb = -12;
+
+    /// <summary>Ceiling resolution. Finer than this is below what a gain step buys.</summary>
+    public const double RecordingTargetCeilingStepDb = 0.5;
+
+    /// <summary>
+    /// Clamps a ceiling into the range the analyzer enforces and snaps it to the
+    /// slider's step, so a hand-edited or out-of-range value is corrected rather than
+    /// discarded. Only a non-finite value falls back to the default.
+    /// </summary>
+    public static double NormalizeTargetCeilingDb(double ceilingDb)
+    {
+        if (!double.IsFinite(ceilingDb)) return DefaultRecordingTargetCeilingDb;
+        double clamped = Math.Clamp(
+            ceilingDb,
+            Audio.Dsp.RecordingLevelAnalyzer.MinimumTargetCeilingDb,
+            Audio.Dsp.RecordingLevelAnalyzer.MaximumTargetCeilingDb);
+        return Math.Round(clamped / RecordingTargetCeilingStepDb, MidpointRounding.AwayFromZero)
+            * RecordingTargetCeilingStepDb;
+    }
+
+    /// <summary>A remembered calibration older than this is no longer worth trusting.</summary>
+    public const int CalibrationMemoryDays = 180;
+
+    /// <summary>
+    /// How far ahead of now a calibration's timestamp may sit and still be believed.
+    /// Ordinary clock skew, not a licence — beyond this the entry is treated as corrupt.
+    /// </summary>
+    public const int CalibrationClockSkewDays = 1;
+
+    /// <summary>Bound on remembered devices, so the dictionary cannot grow forever.</summary>
+    public const int MaximumRememberedCalibrations = 32;
 
     // Recording — automatic stop. Bounds live with the code that enforces them.
     public bool RecordAutoStopOnRunOut { get; set; }
@@ -90,11 +145,32 @@ public sealed class AppSettings
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
-    /// <summary>One remembered level-check outcome for an input device.</summary>
+    /// <summary>
+    /// One remembered level-check outcome for an input device. The applied-setting
+    /// fields are optional so that entries written before they existed still load;
+    /// they are null when the outcome was never realized as a device setting, in
+    /// which case the memory can be shown but not replayed.
+    /// </summary>
+    /// <remarks>
+    /// These are nullable rather than NaN-sentinelled on purpose: System.Text.Json
+    /// refuses to write non-finite doubles, so a NaN here would fail the write of
+    /// the <em>entire</em> settings file, not just this entry.
+    /// </remarks>
     public sealed record InputCalibrationInfo(
         double SuggestedGainDb,
         double ProgramPeakDb,
-        DateTime CheckedUtc);
+        DateTime CheckedUtc,
+        double? DeviceLevelDb = null,
+        double? FineTrimDb = null,
+        double? TotalLevelDb = null)
+    {
+        /// <summary>True when this entry records a setting that can be restored.</summary>
+        [JsonIgnore]
+        public bool HasAppliedSetting =>
+            DeviceLevelDb is { } device && double.IsFinite(device)
+            && FineTrimDb is { } fine && double.IsFinite(fine)
+            && TotalLevelDb is { } total && double.IsFinite(total);
+    }
 
     public static AppSettings Load()
     {
@@ -172,17 +248,66 @@ public sealed class AppSettings
             : 192;
         settings.RecentFiles = NormalizePaths(settings.RecentFiles, 10);
         settings.LastSessionFiles = NormalizePaths(settings.LastSessionFiles, int.MaxValue);
+        settings.RecordingTargetCeilingDb =
+            NormalizeTargetCeilingDb(settings.RecordingTargetCeilingDb);
+        // Entries expire and are capped: a calibration is a statement about a
+        // physical setup, and neither a six-month-old one nor an unbounded pile of
+        // long-unplugged devices is worth offering back to the user. The optional
+        // applied-setting fields are validated only when present, so entries
+        // written before they existed survive rather than being silently wiped.
+        DateTime now = DateTime.UtcNow;
         settings.InputCalibrations = (settings.InputCalibrations ?? [])
             .Where(pair => !string.IsNullOrWhiteSpace(pair.Key)
                 && pair.Value != null
                 && double.IsFinite(pair.Value.SuggestedGainDb)
-                && double.IsFinite(pair.Value.ProgramPeakDb))
+                && double.IsFinite(pair.Value.ProgramPeakDb)
+                && pair.Value.CheckedUtc != default
+                // Tolerate a clock that ran ahead. An NTP correction, a clock set
+                // back, or a settings file carried from a fast machine would
+                // otherwise wipe a perfectly good calibration — permanently, since
+                // this rewrites the dictionary. Anything further out is corrupt.
+                && (pair.Value.CheckedUtc - now).TotalDays <= CalibrationClockSkewDays
+                && (now - pair.Value.CheckedUtc).TotalDays <= CalibrationMemoryDays)
+            .Select(pair => KeyValuePair.Create(pair.Key, SanitizeCalibration(pair.Value, now)))
+            .OrderByDescending(pair => pair.Value.CheckedUtc)
+            .Take(MaximumRememberedCalibrations)
             .ToDictionary(pair => pair.Key, pair => pair.Value);
         if (!double.IsFinite(settings.WindowWidth) || settings.WindowWidth < 0) settings.WindowWidth = 0;
         if (!double.IsFinite(settings.WindowHeight) || settings.WindowHeight < 0) settings.WindowHeight = 0;
         if (settings.WindowLeft is not { } left || !double.IsFinite(left)) settings.WindowLeft = null;
         if (settings.WindowTop is not { } top || !double.IsFinite(top)) settings.WindowTop = null;
         return settings;
+    }
+
+    /// <summary>
+    /// Drops a half-written applied setting rather than trusting it: a plan is only
+    /// replayable if all three parts agree, and the fine trim has to be a value the
+    /// engine would actually accept. A timestamp inside the tolerated clock skew is
+    /// pulled back to now, so an entry that survived the filter cannot then report a
+    /// negative age to everything downstream.
+    /// </summary>
+    private static InputCalibrationInfo SanitizeCalibration(InputCalibrationInfo entry, DateTime now)
+    {
+        if (entry.CheckedUtc > now) entry = entry with { CheckedUtc = now };
+
+        if (!entry.HasAppliedSetting)
+        {
+            return entry with
+            {
+                DeviceLevelDb = null,
+                FineTrimDb = null,
+                TotalLevelDb = null,
+            };
+        }
+
+        double deviceLevelDb = entry.DeviceLevelDb!.Value;
+        double fineTrimDb = Audio.RecordingEngine.NormalizeInputFineTrimDb(entry.FineTrimDb!.Value);
+        return entry with
+        {
+            DeviceLevelDb = deviceLevelDb,
+            FineTrimDb = fineTrimDb,
+            TotalLevelDb = deviceLevelDb + fineTrimDb,
+        };
     }
 
     private static List<string> NormalizePaths(List<string>? paths, int limit) =>
@@ -209,6 +334,10 @@ public sealed class AppSettings
         RecordRunOutHoldSeconds = d.RecordRunOutHoldSeconds;
         RecordAutoStopOnDuration = d.RecordAutoStopOnDuration;
         RecordAutoStopMinutes = d.RecordAutoStopMinutes;
+        RecordingTargetCeilingDb = d.RecordingTargetCeilingDb;
+        // Remembered calibrations describe physical inputs, but they are settings
+        // the user can only reach through this reset, so it has to clear them.
+        InputCalibrations = d.InputCalibrations;
         ReopenLastSession = d.ReopenLastSession;
         UndoLimitMb = d.UndoLimitMb;
         AutosaveEnabled = d.AutosaveEnabled;

@@ -281,6 +281,18 @@ public static class AudioHardware
         return new AudioInputSettingPlan(device, fine, total);
     }
 
+    /// <summary>
+    /// Which half of a plan to apply first so the input is never transiently hotter
+    /// than both the setting it left and the one it is going to.
+    ///
+    /// Fine Trim is attenuation only, so if the plan attenuates further, doing that
+    /// first is unambiguously safe. Otherwise the device step goes first: the new
+    /// fine trim is the less negative of the two, so the intermediate total
+    /// (new device + old fine) cannot exceed the plan's own total.
+    /// </summary>
+    internal static bool ApplyFineTrimFirst(double currentFineDb, AudioInputSettingPlan plan) =>
+        plan.FineTrimDb < currentFineDb - 1e-9;
+
     public static async Task TestOutputAsync(
         string? deviceId,
         Role defaultRole,

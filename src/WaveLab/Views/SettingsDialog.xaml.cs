@@ -2,9 +2,11 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using NAudio.CoreAudioApi;
 using WaveLab.Audio;
 using WaveLab.Util;
+using WaveLab.Views.Controls;
 
 namespace WaveLab.Views;
 
@@ -28,6 +30,7 @@ public partial class SettingsDialog : Window
         bool InputEventSync,
         string OutputDefaultRole,
         string InputDefaultRole,
+        double RecordingTargetCeilingDb,
         bool AutosaveEnabled,
         int AutosaveMinutes,
         string ExportFormat,
@@ -71,6 +74,8 @@ public partial class SettingsDialog : Window
         int intervalIndex = Array.IndexOf(Intervals, settings.AutosaveMinutes);
         cmbAutosaveInterval.SelectedIndex = intervalIndex >= 0 ? intervalIndex : 2;
 
+        RangeTargetCeiling(settings.RecordingTargetCeilingDb);
+
         foreach (OptionItem format in Formats()) cmbExportFormat.Items.Add(format);
         SelectOption(cmbExportFormat, settings.ExportFormat);
 
@@ -82,6 +87,27 @@ public partial class SettingsDialog : Window
         UpdateLabels();
         UpdateExportFormatUi();
         UpdateAudioUi(refreshDiagnostics: true);
+    }
+
+    /// <summary>
+    /// Ranges the ceiling slider and redraws its landmarks. The landmarks depend on
+    /// the range, which a stored ceiling below the slider's usual floor widens, so the
+    /// two always move together.
+    /// </summary>
+    private void RangeTargetCeiling(double ceilingDb)
+    {
+        TargetCeilingScale.Range(sldTargetCeiling, ceilingDb);
+        TargetCeilingScale.DrawLandmarks(
+            ceilingLandmarks, sldTargetCeiling, (Brush)FindResource("Faint"), withLabels: true);
+        // Range() leaves Value alone when it already matches, so paint the readout here
+        // rather than relying on ValueChanged having fired.
+        lblTargetCeiling.Text = TargetCeilingScale.Format(sldTargetCeiling.Value);
+    }
+
+    private void OnTargetCeilingSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (lblTargetCeiling == null) return;
+        lblTargetCeiling.Text = TargetCeilingScale.Format(e.NewValue);
     }
 
     private static readonly int[] Intervals = [1, 2, 3, 5, 10, 15];
@@ -214,6 +240,7 @@ public partial class SettingsDialog : Window
         if (pageGeneral == null) return;
         pageGeneral.Visibility = navGeneral.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         pageAudio.Visibility = navAudio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        pageRecording.Visibility = navRecording.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         pageAutosave.Visibility = navAutosave.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         pageExport.Visibility = navExport.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -476,6 +503,7 @@ public partial class SettingsDialog : Window
             SelectOption(cmbInputScheduling, "event");
             sldBuffer.Value = 60;
             sldCaptureBuffer.Value = 100;
+            RangeTargetCeiling(AppSettings.DefaultRecordingTargetCeilingDb);
             chkAutosave.IsChecked = true;
             cmbAutosaveInterval.SelectedIndex = 2;
             cmbExportFormat.SelectedIndex = 0;
@@ -505,6 +533,8 @@ public partial class SettingsDialog : Window
         settings.InputEventSync = SelectedKey(cmbInputScheduling, "event") == "event";
         settings.OutputDefaultRole = SelectedKey(cmbOutputRole, "multimedia");
         settings.InputDefaultRole = SelectedKey(cmbInputRole, "console");
+        settings.RecordingTargetCeilingDb =
+            AppSettings.NormalizeTargetCeilingDb(sldTargetCeiling.Value);
         settings.AutosaveEnabled = chkAutosave.IsChecked == true;
         settings.AutosaveMinutes = Intervals[Math.Max(0, cmbAutosaveInterval.SelectedIndex)];
         settings.ExportFormat = (cmbExportFormat.SelectedItem as OptionItem)?.Key ?? "wav32";
@@ -536,6 +566,7 @@ public partial class SettingsDialog : Window
         settings.InputEventSync,
         settings.OutputDefaultRole,
         settings.InputDefaultRole,
+        settings.RecordingTargetCeilingDb,
         settings.AutosaveEnabled,
         settings.AutosaveMinutes,
         settings.ExportFormat,
@@ -555,6 +586,7 @@ public partial class SettingsDialog : Window
         settings.InputEventSync = snapshot.InputEventSync;
         settings.OutputDefaultRole = snapshot.OutputDefaultRole;
         settings.InputDefaultRole = snapshot.InputDefaultRole;
+        settings.RecordingTargetCeilingDb = snapshot.RecordingTargetCeilingDb;
         settings.AutosaveEnabled = snapshot.AutosaveEnabled;
         settings.AutosaveMinutes = snapshot.AutosaveMinutes;
         settings.ExportFormat = snapshot.ExportFormat;
