@@ -416,17 +416,45 @@ public static class CdTransfer
         return true;
     }
 
+    /// <summary>
+    /// Windows resolves these as DOS devices no matter which directory or
+    /// extension is used, so a file named after one is never actually created.
+    /// </summary>
+    private static readonly string[] ReservedDeviceNames =
+    [
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+
     private static string SafeName(string value)
     {
         value = string.IsNullOrWhiteSpace(value) ? "Audio CD" : value.Trim();
         foreach (char c in Path.GetInvalidFileNameChars()) value = value.Replace(c, '_');
         value = value.TrimEnd('.', ' ');
         if (value.Length > 96) value = value[..96].TrimEnd('.', ' ');
-        return string.IsNullOrWhiteSpace(value) ? "Track" : value;
+        if (string.IsNullOrWhiteSpace(value)) return "Track";
+
+        // "NUL.cue" addresses the null device exactly as "NUL" does, and callers
+        // append their own extension, so the reserved test uses the base name.
+        int dot = value.IndexOf('.');
+        string baseName = (dot >= 0 ? value[..dot] : value).TrimEnd(' ');
+        if (ReservedDeviceNames.Contains(baseName, StringComparer.OrdinalIgnoreCase))
+            value = "_" + value;
+        return value;
     }
 
-    private static string CueEscape(string? value) =>
-        (string.IsNullOrWhiteSpace(value) ? "Audio CD" : value).Replace("\"", "'", StringComparison.Ordinal);
+    private static string CueEscape(string? value)
+    {
+        // Titles are free-form user text: a quote breaks the enclosing cue string
+        // and any control character (a newline above all) injects whole commands
+        // into the sheet, describing a track layout that was never written.
+        string text = string.IsNullOrWhiteSpace(value) ? "Audio CD" : value;
+        var builder = new StringBuilder(text.Length);
+        foreach (char c in text)
+            builder.Append(c == '"' ? '\'' : char.IsControl(c) ? ' ' : c);
+        return builder.ToString().Trim();
+    }
 
     private static string FormatDuration(double seconds)
     {

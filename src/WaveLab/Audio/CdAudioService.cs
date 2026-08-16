@@ -10,6 +10,14 @@ namespace WaveLab.Audio;
 public sealed class CdAudioService : ICdAudioService
 {
     private const int SectorsPerRead = 16;
+
+    /// <summary>
+    /// Sectors separating two sessions of a CD-Extra / Enhanced disc: session 1's
+    /// lead-out (90 s), session 2's lead-in (60 s) and the following track's
+    /// pregap (2 s). None of it belongs to the audio track that precedes it.
+    /// </summary>
+    private const int SessionGapSectors = 11_400;
+
     private readonly ICdAudioPlatform _platform;
 
     public CdAudioService()
@@ -269,10 +277,35 @@ public sealed class CdAudioService : ICdAudioService
                 attempt < maximumAttempts && IsTransientReadError(error.NativeErrorCode))
             {
                 // A drive's own CIRC correction can produce a clean result on a
-                // second physical read after a seek/CRC/timeout failure.
-                Thread.Yield();
+                // second physical read after a seek/CRC/timeout failure, but only
+                // if it is given time to re-seek before the read is re-issued.
+                DelayBeforeRetry(attempt, cancellationToken);
             }
         }
+    }
+
+    /// <summary>
+    /// Cancellable backoff between raw-read attempts. The wait grows with the
+    /// attempt number so the drive can re-seek; cancellation ends it immediately.
+    /// </summary>
+    private static void DelayBeforeRetry(int attempt, CancellationToken cancellationToken)
+    {
+        var delay = TimeSpan.FromMilliseconds(50 * attempt);
+        try
+        {
+            if (cancellationToken.CanBeCanceled)
+                cancellationToken.WaitHandle.WaitOne(delay);
+            else
+                Thread.Sleep(delay);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The cancellation source was disposed underneath us; the drive still
+            // needs the pause before the read is re-issued.
+            Thread.Sleep(delay);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     private static bool IsTransientReadError(int nativeErrorCode) => nativeErrorCode is
@@ -370,10 +403,22 @@ public sealed class CdAudioService : ICdAudioService
             if (current.StartSector < 0 || next.StartSector <= current.StartSector)
                 throw InvalidToc(device.DevicePath, $"Track {number:00} has an invalid sector range.");
 
+            // An audio track followed by a data track is the session boundary of a
+            // CD-Extra / Enhanced disc: the sectors between them are lead-out,
+            // lead-in and pregap, not audio. Charging them to the audio track makes
+            // ExtractTrack read past the programme, which the drive rejects.
+            int endSector = next.StartSector;
+            if (!current.IsData && next.IsData && !next.IsLeadOut)
+            {
+                endSector = next.StartSector - SessionGapSectors;
+                if (endSector <= current.StartSector)
+                    throw InvalidToc(device.DevicePath, $"Track {number:00} has an invalid sector range.");
+            }
+
             tracks.Add(new CdAudioTrack(
                 number,
                 current.StartSector,
-                next.StartSector,
+                endSector,
                 current.IsData ? CdTrackKind.Data : CdTrackKind.Audio,
                 current.Control));
         }

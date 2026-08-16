@@ -84,6 +84,9 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
     private static readonly TimeSpan DeviceIoTimeout = TimeSpan.FromSeconds(15);
 
     private readonly SafeFileHandle _handle;
+    private readonly object _scratchSync = new();
+    private DeviceScratch? _scratch;
+    private bool _scratchClosed;
     private int _disposed;
 
     public WindowsCdAudioDevice(string devicePath)
@@ -177,6 +180,17 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
         _handle.Dispose();
+
+        // Only an idle scratch is ever parked here; one that is still rented is
+        // released by the call that owns it, which observes _scratchClosed.
+        DeviceScratch? scratch;
+        lock (_scratchSync)
+        {
+            _scratchClosed = true;
+            scratch = _scratch;
+            _scratch = null;
+        }
+        scratch?.Dispose();
     }
 
     private int InvokeIoControl<TInput>(
@@ -202,17 +216,37 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
         EventWaitHandle? completionEvent = null;
         bool handleReferenceAdded = false;
         bool cleanupTransferred = false;
+        // Non-null only while this call still owns the reusable per-device buffers
+        // and event. Every path that can leave a request pending in the kernel
+        // clears it first: memory the OS may still write into is never recycled.
+        DeviceScratch? scratch = null;
 
         try
         {
             int inputSize = Marshal.SizeOf<TInput>();
             int overlappedSize = Marshal.SizeOf<IoOverlapped>();
-            inputBuffer = Marshal.AllocHGlobal(inputSize);
-            outputBuffer = Marshal.AllocHGlobal(destinationLength);
-            overlappedBuffer = Marshal.AllocHGlobal(overlappedSize);
-            Marshal.StructureToPtr(input, inputBuffer, false);
+            scratch = RentScratch(inputSize, destinationLength, overlappedSize);
+            if (scratch != null)
+            {
+                inputBuffer = scratch.Input;
+                outputBuffer = scratch.Output;
+                overlappedBuffer = scratch.Overlapped;
+                completionEvent = scratch.CompletionEvent;
+                // The event stays signaled after the previous request completed.
+                completionEvent.Reset();
+            }
+            else
+            {
+                inputBuffer = Marshal.AllocHGlobal(inputSize);
+                outputBuffer = Marshal.AllocHGlobal(destinationLength);
+                overlappedBuffer = Marshal.AllocHGlobal(overlappedSize);
+                completionEvent = new EventWaitHandle(false, EventResetMode.ManualReset);
+            }
 
-            completionEvent = new EventWaitHandle(false, EventResetMode.ManualReset);
+            // Both structures are rewritten in full, so a reused block carries no
+            // state from the previous request. The kernel is told the exact sizes
+            // of this request, never the (possibly larger) buffer capacities.
+            Marshal.StructureToPtr(input, inputBuffer, false);
             var overlapped = new IoOverlapped
             {
                 EventHandle = completionEvent.SafeWaitHandle.DangerousGetHandle(),
@@ -253,6 +287,8 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
                     // buffers, so either transfer them or synchronously observe
                     // the cancelled request complete before the outer finally.
                     _ = NativeMethods.CancelIoEx(rawHandle, overlappedBuffer);
+                    scratch?.Detach();
+                    scratch = null;
                     if (RegisterPendingCleanupOrWait(
                             _handle,
                             rawHandle,
@@ -277,6 +313,8 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
                     // native buffers until the OVERLAPPED request completes, so
                     // transfer their lifetime to a waiter before returning.
                     _ = NativeMethods.CancelIoEx(rawHandle, overlappedBuffer);
+                    scratch?.Detach();
+                    scratch = null;
                     if (RegisterPendingCleanupOrWait(
                             _handle,
                             rawHandle,
@@ -323,16 +361,165 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
         {
             if (!cleanupTransferred)
             {
-                if (overlappedBuffer != IntPtr.Zero)
-                    Marshal.FreeHGlobal(overlappedBuffer);
-                if (outputBuffer != IntPtr.Zero)
-                    Marshal.FreeHGlobal(outputBuffer);
-                if (inputBuffer != IntPtr.Zero)
-                    Marshal.FreeHGlobal(inputBuffer);
-                completionEvent?.Dispose();
+                if (scratch != null)
+                {
+                    // Reaching here with the scratch still held means no request
+                    // was left pending: the buffers and the event are idle and go
+                    // back to the device for the next read.
+                    ReturnScratch(scratch);
+                }
+                else
+                {
+                    if (overlappedBuffer != IntPtr.Zero)
+                        Marshal.FreeHGlobal(overlappedBuffer);
+                    if (outputBuffer != IntPtr.Zero)
+                        Marshal.FreeHGlobal(outputBuffer);
+                    if (inputBuffer != IntPtr.Zero)
+                        Marshal.FreeHGlobal(inputBuffer);
+                    completionEvent?.Dispose();
+                }
+
                 if (handleReferenceAdded)
                     _handle.DangerousRelease();
             }
+        }
+    }
+
+    /// <summary>
+    /// Takes the per-device scratch, allocating it on first use and growing it to
+    /// the largest request seen, so a full rip does not create a kernel event and
+    /// three unmanaged blocks per 16-sector read. Returns null once the device has
+    /// been disposed; the caller then allocates a private set as before.
+    /// </summary>
+    private DeviceScratch? RentScratch(int inputSize, int outputSize, int overlappedSize)
+    {
+        DeviceScratch? scratch;
+        lock (_scratchSync)
+        {
+            if (_scratchClosed)
+                return null;
+            scratch = _scratch;
+            _scratch = null;
+        }
+
+        scratch ??= new DeviceScratch();
+        try
+        {
+            scratch.EnsureCapacity(inputSize, outputSize, overlappedSize);
+        }
+        catch
+        {
+            scratch.Dispose();
+            throw;
+        }
+
+        return scratch;
+    }
+
+    /// <summary>
+    /// Parks an idle scratch for the next request. A scratch that cannot be parked
+    /// (the device was disposed, or a concurrent call already parked one) is freed
+    /// here, so exactly one owner releases it.
+    /// </summary>
+    private void ReturnScratch(DeviceScratch scratch)
+    {
+        lock (_scratchSync)
+        {
+            if (!_scratchClosed && _scratch == null)
+            {
+                _scratch = scratch;
+                return;
+            }
+        }
+
+        scratch.Dispose();
+    }
+
+    /// <summary>
+    /// One request's worth of native state, reused across requests on the same
+    /// handle: the input structure, the output buffer and the OVERLAPPED block,
+    /// plus the manual-reset event the request completes on.
+    /// </summary>
+    private sealed class DeviceScratch : IDisposable
+    {
+        private int _inputCapacity;
+        private int _outputCapacity;
+        private int _overlappedCapacity;
+        private bool _detached;
+
+        public DeviceScratch()
+        {
+            CompletionEvent = new EventWaitHandle(false, EventResetMode.ManualReset);
+        }
+
+        public IntPtr Input { get; private set; }
+        public IntPtr Output { get; private set; }
+        public IntPtr Overlapped { get; private set; }
+        public EventWaitHandle CompletionEvent { get; }
+
+        public void EnsureCapacity(int inputSize, int outputSize, int overlappedSize)
+        {
+            Input = Grow(Input, ref _inputCapacity, inputSize);
+            Output = Grow(Output, ref _outputCapacity, outputSize);
+            Overlapped = Grow(Overlapped, ref _overlappedCapacity, overlappedSize);
+        }
+
+        /// <summary>
+        /// Gives up every native resource to a caller that has taken over its
+        /// lifetime, because a cancelled request may still write into it. The
+        /// instance owns nothing afterwards and must simply be dropped.
+        /// </summary>
+        public void Detach()
+        {
+            Input = IntPtr.Zero;
+            Output = IntPtr.Zero;
+            Overlapped = IntPtr.Zero;
+            _inputCapacity = 0;
+            _outputCapacity = 0;
+            _overlappedCapacity = 0;
+            _detached = true;
+        }
+
+        public void Dispose()
+        {
+            if (_detached)
+                return;
+
+            if (Overlapped != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(Overlapped);
+                Overlapped = IntPtr.Zero;
+            }
+            if (Output != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(Output);
+                Output = IntPtr.Zero;
+            }
+            if (Input != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(Input);
+                Input = IntPtr.Zero;
+            }
+
+            _inputCapacity = 0;
+            _outputCapacity = 0;
+            _overlappedCapacity = 0;
+            _detached = true;
+            CompletionEvent.Dispose();
+        }
+
+        private static IntPtr Grow(IntPtr buffer, ref int capacity, int required)
+        {
+            if (buffer != IntPtr.Zero && capacity >= required)
+                return buffer;
+
+            // Allocate first: the existing block stays owned by the caller's field
+            // until a replacement exists, so a failure frees nothing twice.
+            IntPtr replacement = Marshal.AllocHGlobal(required);
+            if (buffer != IntPtr.Zero)
+                Marshal.FreeHGlobal(buffer);
+            capacity = required;
+            return replacement;
         }
     }
 
