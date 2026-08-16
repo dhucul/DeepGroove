@@ -93,7 +93,7 @@ public sealed class RecordingLevelAnalyzer
 
     private readonly object _sync = new();
     private readonly LoudnessMeter _loudness = new();
-    private readonly Queue<BlockSummary> _blocks = [];
+    private readonly BlockHistory _blocks = new();
     private readonly int[] _peakHistogram = new int[PeakHistogramBins];
     private FlatTopTracker[] _flatTopTrackers = [];
     private Queue<FlatTopEvent>[] _flatTopEvents = [];
@@ -155,6 +155,62 @@ public sealed class RecordingLevelAnalyzer
 
     private readonly record struct FlatTopEvent(long Frame, double Level);
 
+    /// <summary>
+    /// Append-only window of completed block summaries. The live entries occupy
+    /// [start, start + count) of a buffer that is only ever appended to: making room
+    /// copies into a fresh buffer instead of shifting entries in place, so a segment
+    /// handed to a snapshot build stays valid while capture keeps running. That lets
+    /// the analysis state publish the history without copying it — the copy used to
+    /// run inside the lock the capture callback takes, once per second.
+    /// </summary>
+    private sealed class BlockHistory
+    {
+        private BlockSummary[] _buffer = [];
+        private int _start;
+        private int _count;
+
+        public int Count => _count;
+
+        public void Add(in BlockSummary block)
+        {
+            if (_start + _count == _buffer.Length)
+            {
+                // Keep a quarter of the window as headroom so the compaction cost is
+                // amortized to O(1) per block however the caps are chosen.
+                int capacity = Math.Max(64, _buffer.Length);
+                while (capacity < _count + _count / 4 + 1) capacity *= 2;
+                var grown = new BlockSummary[capacity];
+                Array.Copy(_buffer, _start, grown, 0, _count);
+                _buffer = grown;
+                _start = 0;
+            }
+
+            _buffer[_start + _count] = block;
+            _count++;
+        }
+
+        /// <summary>Drops the oldest entries until at most <paramref name="maximumBlocks"/> remain.</summary>
+        public void Trim(int maximumBlocks)
+        {
+            int maximum = Math.Max(0, maximumBlocks);
+            if (_count <= maximum) return;
+            _start += _count - maximum;
+            _count = maximum;
+        }
+
+        /// <summary>A stable view of the current window. Never copies.</summary>
+        public ArraySegment<BlockSummary> Publish() => new(_buffer, _start, _count);
+
+        public void Clear()
+        {
+            // Release the buffer rather than reuse it: a published segment may still
+            // be in flight on a snapshot-building thread.
+            _buffer = [];
+            _start = 0;
+            _count = 0;
+        }
+    }
+
     private sealed record AnalysisState(
         long Generation,
         int SampleRate,
@@ -171,7 +227,7 @@ public sealed class RecordingLevelAnalyzer
         double IntegratedLufs,
         bool FullDurationScanEnabled,
         bool HasRepeatedFlatTops,
-        BlockSummary[] Blocks);
+        ArraySegment<BlockSummary> Blocks);
 
     public RecordingLevelAnalyzer(int sampleRate, int channels) => Configure(sampleRate, channels);
 
@@ -188,11 +244,7 @@ public sealed class RecordingLevelAnalyzer
             {
                 if (_fullDurationScanEnabled == value) return;
                 _fullDurationScanEnabled = value;
-                if (!value)
-                {
-                    while (_blocks.Count > MaximumAnalysisBlocks)
-                        _blocks.Dequeue();
-                }
+                if (!value) _blocks.Trim(MaximumAnalysisBlocks);
                 _cachedSnapshot = null;
                 _cachedSnapshotFrame = 0;
                 _analysisGeneration++;
@@ -263,7 +315,7 @@ public sealed class RecordingLevelAnalyzer
         _loudness.IntegratedLufs,
         _fullDurationScanEnabled,
         HasRepeatedFlatTops(),
-        _blocks.ToArray());
+        _blocks.Publish());
 
     private async Task RebuildCachedSnapshotAsync(AnalysisState state)
     {
@@ -481,7 +533,7 @@ public sealed class RecordingLevelAnalyzer
         double maximumZeroCrossingsPerSecond = _blockZeroCrossings.Length == 0
             ? 0
             : _blockZeroCrossings.Max() * _sampleRate / frames;
-        _blocks.Enqueue(new BlockSummary(
+        _blocks.Add(new BlockSummary(
             PowerToDb(meanSquare), PowerToDb(activityMeanSquare), AmplitudeToDb(_blockPeak),
             TrimmedPeakDb(),
             GoertzelPowerDb(_hum50S1, _hum50S2, _humCoeff50, _blockFill),
@@ -492,8 +544,7 @@ public sealed class RecordingLevelAnalyzer
         int maximumBlocks = _fullDurationScanEnabled
             ? MaximumFullScanBlocks
             : MaximumAnalysisBlocks;
-        if (_blocks.Count > maximumBlocks)
-            _blocks.Dequeue();
+        _blocks.Trim(maximumBlocks);
 
         _blockFill = 0;
         _blockPower = 0;

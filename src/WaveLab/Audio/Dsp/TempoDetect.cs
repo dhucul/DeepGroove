@@ -10,6 +10,9 @@ public static class TempoDetect
 
         // analyze up to 60 s from the middle of the material
         int maxFrames = Math.Min(n / hop, 60 * sampleRate / hop);
+        // Shorter than a few hops there is no envelope to analyse; bail out before
+        // the mean below would run over an empty array.
+        if (maxFrames < 4) return (0, 0);
         int startFrame = Math.Max(0, (n / hop - maxFrames) / 2);
 
         // energy envelope

@@ -28,29 +28,38 @@ public sealed class StudioEq
         if (_sampleRate <= 0 || _channels <= 0) return;
         lock (_lock)
         {
-            _filters = new Biquad[3][];
+            // Only the coefficients change on a gain move: keep the existing bank so
+            // the delay lines survive and a slider tick cannot click.
+            if (_filters.Length != 3 || _filters[0].Length != _channels)
+            {
+                _filters = new Biquad[3][];
+                for (int b = 0; b < 3; b++) _filters[b] = new Biquad[_channels];
+            }
             for (int b = 0; b < 3; b++)
             {
-                _filters[b] = new Biquad[_channels];
-                for (int c = 0; c < _channels; c++)
-                    _filters[b][c] = b switch
-                    {
-                        0 => Biquad.LowShelf(_sampleRate, LowFreq, _lowDb),
-                        1 => Biquad.Peaking(_sampleRate, MidFreq, MidQ, _midDb),
-                        _ => Biquad.HighShelf(_sampleRate, HighFreq, _highDb),
-                    };
+                Biquad prototype = b switch
+                {
+                    0 => Biquad.LowShelf(_sampleRate, LowFreq, _lowDb),
+                    1 => Biquad.Peaking(_sampleRate, MidFreq, MidQ, _midDb),
+                    _ => Biquad.HighShelf(_sampleRate, HighFreq, _highDb),
+                };
+                for (int c = 0; c < _channels; c++) _filters[b][c].CopyCoefficientsFrom(prototype);
             }
         }
     }
 
     public void Process(float[] interleaved, int offset, int count)
     {
-        if (!Enabled || _channels <= 0) return;
+        if (!Enabled) return;
         lock (_lock)
         {
+            // Guard on the bank that actually exists: Configure(0, n) leaves it empty.
+            if (_filters.Length != 3) return;
+            int channels = _filters[0].Length;
+            if (channels <= 0 || _filters[1].Length != channels || _filters[2].Length != channels) return;
             for (int i = offset; i < offset + count; i++)
             {
-                int c = (i - offset) % _channels;
+                int c = (i - offset) % channels;
                 float v = interleaved[i];
                 for (int b = 0; b < 3; b++) v = _filters[b][c].Process(v);
                 interleaved[i] = v;

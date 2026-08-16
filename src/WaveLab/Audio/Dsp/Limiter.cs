@@ -1,13 +1,42 @@
 namespace WaveLab.Audio.Dsp;
 
 /// <summary>
-/// Advanced lookahead brickwall limiter with 2x oversampling for true-peak / ISP
-/// protection, program-dependent release, and multi-stage gain reduction.
+/// Advanced lookahead brickwall limiter with 4x oversampled true-peak / ISP
+/// detection, program-dependent release, and multi-stage gain reduction.
 /// </summary>
 public sealed class Limiter
 {
     private const double LookaheadMs = 5.0, ReleaseMs = 80.0;
-    private const int OversampleFactor = 2;
+
+    private const int TruePeakTapsPerPhase = 12;
+
+    // ITU-R BS.1770 Annex 2: order-48, four-phase FIR interpolator, arranged by
+    // output phase and then by input-sample delay. Band-limited interpolation is
+    // what makes an inter-sample peak visible at all: any convex combination of
+    // two neighbouring samples is bounded by them and can never overshoot.
+    private static readonly double[][] TruePeakPhaseCoefficients =
+    [
+        [
+            0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000,
+            -0.0594482421875, 0.1373291015625, 0.9721679687500, -0.1022949218750,
+            0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500,
+        ],
+        [
+            -0.0291748046875, 0.0292968750000, -0.0517578125000, 0.0891113281250,
+            -0.1665039062500, 0.4650878906250, 0.7797851562500, -0.2003173828125,
+            0.1015625000000, -0.0582275390625, 0.0330810546875, -0.0189208984375,
+        ],
+        [
+            -0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625000000,
+            -0.2003173828125, 0.7797851562500, 0.4650878906250, -0.1665039062500,
+            0.0891113281250, -0.0517578125000, 0.0292968750000, -0.0291748046875,
+        ],
+        [
+            -0.0083007812500, 0.0148925781250, -0.0266113281250, 0.0476074218750,
+            -0.1022949218750, 0.9721679687500, 0.1373291015625, -0.0594482421875,
+            0.0332031250000, -0.0196533203125, 0.0109863281250, 0.0017089843750,
+        ],
+    ];
 
     /// <summary>Linear-range width of the soft knee just above the ceiling.</summary>
     private const double SoftKneeLinear = 0.05;
@@ -16,7 +45,6 @@ public sealed class Limiter
     private int _lookahead;
     private float[][] _delay = [];
     private float[] _delayDrive = [];
-    private float[] _prevInput = [];
     private int _delayPos;
     private float[] _maxValues = [];
     private long[] _maxFrames = [];
@@ -28,10 +56,10 @@ public sealed class Limiter
     private int _enabled = 1;
     private int _oversampleEnabled = 1;
 
-    // Oversampling state: simple 2x zero-stuff + half-band FIR
-    private float[] _osUpBuf = [];
-    private float[] _osDownBuf = [];
-    private float[] _osStateLp = []; // simple 1-pole for reconstruction
+    // True-peak detection state: per-channel FIR delay line plus a fill counter so
+    // the interpolator is only trusted once it holds real samples.
+    private float[][] _ispDelay = [];
+    private int[] _ispHistory = [];
 
     public bool Enabled
     {
@@ -80,7 +108,6 @@ public sealed class Limiter
         _delay = new float[_channels][];
         for (int c = 0; c < _channels; c++) _delay[c] = new float[_lookahead];
         _delayDrive = new float[_lookahead];
-        _prevInput = new float[_channels];
         _maxValues = new float[_lookahead + 1];
         _maxFrames = new long[_lookahead + 1];
         _delayPos = 0;
@@ -91,11 +118,31 @@ public sealed class Limiter
         GainReductionDb = 0;
         _releaseCoeff = Math.Exp(-1.0 / (_sampleRate * ReleaseMs / 1000.0));
 
-        // Oversampling buffers
-        int osSize = Math.Max(64, _lookahead * OversampleFactor * 2);
-        _osUpBuf = new float[osSize];
-        _osDownBuf = new float[osSize];
-        _osStateLp = new float[channels];
+        // True-peak interpolator state
+        _ispDelay = new float[_channels][];
+        for (int c = 0; c < _channels; c++) _ispDelay[c] = new float[TruePeakTapsPerPhase];
+        _ispHistory = new int[_channels];
+    }
+
+    /// <summary>
+    /// Clear every delay line and reseed the scalars without reallocating, for a
+    /// transport stop/start or an offline render boundary. Use
+    /// <see cref="Configure(int, int)"/> only for a real rate or channel change.
+    /// </summary>
+    public void Reset()
+    {
+        for (int c = 0; c < _delay.Length; c++) Array.Clear(_delay[c]);
+        for (int c = 0; c < _ispDelay.Length; c++) Array.Clear(_ispDelay[c]);
+        Array.Clear(_ispHistory);
+        Array.Clear(_delayDrive);
+        Array.Clear(_maxValues);
+        Array.Clear(_maxFrames);
+        _delayPos = 0;
+        _maxHead = 0;
+        _maxCount = 0;
+        _frameNumber = 0;
+        _gain = 1.0;
+        GainReductionDb = 0;
     }
 
     public void Process(float[] interleaved, int offset, int count)
@@ -117,7 +164,10 @@ public sealed class Limiter
 
             if (oversample)
             {
-                // 2x oversampling: linear interpolation between frames for ISP detection
+                // 4x oversampled true peak: BS.1770 polyphase interpolation. The
+                // interpolator's ~6-sample group delay is far shorter than the
+                // lookahead, so a peak it reports still arrives before the audio
+                // it belongs to reaches the output.
                 for (int c = 0; c < _channels; c++)
                 {
                     float sample = interleaved[idx + c];
@@ -125,6 +175,8 @@ public sealed class Limiter
                     {
                         sample = 0;
                         interleaved[idx + c] = 0;
+                        Array.Clear(_ispDelay[c]);
+                        _ispHistory[c] = 0;
                     }
 
                     // Current sample
@@ -132,20 +184,22 @@ public sealed class Limiter
                     float a0 = Math.Abs(v0);
                     if (a0 > framePeak) framePeak = a0;
 
-                    // Inter-sample peak: midpoint between current and previous input sample
-                    float prevSample = _prevInput[c];
-                    float vMid = (float)((sample + prevSample) * 0.5 * drive);
-                    float aMid = Math.Abs(vMid);
-                    if (aMid > framePeak) framePeak = aMid;
+                    float[] history = _ispDelay[c];
+                    for (int tap = TruePeakTapsPerPhase - 1; tap > 0; tap--)
+                        history[tap] = history[tap - 1];
+                    history[0] = sample;
+                    if (_ispHistory[c] < TruePeakTapsPerPhase) _ispHistory[c]++;
+                    if (_ispHistory[c] < TruePeakTapsPerPhase) continue;
 
-                    // Quarter-point interpolation for finer ISP detection
-                    float vQ1 = (float)((sample * 0.75 + prevSample * 0.25) * drive);
-                    float vQ3 = (float)((sample * 0.25 + prevSample * 0.75) * drive);
-                    float aQ1 = Math.Abs(vQ1), aQ3 = Math.Abs(vQ3);
-                    if (aQ1 > framePeak) framePeak = aQ1;
-                    if (aQ3 > framePeak) framePeak = aQ3;
-
-                    _prevInput[c] = sample;
+                    foreach (double[] phase in TruePeakPhaseCoefficients)
+                    {
+                        double interpolated = 0;
+                        for (int tap = 0; tap < TruePeakTapsPerPhase; tap++)
+                            interpolated += phase[tap] * history[tap];
+                        interpolated = Math.Abs(interpolated * drive);
+                        if (double.IsFinite(interpolated) && interpolated > framePeak)
+                            framePeak = (float)interpolated;
+                    }
                 }
             }
             else

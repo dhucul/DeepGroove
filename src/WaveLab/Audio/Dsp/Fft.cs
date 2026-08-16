@@ -50,14 +50,38 @@ public static class Fft
         return w;
     }
 
+    // Per-thread scratch for MagnitudeDb: Forward() derives the transform size from
+    // re.Length, so the buffers must match the request exactly rather than merely be
+    // large enough. Callers keep a constant size, so this reallocates ~never.
+    [ThreadStatic] private static float[]? _scratchRe;
+    [ThreadStatic] private static float[]? _scratchIm;
+    [ThreadStatic] private static float[]? _windowSumSource;
+    [ThreadStatic] private static int _windowSumCount;
+    [ThreadStatic] private static double _windowSumValue;
+
     /// <summary>Windowed magnitude spectrum in dBFS. Input length = FFT size; output = size/2 bins.</summary>
     public static void MagnitudeDb(float[] samples, float[] window, float[] outDb)
     {
         int n = samples.Length;
-        var re = new float[n];
-        var im = new float[n];
-        double windowSum = 0;
-        for (int i = 0; i < n; i++) { re[i] = samples[i] * window[i]; windowSum += window[i]; }
+        float[] re = _scratchRe is { } cachedRe && cachedRe.Length == n ? cachedRe : (_scratchRe = new float[n]);
+        float[] im = _scratchIm is { } cachedIm && cachedIm.Length == n ? cachedIm : (_scratchIm = new float[n]);
+        Array.Clear(im);
+
+        double windowSum;
+        if (ReferenceEquals(_windowSumSource, window) && _windowSumCount == n)
+        {
+            windowSum = _windowSumValue;
+            for (int i = 0; i < n; i++) re[i] = samples[i] * window[i];
+        }
+        else
+        {
+            windowSum = 0;
+            for (int i = 0; i < n; i++) { re[i] = samples[i] * window[i]; windowSum += window[i]; }
+            _windowSumSource = window;
+            _windowSumCount = n;
+            _windowSumValue = windowSum;
+        }
+
         Forward(re, im);
         double norm = 2.0 / Math.Max(1e-9, windowSum);
         for (int i = 0; i < outDb.Length && i < n / 2; i++)

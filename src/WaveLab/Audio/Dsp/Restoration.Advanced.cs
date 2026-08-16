@@ -840,6 +840,9 @@ public static partial class Restoration
 
         var coefficients = new double[order + 1];
         coefficients[0] = 1;
+        // One scratch array for the whole recursion, swapped with the live set each
+        // order step: cloning here allocated up to `order` arrays per call.
+        var updated = new double[order + 1];
         double error = autocorrelation[0];
         int fittedOrder = 0;
         for (int currentOrder = 1; currentOrder <= order; currentOrder++)
@@ -851,12 +854,12 @@ public static partial class Restoration
             if (!double.IsFinite(reflection)) break;
             reflection = Math.Clamp(reflection, -0.985, 0.985);
 
-            var updated = (double[])coefficients.Clone();
+            Array.Copy(coefficients, updated, order + 1);
             for (int index = 1; index < currentOrder; index++)
                 updated[index] = coefficients[index] +
                                  reflection * coefficients[currentOrder - index];
             updated[currentOrder] = reflection;
-            coefficients = updated;
+            (coefficients, updated) = (updated, coefficients);
             error *= Math.Max(1e-6, 1.0 - reflection * reflection);
             fittedOrder = currentOrder;
             if (!double.IsFinite(error) || error < autocorrelation[0] * 1e-10) break;
@@ -1237,12 +1240,17 @@ public static partial class Restoration
 
             // Find the extent of the outlier. Use a lower threshold (1.5× reference)
             // to catch the opposite-polarity lobe of bipolar clicks.
+            // Bound both walks the way the curvature path does: on a quiet block the
+            // 1.5x test can be true for the rest of the file, and a span longer than
+            // maximumPopSamples is discarded below anyway.
             int start = i;
-            while (start > 1 && Math.Abs(samples[start - 1]) > referenceEnvelope * 1.5)
+            int expansionFloor = Math.Max(1, i - maximumPopSamples);
+            while (start > expansionFloor && Math.Abs(samples[start - 1]) > referenceEnvelope * 1.5)
                 start--;
 
             int end = i + 1;
-            while (end < n - 1 && Math.Abs(samples[end]) > referenceEnvelope * 1.5)
+            int expansionCeiling = Math.Min(n - 1, start + maximumPopSamples);
+            while (end < expansionCeiling && Math.Abs(samples[end]) > referenceEnvelope * 1.5)
                 end++;
 
 
@@ -1410,87 +1418,129 @@ public static partial class Restoration
         return repaired;
     }
 
+    /// <summary>
+    /// Band-limited gap filling for one impulse. The gap is seeded with the same
+    /// cubic bridge the time-domain repair uses and then refined by iterative
+    /// spectral hard thresholding (Papoulis-Gerchberg): the known context is
+    /// re-imposed every pass, so the estimate converges onto the sinusoidal
+    /// structure around the click instead of the silence that zeroing the gap and
+    /// reading the windowed frame straight back would leave behind. Any estimate
+    /// that is not finite or that exceeds the local context falls back to the seed,
+    /// so this can never write more than a bounded interpolation.
+    /// </summary>
     private static void SpectralInterpolateImpulse(float[] samples, int start, int end,
         float strength, int sampleRate)
     {
         int gapLength = end - start;
         if (gapLength <= 0) return;
+        if (start < 1 || end > samples.Length - 1) return; // need a known sample either side
 
         // Use a small FFT window centered on the gap
         int fftSize = 256;
         while (fftSize < gapLength * 4) fftSize *= 2;
         fftSize = Math.Min(fftSize, 4096);
+        while (fftSize > samples.Length && fftSize > 64) fftSize >>= 1;
+        if (fftSize > samples.Length || gapLength * 2 > fftSize) return; // no usable context
 
-        int contextBefore = Math.Min(fftSize / 4, start);
-        int contextAfter = Math.Min(fftSize / 4, samples.Length - end);
-        int totalContext = contextBefore + gapLength + contextAfter;
+        int frameStart = Math.Clamp(start - (fftSize - gapLength) / 2, 0, samples.Length - fftSize);
+        if (frameStart > start - 1 || frameStart + fftSize < end) return;
+        int gapOffset = start - frameStart;
 
-        if (totalContext < 16) return; // too short for meaningful FFT
-
-        // Build windowed frame with the gap zeroed
+        // The gap sits at the centre of the frame, where the Hann window is close to
+        // unity, so undoing the analysis window on read-back is well conditioned.
         var window = Fft.HannWindow(fftSize);
+        double contextPeak = 0;
+        for (int i = 0; i < fftSize; i++)
+        {
+            int source = frameStart + i;
+            if (source >= start && source < end) continue;
+            float value = samples[source];
+            if (float.IsFinite(value)) contextPeak = Math.Max(contextPeak, Math.Abs(value));
+        }
+        double limit = Math.Max(1e-6, contextPeak * 1.5);
+
+        double[] seed = CubicImpulseInterpolation(samples, start, end);
+        for (int g = 0; g < gapLength; g++)
+        {
+            double value = seed[g];
+            seed[g] = double.IsFinite(value) ? Math.Clamp(value, -limit, limit) : 0;
+        }
+
+        var estimate = new double[gapLength];
+        Array.Copy(seed, estimate, gapLength);
         var re = new float[fftSize];
         var im = new float[fftSize];
 
-        int frameStart = start - contextBefore;
-        for (int i = 0; i < fftSize; i++)
+        const int iterations = 12;
+        for (int iteration = 0; iteration < iterations; iteration++)
         {
-            int srcIdx = frameStart + i;
-            if (srcIdx >= 0 && srcIdx < samples.Length)
+            for (int i = 0; i < fftSize; i++)
             {
-                // Zero out the gap region
-                if (srcIdx >= start && srcIdx < end)
-                    re[i] = 0;
-                else
-                    re[i] = samples[srcIdx] * window[i];
+                int source = frameStart + i;
+                double value = source >= start && source < end
+                    ? estimate[source - start]
+                    : samples[source];
+                if (!double.IsFinite(value)) value = 0;
+                re[i] = (float)(value * window[i]);
+                im[i] = 0;
+            }
+
+            Fft.Forward(re, im);
+
+            double maximumMagnitude = 0;
+            for (int b = 0; b <= fftSize / 2; b++)
+            {
+                double magnitude = Math.Sqrt((double)re[b] * re[b] + (double)im[b] * im[b]);
+                if (magnitude > maximumMagnitude) maximumMagnitude = magnitude;
+            }
+            if (!(maximumMagnitude > 0)) break; // silent context: keep the seed
+
+            // Keep only the strongest partials, relaxing the threshold each pass.
+            double threshold = maximumMagnitude * 0.35 * Math.Pow(0.6, iteration);
+            for (int b = 0; b <= fftSize / 2; b++)
+            {
+                double magnitude = Math.Sqrt((double)re[b] * re[b] + (double)im[b] * im[b]);
+                if (magnitude >= threshold) continue;
+                re[b] = 0;
+                im[b] = 0;
+                if (b > 0 && b < fftSize / 2)
+                {
+                    re[fftSize - b] = 0;
+                    im[fftSize - b] = 0;
+                }
+            }
+
+            // Inverse FFT
+            for (int i = 0; i < fftSize; i++) im[i] = -im[i];
+            Fft.Forward(re, im);
+
+            bool usable = true;
+            for (int g = 0; g < gapLength; g++)
+            {
+                float windowValue = window[gapOffset + g];
+                if (windowValue < 1e-3f) { usable = false; break; }
+                double reconstructed = re[gapOffset + g] / fftSize / windowValue;
+                if (!double.IsFinite(reconstructed) || Math.Abs(reconstructed) > limit)
+                {
+                    usable = false;
+                    break;
+                }
+                estimate[g] = reconstructed;
+            }
+
+            if (!usable)
+            {
+                Array.Copy(seed, estimate, gapLength);
+                break;
             }
         }
 
-        // Forward FFT
-        Fft.Forward(re, im);
-
-        // Magnitude and phase
-        var mag = new double[fftSize / 2];
-        var phase = new double[fftSize / 2];
-        for (int b = 0; b < fftSize / 2; b++)
+        for (int g = 0; g < gapLength; g++)
         {
-            mag[b] = Math.Sqrt(re[b] * re[b] + im[b] * im[b]);
-            phase[b] = Math.Atan2(im[b], re[b]);
-        }
-
-        // Simple spectral smoothing: average magnitude across adjacent bins
-        var smoothedMag = new double[fftSize / 2];
-        for (int b = 1; b < fftSize / 2 - 1; b++)
-            smoothedMag[b] = (mag[b - 1] + mag[b] + mag[b + 1]) / 3.0;
-        smoothedMag[0] = mag[0];
-        smoothedMag[fftSize / 2 - 1] = mag[fftSize / 2 - 1];
-
-        // Reconstruct with smoothed magnitude, original phase
-        for (int b = 0; b < fftSize / 2; b++)
-        {
-            re[b] = (float)(smoothedMag[b] * Math.Cos(phase[b]));
-            im[b] = (float)(smoothedMag[b] * Math.Sin(phase[b]));
-            if (b > 0)
-            {
-                re[fftSize - b] = re[b];
-                im[fftSize - b] = -im[b];
-            }
-        }
-
-        // Inverse FFT
-        for (int i = 0; i < fftSize; i++) im[i] = -im[i];
-        Fft.Forward(re, im);
-
-        // Overlap-add the reconstructed gap samples
-        for (int i = start; i < end; i++)
-        {
-            int fftIdx = i - frameStart;
-            if (fftIdx >= 0 && fftIdx < fftSize)
-            {
-                double reconstructed = re[fftIdx] / fftSize;
-                if (double.IsFinite(reconstructed))
-                    samples[i] += ((float)reconstructed - samples[i]) * strength;
-            }
+            double reconstructed = estimate[g];
+            if (!double.IsFinite(reconstructed)) continue;
+            reconstructed = Math.Clamp(reconstructed, -limit, limit);
+            samples[start + g] += ((float)reconstructed - samples[start + g]) * strength;
         }
     }
 

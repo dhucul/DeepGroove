@@ -39,13 +39,30 @@ public sealed class LoudnessMeter
     private float[][] _truePeakDelay = [];
     private int[] _truePeakHistory = [];
 
+    // 400 ms block loudness history (75% overlap). A session cannot be allowed to
+    // grow this without bound, so it lives in a ring capped at one hour; older
+    // blocks fall out rather than the meter consuming memory forever.
+    private const int MaximumBlockLoudnessEntries = 36_000; // one hour at 100 ms
+
     private int _subBlockSize;           // 100 ms
     private double[] _subBlockSumSq = [];
     private int _subBlockFill;
     private readonly Queue<double> _last400 = new();   // 4 sub-blocks
     private readonly Queue<double> _last3s = new();    // 30 sub-blocks
-    private readonly List<double> _blockLoudness = []; // 400ms block loudness values (75% overlap)
+    private double[] _blockLoudness = [];
+    private int _blockLoudnessStart;
+    private int _blockLoudnessCount;
+    private long _blockLoudnessVersion;                // total blocks added; cache key
     private readonly object _lock = new();
+    // Percentile/gating reads are serialized among themselves so they can share one
+    // scratch buffer and do their sorting and Math.Pow work outside _lock — the
+    // render thread takes _lock for every buffer and must not wait behind them.
+    private readonly object _readLock = new();
+    private double[] _readScratch = [];
+    private long _integratedCacheVersion = -1;
+    private double _integratedCacheValue = double.NegativeInfinity;
+    private long _rangeCacheVersion = -1;
+    private double _rangeCacheValue;
     private double _momentaryLufs = double.NegativeInfinity;
     private double _shortTermLufs = double.NegativeInfinity;
     private double _truePeakDb = double.NegativeInfinity;
@@ -99,7 +116,16 @@ public sealed class LoudnessMeter
             _subBlockFill = 0;
             _last400.Clear();
             _last3s.Clear();
-            _blockLoudness.Clear();
+            _blockLoudnessStart = 0;
+            _blockLoudnessCount = 0;
+            // Keep the version monotonic across resets: a reader that sampled the
+            // pre-reset history must never store its result under a key this meter
+            // can hand out again.
+            _blockLoudnessVersion++;
+            _integratedCacheVersion = -1;
+            _integratedCacheValue = double.NegativeInfinity;
+            _rangeCacheVersion = -1;
+            _rangeCacheValue = 0;
             _framesProcessed = 0;
             MomentaryLufs = ShortTermLufs = TruePeakDb = double.NegativeInfinity;
         }
@@ -154,7 +180,7 @@ public sealed class LoudnessMeter
 
                     MomentaryLufs = Lufs(Avg(_last400));
                     ShortTermLufs = Lufs(Avg(_last3s));
-                    if (_last400.Count == 4) _blockLoudness.Add(Lufs(Avg(_last400)));
+                    if (_last400.Count == 4) AddBlockLoudness(Lufs(Avg(_last400)));
 
                     _subBlockSumSq = new double[_channels];
                     _subBlockFill = 0;
@@ -207,20 +233,93 @@ public sealed class LoudnessMeter
         }
     }
 
+    /// <summary>Appends one block loudness value, dropping the oldest when the ring is full.</summary>
+    private void AddBlockLoudness(double loudness)
+    {
+        if (_blockLoudnessCount == _blockLoudness.Length)
+        {
+            if (_blockLoudness.Length < MaximumBlockLoudnessEntries)
+            {
+                int capacity = Math.Min(MaximumBlockLoudnessEntries,
+                    Math.Max(1024, _blockLoudness.Length * 2));
+                var grown = new double[capacity];
+                for (int i = 0; i < _blockLoudnessCount; i++)
+                    grown[i] = _blockLoudness[(_blockLoudnessStart + i) % _blockLoudness.Length];
+                _blockLoudness = grown;
+                _blockLoudnessStart = 0;
+            }
+            else
+            {
+                _blockLoudnessStart = (_blockLoudnessStart + 1) % _blockLoudness.Length;
+                _blockLoudnessCount--;
+            }
+        }
+
+        _blockLoudness[(_blockLoudnessStart + _blockLoudnessCount) % _blockLoudness.Length] = loudness;
+        _blockLoudnessCount++;
+        _blockLoudnessVersion++;
+    }
+
+    /// <summary>
+    /// Copies the blocks above the absolute gate into the shared read scratch, in
+    /// arrival order. The caller must hold both the read lock and the state lock.
+    /// </summary>
+    private int CopyAbsoluteGatedBlocksLocked(out double[] values)
+    {
+        if (_readScratch.Length < _blockLoudnessCount)
+            _readScratch = new double[Math.Max(1024, _blockLoudnessCount)];
+        values = _readScratch;
+        int count = 0;
+        for (int i = 0; i < _blockLoudnessCount; i++)
+        {
+            double loudness = _blockLoudness[(_blockLoudnessStart + i) % _blockLoudness.Length];
+            if (loudness > -70) values[count++] = loudness;
+        }
+        return count;
+    }
+
     /// <summary>Gated integrated loudness per BS.1770-4.</summary>
     public double IntegratedLufs
     {
         get
         {
-            lock (_lock)
+            lock (_readLock)
             {
-                var abs = _blockLoudness.Where(l => l > -70).ToList();
-                if (abs.Count == 0) return double.NegativeInfinity;
-                double meanPower = abs.Average(l => Math.Pow(10, (l + 0.691) / 10));
-                double relGate = Lufs(meanPower) - 10;
-                var gated = abs.Where(l => l > relGate).ToList();
-                if (gated.Count == 0) return double.NegativeInfinity;
-                return Lufs(gated.Average(l => Math.Pow(10, (l + 0.691) / 10)));
+                long version;
+                int count;
+                double[] values;
+                lock (_lock)
+                {
+                    if (_integratedCacheVersion == _blockLoudnessVersion) return _integratedCacheValue;
+                    version = _blockLoudnessVersion;
+                    count = CopyAbsoluteGatedBlocksLocked(out values);
+                }
+
+                double result = double.NegativeInfinity;
+                if (count > 0)
+                {
+                    double meanPower = 0;
+                    for (int i = 0; i < count; i++) meanPower += Math.Pow(10, (values[i] + 0.691) / 10);
+                    meanPower /= count;
+                    double relGate = Lufs(meanPower) - 10;
+
+                    double gatedPower = 0;
+                    int gatedCount = 0;
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (values[i] <= relGate) continue;
+                        gatedPower += Math.Pow(10, (values[i] + 0.691) / 10);
+                        gatedCount++;
+                    }
+                    if (gatedCount > 0) result = Lufs(gatedPower / gatedCount);
+                }
+
+                lock (_lock)
+                {
+                    _integratedCacheVersion = version;
+                    _integratedCacheValue = result;
+                }
+                return result;
             }
         }
     }
@@ -230,13 +329,33 @@ public sealed class LoudnessMeter
     {
         get
         {
-            lock (_lock)
+            lock (_readLock)
             {
-                var abs = _blockLoudness.Where(l => l > -70).OrderBy(l => l).ToList();
-                if (abs.Count < 4) return 0;
-                double lo = abs[(int)(abs.Count * 0.10)];
-                double hi = abs[Math.Min(abs.Count - 1, (int)(abs.Count * 0.95))];
-                return Math.Max(0, hi - lo);
+                long version;
+                int count;
+                double[] values;
+                lock (_lock)
+                {
+                    if (_rangeCacheVersion == _blockLoudnessVersion) return _rangeCacheValue;
+                    version = _blockLoudnessVersion;
+                    count = CopyAbsoluteGatedBlocksLocked(out values);
+                }
+
+                double result = 0;
+                if (count >= 4)
+                {
+                    Array.Sort(values, 0, count);
+                    double lo = values[(int)(count * 0.10)];
+                    double hi = values[Math.Min(count - 1, (int)(count * 0.95))];
+                    result = Math.Max(0, hi - lo);
+                }
+
+                lock (_lock)
+                {
+                    _rangeCacheVersion = version;
+                    _rangeCacheValue = result;
+                }
+                return result;
             }
         }
     }
