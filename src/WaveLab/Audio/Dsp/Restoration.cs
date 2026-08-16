@@ -83,26 +83,17 @@ public static partial class Restoration
         double thresholdMul = Math.Pow(10, sensitivityDb / 20.0);
         int bins = NrFftSize / 2;
 
+        var stft = NoiseReductionStft(window);
+
         foreach (var channel in data)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            int n = channel.Length;
-            var output = new float[NrFftSize];
-            var norm = new float[NrFftSize];
-            var re = new float[NrFftSize];
-            var im = new float[NrFftSize];
+
             var smooth = new float[bins];
             for (int b = 0; b < bins; b++) smooth[b] = 1f;
-            int nextOutput = 0;
 
-            for (int pos = 0; pos < n; pos += NrHop)
+            stft.Process(channel, channel, (_, _, re, im) =>
             {
-                if ((pos & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
-                Array.Clear(im);
-                for (int i = 0; i < NrFftSize; i++)
-                    re[i] = (pos + i < n ? channel[pos + i] : 0f) * window[i];
-                Fft.Forward(re, im);
-
                 for (int b = 0; b < bins; b++)
                 {
                     double mag = Math.Sqrt(re[b] * re[b] + im[b] * im[b]);
@@ -115,6 +106,8 @@ public static partial class Restoration
                         : 0.85f * smooth[b] + 0.15f * target;
                 }
 
+                // Median of three across frequency, which removes isolated gain spikes — the
+                // "musical noise" a per-bin gate otherwise leaves behind.
                 float prev = smooth[0];
                 for (int b = 1; b < bins - 1; b++)
                 {
@@ -129,37 +122,20 @@ public static partial class Restoration
                 {
                     re[b] *= smooth[b];
                     im[b] *= smooth[b];
-                    if (b > 0)
-                    {
-                        re[NrFftSize - b] *= smooth[b];
-                        im[NrFftSize - b] *= smooth[b];
-                    }
                 }
-
-                for (int i = 0; i < NrFftSize; i++) im[i] = -im[i];
-                Fft.Forward(re, im);
-                for (int i = 0; i < NrFftSize; i++)
-                {
-                    int oi = pos + i;
-                    if (oi >= n) break;
-                    int slot = oi % NrFftSize;
-                    output[slot] += re[i] / NrFftSize * window[i];
-                    norm[slot] += window[i] * window[i];
-                }
-
-                int finalizedThrough = Math.Min(n, pos + NrHop);
-                while (nextOutput < finalizedThrough)
-                {
-                    int slot = nextOutput % NrFftSize;
-                    if (norm[slot] > 1e-6f)
-                        channel[nextOutput] = output[slot] / norm[slot];
-                    output[slot] = 0f;
-                    norm[slot] = 0f;
-                    nextOutput++;
-                }
-            }
+            }, cancellationToken);
         }
     }
+
+    /// <summary>
+    /// The overlap-add configuration both offline noise-reduction passes run on. It is deliberately
+    /// not the framework default: these use the symmetric Hann they were tuned around, start the
+    /// first frame at sample zero, and normalize by the weight actually accumulated on each output
+    /// sample — which is what lets the opening samples, sitting under a window value of zero, pass
+    /// through untouched instead of being divided by nothing.
+    /// </summary>
+    private static Stft NoiseReductionStft(float[] window) =>
+        new(NrFftSize, NrHop, window, window, StftLeadIn.None, StftNormalization.RunningSum);
 
     /// <summary>
     /// Advanced Ephraim-Malah MMSE noise reduction with decision-directed a priori SNR
@@ -181,27 +157,18 @@ public static partial class Restoration
         int bins = NrFftSize / 2;
         double alpha = 0.98; // decision-directed smoothing
 
+        var stft = NoiseReductionStft(window);
+
         foreach (var channel in data)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            int n = channel.Length;
-            var output = new float[NrFftSize];
-            var norm = new float[NrFftSize];
-            var re = new float[NrFftSize];
-            var im = new float[NrFftSize];
+
             var prevGain = new float[bins];
             var prevPower = new double[bins];
             for (int b = 0; b < bins; b++) { prevGain[b] = 1f; prevPower[b] = 0; }
-            int nextOutput = 0;
 
-            for (int pos = 0; pos < n; pos += NrHop)
+            stft.Process(channel, channel, (_, _, re, im) =>
             {
-                if ((pos & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
-                Array.Clear(im);
-                for (int i = 0; i < NrFftSize; i++)
-                    re[i] = (pos + i < n ? channel[pos + i] : 0f) * window[i];
-                Fft.Forward(re, im);
-
                 for (int b = 0; b < bins; b++)
                 {
                     double noisyPower = (re[b] * re[b] + im[b] * im[b]);
@@ -252,35 +219,8 @@ public static partial class Restoration
 
                     re[b] *= prevGain[b];
                     im[b] *= prevGain[b];
-                    if (b > 0)
-                    {
-                        re[NrFftSize - b] *= prevGain[b];
-                        im[NrFftSize - b] *= prevGain[b];
-                    }
                 }
-
-                for (int i = 0; i < NrFftSize; i++) im[i] = -im[i];
-                Fft.Forward(re, im);
-                for (int i = 0; i < NrFftSize; i++)
-                {
-                    int oi = pos + i;
-                    if (oi >= n) break;
-                    int slot = oi % NrFftSize;
-                    output[slot] += re[i] / NrFftSize * window[i];
-                    norm[slot] += window[i] * window[i];
-                }
-
-                int finalizedThrough = Math.Min(n, pos + NrHop);
-                while (nextOutput < finalizedThrough)
-                {
-                    int slot = nextOutput % NrFftSize;
-                    if (norm[slot] > 1e-6f)
-                        channel[nextOutput] = output[slot] / norm[slot];
-                    output[slot] = 0f;
-                    norm[slot] = 0f;
-                    nextOutput++;
-                }
-            }
+            }, cancellationToken);
         }
     }
 
