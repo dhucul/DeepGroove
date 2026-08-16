@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — spectral editor</title>
+<style>
+  :root{--wave-bg:#0F1114;--panel:#14171B;--chrome:#111419;--line:#1D2228;--line-soft:#252B33;
+    --text:#E7EAEE;--muted:#6A717A;--faint:#4A5058;--accent:#3FD6C2;--amber:#FFB454;--rose:#E0736B}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0B0D10;color:var(--text);font-family:"Inter","Segoe UI",system-ui,sans-serif}
+  body{padding:28px 32px 44px}
+  h1{font-size:19px;font-weight:600;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 26px;max-width:1240px;line-height:1.6}
+  h2{font-size:11px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);
+    margin:34px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+
+  /* app shell */
+  .app{width:1240px;border:1px solid var(--line-soft);border-radius:5px;overflow:hidden;background:var(--wave-bg)}
+  .titlebar{height:32px;background:var(--chrome);display:flex;align-items:center;padding:0 12px;gap:9px;
+    border-bottom:1px solid var(--line)}
+  .logo{width:13px;height:13px;border-radius:3px;background:linear-gradient(135deg,var(--accent),#2B8F82)}
+  .titlebar .t{font-size:11.5px;color:var(--muted)}
+  .menubar{height:26px;background:var(--chrome);display:flex;align-items:center;gap:16px;padding:0 12px;
+    border-bottom:1px solid var(--line);font-size:11.5px;color:#AEB5BD}
+
+  /* view-mode + tool strip */
+  .toolstrip{height:40px;background:var(--panel);border-bottom:1px solid var(--line);
+    display:flex;align-items:center;padding:0 10px;gap:7px}
+  .seg{display:flex;border:1px solid #262D36;border-radius:5px;overflow:hidden}
+  .seg div{padding:5px 12px;font-size:11.5px;color:var(--muted);background:#171B21;border-right:1px solid #262D36}
+  .seg div:last-child{border-right:none}
+  .seg div.on{background:#193B37;color:var(--accent)}
+  .tool{width:30px;height:26px;border-radius:5px;background:#171B21;border:1px solid #262D36;
+    display:flex;align-items:center;justify-content:center;position:relative}
+  .tool.on{background:#193B37;border-color:#2C6B62}
+  .tool svg{width:15px;height:15px}
+  .divider{width:1px;height:22px;background:var(--line);margin:0 5px}
+  .act{padding:5px 12px;border-radius:5px;font-size:11.5px;background:#171B21;border:1px solid #262D36;color:#C3CAD2}
+  .act.primary{background:#1B4A44;border-color:#2C6B62;color:#9BE9DC}
+  .act.dim{color:var(--faint)}
+  .selinfo{margin-left:auto;display:flex;gap:16px;font-size:10.5px;color:var(--faint)}
+  .selinfo b{color:#98A0A9;font-weight:500}
+
+  /* editor body */
+  .body{display:grid;grid-template-columns:1fr 236px}
+  .editor{display:grid;grid-template-rows:22px 128px 1fr;min-width:0}
+  .rul,.wavewrap,.specwrap{position:relative}
+  .rul{background:var(--panel);border-bottom:1px solid var(--line)}
+  .wavewrap{border-bottom:1px solid var(--line)}
+  .gut{display:grid;grid-template-rows:22px 128px 1fr;width:52px;border-right:1px solid var(--line);background:var(--panel)}
+  .gutcell{position:relative}
+  .rack{background:var(--panel);border-left:1px solid var(--line);padding:10px 11px}
+  .rack .hd{font-size:10px;letter-spacing:.9px;color:var(--muted);text-transform:uppercase;margin:0 0 8px}
+  .row{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;color:#B9C0C8;
+    padding:6px 0;border-bottom:1px solid #191E24}
+  .row .v{color:var(--accent);font-size:11px}
+  .swatch{height:9px;border-radius:2px;margin:9px 0 3px}
+  .statusbar{height:24px;background:var(--chrome);border-top:1px solid var(--line);display:flex;
+    align-items:center;padding:0 12px;gap:18px;font-size:10.5px;color:var(--faint)}
+
+  /* galleries */
+  .tiles{display:flex;gap:18px;flex-wrap:wrap}
+  .tile{width:294px}
+  .tile .cap{font-size:11.5px;color:var(--accent);margin-bottom:7px}
+  .tile .cap span{color:var(--faint);margin-left:6px}
+  .tile .frame{position:relative;height:170px;border:1px solid var(--line-soft);border-radius:4px;overflow:hidden}
+  .pair{display:flex;gap:18px}
+  .pair .tile{width:604px}
+  .pair .frame{height:210px}
+  .badge{position:absolute;left:9px;top:9px;z-index:5;font-size:9.5px;letter-spacing:.8px;text-transform:uppercase;
+    padding:2px 7px;border-radius:3px;font-weight:600}
+  .badge.a{background:#241C1C;color:#C98B7A;border:1px solid #3A2A26}
+  .badge.b{background:#12241F;color:var(--accent);border:1px solid #1E4038}
+
+  .notes{margin-top:30px;border-top:1px solid var(--line);padding-top:18px;display:grid;
+    grid-template-columns:1fr 1fr;gap:7px 34px;max-width:1240px}
+  .note{font-size:12.5px;line-height:1.6;color:#B9C0C8;padding-left:15px;position:relative}
+  .note::before{content:"•";position:absolute;left:0;color:var(--accent)}
+  .note b{color:var(--text);font-weight:600}
+  code{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--accent)}
+</style>
+</head>
+<body>
+  <h1>Spectral editor — seeing and repairing what the waveform cannot show</h1>
+  <p class="sub">The spectrogram today is a fixed 1024-point, 800×256 image of the current view, downmixed to mono, in a 252&nbsp;px analysis tab, with no mouse handling of any kind. This makes it an editing surface: it moves into the main editor area on the same time axis as the waveform, gains a frequency selection, and gains the repair actions the DSP for which already exists.</p>
+
+  <h2>The editor — split view, a cough selected</h2>
+  <div class="app">
+    <div class="titlebar"><div class="logo"></div><div class="t">WaveLab — side-a.wav</div></div>
+    <div class="menubar"><span>File</span><span>Edit</span><span>View</span><span>Markers</span><span>Transport</span><span>Process</span><span>Restore</span><span>Spectral</span><span>Tools</span><span>Analyze</span><span>Master</span><span>Help</span></div>
+
+    <div class="toolstrip">
+      <div class="seg"><div>Waveform</div><div class="on">Split</div><div>Spectrogram</div></div>
+      <div class="divider"></div>
+      <div class="tool"><svg viewBox="0 0 16 16" fill="none" stroke="#9AA2AB" stroke-width="1.3"><path d="M1 8h14"/><path d="M4 5v6M12 5v6"/></svg></div>
+      <div class="tool on"><svg viewBox="0 0 16 16" fill="none" stroke="#7FE3D4" stroke-width="1.3"><rect x="2.5" y="3.5" width="11" height="9" stroke-dasharray="2.4 1.8"/></svg></div>
+      <div class="tool"><svg viewBox="0 0 16 16" fill="none" stroke="#9AA2AB" stroke-width="1.3"><path d="M3 11c0-5 4-8 7-6s1 7-3 7-3-3 0-4"/></svg></div>
+      <div class="tool"><svg viewBox="0 0 16 16" fill="none" stroke="#9AA2AB" stroke-width="1.3"><path d="M8 2v3M8 11v3M2 8h3M11 8h3"/><circle cx="8" cy="8" r="2.2"/></svg></div>
+      <div class="tool"><svg viewBox="0 0 16 16" fill="none" stroke="#9AA2AB" stroke-width="1.3"><path d="M2 12h12M2 9h12M2 6h12M2 3h12" stroke-dasharray="1.5 2.5"/></svg></div>
+      <div class="divider"></div>
+      <div class="act primary">Heal</div>
+      <div class="act">Attenuate…</div>
+      <div class="act">Gain…</div>
+      <div class="act dim">Learn pattern</div>
+      <div class="selinfo">
+        <div>SELECTION <b class="mono">0:04:12.380 → 0:04:12.940</b></div>
+        <div>BAND <b class="mono">410 Hz → 3.2 kHz</b></div>
+        <div>CH <b class="mono">L + R</b></div>
+      </div>
+    </div>
+
+    <div class="body">
+      <div style="display:grid;grid-template-columns:52px 1fr;min-width:0">
+        <div class="gut">
+          <div class="gutcell" style="border-bottom:1px solid var(--line)"><canvas data-gutlabel="dBFS"></canvas></div>
+          <div class="gutcell" style="border-bottom:1px solid var(--line)"><canvas data-amp></canvas></div>
+          <div class="gutcell"><canvas data-freqruler></canvas></div>
+        </div>
+        <div class="editor" style="grid-template-columns:1fr">
+          <div class="rul"><canvas data-timeruler></canvas></div>
+          <div class="wavewrap"><canvas data-wave></canvas></div>
+          <div class="specwrap"><canvas data-spec data-sel="1"></canvas></div>
+        </div>
+      </div>
+      <div class="rack">
+        <div class="hd">Spectrogram</div>
+        <div class="row"><span>FFT size</span><span class="v mono">2048</span></div>
+        <div class="row"><span>Window</span><span class="v mono">Blackman-Harris</span></div>
+        <div class="row"><span>Overlap</span><span class="v mono">75%</span></div>
+        <div class="row"><span>Reassigned</span><span class="v mono">On</span></div>
+        <div class="row"><span>Channel</span><span class="v mono">L + R</span></div>
+        <div class="row"><span>Range</span><span class="v mono">−96 … 0 dB</span></div>
+        <div class="row" style="border-bottom:none"><span>Colour</span><span class="v mono">Viridis</span></div>
+        <div class="swatch" data-ramp="viridis"></div>
+        <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--faint)" class="mono">
+          <span>−96</span><span>−48</span><span>0 dB</span>
+        </div>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span>Ready</span><span class="mono">11 289 600 samples</span>
+      <span class="mono">2048-pt · hop 512 · reassigned</span>
+      <span style="margin-left:auto" class="mono">1.42 kHz · −38.4 dB</span>
+      <span class="mono">CPU 21%</span>
+    </div>
+  </div>
+
+  <h2>Selecting in two dimensions</h2>
+  <div class="tiles">
+    <div class="tile">
+      <div class="cap">Rectangle <span>time × frequency</span></div>
+      <div class="frame"><canvas data-spec data-mode="rect"></canvas></div>
+    </div>
+    <div class="tile">
+      <div class="cap">Lasso <span>follow the shape of the defect</span></div>
+      <div class="frame"><canvas data-spec data-mode="lasso"></canvas></div>
+    </div>
+    <div class="tile">
+      <div class="cap">Magic wand <span>grow through connected energy</span></div>
+      <div class="frame"><canvas data-spec data-mode="wand"></canvas></div>
+    </div>
+    <div class="tile">
+      <div class="cap">Harmonic <span>a fundamental and its partials</span></div>
+      <div class="frame"><canvas data-spec data-mode="harmonic"></canvas></div>
+    </div>
+  </div>
+
+  <h2>Repair — a cough over sustained strings</h2>
+  <div class="pair">
+    <div class="tile">
+      <div class="frame"><span class="badge a">Before</span><canvas data-spec data-mode="wide" data-defect="1"></canvas></div>
+    </div>
+    <div class="tile">
+      <div class="frame"><span class="badge b">Healed</span><canvas data-spec data-mode="wide" data-defect="0"></canvas></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2 style="grid-column:1/-1;margin-top:26px">How it works</h2>
+    <div class="note"><b>It lives in the editor, not the analysis tab.</b> A 252&nbsp;px tab is a readout; editing needs canvas. Waveform / Split / Spectrogram share one time axis, one zoom, one playhead and one transport, so the overview bar, time ruler, markers and selection all keep working exactly as they do now.</div>
+    <div class="note"><b>The left gutter changes with the view.</b> The dBFS ladder stays beside the waveform; the spectrogram gets a logarithmic frequency ruler on the same adaptive-step principle, so it thins out rather than crowding when the pane is short.</div>
+    <div class="note"><b>Selection gains two dimensions and a channel.</b> Today it is <code>SelStart</code>/<code>SelEnd</code> and nothing else. It becomes a time span, a frequency band, and which channels it applies to — with the existing time-only behaviour intact when the waveform has focus, so nothing that works today changes.</div>
+    <div class="note"><b>Four ways to select, because defects have shapes.</b> A rectangle suits a thump; a lasso follows a swept squeal; the wand grows through connected energy for a cough; harmonic selection takes a fundamental and its partials together, which is what a buzz actually is.</div>
+    <div class="note"><b>Heal is the flagship action.</b> Inside the selection the audio is reconstructed from what surrounds it — the same principle as the de-click repair already shipped, extended to a region of the spectrogram. Attenuate and Gain are the gentler cousins for when removal would be too much.</div>
+    <div class="note"><b>Reassignment is what makes it sharp.</b> Each bin is relocated to its own centre of energy, so partials appear as lines rather than bands. It costs two extra transforms per frame and is a toggle, because for reading noise floors the unsharpened view is easier.</div>
+    <div class="note"><b>Perceptually uniform colour by default.</b> Viridis does not invent contours where the data is smooth, which the usual heat ramps do. The house teal remains available; both are stated in dB with the range on screen rather than left implicit.</div>
+    <div class="note"><b>Edits stay undoable and bounded.</b> A repair renders back to the time domain over the affected span with warm-up lead-in, then commits through the same single <code>ReplaceRange</code> splice every other edit uses — so it undoes in one step and autosaves like anything else.</div>
+  </div>
+
+<script>
+const DPR = window.devicePixelRatio || 1;
+function ctx(cv){const r=cv.getBoundingClientRect();cv.width=Math.max(1,Math.round(r.width*DPR));
+  cv.height=Math.max(1,Math.round(r.height*DPR));const g=cv.getContext("2d");g.scale(DPR,DPR);return{g,w:r.width,h:r.height};}
+
+// ── perceptually uniform ramp ─────────────────────────────────
+const VIRIDIS=[[0.267,0.005,0.329],[0.283,0.141,0.458],[0.254,0.265,0.530],[0.207,0.372,0.553],
+  [0.164,0.471,0.558],[0.128,0.567,0.551],[0.135,0.659,0.518],[0.267,0.749,0.441],
+  [0.478,0.821,0.318],[0.741,0.873,0.150],[0.993,0.906,0.144]];
+function ramp(t){t=Math.max(0,Math.min(1,t));const x=t*(VIRIDIS.length-1);const i=Math.floor(x);
+  const f=x-i;const a=VIRIDIS[i],b=VIRIDIS[Math.min(VIRIDIS.length-1,i+1)];
+  return [255*(a[0]+(b[0]-a[0])*f),255*(a[1]+(b[1]-a[1])*f),255*(a[2]+(b[2]-a[2])*f)];}
+
+// ── synthetic spectrogram ─────────────────────────────────────
+// x: 0..1 time, y: 0..1 with 0 at the bottom (low frequency)
+function hash(x,y){const h=Math.sin(x*127.1+y*311.7)*43758.5453;return h-Math.floor(h);}
+function magnitude(x,y,opt){
+  const f=20*Math.pow(1000,y);                       // 20 Hz … 20 kHz, logarithmic
+  // Noise floor around -66 dB, tilting down with frequency, plus a little texture so the
+  // background is not a flat wash. This has to sit low: a floor that maps into the upper half of
+  // the colour ramp makes the whole image read as loud, which is not what a spectrogram looks like.
+  // Hash-based rather than a product of sines: sines interfere and lay a visible diagonal moiré
+  // over the whole background, which no real spectrogram has.
+  const grain=0.35+1.3*hash(x*1600,y*900);
+  let m=(0.00035+0.0016*Math.exp(-y*2.6))*grain;
+
+  // Broadband content above the harmonics — bow and breath noise, and the hiss of the transfer.
+  // Without it the top two thirds of the image are an empty wash, which is not what music looks like.
+  const air=Math.exp(-Math.pow((y-0.72)/0.30,2));
+  m+=0.010*air*(0.45+0.55*Math.sin(x*13.7+1.2))*(0.4+1.2*hash(x*420,y*260));
+  const onset=Math.exp(-Math.pow((x-0.42)/0.02,2))+Math.exp(-Math.pow((x-0.72)/0.03,2));
+  m+=0.05*onset*Math.exp(-Math.pow((y-0.6)/0.42,2));
+  const f0=196*(1+0.010*Math.sin(x*34))*(1+0.05*Math.sin(x*2.1));
+  for(let n=1;n<=18;n++){
+    const fn=f0*n;
+    if(fn>20000)break;
+    const amp=Math.pow(n,-1.15)*(0.8+0.2*Math.sin(x*7+n));
+    const bw=fn*0.017;
+    const d=(f-fn)/bw;
+    if(d>-6&&d<6)m+=amp*Math.exp(-d*d);
+  }
+  if(x>0.42){                                        // a second voice entering
+    const g0=294*(1+0.008*Math.sin(x*29)), rise=Math.min(1,(x-0.42)*7);
+    for(let n=1;n<=12;n++){
+      const fn=g0*n;
+      if(fn>20000)break;
+      const bw=fn*0.019, d=(f-fn)/bw;
+      if(d>-6&&d<6)m+=0.5*rise*Math.pow(n,-1.3)*Math.exp(-d*d);
+    }
+  }
+  if(opt.cough){
+    const dx=(x-opt.cx)/opt.cw, dy=(y-opt.cy)/opt.ch;
+    m+=opt.camp*Math.exp(-(dx*dx+dy*dy)*2.6);
+  }
+  // The tick and the mains buzz survive into the "healed" panel: repairing a selected cough must
+  // not silently take unrelated defects with it.
+  const tx=(x-opt.tx)/0.0035;
+  if(tx>-6&&tx<6)m+=0.7*Math.exp(-tx*tx)*(0.3+0.7*y);
+  const hb=(f-100)/7;
+  if(hb>-6&&hb<6)m+=0.22*Math.exp(-hb*hb);
+  return m;
+}
+
+function paintSpectro(cv,opt){
+  const {g,w,h}=ctx(cv);
+  // Built at frame/bin resolution and scaled up, exactly as a real spectrogram bitmap is: the
+  // source has one column per hop and one row per bin, not one per screen pixel.
+  const W=Math.min(560,Math.max(160,Math.round(w))), H=Math.min(220,Math.max(90,Math.round(h)));
+  const off=document.createElement("canvas");off.width=W;off.height=H;
+  const og=off.getContext("2d");
+  const img=og.createImageData(W,H);
+  for(let py=0;py<H;py++){
+    const y=1-py/(H-1);
+    for(let px=0;px<W;px++){
+      const m=magnitude(px/(W-1),y,opt);
+      const db=20*Math.log10(m>1e-5?m:1e-5);
+      let t=(db+96)/96; t=t<0?0:t>1?1:t;
+      const c=ramp(Math.pow(t,1.35));
+      const o=(py*W+px)*4;
+      img.data[o]=c[0];img.data[o+1]=c[1];img.data[o+2]=c[2];img.data[o+3]=255;
+    }
+  }
+  og.putImageData(img,0,0);
+  g.imageSmoothingEnabled=true;
+  g.drawImage(off,0,0,w,h);
+  return {g,w,h};
+}
+
+// ── selection overlays ────────────────────────────────────────
+function dashRect(g,x,y,w,h){
+  g.fillStyle="rgba(63,214,194,0.13)";g.fillRect(x,y,w,h);
+  g.strokeStyle="rgba(120,240,222,0.95)";g.lineWidth=1.2;g.setLineDash([4,3]);
+  g.strokeRect(x+.5,y+.5,w,h);g.setLineDash([]);
+  g.fillStyle="rgba(120,240,222,0.95)";
+  for(const[hx,hy]of[[x,y],[x+w,y],[x,y+h],[x+w,y+h]])g.fillRect(hx-2.5,hy-2.5,5,5);
+}
+function blob(g,cx,cy,rx,ry,wobble){
+  g.beginPath();
+  for(let a=0;a<=Math.PI*2+0.01;a+=0.08){
+    const r=1+wobble*Math.sin(a*3.7)+0.5*wobble*Math.sin(a*6.1);
+    const px=cx+Math.cos(a)*rx*r, py=cy+Math.sin(a)*ry*r;
+    a===0?g.moveTo(px,py):g.lineTo(px,py);
+  }
+  g.closePath();
+  g.fillStyle="rgba(63,214,194,0.15)";g.fill();
+  g.strokeStyle="rgba(120,240,222,0.95)";g.lineWidth=1.2;g.setLineDash([4,3]);g.stroke();g.setLineDash([]);
+}
+
+document.querySelectorAll("canvas[data-spec]").forEach(cv=>{
+  const mode=cv.dataset.mode||"main";
+  const opt={cough:cv.dataset.defect!=="0",cx:0.52,cy:0.42,cw:0.045,ch:0.20,camp:0.75,tx:0.28};
+  if(mode==="wide"){opt.cx=0.46;opt.cw=0.055;opt.ch=0.24;opt.camp=0.85;opt.tx=0.19;}
+  const {g,w,h}=paintSpectro(cv,opt);
+
+  if(cv.dataset.sel==="1"){
+    dashRect(g,w*0.487,h*0.30,w*0.075,h*0.30);
+    g.fillStyle="rgba(15,17,20,0.82)";g.fillRect(w*0.487,h*0.30-19,86,16);
+    g.fillStyle="#9BE9DC";g.font='10px "JetBrains Mono",monospace';
+    g.fillText("560 ms · 2.8 kHz",w*0.487+5,h*0.30-7);
+  }
+  if(mode==="rect")     dashRect(g,w*0.34,h*0.28,w*0.26,h*0.32);
+  if(mode==="lasso")    blob(g,w*0.48,h*0.45,w*0.15,h*0.20,0.16);
+  if(mode==="wand")     blob(g,w*0.47,h*0.44,w*0.12,h*0.17,0.30);
+  if(mode==="harmonic"){
+    // a fundamental and its partials, each a thin band
+    for(let n=1;n<=7;n++){
+      const f=196*n; const y=h*(1-Math.log(f/20)/Math.log(1000));
+      const band=Math.max(3,h*0.016);
+      g.fillStyle="rgba(63,214,194,0.16)";g.fillRect(w*0.30,y-band/2,w*0.44,band);
+      g.strokeStyle="rgba(120,240,222,0.85)";g.lineWidth=1;g.setLineDash([3,3]);
+      g.strokeRect(w*0.30+.5,y-band/2+.5,w*0.44,band);g.setLineDash([]);
+    }
+  }
+});
+
+// ── rulers, waveform, ramp swatch ─────────────────────────────
+document.querySelectorAll("canvas[data-freqruler]").forEach(cv=>{
+  const {g,w,h}=ctx(cv);
+  g.fillStyle="#14171B";g.fillRect(0,0,w,h);
+  g.font='8.5px "JetBrains Mono",monospace';g.textAlign="right";g.textBaseline="middle";
+  for(const f of [50,100,200,500,1000,2000,5000,10000,20000]){
+    const y=h*(1-Math.log(f/20)/Math.log(1000));
+    if(y<7||y>h-4)continue;
+    g.strokeStyle="#4A525C";g.beginPath();g.moveTo(w-6,Math.round(y)+.5);g.lineTo(w,Math.round(y)+.5);g.stroke();
+    g.fillStyle="#6A717A";
+    g.fillText(f>=1000?(f/1000)+"k":String(f),w-9,y);
+  }
+  g.strokeStyle="#1D2228";g.beginPath();g.moveTo(w-.5,0);g.lineTo(w-.5,h);g.stroke();
+});
+document.querySelectorAll("canvas[data-gutlabel]").forEach(cv=>{
+  const {g,w,h}=ctx(cv);g.fillStyle="#14171B";g.fillRect(0,0,w,h);
+  g.fillStyle="#4A5058";g.font='8.5px "JetBrains Mono",monospace';g.textAlign="center";
+  g.fillText(cv.dataset.gutlabel,w/2,h-6);
+});
+document.querySelectorAll("canvas[data-amp]").forEach(cv=>{
+  const {g,w,h}=ctx(cv);g.fillStyle="#14171B";g.fillRect(0,0,w,h);
+  g.font='8.5px "JetBrains Mono",monospace';g.textAlign="right";g.textBaseline="middle";
+  const mid=h/2,amp=h*0.46;
+  for(const db of [0,-3,-6,-12]){
+    const o=Math.pow(10,db/20)*amp;
+    for(const y of [mid-o,mid+o]){
+      g.strokeStyle="#4A525C";g.beginPath();g.moveTo(w-7,Math.round(y)+.5);g.lineTo(w,Math.round(y)+.5);g.stroke();
+      g.fillStyle="#6A717A";g.fillText(String(db),w-10,y);
+    }
+  }
+  g.fillStyle="#4A5058";g.fillText("-∞",w-10,mid);
+  g.strokeStyle="#1D2228";g.beginPath();g.moveTo(w-.5,0);g.lineTo(w-.5,h);g.stroke();
+});
+document.querySelectorAll("canvas[data-timeruler]").forEach(cv=>{
+  const {g,w,h}=ctx(cv);g.fillStyle="#14171B";g.fillRect(0,0,w,h);
+  g.strokeStyle="#333B44";g.fillStyle="#4A5058";g.font='9px "JetBrains Mono",monospace';
+  for(let i=0;i<=12;i++){const x=Math.round(w*i/12)+.5;
+    g.beginPath();g.moveTo(x,h-6);g.lineTo(x,h);g.stroke();
+    if(i<12)g.fillText("0:04:"+String(10+i).padStart(2,"0"),x+4,h-8);}
+});
+document.querySelectorAll("canvas[data-wave]").forEach(cv=>{
+  const {g,w,h}=ctx(cv);g.fillStyle="#0F1114";g.fillRect(0,0,w,h);
+  const mid=h/2,amp=h*0.44;
+  function env(x){const t=x*6.283;
+    let v=.52+.28*Math.sin(t*1.7)+.16*Math.sin(t*5.3+1.1)+.09*Math.sin(t*11.9+2.4);
+    if(x>0.275&&x<0.29)v=Math.max(v,1.35);              // the tick
+    if(x>0.49&&x<0.565)v*=1.28;                          // the cough
+    return Math.max(.03,Math.min(1.25,v*.72));}
+  for(let x=0;x<w;x++){const p=env(x/w),r=p*(.52+.16*Math.sin(x*.21));
+    g.fillStyle="#31A998";g.fillRect(x,mid-p*amp,1,Math.max(1,2*p*amp));
+    g.fillStyle="rgba(87,207,192,0.66)";g.fillRect(x,mid-r*amp,1,Math.max(1,2*r*amp));}
+  g.strokeStyle="rgba(231,234,238,0.22)";g.beginPath();g.moveTo(0,mid+.5);g.lineTo(w,mid+.5);g.stroke();
+  g.fillStyle="rgba(63,214,194,0.10)";g.fillRect(w*0.487,0,w*0.075,h);
+  g.strokeStyle="rgba(63,214,194,0.65)";g.beginPath();
+  g.moveTo(w*0.487+.5,0);g.lineTo(w*0.487+.5,h);g.moveTo(w*0.562+.5,0);g.lineTo(w*0.562+.5,h);g.stroke();
+});
+document.querySelectorAll("[data-ramp]").forEach(el=>{
+  let s="linear-gradient(90deg";
+  for(let i=0;i<=10;i++){const c=ramp(i/10);s+=`,rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;}
+  el.style.background=s+")";
+});
+</script>
+</body>
+</html>
