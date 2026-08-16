@@ -81,6 +81,75 @@ public static class SpectralRepair
     }
 
     /// <summary>
+    /// Reduces each selected cell to the level the same bin carries either side of the selection,
+    /// never below it and never by more than <paramref name="maximumReductionDb"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The middle ground between leaving a defect and replacing it. A fixed reduction takes the
+    /// music down with the defect, by the same amount everywhere, so a buzz sitting under a quiet
+    /// passage and a buzz under a loud one get the same treatment and only one of them is right.
+    /// Reducing each bin to what it carried just before and just after the selection removes what was
+    /// added and leaves what was already there.
+    /// </para>
+    /// <para>
+    /// Phase is untouched: only the magnitude is scaled. That is the whole difference from
+    /// <see cref="Heal"/>, which discards the cell and builds a new one — here the original is kept
+    /// and turned down, which is why it survives on material a reconstruction would not suit.
+    /// </para>
+    /// </remarks>
+    public static SpectralRepairResult AttenuateToSurroundings(float[] samples, int analysisOrigin,
+        SpectralMask mask, double maximumReductionDb, SpectralRepairOptions options = default,
+        CancellationToken cancellationToken = default)
+    {
+        Frame? frame = Frame.Create(samples, analysisOrigin, mask, options, cancellationToken);
+        if (frame is null) return SpectralRepairResult.None;
+
+        float[] observedRe = (float[])frame.Re.Clone();
+        float[] observedIm = (float[])frame.Im.Clone();
+        var floor = (float)Math.Pow(10, -Math.Abs(maximumReductionDb) / 20.0);
+        int bins = frame.Bins;
+
+        ForEachRun(frame.MaskWeight, frame.Frames, bins, (bin, first, last, left, right) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Only frames that actually carry audio count as surroundings; the padding beyond the
+            // ends of the file reads as silence and would scoop the selection out to match it.
+            bool hasLeft = left >= 0 && frame.CarriesSignal(left);
+            bool hasRight = right >= 0 && frame.CarriesSignal(right);
+            double before = hasLeft ? Magnitude(observedRe, observedIm, left * bins + bin) : double.NaN;
+            double after = hasRight ? Magnitude(observedRe, observedIm, right * bins + bin) : double.NaN;
+
+            // With nothing to compare against on either side there is no surrounding level to
+            // reduce to, and inventing one would be a fixed reduction wearing a different name.
+            if (double.IsNaN(before) && double.IsNaN(after)) return;
+            if (double.IsNaN(before)) before = after;
+            if (double.IsNaN(after)) after = before;
+
+            int anchor = hasLeft ? left : first - 1;
+            int span = Math.Max(1, (hasRight ? right : last + 1) - anchor);
+            for (int g = first; g <= last; g++)
+            {
+                int index = g * bins + bin;
+                double magnitude = Magnitude(observedRe, observedIm, index);
+                if (magnitude <= 0) continue;
+
+                double blend = (g - anchor) / (double)span;
+                double target = before + (after - before) * blend;
+
+                // Only ever downward, and never past the reduction limit.
+                var scale = (float)Math.Clamp(target / magnitude, floor, 1.0);
+                frame.Re[index] = observedRe[index] * scale;
+                frame.Im[index] = observedIm[index] * scale;
+            }
+        });
+
+        Blend(observedRe, observedIm, frame.MaskWeight, frame.Re, frame.Im);
+        return frame.Synthesize(cancellationToken);
+    }
+
+    /// <summary>
     /// Discards the selected cells and reconstructs each from the partial running through it, where
     /// there is one.
     /// </summary>
@@ -119,6 +188,42 @@ public static class SpectralRepair
         }
     }
 
+    // ── masked runs ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Any weight at all counts as masked. A half-and-half test would leave the outer half of every
+    /// feather holding its observed value, so the taper would hand back to audio the user asked to
+    /// have repaired instead of to the repair.
+    /// </summary>
+    private const float MaskedWeight = 1e-3f;
+
+    /// <summary>
+    /// Walks each bin's runs of masked frames, reporting the run and the observed frames either side
+    /// of it — the anchors every edit works from. An anchor of -1 means the run reaches the edge of
+    /// the analysed block and has nothing to read on that side.
+    /// </summary>
+    private static void ForEachRun(float[] keep, int frames, int bins,
+        Action<int, int, int, int, int> body)
+    {
+        for (int b = 0; b < bins; b++)
+        {
+            int f = 0;
+            while (f < frames)
+            {
+                if (keep[f * bins + b] < MaskedWeight) { f++; continue; }
+
+                int first = f;
+                while (f < frames && keep[f * bins + b] >= MaskedWeight) f++;
+                int last = f - 1;
+
+                body(b, first, last, first - 1 >= 0 ? first - 1 : -1, last + 1 < frames ? last + 1 : -1);
+            }
+        }
+    }
+
+    private static double Magnitude(float[] re, float[] im, int index) =>
+        Math.Sqrt((double)re[index] * re[index] + (double)im[index] * im[index]);
+
     // ── partial continuation ─────────────────────────────────────
 
     /// <summary>Wraps an angle to (-π, π].</summary>
@@ -152,11 +257,6 @@ public static class SpectralRepair
         int frames, int bins, float[] re, float[] im, double hopFraction, double driftTolerance,
         CancellationToken cancellationToken = default)
     {
-        // Any weight at all counts as masked. A half-and-half test would leave the outer half of
-        // every feather holding its observed value, so the taper would hand back to audio the user
-        // asked to have repaired instead of to the repair.
-        const float Masked = 1e-3f;
-
         // Outside the masked runs the observation stands.
         observedRe.CopyTo(re.AsSpan());
         observedIm.CopyTo(im.AsSpan());
@@ -183,10 +283,10 @@ public static class SpectralRepair
             int f = 0;
             while (f < frames)
             {
-                if (keep[f * bins + b] < Masked) { f++; continue; }
+                if (keep[f * bins + b] < MaskedWeight) { f++; continue; }
 
                 int first = f;
-                while (f < frames && keep[f * bins + b] >= Masked) f++;
+                while (f < frames && keep[f * bins + b] >= MaskedWeight) f++;
                 int last = f - 1;
 
                 int left = first - 1, right = last + 1;
@@ -252,9 +352,6 @@ public static class SpectralRepair
                 }
             }
         }
-
-        static double Magnitude(float[] re, float[] im, int index) =>
-            Math.Sqrt((double)re[index] * re[index] + (double)im[index] * im[index]);
 
         static double Angle(float[] re, float[] im, int index) => Math.Atan2(im[index], re[index]);
     }
@@ -365,6 +462,21 @@ public static class SpectralRepair
         }
 
         private int FrameStart(int index) => _origin + (_firstFrame + index) * _hop - _fftSize / 2;
+
+        /// <summary>
+        /// Whether a frame's centre lies within the signal, and so carries audio worth reading.
+        /// </summary>
+        /// <remarks>
+        /// The frame range is padded past the mask so the overlap-add reconstructs, and those extra
+        /// frames read zeros beyond the ends of the file. They are not surroundings the user could
+        /// see: taken as anchors, a selection covering the whole file matched itself to the silence
+        /// off the end and scooped everything to nothing.
+        /// </remarks>
+        public bool CarriesSignal(int index)
+        {
+            int centre = FrameStart(index) + _fftSize / 2;
+            return (uint)centre < (uint)_source.Length;
+        }
 
         /// <summary>Fills the coefficient grid from the source samples.</summary>
         private void Analyze(CancellationToken cancellationToken)

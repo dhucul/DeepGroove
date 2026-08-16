@@ -499,8 +499,13 @@
                 <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Attenuate…"
                         Width="Auto" MinWidth="116" Height="30" Margin="8,0,0,0"
                         Click="OnSpectralAttenuate" IsEnabled="{Binding HasSpectralSelection}"
-                        ToolTip="Turn the selected region down by a chosen amount"
+                        ToolTip="Turn the selected region down, to its surroundings or by a fixed amount"
                         AutomationProperties.Name="Attenuate spectral selection"/>
+                <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Gain…"
+                        Width="Auto" MinWidth="78" Height="30" Margin="6,0,0,0"
+                        Click="OnSpectralGain" IsEnabled="{Binding HasSpectralSelection}"
+                        ToolTip="Raise or lower the selected region"
+                        AutomationProperties.Name="Gain spectral selection"/>
 
                 <Border DockPanel.Dock="Right" Background="{StaticResource Panel2}"
                         BorderBrush="{StaticResource LineSoft}" BorderThickness="1"

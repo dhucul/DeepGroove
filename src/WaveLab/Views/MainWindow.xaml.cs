@@ -497,7 +497,12 @@ public partial class MainWindow : Window
 
     private void OnSpectralAttenuate(object sender, RoutedEventArgs e)
     {
-        var dialog = new ParamDialog("Attenuate selection", "Attenuate", null, null, 0,
+        if (!_vm.HasSpectralSelection) return;
+
+        var dialog = new ParamDialog("Attenuate selection", "Attenuate",
+            "How far down", ["Down to the surrounding level", "By a fixed amount"], 0,
+            // "Reduction" rather than "Limit": the label is fixed when the dialog is built, and it
+            // has to read correctly under either mode the combo above it selects.
             new ParamDialog.SliderSpec("Reduction", 3, 90, 24, value => $"−{value:0} dB", 1))
         {
             Owner = this,
@@ -505,9 +510,38 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true) return;
 
         double reduction = dialog.Values[0];
-        _ = RunSpectralRepair("Attenuate", $"{reduction:0} dB across the selected region",
+        bool toSurroundings = dialog.ComboIndex == 0;
+
+        // The limit means different things in the two modes, which is the point of having both: a
+        // fixed reduction is the amount, while matching the surroundings takes each bin down to what
+        // it carried either side and uses the limit only as a stop.
+        _ = RunSpectralRepair("Attenuate",
+            toSurroundings
+                ? $"Down to the surrounding level · no more than {reduction:0} dB"
+                : $"{reduction:0} dB across the selected region",
+            (channel, mask, options, _, token) => toSurroundings
+                ? SpectralRepair.AttenuateToSurroundings(channel, 0, mask, reduction, options, token)
+                : SpectralRepair.Attenuate(channel, 0, mask, -reduction, options, token));
+    }
+
+    private void OnSpectralGain(object sender, RoutedEventArgs e)
+    {
+        if (!_vm.HasSpectralSelection) return;
+
+        var dialog = new ParamDialog("Gain selection", "Apply", null, null, 0,
+            new ParamDialog.SliderSpec("Gain", -24, 24, -6,
+                value => $"{value:+0.#;−0.#;0} dB", 0.5))
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        double gain = dialog.Values[0];
+        if (Math.Abs(gain) < 0.01) return;
+
+        _ = RunSpectralRepair("Gain", $"{gain:+0.#;−0.#;0} dB across the selected region",
             (channel, mask, options, _, token) =>
-                SpectralRepair.Attenuate(channel, 0, mask, -reduction, options, token));
+                SpectralRepair.Attenuate(channel, 0, mask, gain, options, token));
     }
 
     /// <summary>
