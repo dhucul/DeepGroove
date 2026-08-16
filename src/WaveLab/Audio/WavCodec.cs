@@ -32,7 +32,8 @@ public static class WavCodec
         ushort format = 0, channels = 0, bits = 0;
         uint sampleRate = 0, declaredByteRate = 0;
         ushort declaredBlockAlign = 0;
-        byte[]? data = null;
+        long dataStart = -1;
+        int dataSize = 0;
 
         while (fs.Position + 8 <= fs.Length)
         {
@@ -88,13 +89,16 @@ public static class WavCodec
             {
                 if ((ulong)chunkSize > (ulong)Array.MaxLength)
                     throw new InvalidDataException("The WAV data chunk is too large to load into memory.");
-                data = ReadBytes(br, (int)chunkSize, cancellationToken);
+                // Located now, decoded block by block below: buffering the whole
+                // chunk would hold the raw bytes and the float output at once.
+                dataStart = chunkStart;
+                dataSize = (int)chunkSize;
             }
 
             fs.Position = nextChunk;
         }
 
-        if (data == null || channels == 0 || sampleRate == 0 || sampleRate > int.MaxValue)
+        if (dataStart < 0 || channels == 0 || sampleRate == 0 || sampleRate > int.MaxValue)
             throw new InvalidDataException("Missing or invalid fmt/data chunk.");
         if (format != FormatPcm && format != FormatIeeeFloat)
             throw new InvalidDataException($"Unsupported WAV format tag {format}.");
@@ -112,14 +116,15 @@ public static class WavCodec
             throw new InvalidDataException("The WAV byte rate does not match its sample rate and block alignment.");
 
         int blockAlign = declaredBlockAlign;
-        if (data.Length % blockAlign != 0)
+        if (dataSize % blockAlign != 0)
             throw new InvalidDataException("The WAV data chunk ends in a partial sample frame.");
-        int frameCount = data.Length / blockAlign;
+        int frameCount = dataSize / blockAlign;
         var channelData = new float[channels][];
         for (int channel = 0; channel < channels; channel++)
             channelData[channel] = new float[frameCount];
 
-        Decode(data, format, bits, channels, frameCount, channelData, cancellationToken);
+        fs.Position = dataStart;
+        DecodeStreaming(br, format, bits, channels, blockAlign, frameCount, channelData, cancellationToken);
 
         int sourceBits = format == FormatIeeeFloat ? 32 : Math.Min((int)bits, 32);
         return new AudioDocument(channelData, (int)sampleRate, sourceBits)
@@ -129,24 +134,55 @@ public static class WavCodec
         };
     }
 
-    private static byte[] ReadBytes(
+    /// <summary>
+    /// Decodes the data chunk one whole-frame block at a time, so only a modest
+    /// block buffer is live alongside the float output instead of the entire chunk.
+    /// </summary>
+    private static void DecodeStreaming(
         BinaryReader reader,
-        int count,
+        ushort format,
+        int bits,
+        int channels,
+        int blockAlign,
+        int frames,
+        float[][] destination,
         CancellationToken cancellationToken)
     {
-        var result = new byte[count];
-        int offset = 0;
-        const int blockSize = 1 << 20;
-        while (offset < result.Length)
+        bool supported = format == FormatPcm && bits is 16 or 24 or 32 ||
+                         format == FormatIeeeFloat && bits is 32 or 64;
+        if (!supported)
+            throw new InvalidDataException($"Unsupported sample format: tag {format}, {bits}-bit.");
+        if (frames == 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            int read = reader.Read(result, offset, Math.Min(blockSize, result.Length - offset));
+            return;
+        }
+
+        const int targetBlockBytes = 1 << 20;
+        int framesPerBlock = Math.Max(1, Math.Min(frames, targetBlockBytes / blockAlign));
+        var block = new byte[framesPerBlock * blockAlign];
+
+        for (int frameOffset = 0; frameOffset < frames; frameOffset += framesPerBlock)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int blockFrames = Math.Min(framesPerBlock, frames - frameOffset);
+            FillBlock(reader, block, blockFrames * blockAlign);
+            Decode(block, format, bits, channels, blockFrames, frameOffset, destination, cancellationToken);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private static void FillBlock(BinaryReader reader, byte[] block, int count)
+    {
+        int offset = 0;
+        while (offset < count)
+        {
+            int read = reader.Read(block, offset, count - offset);
             if (read == 0)
                 throw new InvalidDataException("The WAV data chunk is truncated.");
             offset += read;
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        return result;
     }
 
     private static void Decode(
@@ -155,6 +191,7 @@ public static class WavCodec
         int bits,
         int channels,
         int frames,
+        int frameOffset,
         float[][] destination,
         CancellationToken cancellationToken)
     {
@@ -165,7 +202,7 @@ public static class WavCodec
             {
                 if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
                 for (int channel = 0; channel < channels; channel++, offset += 2)
-                    destination[channel][frame] = BitConverter.ToInt16(data, offset) / 32768f;
+                    destination[channel][frameOffset + frame] = BitConverter.ToInt16(data, offset) / 32768f;
             }
         }
         else if (format == FormatPcm && bits == 24)
@@ -176,7 +213,7 @@ public static class WavCodec
                 for (int channel = 0; channel < channels; channel++, offset += 3)
                 {
                     int value = (data[offset + 2] << 24 | data[offset + 1] << 16 | data[offset] << 8) >> 8;
-                    destination[channel][frame] = value / 8388608f;
+                    destination[channel][frameOffset + frame] = value / 8388608f;
                 }
             }
         }
@@ -186,7 +223,7 @@ public static class WavCodec
             {
                 if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
                 for (int channel = 0; channel < channels; channel++, offset += 4)
-                    destination[channel][frame] = BitConverter.ToInt32(data, offset) / 2147483648f;
+                    destination[channel][frameOffset + frame] = BitConverter.ToInt32(data, offset) / 2147483648f;
             }
         }
         else if (format == FormatIeeeFloat && bits == 32)
@@ -195,7 +232,7 @@ public static class WavCodec
             {
                 if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
                 for (int channel = 0; channel < channels; channel++, offset += 4)
-                    destination[channel][frame] = BitConverter.ToSingle(data, offset);
+                    destination[channel][frameOffset + frame] = BitConverter.ToSingle(data, offset);
             }
         }
         else if (format == FormatIeeeFloat && bits == 64)
@@ -204,7 +241,7 @@ public static class WavCodec
             {
                 if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
                 for (int channel = 0; channel < channels; channel++, offset += 8)
-                    destination[channel][frame] = (float)BitConverter.ToDouble(data, offset);
+                    destination[channel][frameOffset + frame] = (float)BitConverter.ToDouble(data, offset);
             }
         }
         else

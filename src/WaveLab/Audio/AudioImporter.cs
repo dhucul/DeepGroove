@@ -65,9 +65,14 @@ public static class AudioImporter
         for (int c = 0; c < channels; c++) ch[c] = new float[frames];
 
         int frame = 0, carryChannel = 0;
-        foreach (var block in blocks)
+        for (int b = 0; b < blocks.Count; b++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            float[] block = blocks[b];
+            // Release each block as it is consumed: the decoded list and the
+            // deinterleaved output would otherwise both be fully rooted, doubling
+            // peak memory on a long import.
+            blocks[b] = null!;
             for (int i = 0; i < block.Length; i++)
             {
                 if (frame >= frames) break;

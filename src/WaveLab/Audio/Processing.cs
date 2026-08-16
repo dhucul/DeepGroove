@@ -1,3 +1,5 @@
+using WaveLab.Audio.Dsp;
+
 namespace WaveLab.Audio;
 
 /// <summary>Destructive processing operations. Each op runs on a copied range and commits via ReplaceRange (undoable).</summary>
@@ -34,28 +36,22 @@ public static class Processing
         {
             if (data.Length == 0 || data[0].Length == 0) return;
 
-            // Simple integrated loudness measurement (K-weighted RMS approximation)
-            double sumSquares = 0;
-            int totalSamples = 0;
-            foreach (var ch in data)
-            {
-                for (int i = 0; i < ch.Length; i++)
-                {
-                    sumSquares += (double)ch[i] * ch[i];
-                    totalSamples++;
-                }
-            }
-
-            double rms = Math.Sqrt(sumSquares / Math.Max(1, totalSamples));
-            double currentLufs = 20 * Math.Log10(Math.Max(1e-9, rms));
+            // BS.1770 integrated loudness: K-weighted, gated, with the standard
+            // offset. An unweighted RMS lands several dB from the stated target.
+            double currentLufs = MeasureIntegratedLufs(data, doc.SampleRate);
+            // No gated block survived (silence, or a range shorter than 400 ms):
+            // there is no measurable loudness to normalize to.
+            if (!double.IsFinite(currentLufs)) return;
             double gainDb = targetLufs - currentLufs;
             float g = (float)Math.Pow(10, gainDb / 20.0);
 
             // Check true-peak after gain
             float truePeak = 0;
-            float prev = 0;
             foreach (var ch in data)
             {
+                // Each channel is its own signal: carrying prev across the channel
+                // boundary invents a peak that exists in neither channel.
+                float prev = 0;
                 for (int i = 0; i < ch.Length; i++)
                 {
                     float s = ch[i] * g;
@@ -75,6 +71,35 @@ public static class Processing
             foreach (var ch in data)
                 for (int i = 0; i < ch.Length; i++) ch[i] *= g;
         });
+    }
+
+    /// <summary>
+    /// Integrated loudness (LUFS) of an offline block, measured by driving the same
+    /// BS.1770 meter the master section uses. Returns negative infinity when no
+    /// block passes the absolute gate.
+    /// </summary>
+    private static double MeasureIntegratedLufs(float[][] data, int sampleRate)
+    {
+        int channels = data.Length;
+        if (channels == 0 || sampleRate <= 0) return double.NegativeInfinity;
+        int frames = data[0].Length;
+        if (frames == 0) return double.NegativeInfinity;
+
+        var meter = new LoudnessMeter();
+        meter.Configure(sampleRate, channels);
+        // The meter consumes interleaved audio; feed it in bounded chunks so the
+        // measurement never allocates a second copy of the whole range.
+        int chunkFrames = Math.Min(frames, 8192);
+        var interleaved = new float[chunkFrames * channels];
+        for (int offset = 0; offset < frames; offset += chunkFrames)
+        {
+            int count = Math.Min(chunkFrames, frames - offset);
+            for (int f = 0; f < count; f++)
+                for (int c = 0; c < channels; c++)
+                    interleaved[f * channels + c] = data[c][offset + f];
+            meter.Process(interleaved, 0, count * channels);
+        }
+        return meter.IntegratedLufs;
     }
 
     public static void FadeIn(AudioDocument doc, int start, int count, int curveType = 0) =>
@@ -102,7 +127,10 @@ public static class Processing
                     // Equal-power crossfade curve
                     double fadeOut = Math.Cos(t * Math.PI / 2);
                     double fadeIn = Math.Sin(t * Math.PI / 2);
-                    ch[i] *= (float)(fadeOut + fadeIn); // unity gain at center
+                    // The pair sums to unity in *power*, and one buffer holds both
+                    // sides of the join. Summing the amplitudes instead would put a
+                    // +3.01 dB bulge at the centre of the window and clip hot material.
+                    ch[i] *= (float)Math.Sqrt(fadeOut * fadeOut + fadeIn * fadeIn);
                 }
             }
         });
@@ -204,15 +232,15 @@ public static class Processing
             {
                 int n = ch.Length;
                 float y0 = ch[0], y1 = ch[n - 1];
-                float d0 = n > 2 ? ch[1] - ch[0] : 0;
-                float d1 = n > 2 ? ch[n - 1] - ch[n - 2] : 0;
                 for (int i = 0; i < n; i++)
                 {
                     float t = (float)i / (n - 1);
                     float t2 = t * t, t3 = t2 * t;
-                    // cubic Hermite bridge between the window's endpoints
-                    float bridge = (2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * d0 * n
-                                 + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * d1 * n;
+                    // Smoothstep between the window's endpoints: monotone, and always
+                    // bounded by [min(y0, y1), max(y0, y1)]. Scaling Hermite tangents
+                    // by the window length turns a one-sample slope into a full-interval
+                    // derivative and overshoots full scale by an order of magnitude.
+                    float bridge = (2 * t3 - 3 * t2 + 1) * y0 + (-2 * t3 + 3 * t2) * y1;
                     // blend strongest at the centre (the actual edit point)
                     float weight = 0.5f - 0.5f * (float)Math.Cos(2 * Math.PI * t);
                     ch[i] = ch[i] * (1 - weight) + bridge * weight;

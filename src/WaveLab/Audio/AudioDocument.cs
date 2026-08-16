@@ -125,7 +125,11 @@ public sealed class AudioDocument
         return result;
     }
 
-    /// <summary>Replace [start, start+removeCount) with newData (may be empty).</summary>
+    /// <summary>
+    /// Replace [start, start+removeCount) with newData (may be empty). The undo
+    /// entry retains <paramref name="newData"/>, so the caller must not mutate it
+    /// after this method returns.
+    /// </summary>
     public void ReplaceRange(int start, int removeCount, float[][] newData, string opName)
     {
         ArgumentNullException.ThrowIfNull(newData);
@@ -137,7 +141,10 @@ public sealed class AudioDocument
         long beforeStateId = _currentStateId;
         long afterStateId = _nextStateId++;
         var oldData = CopyRange(channels, start, removeCount);
-        var edit = new Edit(opName, start, oldData, CloneData(newData), false,
+        // Splice copies out of newData into freshly allocated channels, so the
+        // document never aliases it and the edit can retain the caller's array.
+        // Cloning here would allocate a second full-size copy of every edit.
+        var edit = new Edit(opName, start, oldData, newData, false,
             beforeStateId, afterStateId);
         Splice(channels, start, removeCount, newData);
         _undo.Add(edit);
@@ -350,13 +357,6 @@ public sealed class AudioDocument
             throw new ArgumentOutOfRangeException(nameof(start));
         if (count < 0 || count > length - start)
             throw new ArgumentOutOfRangeException(nameof(count));
-    }
-
-    private static float[][] CloneData(float[][] data)
-    {
-        var copy = new float[data.Length][];
-        for (int i = 0; i < data.Length; i++) copy[i] = (float[])data[i].Clone();
-        return copy;
     }
 
     private sealed record Edit(

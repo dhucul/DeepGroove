@@ -17,6 +17,8 @@ public sealed class PlaybackEngine : IDisposable
     private readonly object _stateLock = new();
     private readonly object _cleanupLock = new();
     private readonly List<Task> _pendingCleanupTasks = [];
+    /// <summary>Upper bound on how long a UI-thread Play/Stop may wait for endpoint teardown.</summary>
+    private static readonly TimeSpan CleanupDrainTimeout = TimeSpan.FromSeconds(2);
     private long _positionClockAccumulatedTicks;
     private long _positionClockStartedAt;
     private bool _positionClockRunning;
@@ -375,8 +377,23 @@ public sealed class PlaybackEngine : IDisposable
                 _pendingCleanupTasks.Clear();
             }
 
-            try { Task.WhenAll(pending).GetAwaiter().GetResult(); }
-            catch { /* DisposeOutput is best-effort; cleanup must not block shutdown. */ }
+            bool completed;
+            // Bounded: Play() and Stop() reach this from the UI thread, and the
+            // queued teardown (WasapiOut.Dispose joins the render thread) is at the
+            // driver's mercy once an endpoint has been invalidated.
+            try { completed = Task.WhenAll(pending).Wait(CleanupDrainTimeout); }
+            catch { completed = true; /* DisposeOutput is best-effort; cleanup must not block shutdown. */ }
+            if (completed) continue;
+
+            // Re-queue whatever is still running so a later Stop/Dispose drains it.
+            lock (_cleanupLock)
+            {
+                foreach (Task task in pending)
+                {
+                    if (!task.IsCompleted) _pendingCleanupTasks.Add(task);
+                }
+            }
+            return;
         }
     }
 

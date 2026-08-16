@@ -28,6 +28,12 @@ public sealed class RecordingEngine : IDisposable
     // 35 minutes of stereo 48 kHz audio—long enough for unusually long LP sides.
     private const long MaxCaptureBytes = 768L * 1024 * 1024;
     private const float DigitalClipLevel = 0.999969f;
+    // Every stop path is reachable from the dispatcher, and the gates can be held
+    // by a finalization that itself needs the dispatcher to make progress
+    // (WasapiCapture posts RecordingStopped to the context it was created on).
+    // No stop may therefore wait on them without a bound.
+    private static readonly TimeSpan StopGateTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan DisposeGateTimeout = TimeSpan.FromSeconds(10);
 
     private CaptureSession? _session;
     private readonly object _sessionLock = new();
@@ -144,7 +150,20 @@ public sealed class RecordingEngine : IDisposable
         int Channels,
         int SampleRate,
         DateTime StoppedAt,
-        string? CaptureNote);
+        string? CaptureNote)
+    {
+        private int _buildClaimed;
+
+        /// <summary>
+        /// Exactly one finalization may flatten a snapshot at a time. This claim is
+        /// what lets the finalize gate be released before the flatten without
+        /// allowing two finalizations over the same captured blocks.
+        /// </summary>
+        public bool TryClaimBuild() => Interlocked.CompareExchange(ref _buildClaimed, 1, 0) == 0;
+
+        /// <summary>Release the claim so a failed or cancelled flatten can be retried.</summary>
+        public void ReleaseBuildClaim() => Interlocked.Exchange(ref _buildClaimed, 0);
+    }
 
     public bool IsRecording
     {
@@ -528,7 +547,13 @@ public sealed class RecordingEngine : IDisposable
 
     private long StartCore(string? deviceId, bool retainAudio)
     {
-        Stop();
+        // Starting over a finalization that is still reading the captured blocks
+        // would corrupt both takes, so this stop must succeed before proceeding.
+        if (!TryStopCore(StopGateTimeout, captureLevelSnapshot: false, out _))
+        {
+            throw new InvalidOperationException(
+                "The previous recording is still being finalized. Try again in a moment.");
+        }
         _pendingCaptureNote = null;
         AppSettings settings = AppSettings.Instance;
         Role role = AudioHardwareOptions.ParseRole(settings.InputDefaultRole, Role.Console);
@@ -887,7 +912,10 @@ public sealed class RecordingEngine : IDisposable
             CaptureSession? session = GetCurrentSession();
             if (session == null || session.Id != sessionId || session.RetainAudio)
                 return null;
-            return StopCore(captureLevelSnapshot: true);
+            // A busy gate means nothing was stopped, so there is no settled result.
+            return TryStopCore(StopGateTimeout, captureLevelSnapshot: true, out RecordingLevelSnapshot? stopped)
+                ? stopped
+                : null;
         }
     }
 
@@ -914,12 +942,25 @@ public sealed class RecordingEngine : IDisposable
         }
         try
         {
+            CaptureSnapshot snapshot;
+            // The gate guards stop/snapshot only. Holding it across the flatten
+            // below would park every other stop path — including the dispatcher,
+            // which NAudio needs in order to post RecordingStopped — for the whole
+            // flatten of up to 768 MiB.
             await _finalizeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var snapshot = await StopAndSnapshotAsync(expectedSessionId).ConfigureAwait(false);
-                if (snapshot == null) return null;
+                CaptureSnapshot? stopped = await StopAndSnapshotAsync(expectedSessionId).ConfigureAwait(false);
+                if (stopped == null) return null;
+                // Another finalization is already flattening these blocks; it owns
+                // the resulting document, exactly as when it had held the gate.
+                if (!stopped.TryClaimBuild()) return null;
+                snapshot = stopped;
+            }
+            finally { _finalizeGate.Release(); }
 
+            try
+            {
                 // Do not clear the pending snapshot until construction succeeds. An
                 // allocation failure or cancellation can therefore be retried without
                 // losing the audio blocks that were already captured.
@@ -933,7 +974,7 @@ public sealed class RecordingEngine : IDisposable
                 }
                 return document;
             }
-            finally { _finalizeGate.Release(); }
+            finally { snapshot.ReleaseBuildClaim(); }
         }
         finally
         {
@@ -1068,22 +1109,37 @@ public sealed class RecordingEngine : IDisposable
         return document;
     }
 
+    /// <summary>
+    /// Stop and discard the current capture. Best-effort: when a finalization is in
+    /// flight it is already tearing the same capture down, and waiting for it here
+    /// would park the dispatcher that finalization needs.
+    /// </summary>
     public void Stop()
     {
         lock (_lifecycleLock)
         {
             if (Volatile.Read(ref _disposed) != 0) return;
-            StopCore();
+            TryStopCore(StopGateTimeout, captureLevelSnapshot: false, out _);
         }
     }
 
-    private RecordingLevelSnapshot? StopCore(bool captureLevelSnapshot = false)
+    /// <summary>
+    /// Stop and discard the current capture. Returns false — without stopping
+    /// anything — when a finalization still holds the gates: it is already tearing
+    /// the capture down, and blocking the dispatcher here is what would prevent it
+    /// from completing.
+    /// </summary>
+    private bool TryStopCore(
+        TimeSpan timeout,
+        bool captureLevelSnapshot,
+        out RecordingLevelSnapshot? levelSnapshot)
     {
+        levelSnapshot = null;
         RecordingLevelSnapshot? finalLevelSnapshot = null;
-        _finalizeGate.Wait();
+        if (!_finalizeGate.Wait(timeout)) return false;
         try
         {
-            _stopGate.Wait();
+            if (!_stopGate.Wait(timeout)) return false;
             try
             {
                 // This is the explicit discard path. WasapiCapture posts its
@@ -1120,7 +1176,8 @@ public sealed class RecordingEngine : IDisposable
             finally { _stopGate.Release(); }
         }
         finally { _finalizeGate.Release(); }
-        return finalLevelSnapshot;
+        levelSnapshot = finalLevelSnapshot;
+        return true;
     }
 
     public void Dispose()
@@ -1128,11 +1185,20 @@ public sealed class RecordingEngine : IDisposable
         lock (_lifecycleLock)
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            // Shutdown runs on the dispatcher, and a finalization can be waiting on
+            // work posted to it. Give in-flight finalizations a bounded chance to
+            // finish rather than hanging the close.
+            long deadline = Environment.TickCount64 + (long)DisposeGateTimeout.TotalMilliseconds;
             while (_activeFinalizations != 0)
-                Monitor.Wait(_lifecycleLock);
+            {
+                long remaining = deadline - Environment.TickCount64;
+                if (remaining <= 0 || !Monitor.Wait(_lifecycleLock, (int)Math.Min(int.MaxValue, remaining)))
+                    break;
+            }
+            bool finalizationsQuiescent = _activeFinalizations == 0;
             try
             {
-                StopCore();
+                TryStopCore(DisposeGateTimeout, captureLevelSnapshot: false, out _);
             }
             finally
             {
@@ -1142,8 +1208,14 @@ public sealed class RecordingEngine : IDisposable
                 try { _inputMonitor.Dispose(); }
                 finally
                 {
-                    try { _stopGate.Dispose(); }
-                    finally { _finalizeGate.Dispose(); }
+                    // A finalization that outlived the wait above still releases
+                    // these gates. Disposing them from under it would throw on its
+                    // thread; a managed SemaphoreSlim left to the GC costs nothing.
+                    if (finalizationsQuiescent)
+                    {
+                        try { _stopGate.Dispose(); }
+                        finally { _finalizeGate.Dispose(); }
+                    }
                 }
             }
         }

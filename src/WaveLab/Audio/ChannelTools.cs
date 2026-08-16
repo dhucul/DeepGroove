@@ -41,13 +41,20 @@ public static class ChannelTools
 
     public static AudioDocument MonoMixdown(AudioDocument doc)
     {
+        // This runs on a background thread against the live document. Take a
+        // point-in-time snapshot and derive every bound from it: an edit publishing
+        // a longer array mid-loop would otherwise grow the loop bound while the
+        // destination stays sized from before.
+        float[][] source = [.. doc.Channels];
+        int channelCount = source.Length;
+        int length = channelCount == 0 ? 0 : source[0].Length;
         var mono = new float[1][];
-        mono[0] = new float[doc.Length];
-        for (int i = 0; i < doc.Length; i++)
+        mono[0] = new float[length];
+        for (int i = 0; i < length; i++)
         {
             float v = 0;
-            for (int c = 0; c < doc.ChannelCount; c++) v += doc.Channels[c][i];
-            mono[0][i] = v / doc.ChannelCount;
+            for (int c = 0; c < channelCount; c++) v += source[c][i];
+            mono[0][i] = v / channelCount;
         }
         // Averaging channels creates values between the source PCM quantization
         // steps. Mark the result as float-derived so later 16-bit CD export dithers it.

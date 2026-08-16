@@ -18,7 +18,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
     private string? _lastError;
 
     public bool Enabled { get { lock (_sync) return _enabled; } }
-    public bool IsActive { get { lock (_sync) return _session != null; } }
+    public bool IsActive => Volatile.Read(ref _session) != null;
     public string? LastError { get { lock (_sync) return _lastError; } }
 
     public void SetEnabled(bool enabled)
@@ -41,7 +41,9 @@ internal sealed class SoftwareInputMonitor : IDisposable
             try
             {
                 MonitorSession session = MonitorSession.Start(inputFormat, OnSessionStopped);
-                _session = session;
+                // Published for the capture thread, which reads _session without
+                // ever taking _sync (this lock is held across device open/teardown).
+                Volatile.Write(ref _session, session);
                 _lastError = null;
                 // With no synchronization context, WasapiOut can report a worker-
                 // thread failure before Start returns and before _session is set.
@@ -66,8 +68,8 @@ internal sealed class SoftwareInputMonitor : IDisposable
     /// <summary>Call while holding <see cref="_sync"/>.</summary>
     private void FailSessionCore(MonitorSession session, Exception? error)
     {
-        if (!ReferenceEquals(_session, session)) return;
-        _session = null;
+        if (!ReferenceEquals(Volatile.Read(ref _session), session)) return;
+        Volatile.Write(ref _session, null);
         _enabled = false;
         _lastError = error?.Message ?? "The monitoring output stopped unexpectedly.";
 
@@ -79,18 +81,31 @@ internal sealed class SoftwareInputMonitor : IDisposable
         }, session);
     }
 
+    /// <summary>
+    /// Called from NAudio's capture thread for every buffer. It must never wait on
+    /// <see cref="_sync"/>, which is held across WASAPI device open and teardown:
+    /// stalling here overruns the endpoint buffer and drops recorded audio.
+    /// </summary>
     public void Enqueue(float[] samples, int count)
     {
-        lock (_sync)
+        MonitorSession? session = Volatile.Read(ref _session);
+        if (session == null) return;
+        try { session.Enqueue(samples, count); }
+        catch (Exception ex)
         {
-            if (_session == null) return;
-            try { _session.Enqueue(samples, count); }
-            catch (Exception ex)
+            // Drop the failed session without blocking, so later capture buffers
+            // return immediately, then hand the teardown to a worker.
+            if (!ReferenceEquals(Interlocked.CompareExchange(ref _session, null, session), session)) return;
+            ThreadPool.QueueUserWorkItem(static state =>
             {
-                _lastError = ex.Message;
-                _enabled = false;
-                StopSession();
-            }
+                var (monitor, failed, message) = ((SoftwareInputMonitor, MonitorSession, string))state!;
+                lock (monitor._sync)
+                {
+                    monitor._lastError = message;
+                    monitor._enabled = false;
+                }
+                try { failed.Dispose(); } catch { }
+            }, (this, session, ex.Message));
         }
     }
 
@@ -102,8 +117,8 @@ internal sealed class SoftwareInputMonitor : IDisposable
 
     private void StopSession()
     {
-        MonitorSession? session = _session;
-        _session = null;
+        MonitorSession? session = Volatile.Read(ref _session);
+        Volatile.Write(ref _session, null);
         if (session == null) return;
         try { session.Dispose(); } catch { }
     }

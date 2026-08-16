@@ -127,14 +127,14 @@ public static class AiffCodec
         if (expectedLength > Array.MaxLength)
             throw new InvalidDataException("The AIFF sound-data chunk is too large to load into memory.");
 
-        stream.Position = soundPosition;
-        byte[] data = ReadBytes(reader, (int)expectedLength, cancellationToken);
         int frames = (int)declaredFrames;
         var channelData = new float[channels][];
         for (int channel = 0; channel < channels; channel++)
             channelData[channel] = new float[frames];
-        Decode(data, bits, channels, frames, floatingPoint, littleEndian, unsigned8Bit, channelData,
-            cancellationToken);
+
+        stream.Position = soundPosition;
+        DecodeStreaming(reader, bits, channels, blockAlign, frames, floatingPoint, littleEndian,
+            unsigned8Bit, channelData, cancellationToken);
 
         int sourceBits = floatingPoint ? 32 : bits <= 16 ? 16 : bits;
         return new AudioDocument(channelData, sampleRate, sourceBits)
@@ -289,24 +289,54 @@ public static class AiffCodec
         progress?.Report(1);
     }
 
-    private static byte[] ReadBytes(
+    /// <summary>
+    /// Decodes the sound data one whole-frame block at a time, so only a modest
+    /// block buffer is live alongside the float output instead of the entire chunk.
+    /// </summary>
+    private static void DecodeStreaming(
         BinaryReader reader,
-        int count,
+        int bits,
+        int channels,
+        int blockAlign,
+        int frames,
+        bool floatingPoint,
+        bool littleEndian,
+        bool unsigned8Bit,
+        float[][] destination,
         CancellationToken cancellationToken)
     {
-        var result = new byte[count];
-        int offset = 0;
-        const int blockSize = 1 << 20;
-        while (offset < result.Length)
+        if (frames == 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            int read = reader.Read(result, offset, Math.Min(blockSize, result.Length - offset));
+            return;
+        }
+
+        const int targetBlockBytes = 1 << 20;
+        int framesPerBlock = Math.Max(1, Math.Min(frames, targetBlockBytes / blockAlign));
+        var block = new byte[framesPerBlock * blockAlign];
+
+        for (int frameOffset = 0; frameOffset < frames; frameOffset += framesPerBlock)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int blockFrames = Math.Min(framesPerBlock, frames - frameOffset);
+            FillBlock(reader, block, blockFrames * blockAlign);
+            Decode(block, bits, channels, blockFrames, frameOffset, floatingPoint, littleEndian,
+                unsigned8Bit, destination, cancellationToken);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private static void FillBlock(BinaryReader reader, byte[] block, int count)
+    {
+        int offset = 0;
+        while (offset < count)
+        {
+            int read = reader.Read(block, offset, count - offset);
             if (read == 0)
                 throw new InvalidDataException("The AIFF sound-data chunk is truncated.");
             offset += read;
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        return result;
     }
 
     private static void Decode(
@@ -314,6 +344,7 @@ public static class AiffCodec
         int bits,
         int channels,
         int frames,
+        int frameOffset,
         bool floatingPoint,
         bool littleEndian,
         bool unsigned8Bit,
@@ -366,7 +397,7 @@ public static class AiffCodec
                     sample = unchecked((int)value) / 2147483648f;
                     offset += 4;
                 }
-                destination[channel][frame] = sample;
+                destination[channel][frameOffset + frame] = sample;
             }
         }
         cancellationToken.ThrowIfCancellationRequested();
