@@ -107,6 +107,10 @@ public sealed class AudioDocument
 
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
+
+    /// <summary>Retained history depth, for budget diagnostics and tests.</summary>
+    internal int UndoDepth => _undo.Count;
+    internal int RedoDepth => _redo.Count;
     public string? NextUndoName => _undo.Count > 0 ? _undo[^1].Name : null;
     public string? NextRedoName => _redo.Count > 0 ? _redo[^1].Name : null;
 
@@ -197,6 +201,8 @@ public sealed class AudioDocument
         else
             Splice(e.Start, insertedLen, e.Old);
         _redo.Add(e);
+        // Undo moved an edit rather than releasing it, so the budget has to be re-checked here too.
+        EnforceUndoBudget();
         _currentStateId = e.BeforeStateId;
         UpdateDirtyFromSavepoint();
         EditVersion++;
@@ -220,20 +226,42 @@ public sealed class AudioDocument
         Changed?.Invoke(e.Start, oldLen, e.New.Length == 0 ? 0 : e.New[0].Length);
     }
 
+    private static long EditBytes(Edit edit)
+    {
+        long samples = 0;
+        foreach (var channel in edit.Old) samples += channel.Length;
+        foreach (var channel in edit.New) samples += channel.Length;
+        return samples * sizeof(float);
+    }
+
+    /// <summary>
+    /// Keeps the retained history inside <see cref="UndoBudgetBytes"/>, which is a per-document
+    /// figure: several open tabs each hold up to that much.
+    /// </summary>
+    /// <remarks>
+    /// Both stacks count. Undoing does not free an edit, it moves it to the redo stack, so an
+    /// accounting that looked only at <c>_undo</c> — as this did — reported a document as being
+    /// inside its budget while undoing repeatedly grew memory without limit. Redo is also the side
+    /// to give up first: it is only reachable once the user has already stepped backwards, so
+    /// dropping the far end of the forward chain costs less than throwing away undo history.
+    /// </remarks>
     private void EnforceUndoBudget()
     {
-        static long Bytes(Edit e)
-        {
-            long n = 0;
-            foreach (var ch in e.Old) n += ch.Length;
-            foreach (var ch in e.New) n += ch.Length;
-            return n * sizeof(float);
-        }
         long total = 0;
-        for (int i = _undo.Count - 1; i >= 0; i--) total += Bytes(_undo[i]);
+        for (int i = 0; i < _undo.Count; i++) total += EditBytes(_undo[i]);
+        for (int i = 0; i < _redo.Count; i++) total += EditBytes(_redo[i]);
+        if (total <= UndoBudgetBytes) return;
+
+        // _redo[0] is the furthest-future edit, so trimming from the front keeps the next redo step
+        // available for as long as possible.
+        int dropped = 0;
+        while (dropped < _redo.Count && total > UndoBudgetBytes)
+            total -= EditBytes(_redo[dropped++]);
+        if (dropped > 0) _redo.RemoveRange(0, dropped);
+
         while (_undo.Count > 1 && total > UndoBudgetBytes)
         {
-            total -= Bytes(_undo[0]);
+            total -= EditBytes(_undo[0]);
             _undo.RemoveAt(0);
         }
     }
