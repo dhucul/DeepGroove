@@ -24,8 +24,7 @@ public sealed class StereoWidthEffect : EffectBase
     private double _sideEnergy;
     private double _safetyGain = 1;
     private double _correlation = 1;
-    private Biquad[] _splitLowPass = [];
-    private Biquad[] _splitHighPass = [];
+    private Biquad _sideSplit;   // SPLIT FREQ low band of the side signal
     private float[] _haasDelayLine = [];
     private int _haasWritePos;
 
@@ -36,22 +35,15 @@ public sealed class StereoWidthEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        _splitLowPass = new Biquad[ChannelCount];
-        _splitHighPass = new Biquad[ChannelCount];
         _haasDelayLine = new float[Math.Max(32, (int)(SampleRate * 0.02) + 2)];
         RebuildSplitFilters();
     }
 
     private void RebuildSplitFilters()
     {
-        if (_splitLowPass.Length != ChannelCount || _splitHighPass.Length != ChannelCount) return;
-
-        double splitFreq = GetParam("splitFreq");
-        for (int c = 0; c < ChannelCount; c++)
-        {
-            _splitLowPass[c] = Biquad.LowPass12Db(SampleRate, splitFreq);
-            _splitHighPass[c] = Biquad.HighPass12Db(SampleRate, splitFreq);
-        }
+        // In-place coefficient update: a whole-struct rebuild would discard the
+        // split filter's delay-line state on every unrelated parameter tick.
+        _sideSplit.CopyCoefficientsFrom(Biquad.LowPass12Db(SampleRate, GetParam("splitFreq")));
     }
 
     protected override void OnParamsChanged() => RebuildSplitFilters();
@@ -65,8 +57,7 @@ public sealed class StereoWidthEffect : EffectBase
         _correlation = 1;
         _haasWritePos = 0;
         Array.Clear(_haasDelayLine);
-        foreach (var f in _splitLowPass) f.Reset();
-        foreach (var f in _splitHighPass) f.Reset();
+        _sideSplit.Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
@@ -111,22 +102,25 @@ public sealed class StereoWidthEffect : EffectBase
                 continue;
             }
 
-            // Per-band M/S processing
-            double lowSidePart, highSidePart;
+            // MONO BASS: collapse the side content below the cutoff to mono.
+            double bandSide = side;
             if (monoBass > 0)
             {
                 _lowSide += bassAlpha * (side - _lowSide);
-                lowSidePart = _lowSide * lowWidth;
-                highSidePart = (side - _lowSide) * width;
+                bandSide = side - _lowSide;
             }
             else
             {
-                _lowSide = side;
-                lowSidePart = side * lowWidth;
-                highSidePart = side * width;
+                _lowSide = 0;
             }
 
-            double candidateSide = lowSidePart + highSidePart;
+            // Per-band M/S processing at SPLIT FREQ: LOW WIDTH below, WIDTH above.
+            // The high band is the residual, so the two bands sum back to the side
+            // signal exactly — a filtered low + filtered high pair would notch at
+            // the crossover whenever the two widths match.
+            double lowSidePart = _sideSplit.Process((float)bandSide);
+            double highSidePart = bandSide - lowSidePart;
+            double candidateSide = lowSidePart * lowWidth + highSidePart * width;
 
             _midEnergy = energyCoefficient * _midEnergy + (1 - energyCoefficient) * mid * mid;
             _sideEnergy = energyCoefficient * _sideEnergy + (1 - energyCoefficient) * candidateSide * candidateSide;

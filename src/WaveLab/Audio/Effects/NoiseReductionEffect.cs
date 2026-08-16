@@ -100,9 +100,19 @@ public sealed class NoiseReductionEffect : EffectBase
         ResetSpectralState();
     }
 
+    /// <summary>Full reset, including the learned profile (rate/channel changes invalidate it).</summary>
     private void ResetSpectralState()
     {
+        ResetStreamState();
         Array.Clear(_noiseProfile);
+        _noiseProfileFrames = 0;
+        _learning = false;
+        Volatile.Write(ref _spectralActive, 0);
+    }
+
+    /// <summary>Streaming state only: rings, OLA accumulators, positions, pipeline delay.</summary>
+    private void ResetStreamState()
+    {
         Array.Clear(_learnBuf);
         _learnPos = 0;
         foreach (var ring in _specIn) Array.Clear(ring);
@@ -115,10 +125,6 @@ public sealed class NoiseReductionEffect : EffectBase
         _specOlaRead = 0;
         _specOlaWrite = 0;
         _specPipelineDelay = FftSize + HopSize;
-        _noiseProfileFrames = 0;
-        _learning = false;
-        Volatile.Write(ref _spectralActive, 0);
-
     }
 
     public override void ResetState()
@@ -128,7 +134,12 @@ public sealed class NoiseReductionEffect : EffectBase
         _noiseGain = 1;
         _hissGain = 1;
         _reductionReadout = 0;
-        if (_specIn.Length == ChannelCount) ResetSpectralState();
+        // The learned noise profile is captured user data, not processing state:
+        // ResetState is documented to clear delay lines and envelopes without
+        // touching parameters, and the master section calls it on every transport
+        // start. Discarding the profile here silently turned SPECTRAL NR into a
+        // no-op and dropped LatencySamples from a full frame to 0 mid-render.
+        if (_specIn.Length == ChannelCount) ResetStreamState();
     }
 
     public override void Process(float[] buffer, int offset, int count)
@@ -171,8 +182,13 @@ public sealed class NoiseReductionEffect : EffectBase
         bool spectralActive = spectralEnabled && !_learning && _noiseProfileFrames > 10;
         Volatile.Write(ref _spectralActive, spectralActive ? 1 : 0);
 
+        // Fully-reduced gains are block constants: computing them per frame cost a
+        // Math.Pow apiece. The readout tracks the linear minimum and converts once.
+        double fullNoiseGain = Math.Pow(10, -noiseReduction / 20.0);
+        double fullHissGain = Math.Pow(10, -hissReduction / 20.0);
+
         int frames = count / ChannelCount;
-        double maximumReduction = 0;
+        double minimumGain = 1;
 
         for (int frame = 0; frame < frames; frame++)
         {
@@ -185,8 +201,8 @@ public sealed class NoiseReductionEffect : EffectBase
             _envelope = detectorCoefficient * _envelope + (1 - detectorCoefficient) * peak;
             double levelDb = 20 * Math.Log10(Math.Max(1e-9, _envelope));
             double depth = Math.Clamp((threshold - levelDb) / 24.0, 0, 1);
-            double targetNoiseGain = Math.Pow(10, -noiseReduction * depth / 20.0);
-            double targetHissGain = Math.Pow(10, -hissReduction * depth / 20.0);
+            double targetNoiseGain = 1 + (fullNoiseGain - 1) * depth;
+            double targetHissGain = 1 + (fullHissGain - 1) * depth;
 
             double noiseCoefficient = targetNoiseGain > _noiseGain ? openCoefficient : closeCoefficient;
             double hissCoefficient = targetHissGain > _hissGain ? openCoefficient : closeCoefficient;
@@ -201,8 +217,7 @@ public sealed class NoiseReductionEffect : EffectBase
                 buffer[index + channel] = (float)((_hissLowPass[channel] + high * _hissGain) * _noiseGain);
             }
 
-            double currentReduction = -20 * Math.Log10(Math.Max(1e-9, _noiseGain));
-            if (currentReduction > maximumReduction) maximumReduction = currentReduction;
+            if (_noiseGain < minimumGain) minimumGain = _noiseGain;
 
             // --- spectral stage (learned profile, per channel, WOLA) ---
             if (spectralActive)
@@ -253,7 +268,7 @@ public sealed class NoiseReductionEffect : EffectBase
             }
         }
 
-        _reductionReadout = maximumReduction;
+        _reductionReadout = -20 * Math.Log10(Math.Max(1e-9, minimumGain));
     }
 
     /// <summary>Window + FFT one input frame and fold its magnitudes into the profile.</summary>

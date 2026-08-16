@@ -35,7 +35,10 @@ public sealed class LimiterEffect : EffectBase
         _limiter.Oversample = GetParam("oversample") > 0.5;
     }
 
-    public override void ResetState() => _limiter.Configure(SampleRate, ChannelCount);
+    // Clear the existing buffers instead of reconfiguring: Configure reallocates
+    // the whole lookahead/oversampling working set, and the master section calls
+    // ResetState on every transport start and rack toggle.
+    public override void ResetState() => _limiter.Reset();
 
     public override void Process(float[] buffer, int offset, int count)
     {

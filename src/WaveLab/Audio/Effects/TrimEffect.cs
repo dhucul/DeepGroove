@@ -57,10 +57,12 @@ public sealed class TrimEffect : EffectBase
         double degrees = GetParam("phaseRotate");
         // Phase rotation via all-pass filter at ~600Hz with Q adjusted for phase shift
         double q = degrees > 1 ? 0.3 + degrees / 180.0 * 1.5 : 0;
-        for (int c = 0; c < ChannelCount; c++)
-            _phaseAllPass[c] = degrees > 1
-                ? Biquad.AllPass(SampleRate, 600, q)
-                : Biquad.Identity();
+        // In-place coefficient update: a whole-struct rebuild would discard the
+        // all-pass delay line on every unrelated parameter tick.
+        Biquad proto = degrees > 1
+            ? Biquad.AllPass(SampleRate, 600, q)
+            : Biquad.Identity();
+        for (int c = 0; c < ChannelCount; c++) _phaseAllPass[c].CopyCoefficientsFrom(proto);
     }
 
     protected override void OnParamsChanged()
@@ -76,11 +78,14 @@ public sealed class TrimEffect : EffectBase
         _currentGain = _targetGain;
         _currentMidGain = _targetMidGain;
         _currentSideGain = _targetSideGain;
-        foreach (var f in _phaseAllPass) f.Reset();
+        // Indexed, not foreach: Biquad is a struct, so foreach would reset copies.
+        for (int c = 0; c < _phaseAllPass.Length; c++) _phaseAllPass[c].Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
+        if (_phaseAllPass.Length != ChannelCount) return;
+
         double smoothing = 1 - Math.Exp(-1.0 / (SampleRate * 0.005));
         bool invertL = GetParam("polarityL") > 0.5;
         bool invertR = GetParam("polarityR") > 0.5;
@@ -95,44 +100,38 @@ public sealed class TrimEffect : EffectBase
 
             int index = offset + frame * ChannelCount;
 
+            // MODE is a routing stage only. The gain / polarity / phase stage below
+            // always runs, so GAIN and Ø are not silently dropped in M/S or SWAP —
+            // and the all-pass keeps being fed, so switching modes cannot resume
+            // from a stale delay line.
             if (mode == 2 && ChannelCount >= 2)
             {
                 // Channel swap
-                float tmp = buffer[index];
-                buffer[index] = buffer[index + 1];
-                buffer[index + 1] = tmp;
+                (buffer[index], buffer[index + 1]) = (buffer[index + 1], buffer[index]);
             }
             else if (mode == 1 && ChannelCount >= 2)
             {
                 // M/S mode
                 double left = buffer[index];
                 double right = buffer[index + 1];
-                double mid = (left + right) * 0.5;
-                double side = (left - right) * 0.5;
-
-                mid *= (float)_currentMidGain;
-                side *= (float)_currentSideGain;
+                double mid = (left + right) * 0.5 * _currentMidGain;
+                double side = (left - right) * 0.5 * _currentSideGain;
 
                 buffer[index] = (float)(mid + side);
                 buffer[index + 1] = (float)(mid - side);
             }
-            else
+
+            float gain = (float)_currentGain;
+            for (int channel = 0; channel < ChannelCount; channel++)
             {
-                // L/R mode
-                float gain = (float)_currentGain;
-                for (int channel = 0; channel < ChannelCount; channel++)
-                {
-                    float sample = buffer[index + channel] * gain;
+                float sample = buffer[index + channel] * gain;
 
-                    // Polarity invert
-                    if (channel == 0 && invertL) sample = -sample;
-                    if (channel == 1 && invertR) sample = -sample;
+                // Polarity invert
+                if (channel == 0 && invertL) sample = -sample;
+                if (channel == 1 && invertR) sample = -sample;
 
-                    // Phase rotation
-                    sample = _phaseAllPass[channel].Process(sample);
-
-                    buffer[index + channel] = sample;
-                }
+                // Phase rotation
+                buffer[index + channel] = _phaseAllPass[channel].Process(sample);
             }
         }
     }

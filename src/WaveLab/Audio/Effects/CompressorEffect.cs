@@ -65,10 +65,12 @@ public sealed class CompressorEffect : EffectBase
         if (_sidechainHpf.Length != ChannelCount) return;
 
         double hpfFreq = GetParam("scHpf");
-        for (int c = 0; c < ChannelCount; c++)
-            _sidechainHpf[c] = hpfFreq > 25
-                ? Biquad.FirstOrderHighPass(SampleRate, hpfFreq)
-                : Biquad.Identity();
+        // In-place coefficient update: a whole-struct rebuild would zero the
+        // detector filter's delay line on every unrelated parameter tick.
+        Biquad proto = hpfFreq > 25
+            ? Biquad.FirstOrderHighPass(SampleRate, hpfFreq)
+            : Biquad.Identity();
+        for (int c = 0; c < ChannelCount; c++) _sidechainHpf[c].CopyCoefficientsFrom(proto);
     }
 
     protected override void OnParamsChanged() => RebuildSidechain();
@@ -81,7 +83,8 @@ public sealed class CompressorEffect : EffectBase
         _autoMakeupDb = 0;
         foreach (var buf in _lookaheadBuf) Array.Clear(buf);
         _lookaheadPos = 0;
-        foreach (var f in _sidechainHpf) f.Reset();
+        // Indexed, not foreach: Biquad is a struct, so foreach would reset copies.
+        for (int c = 0; c < _sidechainHpf.Length; c++) _sidechainHpf[c].Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
@@ -106,6 +109,13 @@ public sealed class CompressorEffect : EffectBase
         // RMS detector time constant (~10 ms) and auto-makeup follower (~0.5 s)
         double msCoeff = Math.Exp(-1.0 / (SampleRate * 0.010));
         double makeupCoeff = Math.Exp(-1.0 / (SampleRate * 0.5));
+
+        // Block-invariant terms hoisted out of the sample loop: the makeup gain and
+        // the two ends of the auto-release range (interpolated per frame below).
+        double makeupLin = Math.Pow(10, makeupDb / 20.0);
+        double relFast = autoRelease
+            ? Math.Exp(-1.0 / (SampleRate * releaseMs * 0.3 / 1000.0))
+            : relCoeff;
 
         int frames = count / ChannelCount;
         double maxGr = 0;
@@ -146,8 +156,7 @@ public sealed class CompressorEffect : EffectBase
             if (autoRelease)
             {
                 double crestFactor = inDb - _envDb;
-                double adaptiveReleaseMs = releaseMs * (0.3 + 0.7 * Math.Clamp(crestFactor / 12.0, 0, 1));
-                relCoeffEff = Math.Exp(-1.0 / (SampleRate * adaptiveReleaseMs / 1000.0));
+                relCoeffEff = relFast + (relCoeff - relFast) * Math.Clamp(crestFactor / 12.0, 0, 1);
             }
             _envDb = inDb > _envDb
                 ? attCoeff * _envDb + (1 - attCoeff) * inDb
@@ -183,7 +192,7 @@ public sealed class CompressorEffect : EffectBase
             else
                 _autoMakeupDb = 0;
 
-            float gain = (float)(Math.Pow(10, (_autoMakeupDb - grDb) / 20.0) * Math.Pow(10, makeupDb / 20.0));
+            float gain = (float)(Math.Pow(10, (_autoMakeupDb - grDb) / 20.0) * makeupLin);
 
             // --- lookahead delay (true passthrough at 0 ms) ---
             for (int c = 0; c < ChannelCount; c++)

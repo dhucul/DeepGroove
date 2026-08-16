@@ -36,34 +36,29 @@ public sealed class EqEffect : EffectBase
         new("highQ", "HIGH Q", 0.3, 2, 0.707, EffectParam.Plain),
     ];
 
-    private readonly object _lock = new();
-    private Biquad[][] _filters = [];
+    private Biquad[][] _filters = [];      // audio-thread state only
+    private Biquad[] _bandCoefficients = []; // immutable snapshot published to the audio thread
     private const int BandCount = 5;
 
     public override string TypeId => "eq";
     public override string DisplayName => "Parametric EQ";
     public override IReadOnlyList<EffectParam> Params => P;
 
+    protected override void OnConfigure()
+    {
+        _filters = new Biquad[BandCount][];
+        for (int b = 0; b < BandCount; b++)
+            _filters[b] = new Biquad[ChannelCount];
+    }
+
     protected override void OnParamsChanged()
     {
-        lock (_lock)
-        {
-            if (_filters.Length != BandCount || _filters[0].Length != ChannelCount)
-            {
-                _filters = new Biquad[BandCount][];
-                for (int b = 0; b < BandCount; b++)
-                    _filters[b] = new Biquad[ChannelCount];
-            }
-
-            // Update coefficients in place: preserving each biquad's delay-line
-            // state keeps live sweeps free of clicks and zipper noise.
-            for (int b = 0; b < BandCount; b++)
-            {
-                Biquad updated = BuildBand(b);
-                for (int c = 0; c < ChannelCount; c++)
-                    _filters[b][c].CopyCoefficientsFrom(updated);
-            }
-        }
+        // Publish a fresh snapshot rather than taking a lock the audio thread also
+        // needs: a monitor is not priority-inheriting, so a preempted UI thread
+        // could stall the render callback for a whole scheduler quantum.
+        var updated = new Biquad[BandCount];
+        for (int b = 0; b < BandCount; b++) updated[b] = BuildBand(b);
+        Volatile.Write(ref _bandCoefficients, updated);
     }
 
 
@@ -81,26 +76,33 @@ public sealed class EqEffect : EffectBase
 
     public override void ResetState()
     {
-        lock (_lock)
-            foreach (var band in _filters)
-                for (int c = 0; c < band.Length; c++)
-                    band[c].Reset();
+        var filters = _filters;
+        foreach (var band in filters)
+            for (int c = 0; c < band.Length; c++)
+                band[c].Reset();
     }
 
 
     public override void Process(float[] buffer, int offset, int count)
     {
-        lock (_lock)
+        var filters = _filters;
+        var coefficients = Volatile.Read(ref _bandCoefficients);
+        if (filters.Length != BandCount || coefficients.Length != BandCount) return;
+        if (filters[0].Length != ChannelCount) return;
+
+        // Copy the published coefficients in once per block. Preserving each
+        // biquad's delay-line state keeps live sweeps free of clicks and zipper noise.
+        for (int b = 0; b < BandCount; b++)
+            for (int c = 0; c < ChannelCount; c++)
+                filters[b][c].CopyCoefficientsFrom(coefficients[b]);
+
+        for (int i = offset; i < offset + count; i++)
         {
-            if (_filters.Length == 0) return;
-            for (int i = offset; i < offset + count; i++)
-            {
-                int c = (i - offset) % ChannelCount;
-                float v = buffer[i];
-                for (int b = 0; b < BandCount; b++)
-                    v = _filters[b][c].Process(v);
-                buffer[i] = v;
-            }
+            int c = (i - offset) % ChannelCount;
+            float v = buffer[i];
+            for (int b = 0; b < BandCount; b++)
+                v = filters[b][c].Process(v);
+            buffer[i] = v;
         }
     }
 }

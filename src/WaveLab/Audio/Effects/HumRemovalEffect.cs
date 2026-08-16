@@ -19,9 +19,12 @@ public sealed class HumRemovalEffect : EffectBase
         new("dynamic", "DYNAMIC", 0, 1, 0, v => v > 0.5 ? "ON" : "OFF"),
     ];
 
+    private const int MaxHarmonics = 12; // the HARMONICS parameter maximum
+
     private Biquad[][] _notches = [];
     private int _activeHarmonics;
     private double _detectedFundamental = 60;
+    private double _appliedFundamental = 60; // the frequency the notch bank is tuned to
     private double _fundamentalConfidence;
     private double[] _harmonicEnergy = [];
     private double[] _harmonicSmoothing = [];
@@ -55,15 +58,35 @@ public sealed class HumRemovalEffect : EffectBase
         for (int harmonic = 1; harmonic <= requested; harmonic++)
             if (effectiveFreq * harmonic < SampleRate * 0.475) active++;
 
-        var rebuilt = new Biquad[ChannelCount][];
-        for (int channel = 0; channel < ChannelCount; channel++)
+        // Reuse the bank and copy coefficients in: rebuilding whole structs would
+        // discard every notch's delay-line state mid-stream, and the auto-detector
+        // calls this from the audio thread, where allocating is not allowed. The
+        // bank is always sized for the maximum harmonic count so its shape is fixed.
+        var bank = Volatile.Read(ref _notches);
+        bool rebuilt = bank.Length != ChannelCount || bank.Length == 0 || bank[0].Length != MaxHarmonics;
+        if (rebuilt)
         {
-            rebuilt[channel] = new Biquad[active];
-            for (int harmonic = 1; harmonic <= active; harmonic++)
-                rebuilt[channel][harmonic - 1] = Biquad.Notch(SampleRate, effectiveFreq * harmonic, q);
+            bank = new Biquad[ChannelCount][];
+            for (int channel = 0; channel < ChannelCount; channel++)
+                bank[channel] = new Biquad[MaxHarmonics];
         }
-        _activeHarmonics = active;
-        Volatile.Write(ref _notches, rebuilt);
+
+        for (int harmonic = 1; harmonic <= active; harmonic++)
+        {
+            Biquad proto = Biquad.Notch(SampleRate, effectiveFreq * harmonic, q);
+            for (int channel = 0; channel < ChannelCount; channel++)
+                bank[channel][harmonic - 1].CopyCoefficientsFrom(proto);
+        }
+
+        // Stages coming back into use start from a stale delay line — clear those.
+        if (!rebuilt)
+            for (int harmonic = _activeHarmonics; harmonic < active; harmonic++)
+                for (int channel = 0; channel < ChannelCount; channel++)
+                    bank[channel][harmonic].Reset();
+
+        _appliedFundamental = effectiveFreq;
+        Volatile.Write(ref _notches, bank);
+        Volatile.Write(ref _activeHarmonics, active);
     }
 
     public override void ResetState()
@@ -76,23 +99,24 @@ public sealed class HumRemovalEffect : EffectBase
         Array.Clear(_harmonicSmoothing);
         _detectedFundamental = GetParam("frequency");
         _fundamentalConfidence = 0;
+        // The detector has been rewound, so retune the bank to the manual frequency.
+        Rebuild();
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
-        var notches = Volatile.Read(ref _notches);
-        if (notches.Length != ChannelCount) return;
         float amount = (float)GetParam("amount");
         float dry = 1 - amount;
         bool autoDetect = GetParam("autoDetect") > 0.5;
         bool dynamic = GetParam("dynamic") > 0.5;
 
-        // Adaptive fundamental detection via energy-gated Goertzel analysis
-        if (autoDetect)
+        // Adaptive fundamental detection via energy-gated Goertzel analysis.
+        // It can retune (and therefore republish) the bank, so read it afterwards.
+        if (autoDetect) DetectFundamental(buffer, offset, count);
 
-        {
-            DetectFundamental(buffer, offset, count);
-        }
+        var notches = Volatile.Read(ref _notches);
+        if (notches.Length != ChannelCount) return;
+        int active = Math.Min(Volatile.Read(ref _activeHarmonics), notches[0].Length);
 
         for (int i = 0; i < count; i++)
         {
@@ -101,26 +125,32 @@ public sealed class HumRemovalEffect : EffectBase
             float input = buffer[index];
             float filtered = input;
 
-            for (int harmonic = 0; harmonic < notches[channel].Length; harmonic++)
+            for (int harmonic = 0; harmonic < active; harmonic++)
             {
-                float notchOut = notches[channel][harmonic].Process(filtered);
+                // Blend against what entered this stage, never the raw input:
+                // mixing `input` back in would re-inject the hum the earlier
+                // notches already removed.
+                float pre = filtered;
+                float notchOut = notches[channel][harmonic].Process(pre);
 
                 // Dynamic depth: reduce notch depth when harmonic has significant energy
                 // (likely musical content, not hum)
                 if (dynamic && harmonic < _harmonicEnergy.Length)
                 {
-                    double energy = Math.Abs(filtered);
+                    double energy = Math.Abs(pre);
                     _harmonicEnergy[harmonic] = 0.95 * _harmonicEnergy[harmonic] + 0.05 * energy;
                     _harmonicSmoothing[harmonic] = 0.9 * _harmonicSmoothing[harmonic] + 0.1 * _harmonicEnergy[harmonic];
 
-                    double dynamicAmount = amount;
+                    // The global AMOUNT is applied once, after the bank; this stage
+                    // only decides how deep its own notch goes.
+                    double depth = 1.0;
                     if (_harmonicSmoothing[harmonic] > 0.01)
                     {
                         // Reduce notch depth when sustained energy is present
                         double reduction = Math.Clamp(_harmonicSmoothing[harmonic] * 20, 0, 1);
-                        dynamicAmount *= (1 - reduction * 0.7);
+                        depth = 1 - reduction * 0.7;
                     }
-                    filtered = input * (1 - (float)dynamicAmount) + notchOut * (float)dynamicAmount;
+                    filtered = (float)(pre * (1 - depth) + notchOut * depth);
                 }
                 else
                 {
@@ -171,6 +201,11 @@ public sealed class HumRemovalEffect : EffectBase
         {
             _detectedFundamental = 0.9 * _detectedFundamental + 0.1 * candidate;
             _fundamentalConfidence = 0.9 * _fundamentalConfidence + 0.1 * confidence;
+
+            // Retune the notch bank once the locked estimate has actually moved —
+            // updating the readout alone left the notches on the manual frequency.
+            if (_fundamentalConfidence > 0.3 && Math.Abs(_detectedFundamental - _appliedFundamental) > 0.05)
+                Rebuild();
         }
         else
         {

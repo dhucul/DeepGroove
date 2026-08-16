@@ -51,15 +51,16 @@ public sealed class DelayEffect : EffectBase
 
         int filterType = (int)GetParam("fbFilter");
         double freq = GetParam("fbFreq");
-        for (int c = 0; c < ChannelCount; c++)
+        // In-place coefficient update: a whole-struct rebuild would hard-reset a
+        // filter that sits *inside* the feedback loop, so moving MIX or TIME would
+        // make running repeats step discontinuously.
+        Biquad proto = filterType switch
         {
-            _fbFilters[c] = filterType switch
-            {
-                1 => Biquad.LowPass12Db(SampleRate, freq),
-                2 => Biquad.HighPass12Db(SampleRate, freq),
-                _ => Biquad.Identity(),
-            };
-        }
+            1 => Biquad.LowPass12Db(SampleRate, freq),
+            2 => Biquad.HighPass12Db(SampleRate, freq),
+            _ => Biquad.Identity(),
+        };
+        for (int c = 0; c < ChannelCount; c++) _fbFilters[c].CopyCoefficientsFrom(proto);
     }
 
     protected override void OnParamsChanged() => RebuildFeedbackFilters();
@@ -67,7 +68,8 @@ public sealed class DelayEffect : EffectBase
     public override void ResetState()
     {
         foreach (var line in _lines) Array.Clear(line);
-        foreach (var f in _fbFilters) f.Reset();
+        // Indexed, not foreach: Biquad is a struct, so foreach would reset copies.
+        for (int c = 0; c < _fbFilters.Length; c++) _fbFilters[c].Reset();
         _pos = 0;
         _duckEnv = 0;
         _duckGain = 1;

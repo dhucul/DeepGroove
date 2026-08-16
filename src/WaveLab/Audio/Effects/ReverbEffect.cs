@@ -31,6 +31,36 @@ public sealed class ReverbEffect : EffectBase
     private static readonly double[] BaseDelaysMs = [29.7, 37.1, 41.3, 43.7, 47.9, 53.3, 59.1, 61.9];
     private static readonly double[] ErDelaysMs = [3.2, 5.8, 8.1, 11.4, 14.7, 17.3, 21.6, 25.9];
 
+    /// <summary>Constant 8×8 Hadamard sign matrix — built once, not per sample.</summary>
+    private static readonly float[][] Hadamard = BuildHadamard();
+
+    /// <summary>Per-line LFO phase offsets (i·π/8), so one sin/cos per frame covers all eight.</summary>
+    private static readonly double[] ModOffsetSin = BuildModOffsets(sine: true);
+    private static readonly double[] ModOffsetCos = BuildModOffsets(sine: false);
+
+    private static float[][] BuildHadamard()
+    {
+        var matrix = new float[FdnSize][];
+        for (int i = 0; i < FdnSize; i++)
+        {
+            matrix[i] = new float[FdnSize];
+            for (int j = 0; j < FdnSize; j++)
+                matrix[i][j] = (PopCount(i & j) & 1) == 0 ? 1f : -1f;
+        }
+        return matrix;
+    }
+
+    private static double[] BuildModOffsets(bool sine)
+    {
+        var offsets = new double[FdnSize];
+        for (int i = 0; i < FdnSize; i++)
+        {
+            double angle = i * (Math.PI / FdnSize);
+            offsets[i] = sine ? Math.Sin(angle) : Math.Cos(angle);
+        }
+        return offsets;
+    }
+
     private sealed class DelayLine
     {
         public float[] Buf = [];
@@ -182,6 +212,11 @@ public sealed class ReverbEffect : EffectBase
             }
 
             // --- FDN late reverb ---
+            // One sin/cos per frame for all eight lines: each line's staggered phase
+            // is then sin(_modPhase + i·π/8) via the angle-sum identity.
+            double modSin = 0, modCos = 0;
+            if (modDepthSamples > 0.01f) (modSin, modCos) = Math.SinCos(_modPhase);
+
             // Read FDN outputs, with per-line modulated (fractional) read positions.
             for (int i = 0; i < FdnSize; i++)
             {
@@ -191,7 +226,8 @@ public sealed class ReverbEffect : EffectBase
                 if (modDepthSamples > 0.01f)
                 {
                     // Stagger each line's LFO phase so the modulated delays decorrelate.
-                    double mod = Math.Sin(_modPhase + i * (Math.PI / FdnSize)) * modDepthSamples * rtScale;
+                    double mod = (modSin * ModOffsetCos[i] + modCos * ModOffsetSin[i])
+                        * modDepthSamples * rtScale;
                     double readPos = _fdnLines[i].Pos + mod;
                     int i0 = (int)Math.Floor(readPos);
                     double frac = readPos - i0;
@@ -206,17 +242,13 @@ public sealed class ReverbEffect : EffectBase
                 fdnOut[i] = _fdnFilters[i].Process(raw, dampCoeff);
             }
 
-            // Hadamard mixing matrix (normalized)
+            // Hadamard mixing matrix (normalized), signs precomputed at startup
             for (int i = 0; i < FdnSize; i++)
             {
+                float[] signs = Hadamard[i];
                 float sum = 0;
                 for (int j = 0; j < FdnSize; j++)
-                {
-                    // Hadamard(8) sign pattern
-                    int bit = (i & j);
-                    int sign = (PopCount(bit) & 1) == 0 ? 1 : -1;
-                    sum += fdnOut[j] * sign;
-                }
+                    sum += fdnOut[j] * signs[j];
                 fdnIn[i] = sum * 0.3536f; // 1/sqrt(8)
             }
 

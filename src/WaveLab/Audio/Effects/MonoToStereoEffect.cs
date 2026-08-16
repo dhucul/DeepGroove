@@ -70,7 +70,9 @@ public sealed class MonoToStereoEffect : EffectBase
         _safetyGain = 1;
         _spread = 0;
         _pitchPhase = 0;
-        foreach (var f in _allPassFilters) f.Reset();
+        // Indexed, not foreach: Biquad is a struct, so foreach would reset copies
+        // and the previous take's tail would leak into the synthetic side signal.
+        for (int i = 0; i < _allPassFilters.Length; i++) _allPassFilters[i].Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)

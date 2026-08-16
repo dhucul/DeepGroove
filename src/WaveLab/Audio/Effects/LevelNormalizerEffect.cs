@@ -29,6 +29,7 @@ public sealed class LevelNormalizerEffect : EffectBase
     private double _targetGain = 1;
     private double _gainReadoutDb;
     private int _controlCountdown;
+    private double _intervalPeak; // highest true-peak estimate since the last control update
     private double[] _lufsHistory = [];
     private int _lufsHistoryPos;
     private double _integratedLoudness;
@@ -69,13 +70,16 @@ public sealed class LevelNormalizerEffect : EffectBase
         _targetGain = 1;
         _gainReadoutDb = 0;
         _controlCountdown = 0;
+        _intervalPeak = 0;
         Array.Clear(_prevSample);
         Array.Fill(_lufsHistory, -100.0); // silence, not 0 LUFS (see OnConfigure)
         _lufsHistoryPos = 0;
 
         _integratedLoudness = -18;
-        foreach (var f in _kStage1) f.Reset();
-        foreach (var f in _kStage2) f.Reset();
+        // Indexed, not foreach: Biquad is a struct, so foreach would reset copies
+        // and the K-weighting memory would carry over into the next render.
+        for (int c = 0; c < _kStage1.Length; c++) _kStage1[c].Reset();
+        for (int c = 0; c < _kStage2.Length; c++) _kStage2[c].Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
@@ -98,6 +102,9 @@ public sealed class LevelNormalizerEffect : EffectBase
         // Max gain change per frame (the gain is updated once per frame,
         // and there are SampleRate frames per second — independent of channel count).
         double maxGainChangePerFrame = maxGainChangePerSec / SampleRate;
+        // Loop-invariant: the per-frame gain-change ceiling, in linear ratio.
+        double maxRatio = Math.Pow(10, maxGainChangePerFrame / 20.0);
+        double minRatio = 1.0 / maxRatio;
 
         for (int frame = 0; frame < frames; frame++)
         {
@@ -124,6 +131,11 @@ public sealed class LevelNormalizerEffect : EffectBase
             power /= ChannelCount;
 
             _meanSquare = detectorCoefficient * _meanSquare + (1 - detectorCoefficient) * power;
+
+            // Accumulate across the control interval: reading framePeak only inside
+            // the update below would discard 31 of every 32 peaks, including the
+            // transients the ceiling exists to catch.
+            if (framePeak > _intervalPeak) _intervalPeak = framePeak;
 
             if (_controlCountdown-- <= 0)
             {
@@ -157,21 +169,20 @@ public sealed class LevelNormalizerEffect : EffectBase
                     : Math.Clamp(targetLevelDb - effectiveLevel, -maximumCutDb, maximumBoostDb);
 
                 // True-peak limiting: reduce gain if peaks would exceed ceiling
-                if (framePeak > 0)
+                if (_intervalPeak > 0)
                 {
-                    double peakDb = 20 * Math.Log10(framePeak);
+                    double peakDb = 20 * Math.Log10(_intervalPeak);
                     double peakHeadroom = truePeakLimitDb - peakDb;
                     if (peakHeadroom < desiredGainDb)
                         desiredGainDb = Math.Min(desiredGainDb, peakHeadroom);
                 }
+                _intervalPeak = 0;
 
                 _targetGain = Math.Pow(10, desiredGainDb / 20.0);
             }
 
             // Gain change limiting
             double requestedGain = _targetGain;
-            double maxRatio = Math.Pow(10, maxGainChangePerFrame / 20.0);
-            double minRatio = 1.0 / maxRatio;
             double clampedGain = Math.Clamp(requestedGain / Math.Max(1e-9, _currentGain), minRatio, maxRatio)
                 * _currentGain;
 

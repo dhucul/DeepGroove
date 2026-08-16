@@ -45,15 +45,16 @@ public sealed class GateEffect : EffectBase
 
         int filterType = (int)GetParam("scFilter");
         double freq = GetParam("scFreq");
-        for (int c = 0; c < ChannelCount; c++)
+        // In-place coefficient update: a whole-struct rebuild would zero the
+        // sidechain filter's delay line whenever any other knob moves, and the
+        // detector would then see a step.
+        Biquad proto = filterType switch
         {
-            _sidechainFilters[c] = filterType switch
-            {
-                1 => Biquad.LowPass12Db(SampleRate, freq),
-                2 => Biquad.HighPass12Db(SampleRate, freq),
-                _ => Biquad.Identity(),
-            };
-        }
+            1 => Biquad.LowPass12Db(SampleRate, freq),
+            2 => Biquad.HighPass12Db(SampleRate, freq),
+            _ => Biquad.Identity(),
+        };
+        for (int c = 0; c < ChannelCount; c++) _sidechainFilters[c].CopyCoefficientsFrom(proto);
     }
 
     protected override void OnParamsChanged() => RebuildSidechain();
@@ -64,7 +65,8 @@ public sealed class GateEffect : EffectBase
         _gain = 1;
         _open = true;
         _holdCounter = 0;
-        foreach (var f in _sidechainFilters) f.Reset();
+        // Indexed, not foreach: Biquad is a struct, so foreach would reset copies.
+        for (int c = 0; c < _sidechainFilters.Length; c++) _sidechainFilters[c].Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)

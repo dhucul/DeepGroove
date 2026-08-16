@@ -31,7 +31,7 @@ public sealed class SaturationEffect : EffectBase
     private SaturationParameters _parameters = new(1f, 1f, 1f, 0, true);
     private double[] _osFir = [];
     private float[][] _osHist = [];
-    private int _osPos;
+    private int[] _osPos = []; // per channel: one shared cursor would leave half of every history unwritten
     private float[] _prevIn = [];
 
     private sealed record SaturationParameters(float Drive, float Compensation, float Mix, int Curve, bool Oversample);
@@ -45,7 +45,7 @@ public sealed class SaturationEffect : EffectBase
         _prevIn = new float[ChannelCount];
         _osHist = new float[ChannelCount][];
         for (int c = 0; c < ChannelCount; c++) _osHist[c] = new float[OsTaps];
-        _osPos = 0;
+        _osPos = new int[ChannelCount];
 
         // 16-tap windowed-sinc anti-alias filter for the 2x path; cutoff sits just
         // below the original Nyquist, expressed in cycles per 2x-rate sample.
@@ -109,13 +109,13 @@ public sealed class SaturationEffect : EffectBase
         for (int c = 0; c < tone.Length; c++) tone[c].Reset();
         Array.Clear(_prevIn);
         foreach (var hist in _osHist) Array.Clear(hist);
-        _osPos = 0;
+        Array.Clear(_osPos);
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
         var tone = Volatile.Read(ref _tone);
-        if (tone.Length != ChannelCount || _osHist.Length != ChannelCount) return;
+        if (tone.Length != ChannelCount || _osHist.Length != ChannelCount || _osPos.Length != ChannelCount) return;
         var parameters = Volatile.Read(ref _parameters);
         float drive = parameters.Drive;
         float comp = parameters.Compensation;
@@ -138,14 +138,15 @@ public sealed class SaturationEffect : EffectBase
                 _prevIn[c] = x;
 
                 float[] hist = _osHist[c];
-                hist[_osPos] = ShapeSample(mid * drive, curve) * comp;
-                _osPos = (_osPos + 1) & (OsTaps - 1);
-                hist[_osPos] = ShapeSample(x * drive, curve) * comp;
+                int p = _osPos[c];
+                hist[p] = ShapeSample(mid * drive, curve) * comp;
+                p = (p + 1) & (OsTaps - 1);
+                hist[p] = ShapeSample(x * drive, curve) * comp;
 
                 double acc = 0;
                 for (int k = 0; k < OsTaps; k++)
-                    acc += _osFir[k] * hist[(_osPos - k) & (OsTaps - 1)];
-                _osPos = (_osPos + 1) & (OsTaps - 1);
+                    acc += _osFir[k] * hist[(p - k) & (OsTaps - 1)];
+                _osPos[c] = (p + 1) & (OsTaps - 1);
                 shaped = (float)acc;
             }
             else
