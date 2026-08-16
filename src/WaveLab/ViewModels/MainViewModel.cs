@@ -154,6 +154,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ShowWaveformCommand = new RelayCommand(() => EditorView = EditorViewMode.Waveform);
         ShowSplitCommand = new RelayCommand(() => EditorView = EditorViewMode.Split);
         ShowSpectrogramCommand = new RelayCommand(() => EditorView = EditorViewMode.Spectrogram);
+        UseRectangleToolCommand = new RelayCommand(() => SpectralTool = SpectralTool.Rectangle);
+        UseLassoToolCommand = new RelayCommand(() => SpectralTool = SpectralTool.Lasso);
+        UseMagicWandToolCommand = new RelayCommand(() => SpectralTool = SpectralTool.MagicWand);
+        UseHarmonicToolCommand = new RelayCommand(() => SpectralTool = SpectralTool.Harmonic);
         RenderCommand = new RelayCommand(RenderMaster, () => HasAudioDocument);
         ApplyChainCommand = new RelayCommand(ApplyChain, () => HasAudioDocument);
         RecordCommand = new RelayCommand(ToggleRecord, () => !IsFinalizingRecording);
@@ -258,7 +262,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Raise(nameof(IsActiveDocumentPlaying));
             // A time-frequency region belongs to the file it was drawn on; carrying it to another
             // tab would offer a repair at a position that means nothing there.
-            SpectralSelection = SpectralRegion.None;
+            SpectralSelection = SpectralSelection.None;
             RefreshEditCommandStates();
         }
     }
@@ -437,25 +441,60 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     // ── spectral selection ───────────────────────────────────────
 
-    private SpectralRegion _spectralSelection = SpectralRegion.None;
+    private SpectralSelection _spectralSelection = SpectralSelection.None;
+    private SpectralTool _spectralTool = SpectralTool.Rectangle;
 
     /// <summary>
     /// What the spectral editor currently has selected. It lives here rather than on the control so
     /// that the repair actions and the readout beside them can bind to it, and so that switching
     /// away from the spectrogram and back does not quietly lose it.
     /// </summary>
-    public SpectralRegion SpectralSelection
+    public SpectralSelection SpectralSelection
     {
         get => _spectralSelection;
         set
         {
-            if (!Set(ref _spectralSelection, value)) return;
+            if (!Set(ref _spectralSelection, value ?? SpectralSelection.None)) return;
             Raise(nameof(HasSpectralSelection));
             Raise(nameof(NeedsSpectralSelection));
             Raise(nameof(SpectralSpanText));
             Raise(nameof(SpectralBandText));
         }
     }
+
+    /// <summary>Which tool the next gesture on the spectrogram uses.</summary>
+    public SpectralTool SpectralTool
+    {
+        get => _spectralTool;
+        set
+        {
+            if (!Set(ref _spectralTool, value)) return;
+            Raise(nameof(IsRectangleTool));
+            Raise(nameof(IsLassoTool));
+            Raise(nameof(IsMagicWandTool));
+            Raise(nameof(IsHarmonicTool));
+            Raise(nameof(SpectralToolHint));
+        }
+    }
+
+    public bool IsRectangleTool => _spectralTool == SpectralTool.Rectangle;
+    public bool IsLassoTool => _spectralTool == SpectralTool.Lasso;
+    public bool IsMagicWandTool => _spectralTool == SpectralTool.MagicWand;
+    public bool IsHarmonicTool => _spectralTool == SpectralTool.Harmonic;
+
+    public RelayCommand UseRectangleToolCommand { get; }
+    public RelayCommand UseLassoToolCommand { get; }
+    public RelayCommand UseMagicWandToolCommand { get; }
+    public RelayCommand UseHarmonicToolCommand { get; }
+
+    /// <summary>What the current tool expects the user to do, shown until something is selected.</summary>
+    public string SpectralToolHint => _spectralTool switch
+    {
+        SpectralTool.Lasso => "Draw around the defect",
+        SpectralTool.MagicWand => "Click the defect to grow a region through it",
+        SpectralTool.Harmonic => "Drag from the fundamental to take it and its partials",
+        _ => "Drag a region on the spectrogram",
+    };
 
     public bool HasSpectralSelection => !_spectralSelection.IsEmpty;
 
@@ -467,18 +506,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         get
         {
-            DocumentViewModel? document = ActiveDocument;
-            if (document == null || _spectralSelection.IsEmpty) return "—";
-            int rate = document.Doc.SampleRate;
-            return $"{TimeFormat.Position(_spectralSelection.StartSample, rate)} → " +
-                   $"{TimeFormat.Position(_spectralSelection.EndSample, rate)}";
+            if (_spectralSelection.IsEmpty) return "—";
+            SpectralRegion bounds = _spectralSelection.Bounds;
+            int rate = _spectralSelection.SampleRate;
+            return $"{TimeFormat.Position(bounds.StartSample, rate)} → " +
+                   $"{TimeFormat.Position(bounds.EndSample, rate)}";
         }
     }
 
     /// <summary>The selected frequency band, as the toolbar shows it.</summary>
-    public string SpectralBandText => _spectralSelection.IsEmpty
-        ? "—"
-        : $"{Hertz(_spectralSelection.LowFrequency)} → {Hertz(_spectralSelection.HighFrequency)}";
+    public string SpectralBandText
+    {
+        get
+        {
+            if (_spectralSelection.IsEmpty) return "—";
+            SpectralRegion bounds = _spectralSelection.Bounds;
+            return $"{Hertz(bounds.LowFrequency)} → {Hertz(bounds.HighFrequency)}";
+        }
+    }
 
     private static string Hertz(double frequency) => frequency >= 1_000
         ? $"{frequency / 1_000:0.##} kHz"

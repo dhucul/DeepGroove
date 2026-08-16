@@ -50,9 +50,14 @@ public sealed class SpectralEditorView : FrameworkElement
         new FrameworkPropertyMetadata(SpectralChannel.Mid, FrameworkPropertyMetadataOptions.AffectsRender));
 
     public static readonly DependencyProperty SelectionProperty = DependencyProperty.Register(
-        nameof(Selection), typeof(SpectralRegion), typeof(SpectralEditorView),
-        new FrameworkPropertyMetadata(SpectralRegion.None,
-            FrameworkPropertyMetadataOptions.AffectsRender | FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
+        nameof(Selection), typeof(SpectralSelection), typeof(SpectralEditorView),
+        new FrameworkPropertyMetadata(SpectralSelection.None,
+            FrameworkPropertyMetadataOptions.AffectsRender | FrameworkPropertyMetadataOptions.BindsTwoWayByDefault,
+            OnSelectionChanged));
+
+    public static readonly DependencyProperty ToolProperty = DependencyProperty.Register(
+        nameof(Tool), typeof(SpectralTool), typeof(SpectralEditorView),
+        new FrameworkPropertyMetadata(SpectralTool.Rectangle));
 
     public DocumentViewModel? Document
     {
@@ -79,14 +84,21 @@ public sealed class SpectralEditorView : FrameworkElement
     }
 
     /// <summary>The current time-frequency selection.</summary>
-    public SpectralRegion Selection
+    public SpectralSelection Selection
     {
-        get => (SpectralRegion)GetValue(SelectionProperty);
+        get => (SpectralSelection)GetValue(SelectionProperty);
         set => SetValue(SelectionProperty, value);
     }
 
-    /// <summary>Raised when the user finishes dragging out a selection.</summary>
-    public event Action<SpectralRegion>? SelectionCommitted;
+    /// <summary>Which tool the next gesture uses.</summary>
+    public SpectralTool Tool
+    {
+        get => (SpectralTool)GetValue(ToolProperty);
+        set => SetValue(ToolProperty, value);
+    }
+
+    /// <summary>Raised when the user finishes drawing a selection.</summary>
+    public event Action<SpectralSelection>? SelectionCommitted;
 
     /// <summary>
     /// Floor for the analysis hop. Below this a zoomed-in view buys overlap it cannot show, at a
@@ -100,9 +112,22 @@ public sealed class SpectralEditorView : FrameworkElement
     private PaintKey _paintKey;
     private bool _painted;
 
+    /// <summary>How much audio the wand analyses around the click, in seconds.</summary>
+    private const int WandWindowSeconds = 6;
+
+    /// <summary>
+    /// How far a drag must travel to count as one. Measured in pixels, because that is what the
+    /// user's hand controls — a guard in samples means something different at every zoom, and at a
+    /// hundred-odd samples per pixel a single-pixel slip would clear it and select a region.
+    /// </summary>
+    private const double MinimumDragPixels = 3;
+
     private CancellationTokenSource? _analysis;
     private Point? _dragOrigin;
-    private SpectralRegion _dragRegion;
+    private readonly List<Point> _dragPoints = [];
+
+    private Geometry? _selectionGeometry;
+    private object? _geometryKey;
 
     /// <summary>
     /// Everything the bitmap depends on. Anything that changes per frame — the playhead, the
@@ -176,6 +201,20 @@ public sealed class SpectralEditorView : FrameworkElement
         return SpectrogramImage.RowForFrequency(frequency, Math.Max(1, (int)ActualHeight), ImageSettings, nyquist);
     }
 
+    /// <summary>Analysis frame under an x coordinate, in the repair grid.</summary>
+    private double FrameAtX(double x) => SampleAtX(x) / Math.Max(1, Settings.Hop);
+
+    /// <summary>Analysis bin under a y coordinate.</summary>
+    private double BinAtY(double y)
+    {
+        DocumentViewModel? vm = Document;
+        int rate = vm?.Doc.SampleRate ?? 48_000;
+        return FrequencyAtY(y) * Settings.FftSize / rate;
+    }
+
+    private static void OnSelectionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((SpectralEditorView)d)._geometryKey = null;
+
     // ── mouse ────────────────────────────────────────────────────
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -184,18 +223,42 @@ public sealed class SpectralEditorView : FrameworkElement
         if (Document is not { Doc.Length: > 0 }) return;
 
         Focus();
-        _dragOrigin = e.GetPosition(this);
-        _dragRegion = SpectralRegion.None;
-        CaptureMouse();
+        Point position = e.GetPosition(this);
         e.Handled = true;
+
+        // The wand takes a single click; there is nothing to drag out.
+        if (Tool == SpectralTool.MagicWand)
+        {
+            Commit(GrowFrom(position));
+            return;
+        }
+
+        _dragOrigin = position;
+        _dragPoints.Clear();
+        _dragPoints.Add(position);
+        CaptureMouse();
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (_dragOrigin is not { } origin) return;
+        if (_dragOrigin is null) return;
 
-        _dragRegion = RegionBetween(origin, e.GetPosition(this));
+        Point position = e.GetPosition(this);
+        if (Tool == SpectralTool.Lasso)
+        {
+            // Thin the trail: a freehand drag delivers far more points than the outline needs, and
+            // the point-in-polygon test is linear in them for every cell it fills.
+            Point last = _dragPoints[^1];
+            if (Math.Abs(position.X - last.X) + Math.Abs(position.Y - last.Y) >= 3)
+                _dragPoints.Add(position);
+        }
+        else
+        {
+            if (_dragPoints.Count > 1) _dragPoints.RemoveRange(1, _dragPoints.Count - 1);
+            _dragPoints.Add(position);
+        }
+
         RequestRedraw();
     }
 
@@ -205,34 +268,142 @@ public sealed class SpectralEditorView : FrameworkElement
         if (_dragOrigin is not { } origin) return;
 
         ReleaseMouseCapture();
-        SpectralRegion region = RegionBetween(origin, e.GetPosition(this));
+        Point end = e.GetPosition(this);
+        SpectralTool tool = Tool;
+        var points = new List<Point>(_dragPoints);
         _dragOrigin = null;
-        _dragRegion = SpectralRegion.None;
+        _dragPoints.Clear();
 
-        // A click without a drag clears the selection rather than leaving a sliver behind.
-        Selection = region.IsEmpty ? SpectralRegion.None : region;
-        SelectionCommitted?.Invoke(Selection);
-        RequestRedraw();
+        Commit(SelectionFor(tool, origin, end, points));
         e.Handled = true;
     }
 
-    private SpectralRegion RegionBetween(Point a, Point b)
+    private SpectralSelection? SelectionFor(SpectralTool tool, Point from, Point to,
+        IReadOnlyList<Point> points) => tool switch
+    {
+        SpectralTool.Lasso => LassoFrom(points),
+        SpectralTool.MagicWand => GrowFrom(from),
+        SpectralTool.Harmonic => HarmonicFrom(from, to),
+        _ => RectangleFrom(from, to),
+    };
+
+    /// <summary>
+    /// Runs one complete gesture and returns what it selected. The mouse handlers are thin wrappers
+    /// over the same call, so driving this exercises the path a real drag takes rather than a
+    /// parallel copy of it — which is the only way to cover the gestures without a live mouse.
+    /// </summary>
+    internal SpectralSelection PerformGesture(Point from, Point to, IReadOnlyList<Point>? path = null)
+    {
+        Commit(SelectionFor(Tool, from, to, path ?? [from, to]));
+        return Selection;
+    }
+
+    private void Commit(SpectralSelection? selection)
+    {
+        // Anything too small to be deliberate clears the selection rather than leaving a sliver
+        // behind, which would make an accidental repair a single slip away.
+        Selection = selection is { IsEmpty: false } ? selection : SpectralSelection.None;
+        SelectionCommitted?.Invoke(Selection);
+        RequestRedraw();
+    }
+
+    // ── the tools ────────────────────────────────────────────────
+
+    private SpectralSelection? RectangleFrom(Point a, Point b)
     {
         DocumentViewModel? vm = Document;
-        if (vm == null) return SpectralRegion.None;
+        if (vm == null) return null;
 
-        double sampleA = SampleAtX(a.X), sampleB = SampleAtX(b.X);
-        double frequencyA = FrequencyAtY(a.Y), frequencyB = FrequencyAtY(b.Y);
+        if (Math.Abs(b.X - a.X) < MinimumDragPixels || Math.Abs(b.Y - a.Y) < MinimumDragPixels) return null;
 
-        int start = (int)Math.Clamp(Math.Min(sampleA, sampleB), 0, vm.Doc.Length);
-        int end = (int)Math.Clamp(Math.Max(sampleA, sampleB), 0, vm.Doc.Length);
-        double low = Math.Min(frequencyA, frequencyB);
-        double high = Math.Max(frequencyA, frequencyB);
+        int start = (int)Math.Clamp(Math.Min(SampleAtX(a.X), SampleAtX(b.X)), 0, vm.Doc.Length);
+        int end = (int)Math.Clamp(Math.Max(SampleAtX(a.X), SampleAtX(b.X)), 0, vm.Doc.Length);
+        double low = Math.Min(FrequencyAtY(a.Y), FrequencyAtY(b.Y));
+        double high = Math.Max(FrequencyAtY(a.Y), FrequencyAtY(b.Y));
+        if (end - start < 2 || high - low < 1) return null;
 
-        // A drag of a pixel or two is a click; treating it as a selection would make an accidental
-        // repair a single slip away.
-        if (end - start < 2 || high - low < 1) return SpectralRegion.None;
-        return new SpectralRegion(start, end, low, high);
+        SpectrogramSettings settings = Settings;
+        return Wrap(vm, SpectralMask.ForRegion(start, end, low, high,
+            vm.Doc.SampleRate, settings.FftSize, settings.Hop));
+    }
+
+    private SpectralSelection? LassoFrom(IReadOnlyList<Point> points)
+    {
+        DocumentViewModel? vm = Document;
+        if (vm == null || points.Count < 3) return null;
+
+        var outline = new List<(double Frame, double Bin)>(points.Count);
+        foreach (Point point in points) outline.Add((FrameAtX(point.X), BinAtY(point.Y)));
+
+        return Wrap(vm, SpectralMask.Lasso(outline));
+    }
+
+    /// <summary>
+    /// The comb the drag describes: the fundamental is the frequency the drag started on, and the
+    /// span is how far it travelled. A buzz is not a region of the plane, so selecting it as one
+    /// would take the music between the teeth as well.
+    /// </summary>
+    private SpectralSelection? HarmonicFrom(Point a, Point b)
+    {
+        DocumentViewModel? vm = Document;
+        if (vm == null) return null;
+
+        // Only horizontal travel counts: the vertical position is picking the fundamental, not
+        // describing a band, so a drag straight along a partial is a legitimate selection.
+        if (Math.Abs(b.X - a.X) < MinimumDragPixels) return null;
+
+        double fundamental = FrequencyAtY(a.Y);
+        int start = (int)Math.Clamp(Math.Min(SampleAtX(a.X), SampleAtX(b.X)), 0, vm.Doc.Length);
+        int end = (int)Math.Clamp(Math.Max(SampleAtX(a.X), SampleAtX(b.X)), 0, vm.Doc.Length);
+        if (end - start < 2 || !(fundamental > 0)) return null;
+
+        SpectrogramSettings settings = Settings;
+        return Wrap(vm, SpectralMask.Harmonic(
+            settings.FftSize / 2 + 1, settings.FftSize, vm.Doc.SampleRate,
+            start / settings.Hop, end / settings.Hop + 1, fundamental));
+    }
+
+    /// <summary>
+    /// Grows a region from the clicked cell through connected energy — the tool for a cough or a
+    /// thump, whose edges are wherever its energy stops rather than anywhere the user can see to
+    /// draw.
+    /// </summary>
+    /// <remarks>
+    /// This analyses its own small window rather than reusing the display's. The display's grid moves
+    /// with the zoom, so a mask grown in it would have to be renumbered to be repairable at all; and
+    /// the display is reassigned, which scatters a noise floor into isolated points and would break
+    /// the connectivity the growth depends on. The window is bounded because the cost is what makes
+    /// this safe to run on a click, with no progress to report.
+    /// </remarks>
+    private SpectralSelection? GrowFrom(Point position)
+    {
+        DocumentViewModel? vm = Document;
+        if (vm == null || vm.Doc.Channels.Count == 0) return null;
+
+        SpectrogramSettings settings = Settings;
+        int hop = settings.Hop;
+        int rate = vm.Doc.SampleRate;
+        int seedFrame = (int)Math.Round(SampleAtX(position.X) / hop);
+        int seedBin = (int)Math.Round(BinAtY(position.Y));
+
+        int radius = Math.Max(8, WandWindowSeconds * rate / hop / 2);
+        int firstFrame = Math.Max(0, seedFrame - radius);
+        int from = firstFrame * hop;
+        int count = Math.Min(vm.Doc.Length - from, (2 * radius + 1) * hop);
+        if (count <= 0) return null;
+
+        float[] mono = Mix(vm.Doc.Channels.ToArray(), Channel);
+        SpectrogramData data = Spectrogram.Analyze(mono, from, count, rate,
+            settings with { Hop = hop, Reassign = false });
+
+        SpectralMask grown = SpectralMask.MagicWand(data, seedFrame - firstFrame, seedBin);
+        return Wrap(vm, grown.Shifted(firstFrame));
+    }
+
+    private SpectralSelection Wrap(DocumentViewModel vm, SpectralMask mask)
+    {
+        SpectrogramSettings settings = Settings;
+        return new SpectralSelection(Tool, mask, vm.Doc.SampleRate, settings.FftSize, settings.Hop);
     }
 
     // ── rendering ────────────────────────────────────────────────
@@ -261,7 +432,8 @@ public sealed class SpectralEditorView : FrameworkElement
             if (_painted) dc.DrawImage(_bitmap!, new Rect(0, 0, w, h));
         }
 
-        DrawSelection(dc, _dragRegion.IsEmpty ? Selection : _dragRegion, w, h);
+        if (_dragOrigin is null) DrawSelection(dc, Selection);
+        else DrawDrag(dc, h);
         DrawPlayhead(dc, vm, h);
     }
 
@@ -389,28 +561,147 @@ public sealed class SpectralEditorView : FrameworkElement
         }
     }
 
-    private void DrawSelection(DrawingContext dc, SpectralRegion region, double width, double height)
+    /// <summary>
+    /// Draws the selection from the mask itself rather than from the shape that produced it, so what
+    /// is on screen is what will actually be repaired — including the feathered rim, which is real
+    /// and which a tidied outline would hide.
+    /// </summary>
+    private void DrawSelection(DrawingContext dc, SpectralSelection selection)
     {
-        if (region.IsEmpty) return;
+        if (selection.IsEmpty) return;
 
-        double x0 = XForSample(region.StartSample), x1 = XForSample(region.EndSample);
-        double y0 = YForFrequency(region.HighFrequency), y1 = YForFrequency(region.LowFrequency);
-        var rect = new Rect(Math.Min(x0, x1), Math.Min(y0, y1), Math.Abs(x1 - x0), Math.Abs(y1 - y0));
-        if (rect.Width <= 0 || rect.Height <= 0) return;
+        DocumentViewModel? vm = Document;
+        if (vm == null) return;
 
-        // The heavier overlay rather than the waveform's SelectionFill: an 8% wash reads clearly
-        // over a near-black waveform and disappears over a bright spectrogram.
-        dc.DrawRectangle(WaveTheme.SelectionOverlay, WaveTheme.SelectionEdge, rect);
+        var key = (selection, vm.ViewStart, vm.SamplesPerPixel, ActualWidth, ActualHeight,
+            ImageSettings, Settings.FftSize, Settings.Hop);
+        if (!key.Equals(_geometryKey) || _selectionGeometry == null)
+        {
+            _selectionGeometry = BuildSelectionGeometry(selection);
+            _geometryKey = key;
+        }
 
-        // Corner handles, so it is obvious the region can be adjusted rather than only redrawn.
+        // Dim the surround rather than tint the selection. The geometry is one figure per cell run,
+        // so stroking it outlines every run rather than the region — thousands of edges a pixel
+        // apart, painting the selection solid — while a tint light enough to keep the detail
+        // readable vanishes against the bright end of the colour ramp. Scrimming the outside reads
+        // over every colour and leaves the audio being repaired untouched.
+        dc.DrawGeometry(WaveTheme.SelectionScrim, null, _selectionGeometry);
+
+        // Only a rectangle gets an edge and handles, because only for a rectangle are the bounds the
+        // shape. Outlining a lasso or a wand blob with its bounding box would claim it had selected
+        // audio it had not.
+        if (selection.Tool != SpectralTool.Rectangle) return;
+
+        // Taken from the selection's own extent, not the geometry's — the geometry is now the
+        // scrimmed surround, whose bounds are the whole pane.
+        SpectralRegion extent = selection.Bounds;
+        double x0 = XForSample(extent.StartSample), x1 = XForSample(extent.EndSample);
+        double y0 = YForFrequency(extent.HighFrequency), y1 = YForFrequency(extent.LowFrequency);
+        if (!double.IsFinite(y0) || !double.IsFinite(y1)) return;
+
+        var bounds = new Rect(Math.Min(x0, x1), Math.Min(y0, y1), Math.Abs(x1 - x0), Math.Abs(y1 - y0));
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+        dc.DrawRectangle(null, WaveTheme.SelectionEdge, bounds);
         const double handle = 5;
-        foreach (Point corner in new[]
-                 {
-                     rect.TopLeft, rect.TopRight, rect.BottomLeft, rect.BottomRight,
-                 })
+        foreach (Point corner in new[] { bounds.TopLeft, bounds.TopRight, bounds.BottomLeft, bounds.BottomRight })
         {
             dc.DrawRectangle(WaveTheme.SelectionHandle, null,
                 new Rect(corner.X - handle / 2, corner.Y - handle / 2, handle, handle));
+        }
+    }
+
+    /// <summary>
+    /// Everything the selection does <em>not</em> cover, as one even-odd figure set: the whole pane,
+    /// then a hole for each covered run. The runs tile without overlapping, so a point inside one
+    /// crosses two boundaries and is left unfilled, while a point outside them all crosses one and
+    /// is scrimmed.
+    /// </summary>
+    private Geometry BuildSelectionGeometry(SpectralSelection selection)
+    {
+        var geometry = new StreamGeometry { FillRule = FillRule.EvenOdd };
+        using (StreamGeometryContext context = geometry.Open())
+        {
+            context.BeginFigure(new Point(0, 0), isFilled: true, isClosed: true);
+            context.LineTo(new Point(ActualWidth, 0), false, false);
+            context.LineTo(new Point(ActualWidth, ActualHeight), false, false);
+            context.LineTo(new Point(0, ActualHeight), false, false);
+
+            double hop = Math.Max(1, selection.Hop);
+            foreach (var (frame, fromBin, toBin) in selection.Runs())
+            {
+                // A cell spans half a hop either side of its centre, and half a bin above and below.
+                double x0 = XForSample((frame - 0.5) * hop);
+                double x1 = XForSample((frame + 0.5) * hop);
+                double y0 = YForFrequency(selection.FrequencyAt(toBin) + 0.5 * selection.FrequencyAt(1));
+                double y1 = YForFrequency(Math.Max(1, selection.FrequencyAt(fromBin) - 0.5 * selection.FrequencyAt(1)));
+                if (!double.IsFinite(y0) || !double.IsFinite(y1)) continue;
+                if (x1 < 0 || x0 > ActualWidth) continue;
+
+                // Clamped to the pane: zoomed in, a single cell can be thousands of pixels wide, and
+                // the scrim only has to be right where it is visible.
+                x0 = Math.Max(x0, -1);
+                x1 = Math.Min(x1, ActualWidth + 1);
+
+                context.BeginFigure(new Point(x0, y0), isFilled: true, isClosed: true);
+                context.LineTo(new Point(x1, y0), false, false);
+                context.LineTo(new Point(x1, y1), false, false);
+                context.LineTo(new Point(x0, y1), false, false);
+            }
+        }
+        geometry.Freeze();
+        return geometry;
+    }
+
+    /// <summary>The shape being dragged out, before it becomes a mask.</summary>
+    private void DrawDrag(DrawingContext dc, double height)
+    {
+        if (_dragOrigin is not { } origin || _dragPoints.Count < 2) return;
+        Point current = _dragPoints[^1];
+
+        switch (Tool)
+        {
+            case SpectralTool.Lasso:
+            {
+                var geometry = new StreamGeometry();
+                using (StreamGeometryContext context = geometry.Open())
+                {
+                    context.BeginFigure(_dragPoints[0], isFilled: true, isClosed: true);
+                    for (int i = 1; i < _dragPoints.Count; i++)
+                        context.LineTo(_dragPoints[i], true, false);
+                }
+                geometry.Freeze();
+                dc.DrawGeometry(WaveTheme.SelectionOverlay, WaveTheme.SelectionEdge, geometry);
+                break;
+            }
+
+            case SpectralTool.Harmonic:
+            {
+                // Preview the comb, not a box: the fundamental is where the drag began.
+                double x0 = Math.Min(origin.X, current.X), x1 = Math.Max(origin.X, current.X);
+                double fundamental = FrequencyAtY(origin.Y);
+                if (!(fundamental > 0)) return;
+                DocumentViewModel? vm = Document;
+                double nyquist = (vm?.Doc.SampleRate ?? 48_000) / 2.0;
+                for (int n = 1; n <= 12 && fundamental * n < nyquist; n++)
+                {
+                    double y = YForFrequency(fundamental * n);
+                    if (!double.IsFinite(y)) continue;
+                    dc.DrawRectangle(WaveTheme.SelectionOverlay, WaveTheme.SelectionEdge,
+                        new Rect(x0, y - 3, Math.Max(1, x1 - x0), 6));
+                }
+                break;
+            }
+
+            default:
+            {
+                var rect = new Rect(
+                    Math.Min(origin.X, current.X), Math.Min(origin.Y, current.Y),
+                    Math.Abs(current.X - origin.X), Math.Abs(current.Y - origin.Y));
+                if (rect.Width <= 0 || rect.Height <= 0) return;
+                dc.DrawRectangle(WaveTheme.SelectionOverlay, WaveTheme.SelectionEdge, rect);
+                break;
+            }
         }
     }
 

@@ -61,6 +61,13 @@ public sealed class SpectralMask
         Kind = kind;
     }
 
+    /// <summary>
+    /// The same mask with its frames renumbered. Tools that grow a selection inside a small analysed
+    /// window work in that window's own frame numbering and shift the result back to absolute.
+    /// </summary>
+    public SpectralMask Shifted(int frames) =>
+        Frames <= 0 ? this : new SpectralMask(FrameOffset + frames, BinOffset, Frames, Bins, Weight, Kind);
+
     /// <summary>Weight at an absolute grid position; zero outside the region.</summary>
     public float At(int frame, int bin)
     {
@@ -78,6 +85,22 @@ public sealed class SpectralMask
     }
 
     public bool IsEmpty => Frames <= 0 || Bins <= 0 || Coverage() <= 0;
+
+    /// <summary>
+    /// How far above the quietest cell present a seed has to be for the wand to grow from it, and
+    /// the level growth will not reach below.
+    /// </summary>
+    private const double FloorMarginDb = 6;
+
+    /// <summary>Nothing selected.</summary>
+    public static SpectralMask Empty { get; } =
+        new(0, 0, 0, 0, [], SpectralSelectionKind.Rectangle);
+
+    /// <summary>
+    /// Nothing selected, but still recording which tool drew it. A builder that finds nothing has
+    /// still been used, and callers key off the kind.
+    /// </summary>
+    private static SpectralMask Nothing(SpectralSelectionKind kind) => new(0, 0, 0, 0, [], kind);
 
     // ── builders ─────────────────────────────────────────────────
 
@@ -115,6 +138,10 @@ public sealed class SpectralMask
 
         (startSample, endSample) = Order(startSample, endSample);
         if (lowHz > highHz) (lowHz, highHz) = (highHz, lowHz);
+
+        // A region of no extent is nothing drawn. The rounding below is outward, so without this a
+        // zero-width drag would still claim a couple of frames and the repair actions would light up.
+        if (endSample <= startSample || highHz <= lowHz) return Empty;
 
         int bins = fftSize / 2 + 1;
         int frameFrom = Math.Max(0, (int)Math.Floor(startSample / (double)hop));
@@ -165,14 +192,24 @@ public sealed class SpectralMask
     /// the tool for a cough or a thump, whose edges are wherever its energy stops.
     /// </summary>
     public static SpectralMask MagicWand(SpectrogramData data, int seedFrame, int seedBin,
-        double toleranceDb = 18, int maximumCells = 200_000, int feather = 2)
+        double toleranceDb = 18, int maximumCells = 80_000, int feather = 2)
     {
         ArgumentNullException.ThrowIfNull(data);
         if ((uint)seedFrame >= (uint)data.Frames || (uint)seedBin >= (uint)data.Bins)
-            return new SpectralMask(0, 0, 0, 0, [], SpectralSelectionKind.MagicWand);
+            return Nothing(SpectralSelectionKind.MagicWand);
+
+        // The wand grows through energy, so it needs a floor as well as a tolerance. Seeded on the
+        // noise floor every cell is within tolerance of every other and the region swallows the whole
+        // analysed window — measured at 195 000 cells from one click on silence, stopped only by the
+        // cell cap. A seed that is not itself above the floor has nothing to grow through and selects
+        // nothing at all, which is the honest answer and leaves the repair actions disabled.
+        float quietest = float.MaxValue;
+        foreach (float value in data.MagnitudeDb) quietest = Math.Min(quietest, value);
 
         float seed = data[seedFrame, seedBin];
-        double floor = seed - Math.Abs(toleranceDb);
+        if (seed <= quietest + FloorMarginDb) return Nothing(SpectralSelectionKind.MagicWand);
+
+        double floor = Math.Max(seed - Math.Abs(toleranceDb), quietest + FloorMarginDb);
 
         // `visited` stops a cell being queued twice; `selected` is what actually ends up in the mask.
         // They are separate because the queue can hold far more than the cell limit allows, and
@@ -230,31 +267,68 @@ public sealed class SpectralMask
         double fundamentalHz, int partials = 12, double relativeBandwidth = 0.03, int feather = 1)
     {
         ArgumentNullException.ThrowIfNull(data);
+        frameFrom = Math.Clamp(Math.Min(frameFrom, frameTo), 0, Math.Max(0, data.Frames));
+        frameTo = Math.Clamp(Math.Max(frameFrom, frameTo), 0, data.Frames);
+        return Harmonic(data.Bins, data.FftSize, data.SampleRate, frameFrom, frameTo, fundamentalHz,
+            partials, relativeBandwidth, feather);
+    }
+
+    /// <summary>
+    /// The same comb, described by the grid's dimensions rather than by an analysed block — for
+    /// callers building a mask before anything has been analysed, which every selection tool does.
+    /// </summary>
+    public static SpectralMask Harmonic(int bins, int fftSize, int sampleRate, int frameFrom, int frameTo,
+        double fundamentalHz, int partials = 12, double relativeBandwidth = 0.03, int feather = 1)
+    {
+        if (bins <= 0 || fftSize <= 0 || sampleRate <= 0)
+            return new SpectralMask(0, 0, 0, 0, [], SpectralSelectionKind.Harmonic);
+
         (frameFrom, frameTo) = Order(frameFrom, frameTo);
-        frameFrom = Math.Clamp(frameFrom, 0, Math.Max(0, data.Frames));
-        frameTo = Math.Clamp(frameTo, 0, data.Frames);
         int frames = frameTo - frameFrom;
         if (frames <= 0 || !(fundamentalHz > 0) || partials <= 0)
             return new SpectralMask(frameFrom, 0, 0, 0, [], SpectralSelectionKind.Harmonic);
 
-        int bins = data.Bins;
         var weight = new float[frames * bins];
-        double binsPerHz = data.FftSize / (double)data.SampleRate;
+        double binsPerHz = fftSize / (double)sampleRate;
 
+        // Each band gets a raised-cosine profile across frequency, written directly rather than
+        // eroded and smoothed afterwards. The general feather works by eroding first, which a band
+        // only a few bins wide cannot survive — it came back at half weight, so a harmonic repair
+        // applied at half strength however hard it was asked for. Widening the bands to give the
+        // erosion room is worse still: partials of a low fundamental sit a handful of bins apart, so
+        // wider bands merge into a solid block and take the music between the teeth, which is the
+        // one thing this tool exists to avoid.
         for (int n = 1; n <= partials; n++)
         {
             double centre = fundamentalHz * n;
-            if (centre >= data.SampleRate / 2.0) break;
+            if (centre >= sampleRate / 2.0) break;
+
+            double centreBin = centre * binsPerHz;
             double halfWidth = Math.Max(1.0, centre * relativeBandwidth * binsPerHz);
-            int centreBin = (int)Math.Round(centre * binsPerHz);
             int from = Math.Max(0, (int)Math.Floor(centreBin - halfWidth));
             int to = Math.Min(bins - 1, (int)Math.Ceiling(centreBin + halfWidth));
-            for (int f = 0; f < frames; f++)
-                for (int b = from; b <= to; b++)
-                    weight[f * bins + b] = 1f;
+
+            for (int b = from; b <= to; b++)
+            {
+                // Flat across the core, cosine shoulders to the edges. A profile that peaked only at
+                // the exact centre would under-apply whenever the partial falls between bins, which
+                // is almost always — the band has to reach full weight wherever the partial landed.
+                double distance = Math.Abs(b - centreBin) / halfWidth;
+                if (distance >= 1) continue;
+                float profile = distance <= 0.5f
+                    ? 1f
+                    : (float)(0.5 + 0.5 * Math.Cos(Math.PI * (distance - 0.5) * 2));
+                for (int f = 0; f < frames; f++)
+                {
+                    int index = f * bins + b;
+                    if (profile > weight[index]) weight[index] = profile;
+                }
+            }
         }
 
-        Feather(weight, frames, bins, feather);
+        // Time is feathered separately: the ends of the span are where the user stopped dragging,
+        // and a hard edge there is a click.
+        TaperFrames(weight, frames, bins, Math.Max(0, feather));
         return new SpectralMask(frameFrom, 0, frames, bins, weight, SpectralSelectionKind.Harmonic);
     }
 
@@ -276,6 +350,27 @@ public sealed class SpectralMask
 
         Erode(weight, frames, bins, radius);
         Smooth(weight, frames, bins, radius);
+    }
+
+    /// <summary>
+    /// Fades the first and last few frames, leaving the frequency profile alone. For a comb the
+    /// bands are already tapered across frequency by construction; only the ends of the time span
+    /// need softening.
+    /// </summary>
+    private static void TaperFrames(float[] weight, int frames, int bins, int radius)
+    {
+        int ramp = Math.Min(radius, frames / 2);
+        if (ramp <= 0) return;
+
+        for (int i = 0; i < ramp; i++)
+        {
+            var scale = (float)(0.5 - 0.5 * Math.Cos(Math.PI * (i + 0.5) / ramp));
+            for (int b = 0; b < bins; b++)
+            {
+                weight[i * bins + b] *= scale;
+                weight[(frames - 1 - i) * bins + b] *= scale;
+            }
+        }
     }
 
     private static void Erode(float[] weight, int frames, int bins, int radius)

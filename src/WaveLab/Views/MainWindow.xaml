@@ -449,6 +449,45 @@
             <DockPanel Margin="14,7" LastChildFill="False">
                 <TextBlock DockPanel.Dock="Left" Text="SPECTRAL" FontSize="9" FontWeight="SemiBold"
                            VerticalAlignment="Center" Margin="0,0,14,0" Foreground="{StaticResource Faint}"/>
+
+                <!-- Four tools, because defects have shapes. IsChecked is one-way for the same
+                     reason as the view switch: the tool lives on the view model. -->
+                <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30"
+                              IsChecked="{Binding IsRectangleTool, Mode=OneWay}"
+                              Command="{Binding UseRectangleToolCommand}"
+                              ToolTip="Rectangle — a time span crossed with a frequency band"
+                              AutomationProperties.Name="Rectangle selection tool">
+                    <Rectangle Width="13" Height="11" Stroke="#9AA1A9" StrokeThickness="1.3"
+                               StrokeDashArray="2.5 2" Fill="Transparent"/>
+                </ToggleButton>
+                <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
+                              IsChecked="{Binding IsLassoTool, Mode=OneWay}"
+                              Command="{Binding UseLassoToolCommand}"
+                              ToolTip="Lasso — follow the shape of the defect"
+                              AutomationProperties.Name="Lasso selection tool">
+                    <Path Data="M2,7 C2,3 5,1 8,2 C12,3 13,7 10,9 C7,11 3,10 2,7 M6,10 L5,13"
+                          Stroke="#9AA1A9" StrokeThickness="1.3" StrokeDashArray="2.5 2"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                </ToggleButton>
+                <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
+                              IsChecked="{Binding IsMagicWandTool, Mode=OneWay}"
+                              Command="{Binding UseMagicWandToolCommand}"
+                              ToolTip="Magic wand — grow a region through connected energy"
+                              AutomationProperties.Name="Magic wand selection tool">
+                    <Path Data="M7,1 L8.4,5 L12.5,6.4 L8.4,7.8 L7,12 L5.6,7.8 L1.5,6.4 L5.6,5 Z"
+                          Stroke="#9AA1A9" StrokeThickness="1.2" StrokeLineJoin="Round"/>
+                </ToggleButton>
+                <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
+                              IsChecked="{Binding IsHarmonicTool, Mode=OneWay}"
+                              Command="{Binding UseHarmonicToolCommand}"
+                              ToolTip="Harmonic — a fundamental and its partials together"
+                              AutomationProperties.Name="Harmonic selection tool">
+                    <Path Data="M1,12 L13,12 M1,9 L13,9 M1,5.5 L13,5.5 M1,1.5 L13,1.5"
+                          Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round"/>
+                </ToggleButton>
+
+                <Border DockPanel.Dock="Left" Width="1" Margin="12,3" Background="{StaticResource Line}"/>
                 <!-- MinWidth rather than Padding: neither the ToolButton nor the AccentButton
                      template binds Padding, so it is silently ignored on both. -->
                 <Button DockPanel.Dock="Left" Style="{StaticResource AccentButton}" Content="Heal"
@@ -482,7 +521,7 @@
 
                 <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,14,0"
                            FontSize="11" Foreground="{StaticResource Faint}"
-                           Text="Drag on the spectrogram to select a region"
+                           Text="{Binding SpectralToolHint}"
                            Visibility="{Binding NeedsSpectralSelection, Converter={StaticResource BoolToVis}}"/>
             </DockPanel>
         </Border>
@@ -583,6 +622,7 @@
                          than pushed one way, so the two can never disagree about what is selected. -->
                     <c:SpectralEditorView x:Name="spectralEditor" Grid.Row="2" Grid.Column="1"
                                           Document="{Binding ActiveDocument}"
+                                          Tool="{Binding SpectralTool}"
                                           Selection="{Binding SpectralSelection, Mode=TwoWay}"/>
                 </Grid>
 

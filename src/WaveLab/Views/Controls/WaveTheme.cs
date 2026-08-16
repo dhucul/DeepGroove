@@ -26,6 +26,15 @@ public static class WaveTheme
     // Corner grips on a spectral selection: brighter than the edge so the region reads as adjustable
     // rather than merely drawn.
     public static readonly Brush SelectionHandle = Freeze(new SolidColorBrush(Color.FromArgb(0xF0, 0x78, 0xF0, 0xDE)));
+
+    /// <summary>
+    /// Dims everything <em>outside</em> a spectral selection. A tint over the selection cannot work
+    /// here: the spectrogram spans the whole colour ramp, so any wash light enough not to hide the
+    /// detail is invisible against the bright end of it, and any wash heavy enough to read obscures
+    /// exactly the region the user is about to repair. Dimming the surround reads against every
+    /// colour in the ramp and leaves the selected audio at full fidelity.
+    /// </summary>
+    public static readonly Brush SelectionScrim = Freeze(new SolidColorBrush(Color.FromArgb(0x8C, 0x06, 0x09, 0x0C)));
     public static readonly Pen CenterLine = FreezePen(new Pen(new SolidColorBrush(Color.FromArgb(0x38, 0xE7, 0xEA, 0xEE)), 1));
     public static readonly Pen GridLine = FreezePen(new Pen(new SolidColorBrush(Color.FromArgb(0x0A, 0xFF, 0xFF, 0xFF)), 1));
     public static readonly Pen ChannelDivider = FreezePen(new Pen(new SolidColorBrush(Color.FromRgb(0x1D, 0x22, 0x28)), 1));

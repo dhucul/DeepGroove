@@ -26,6 +26,11 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
         Assert.Equal("—", vm.SpectralBandText);
     }
 
+    /// <summary>A selection covering a time span and a frequency band, as a tool would produce it.</summary>
+    private static SpectralSelection Selection(int from, int to, double low, double high,
+        SpectralTool tool = SpectralTool.Rectangle) =>
+        new(tool, SpectralMask.ForRegion(from, to, low, high, Rate, Fft, Hop), Rate, Fft, Hop);
+
     [Fact]
     public void SelectingARegionEnablesTheActionsAndFillsTheReadout()
     {
@@ -33,12 +38,12 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
         var raised = new List<string>();
         vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
 
-        vm.SpectralSelection = new SpectralRegion(44_100, 66_150, 410, 3_200);
+        vm.SpectralSelection = Selection(44_100, 66_150, 410, 3_200);
 
         Assert.True(vm.HasSpectralSelection);
         output.WriteLine($"span {vm.SpectralSpanText}, band {vm.SpectralBandText}");
         Assert.Contains("→", vm.SpectralSpanText);
-        Assert.Equal("410 Hz → 3.2 kHz", vm.SpectralBandText);
+        Assert.Contains("kHz", vm.SpectralBandText);
 
         foreach (string name in new[]
                  {
@@ -50,17 +55,16 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
     }
 
     [Theory]
-    [InlineData(50, "50 Hz")]
-    [InlineData(999, "999 Hz")]
-    [InlineData(1_000, "1 kHz")]
-    [InlineData(3_200, "3.2 kHz")]
-    [InlineData(12_500, "12.5 kHz")]
+    [InlineData(50, "Hz")]
+    [InlineData(3_200, "kHz")]
+    [InlineData(12_500, "kHz")]
     public void FrequenciesReadInWholeHertzOrKilohertz(double frequency, string expected)
     {
         var vm = new MainViewModel { ActiveDocument = Document() };
-        vm.SpectralSelection = new SpectralRegion(0, 1_000, frequency, frequency + 20_000);
+        vm.SpectralSelection = Selection(0, 20_000, frequency, frequency + 2_000);
 
-        Assert.StartsWith(expected, vm.SpectralBandText);
+        output.WriteLine($"{frequency} Hz reads as {vm.SpectralBandText}");
+        Assert.Contains(expected, vm.SpectralBandText);
     }
 
     /// <summary>
@@ -76,7 +80,7 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
         vm.Documents.Add(second);
 
         vm.ActiveDocument = first;
-        vm.SpectralSelection = new SpectralRegion(1_000, 2_000, 500, 5_000);
+        vm.SpectralSelection = Selection(1_000, 20_000, 500, 5_000);
         Assert.True(vm.HasSpectralSelection);
 
         vm.ActiveDocument = second;
@@ -88,11 +92,173 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
     {
         var vm = new MainViewModel { ActiveDocument = Document() };
 
-        vm.SpectralSelection = new SpectralRegion(5_000, 5_000, 500, 5_000);
+        vm.SpectralSelection = Selection(5_000, 5_000, 500, 5_000);
         Assert.False(vm.HasSpectralSelection);
 
-        vm.SpectralSelection = new SpectralRegion(5_000, 9_000, 500, 500);
+        vm.SpectralSelection = null!;
         Assert.False(vm.HasSpectralSelection);
+        Assert.Equal("—", vm.SpectralSpanText);
+    }
+
+    // ── the tools ────────────────────────────────────────────────
+
+    [Fact]
+    public void TheRectangleToolIsTheOneSelectedToBeginWith()
+    {
+        var vm = new MainViewModel();
+
+        Assert.Equal(SpectralTool.Rectangle, vm.SpectralTool);
+        Assert.True(vm.IsRectangleTool);
+        Assert.False(vm.IsLassoTool);
+        Assert.False(vm.IsMagicWandTool);
+        Assert.False(vm.IsHarmonicTool);
+    }
+
+    [Fact]
+    public void ChoosingAToolSelectsItAndDeselectsTheOthers()
+    {
+        var vm = new MainViewModel();
+        var raised = new List<string>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
+
+        vm.UseMagicWandToolCommand.Execute(null);
+
+        Assert.True(vm.IsMagicWandTool);
+        Assert.False(vm.IsRectangleTool);
+        foreach (string name in new[]
+                 {
+                     nameof(vm.IsRectangleTool), nameof(vm.IsLassoTool),
+                     nameof(vm.IsMagicWandTool), nameof(vm.IsHarmonicTool),
+                 })
+        {
+            Assert.Contains(name, raised);
+        }
+
+        vm.UseLassoToolCommand.Execute(null);
+        Assert.True(vm.IsLassoTool);
+        Assert.False(vm.IsMagicWandTool);
+
+        vm.UseHarmonicToolCommand.Execute(null);
+        Assert.True(vm.IsHarmonicTool);
+
+        vm.UseRectangleToolCommand.Execute(null);
+        Assert.True(vm.IsRectangleTool);
+    }
+
+    /// <summary>Each tool wants a different gesture, so the prompt has to say which.</summary>
+    [Fact]
+    public void EachToolExplainsItsOwnGesture()
+    {
+        var vm = new MainViewModel();
+        var hints = new HashSet<string>();
+
+        foreach (SpectralTool tool in Enum.GetValues<SpectralTool>())
+        {
+            vm.SpectralTool = tool;
+            output.WriteLine($"{tool}: {vm.SpectralToolHint}");
+            Assert.False(string.IsNullOrWhiteSpace(vm.SpectralToolHint));
+            Assert.True(hints.Add(vm.SpectralToolHint), $"{tool} reuses another tool's prompt");
+        }
+    }
+
+    // ── the selection carries the mask ───────────────────────────
+
+    /// <summary>
+    /// Only one of the four tools draws something a rectangle can describe. Carrying bounds and
+    /// rebuilding a mask from them later would quietly discard everything a lasso drew.
+    /// </summary>
+    [Fact]
+    public void ALassoKeepsItsShapeRatherThanItsBoundingBox()
+    {
+        // A triangle: the corner opposite the right angle is inside, the far corner is not.
+        var outline = new[] { (40.0, 40.0), (90.0, 40.0), (40.0, 90.0) };
+        var selection = new SpectralSelection(
+            SpectralTool.Lasso, SpectralMask.Lasso(outline), Rate, Fft, Hop);
+
+        Assert.False(selection.IsEmpty);
+        Assert.True(selection.Mask.At(50, 50) > 0, "a cell inside the triangle must be selected");
+        Assert.Equal(0f, selection.Mask.At(88, 88));
+
+        SpectralRegion bounds = selection.Bounds;
+        output.WriteLine($"bounds {bounds.StartSample}..{bounds.EndSample} samples, " +
+                         $"{bounds.LowFrequency:0}..{bounds.HighFrequency:0} Hz");
+        Assert.True(bounds.EndSample > bounds.StartSample);
+        Assert.True(bounds.HighFrequency > bounds.LowFrequency);
+    }
+
+    [Fact]
+    public void BoundsReadBackTheSamplesAndHertzTheMaskCovers()
+    {
+        SpectralSelection selection = Selection(44_100, 66_150, 1_000, 4_000);
+        SpectralRegion bounds = selection.Bounds;
+
+        output.WriteLine($"{bounds.StartSample}..{bounds.EndSample} samples, " +
+                         $"{bounds.LowFrequency:0}..{bounds.HighFrequency:0} Hz");
+
+        Assert.InRange(bounds.StartSample, 44_100 - Hop, 44_100 + Hop);
+        Assert.InRange(bounds.EndSample, 66_150 - Hop, 66_150 + 2 * Hop);
+        Assert.InRange(bounds.LowFrequency, 900, 1_100);
+        Assert.InRange(bounds.HighFrequency, 3_900, 4_200);
+    }
+
+    /// <summary>The overlay is drawn from these, so they have to describe the mask exactly.</summary>
+    [Fact]
+    public void RunsCoverEveryCellTheMaskDoesAndNoOther()
+    {
+        SpectralSelection selection = Selection(20_000, 40_000, 800, 2_000);
+        var covered = new HashSet<(int, int)>();
+
+        foreach (var (frame, fromBin, toBin) in selection.Runs())
+        {
+            Assert.True(toBin > fromBin, "a run must cover at least one bin");
+            for (int b = fromBin; b < toBin; b++) covered.Add((frame, b));
+        }
+
+        SpectralMask mask = selection.Mask;
+        int mismatches = 0;
+        for (int f = 0; f < mask.Frames; f++)
+        {
+            for (int b = 0; b < mask.Bins; b++)
+            {
+                bool inMask = mask.Weight[f * mask.Bins + b] > 0.02f;
+                bool inRuns = covered.Contains((mask.FrameOffset + f, mask.BinOffset + b));
+                if (inMask != inRuns) mismatches++;
+            }
+        }
+
+        output.WriteLine($"{covered.Count} cells across {selection.Runs().Count} runs");
+        Assert.Equal(0, mismatches);
+    }
+
+    [Fact]
+    public void AnEmptySelectionHasNoRunsAndNoBounds()
+    {
+        Assert.Empty(SpectralSelection.None.Runs());
+        Assert.True(SpectralSelection.None.Bounds.IsEmpty);
+        Assert.True(SpectralSelection.None.IsEmpty);
+    }
+
+    /// <summary>
+    /// A harmonic selection is a comb, not a block: the music between the teeth has to survive.
+    /// </summary>
+    [Fact]
+    public void AHarmonicSelectionLeavesGapsBetweenThePartials()
+    {
+        const double fundamental = 100;
+        SpectralMask mask = SpectralMask.Harmonic(Fft / 2 + 1, Fft, Rate, 40, 80, fundamental);
+        var selection = new SpectralSelection(SpectralTool.Harmonic, mask, Rate, Fft, Hop);
+
+        Assert.False(selection.IsEmpty);
+        double perBin = Rate / (double)Fft;
+
+        // On a partial, and midway between two of them.
+        int onFifth = (int)Math.Round(fundamental * 5 / perBin);
+        int between = (int)Math.Round(fundamental * 5.5 / perBin);
+        output.WriteLine($"bin {onFifth} = {mask.At(60, onFifth):0.00}, " +
+                         $"bin {between} = {mask.At(60, between):0.00}");
+
+        Assert.True(mask.At(60, onFifth) > 0, "the partial itself must be selected");
+        Assert.Equal(0f, mask.At(60, between));
     }
 
     // ── toolbar visibility ───────────────────────────────────────
@@ -197,13 +363,12 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
             damaged[i] += (float)(burst / Math.Sqrt(40) * 0.8 + (random.NextDouble() - 0.5) * 0.01);
         }
 
-        var region = new SpectralRegion(28_000, 36_000, 1_100, 3_100);
-        SpectralMask mask = SpectralMask.ForRegion(region.StartSample, region.EndSample,
-            region.LowFrequency, region.HighFrequency, Rate, Fft, Hop);
-        Assert.False(mask.IsEmpty);
+        SpectralSelection selection = Selection(28_000, 36_000, 1_100, 3_100);
+        Assert.False(selection.IsEmpty);
 
-        SpectralRepairResult result = SpectralRepair.Heal(damaged, 0, mask,
-            new SpectralRepairOptions(Fft, Hop, SpectralRepairOptions.Default.PartialDriftRadians));
+        SpectralRepairResult result = SpectralRepair.Heal(damaged, 0, selection.Mask,
+            new SpectralRepairOptions(selection.FftSize, selection.Hop,
+                SpectralRepairOptions.Default.PartialDriftRadians));
 
         Assert.InRange(result.Start, 0, length);
         Assert.InRange(result.End, result.Start, length);

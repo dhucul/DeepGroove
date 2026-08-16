@@ -522,16 +522,15 @@ public partial class MainWindow : Window
     {
         if (_longOperationRunning) return;
         var d = Doc;
-        SpectralRegion region = _vm.SpectralSelection;
-        if (d == null || d.Doc.Length == 0 || region.IsEmpty) return;
+        SpectralSelection selection = _vm.SpectralSelection;
+        if (d == null || d.Doc.Length == 0 || selection.IsEmpty) return;
 
-        SpectrogramSettings analysis = spectralEditor.Settings;
-        var options = new SpectralRepairOptions(analysis.FftSize, analysis.Hop,
+        // The mask carries the grid it was built in, so a lasso or a wand is repaired through exactly
+        // what the user drew rather than through a rectangle reconstructed from its bounds.
+        var options = new SpectralRepairOptions(selection.FftSize, selection.Hop,
             SpectralRepairOptions.Default.PartialDriftRadians);
-
-        SpectralMask mask = SpectralMask.ForRegion(region.StartSample, region.EndSample,
-            region.LowFrequency, region.HighFrequency, d.Doc.SampleRate, options.FftSize, options.Hop);
-        if (mask.IsEmpty) return;
+        SpectralMask mask = selection.Mask;
+        if (mask.IsEmpty || selection.SampleRate != d.Doc.SampleRate) return;
 
         float[][] channels = d.Doc.Channels.ToArray();
         _longOperationRunning = true;
