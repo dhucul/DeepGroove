@@ -29,6 +29,10 @@ public static class WaveTheme
     public static readonly Pen Playhead = FreezePen(new Pen(new SolidColorBrush(Amber), 1.25));
     public static readonly Pen CursorPen = FreezePen(new Pen(new SolidColorBrush(Color.FromArgb(0xB8, 0xE7, 0xEA, 0xEE)), 1));
     public static readonly Pen TickPen = FreezePen(new Pen(new SolidColorBrush(Color.FromRgb(0x3A, 0x41, 0x4A)), 1));
+    // The amplitude ladder needs two weights of its own: a numbered rung has to read at a glance
+    // against the unnumbered ones between it, which TickPen alone cannot do.
+    public static readonly Pen ScaleTickPen = FreezePen(new Pen(new SolidColorBrush(Color.FromRgb(0x4A, 0x52, 0x5C)), 1));
+    public static readonly Pen ScaleTickMinorPen = FreezePen(new Pen(new SolidColorBrush(Color.FromRgb(0x34, 0x3C, 0x45)), 1));
     public static readonly Pen AccentPen = FreezePen(new Pen(new SolidColorBrush(Accent), 1.6));
     public static readonly Pen PeakHoldPen = FreezePen(new Pen(new SolidColorBrush(Color.FromArgb(0x80, 0xFF, 0xB4, 0x54)), 1));
     public static readonly Pen ViewportPen = FreezePen(new Pen(new SolidColorBrush(Color.FromArgb(0x73, 0x3F, 0xD6, 0xC2)), 1));
