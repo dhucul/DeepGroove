@@ -116,13 +116,31 @@ public sealed class SpectralMaskTests(ITestOutputHelper output)
         Assert.Equal(1f, mask.At(19, 19));
     }
 
-    [Fact]
-    public void AFeatherWiderThanTheRegionLeavesNothingBehind()
+    /// <summary>
+    /// A feather wider than the region gives way to the region rather than erasing it. Eroding a
+    /// four-cell selection by eight cells leaves nothing at all, which turned a small repair into a
+    /// silent no-op — the tool doing nothing reads as the tool being broken, and the taper is a
+    /// detail of how the edit is applied, not a reason not to apply it.
+    /// </summary>
+    [Theory]
+    [InlineData(4, 8)]
+    [InlineData(2, 2)]
+    [InlineData(1, 4)]
+    public void AFeatherWiderThanTheRegionGivesWayToIt(int size, int feather)
     {
-        // Eroding a four-cell region by eight cells removes all of it, which is the honest answer:
-        // there is no interior left to protect.
-        SpectralMask mask = SpectralMask.Rectangle(0, 4, 0, 4, feather: 8);
-        Assert.True(mask.Coverage() < 1e-6);
+        SpectralMask mask = SpectralMask.Rectangle(0, size, 0, size, feather);
+
+        Assert.False(mask.IsEmpty);
+        Assert.True(mask.Coverage() > 0, $"a {size}×{size} selection vanished under a {feather}-cell feather");
+    }
+
+    [Fact]
+    public void AFeatherStillTapersWhenTheRegionIsLargeEnoughToCarryIt()
+    {
+        SpectralMask mask = SpectralMask.Rectangle(0, 40, 0, 40, feather: 4);
+
+        Assert.Equal(1f, mask.At(20, 20), 3);
+        Assert.True(mask.At(0, 0) < 0.2f, "the outline itself must stay near zero");
     }
 
     // ── lasso ────────────────────────────────────────────────────

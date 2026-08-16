@@ -238,6 +238,12 @@ public sealed class SpectralMask
     {
         if (radius <= 0 || frames <= 0 || bins <= 0) return;
 
+        // Never erode a region out of existence. A two-frame selection fed to a radius-two feather
+        // has nothing left after the erosion, so a small selection would silently do nothing at all
+        // — the taper has to give way to the region rather than the other way round.
+        radius = Math.Min(radius, (Math.Min(frames, bins) - 1) / 2);
+        if (radius <= 0) return;
+
         Erode(weight, frames, bins, radius);
         Smooth(weight, frames, bins, radius);
     }
