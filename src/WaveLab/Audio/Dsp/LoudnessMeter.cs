@@ -44,6 +44,19 @@ public sealed class LoudnessMeter
     // blocks fall out rather than the meter consuming memory forever.
     private const int MaximumBlockLoudnessEntries = 36_000; // one hour at 100 ms
 
+    // Loudness range is not computed from the 400 ms blocks above. EBU Tech 3342 builds it from
+    // *short-term* (3 s) loudness sampled at no less than 66.7% overlap, which is a 1 s hop, and then
+    // gates that distribution twice. Measuring it from momentary blocks — as this did — reports a
+    // range several LU too wide on almost any real programme, because 400 ms windows track the
+    // envelope closely enough to include level swings that 3 s windows average away.
+    private const int MaximumShortTermEntries = 3_600;      // one hour at 1 s
+    private const int SubBlocksPerShortTermSample = 10;     // 100 ms sub-blocks per 1 s hop
+    private const int ShortTermSubBlocks = 30;              // 3 s window
+    private double[] _shortTermLoudness = [];
+    private int _shortTermStart;
+    private int _shortTermCount;
+    private int _subBlocksSinceShortTerm;
+
     private int _subBlockSize;           // 100 ms
     private double[] _subBlockSumSq = [];
     private int _subBlockFill;
@@ -118,6 +131,9 @@ public sealed class LoudnessMeter
             _last3s.Clear();
             _blockLoudnessStart = 0;
             _blockLoudnessCount = 0;
+            _shortTermStart = 0;
+            _shortTermCount = 0;
+            _subBlocksSinceShortTerm = 0;
             // Keep the version monotonic across resets: a reader that sampled the
             // pre-reset history must never store its result under a key this meter
             // can hand out again.
@@ -181,6 +197,15 @@ public sealed class LoudnessMeter
                     MomentaryLufs = Lufs(Avg(_last400));
                     ShortTermLufs = Lufs(Avg(_last3s));
                     if (_last400.Count == 4) AddBlockLoudness(Lufs(Avg(_last400)));
+
+                    // Short-term samples for loudness range: one per second, and only once a full
+                    // 3 s window has accumulated, so a partly-filled window cannot report as a quiet
+                    // passage and stretch the range.
+                    if (++_subBlocksSinceShortTerm >= SubBlocksPerShortTermSample)
+                    {
+                        _subBlocksSinceShortTerm = 0;
+                        if (_last3s.Count == ShortTermSubBlocks) AddShortTermLoudness(ShortTermLufs);
+                    }
 
                     _subBlockSumSq = new double[_channels];
                     _subBlockFill = 0;
@@ -260,6 +285,55 @@ public sealed class LoudnessMeter
         _blockLoudnessVersion++;
     }
 
+    /// <summary>Appends one short-term loudness sample, dropping the oldest when the ring is full.</summary>
+    private void AddShortTermLoudness(double loudness)
+    {
+        if (_shortTermCount == _shortTermLoudness.Length)
+        {
+            if (_shortTermLoudness.Length < MaximumShortTermEntries)
+            {
+                int capacity = Math.Min(MaximumShortTermEntries,
+                    Math.Max(256, _shortTermLoudness.Length * 2));
+                var grown = new double[capacity];
+                for (int i = 0; i < _shortTermCount; i++)
+                    grown[i] = _shortTermLoudness[(_shortTermStart + i) % _shortTermLoudness.Length];
+                _shortTermLoudness = grown;
+                _shortTermStart = 0;
+            }
+            else
+            {
+                _shortTermLoudness[_shortTermStart] = loudness;
+                _shortTermStart = (_shortTermStart + 1) % _shortTermLoudness.Length;
+                _blockLoudnessVersion++;
+                return;
+            }
+        }
+
+        _shortTermLoudness[(_shortTermStart + _shortTermCount) % _shortTermLoudness.Length] = loudness;
+        _shortTermCount++;
+        _blockLoudnessVersion++;
+    }
+
+    /// <summary>
+    /// Copies the short-term samples above the absolute gate into the shared read scratch. The caller
+    /// must hold both the read lock and the state lock.
+    /// </summary>
+    private int CopyAbsoluteGatedShortTermLocked(out double[] values)
+    {
+        if (_readScratch.Length < _shortTermCount)
+            _readScratch = new double[Math.Max(1024, _shortTermCount)];
+        values = _readScratch;
+        int count = 0;
+        for (int i = 0; i < _shortTermCount; i++)
+        {
+            double loudness = _shortTermLoudness[(_shortTermStart + i) % _shortTermLoudness.Length];
+            if (loudness > AbsoluteGateLufs) values[count++] = loudness;
+        }
+        return count;
+    }
+
+    private const double AbsoluteGateLufs = -70;
+
     /// <summary>
     /// Copies the blocks above the absolute gate into the shared read scratch, in
     /// arrival order. The caller must hold both the read lock and the state lock.
@@ -273,7 +347,7 @@ public sealed class LoudnessMeter
         for (int i = 0; i < _blockLoudnessCount; i++)
         {
             double loudness = _blockLoudness[(_blockLoudnessStart + i) % _blockLoudness.Length];
-            if (loudness > -70) values[count++] = loudness;
+            if (loudness > AbsoluteGateLufs) values[count++] = loudness;
         }
         return count;
     }
@@ -324,7 +398,17 @@ public sealed class LoudnessMeter
         }
     }
 
-    /// <summary>Simple LRA approximation: 10th..95th percentile of short-term-ish blocks.</summary>
+    /// <summary>
+    /// Loudness range per EBU Tech 3342: the spread between the 10th and 95th percentiles of the
+    /// short-term (3 s) loudness distribution, after an absolute gate at -70 LUFS and a relative gate
+    /// 20 LU below the mean of what survives it.
+    /// </summary>
+    /// <remarks>
+    /// The relative gate is the part that matters most in practice. Without it, a fade-out, a lead-in
+    /// or a quiet run-out counts as programme and inflates the range by as much as it is quiet —
+    /// which for a vinyl side means the number described the silence between tracks rather than the
+    /// music.
+    /// </remarks>
     public double LoudnessRangeLu
     {
         get
@@ -338,16 +422,27 @@ public sealed class LoudnessMeter
                 {
                     if (_rangeCacheVersion == _blockLoudnessVersion) return _rangeCacheValue;
                     version = _blockLoudnessVersion;
-                    count = CopyAbsoluteGatedBlocksLocked(out values);
+                    count = CopyAbsoluteGatedShortTermLocked(out values);
                 }
 
                 double result = 0;
-                if (count >= 4)
+                if (count >= 2)
                 {
-                    Array.Sort(values, 0, count);
-                    double lo = values[(int)(count * 0.10)];
-                    double hi = values[Math.Min(count - 1, (int)(count * 0.95))];
-                    result = Math.Max(0, hi - lo);
+                    double meanPower = 0;
+                    for (int i = 0; i < count; i++) meanPower += Math.Pow(10, (values[i] + 0.691) / 10);
+                    double relativeGate = Lufs(meanPower / count) - 20;
+
+                    int kept = 0;
+                    for (int i = 0; i < count; i++)
+                        if (values[i] > relativeGate) values[kept++] = values[i];
+
+                    if (kept >= 2)
+                    {
+                        Array.Sort(values, 0, kept);
+                        double lo = values[(int)((kept - 1) * 0.10 + 0.5)];
+                        double hi = values[(int)((kept - 1) * 0.95 + 0.5)];
+                        result = Math.Max(0, hi - lo);
+                    }
                 }
 
                 lock (_lock)
