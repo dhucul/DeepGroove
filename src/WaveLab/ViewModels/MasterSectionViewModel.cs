@@ -16,6 +16,10 @@ public sealed class MasterSectionViewModel : ObservableObject
     private bool _applyingPreset;
     private string _rackStatusText = "Rack ready.";
     private int _tick;
+    // last rendered value of each formatted readout, so a tick only notifies
+    // when the string the UI would show has actually moved
+    private string? _lufsMCache, _lufsSCache, _truePeakCache, _peakLrCache, _correlationTextCache;
+    private double _correlationCache = double.NaN, _balanceCache = double.NaN;
 
     // shared loudness-history ring (~2 min at 10 Hz), sampled here so the graph
     // records regardless of which analysis tab is visible
@@ -293,10 +297,48 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     private static string Fmt(double v) => double.IsFinite(v) && v > -99 ? $"{v:0.0}" : "—";
 
+    private static double ToDb(float linear) => linear <= 1e-5f ? -60 : Math.Max(-60, 20 * Math.Log10(linear));
+
+    /// <summary>
+    /// True while a displayed meter still differs from the level feeding it, so
+    /// the UI timer knows a tick would change something. Not bindable: it is
+    /// polled, never notified.
+    /// </summary>
+    public bool NeedsDecay
+    {
+        get
+        {
+            double peakL = ToDb(_master.PeakL), peakR = ToDb(_master.PeakR);
+            return _peakL != peakL || _peakR != peakR
+                || _holdL != peakL || _holdR != peakR
+                || _rmsL != ToDb(_master.RmsL) || _rmsR != ToDb(_master.RmsR);
+        }
+    }
+
+    private void RaiseIfChanged(ref string? cache, string value, string name)
+    {
+        if (string.Equals(cache, value, StringComparison.Ordinal)) return;
+        cache = value;
+        Raise(name);
+    }
+
+    private void RaiseIfChanged(ref double cache, double value, string name)
+    {
+        if (cache == value) return;
+        cache = value;
+        Raise(name);
+    }
+
+    /// <summary>Forces the next tick to re-notify every cached readout.</summary>
+    private void InvalidateReadoutCaches()
+    {
+        _lufsMCache = _lufsSCache = _truePeakCache = _peakLrCache = _correlationTextCache = null;
+        _correlationCache = _balanceCache = double.NaN;
+    }
+
     public void Tick(double dt, bool isPlaying)
     {
         _tick++;
-        double ToDb(float linear) => linear <= 1e-5f ? -60 : Math.Max(-60, 20 * Math.Log10(linear));
         double DecayTo(double current, double target, double rate) =>
             target >= current ? target : Math.Max(target, current - rate * dt);
 
@@ -307,13 +349,15 @@ public sealed class MasterSectionViewModel : ObservableObject
         HoldLDb = Math.Max(ToDb(_master.PeakL), _holdL - 6 * dt);
         HoldRDb = Math.Max(ToDb(_master.PeakR), _holdR - 6 * dt);
 
-        Raise(nameof(LufsMText));
-        Raise(nameof(LufsSText));
-        Raise(nameof(TruePeakText));
-        Raise(nameof(PeakLrText));
-        Raise(nameof(CorrelationText));
-        Raise(nameof(Correlation));
-        Raise(nameof(BalanceDb));
+        // Each of these getters allocates a fresh interpolated string, so notify
+        // only when the rendered text (or value) actually moved.
+        RaiseIfChanged(ref _lufsMCache, LufsMText, nameof(LufsMText));
+        RaiseIfChanged(ref _lufsSCache, LufsSText, nameof(LufsSText));
+        RaiseIfChanged(ref _truePeakCache, TruePeakText, nameof(TruePeakText));
+        RaiseIfChanged(ref _peakLrCache, PeakLrText, nameof(PeakLrText));
+        RaiseIfChanged(ref _correlationTextCache, CorrelationText, nameof(CorrelationText));
+        RaiseIfChanged(ref _correlationCache, Correlation, nameof(Correlation));
+        RaiseIfChanged(ref _balanceCache, BalanceDb, nameof(BalanceDb));
 
         // gated-integrated recompute is O(blocks) — 2 Hz is plenty for the readout
         if (_tick % 15 == 0)
@@ -340,6 +384,9 @@ public sealed class MasterSectionViewModel : ObservableObject
     {
         PeakLDb = PeakRDb = RmsLDb = RmsRDb = HoldLDb = HoldRDb = -60;
         _master.ResetMeters();
+        // The unconditional raises below re-read every readout; drop the caches
+        // so a later tick cannot mistake a stale entry for the shown value.
+        InvalidateReadoutCaches();
         Raise(nameof(LufsIntText));
         Raise(nameof(LufsMText));
         Raise(nameof(LufsSText));

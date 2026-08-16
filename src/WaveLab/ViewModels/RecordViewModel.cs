@@ -1,4 +1,6 @@
+using System.Collections;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Util;
@@ -59,7 +61,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private bool _autoStopOnDuration;
     private int _autoStopMinutes = DefaultAutoStopMinutes;
     private string _autoStopStatusText = "";
-    private bool _disposed;
+    // written on the UI thread in Dispose, read on NAudio's capture/stop
+    // callback threads — must not be cached in a register
+    private volatile bool _disposed;
 
     public RecordViewModel()
     {
@@ -193,7 +197,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Recent input RMS (dB), newest last; drives the scrolling history strip.</summary>
-    public ObservableCollection<double> LevelHistory { get; } = [];
+    public LevelHistoryBuffer LevelHistory { get; } = new(LevelHistoryCapacity);
 
     public bool IsRecording
     {
@@ -926,8 +930,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         UpdateHeldRecommendation(snapshot);
         HoldLDb = ToMeterDb(snapshot.PeakLeftDb);
         HoldRDb = ToMeterDb(snapshot.PeakRightDb);
-        LevelHistory.Add(Math.Max(rmsDbL, rmsDbR));
-        while (LevelHistory.Count > LevelHistoryCapacity) LevelHistory.RemoveAt(0);
+        LevelHistory.Append(Math.Max(rmsDbL, rmsDbR));
         SaveCalibrationOnceSettled();
         UpdateAutoStopCountdown();
         Raise(nameof(ElapsedText));
@@ -1150,7 +1153,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             _heldProgramPeakDb = double.NaN;
         }
         PeakLDb = PeakRDb = RmsLDb = RmsRDb = HoldLDb = HoldRDb = -60;
-        LevelHistory.Clear();
+        LevelHistory.Reset();
     }
 
     private void RaiseLevelProperties()
@@ -1208,4 +1211,103 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         Interlocked.Exchange(ref _expectedRecordingSessionId, 0);
         _engine.Dispose();
     }
+}
+
+/// <summary>
+/// Fixed-capacity input-level history, oldest first. Appending is O(1) and
+/// reports a single change, where an ObservableCollection capped with
+/// RemoveAt(0) shifted the whole list and raised both a Remove and an Add on
+/// every 33 ms tick. Reads exactly like the list it replaces, so the bound
+/// history strip is unaffected.
+/// </summary>
+public sealed class LevelHistoryBuffer : IList<double>, IReadOnlyList<double>, INotifyCollectionChanged
+{
+    private const string AppendOnly = "The level history is append-only.";
+    private static readonly NotifyCollectionChangedEventArgs ResetArgs = new(NotifyCollectionChangedAction.Reset);
+
+    private readonly double[] _values;
+    private int _start;   // ring index of the oldest sample
+    private int _count;
+
+    public LevelHistoryBuffer(int capacity)
+    {
+        if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+        _values = new double[capacity];
+    }
+
+    public event NotifyCollectionChangedEventHandler? CollectionChanged;
+
+    public int Capacity => _values.Length;
+    public int Count => _count;
+    public bool IsReadOnly => true;
+
+    public double this[int index]
+    {
+        get
+        {
+            if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+            return _values[Wrap(_start + index)];
+        }
+        set => throw new NotSupportedException(AppendOnly);
+    }
+
+    /// <summary>Adds one sample, dropping the oldest once the ring is full.</summary>
+    public void Append(double value)
+    {
+        if (_count < _values.Length)
+        {
+            _values[Wrap(_start + _count)] = value;
+            _count++;
+            CollectionChanged?.Invoke(this,
+                new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, value, _count - 1));
+            return;
+        }
+
+        _values[_start] = value;
+        _start = Wrap(_start + 1);
+        // Dropping the oldest while appending the newest is not expressible as a
+        // single Add or Remove, so the strip is invalidated once instead.
+        CollectionChanged?.Invoke(this, ResetArgs);
+    }
+
+    /// <summary>Discards the whole history.</summary>
+    public void Reset()
+    {
+        if (_count == 0) return;
+        _start = 0;
+        _count = 0;
+        CollectionChanged?.Invoke(this, ResetArgs);
+    }
+
+    public int IndexOf(double item)
+    {
+        for (int i = 0; i < _count; i++)
+            if (_values[Wrap(_start + i)].Equals(item)) return i;
+        return -1;
+    }
+
+    public bool Contains(double item) => IndexOf(item) >= 0;
+
+    public void CopyTo(double[] array, int arrayIndex)
+    {
+        ArgumentNullException.ThrowIfNull(array);
+        if (arrayIndex < 0 || array.Length - arrayIndex < _count)
+            throw new ArgumentOutOfRangeException(nameof(arrayIndex));
+        for (int i = 0; i < _count; i++) array[arrayIndex + i] = _values[Wrap(_start + i)];
+    }
+
+    public IEnumerator<double> GetEnumerator()
+    {
+        for (int i = 0; i < _count; i++) yield return _values[Wrap(_start + i)];
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    void IList<double>.Insert(int index, double item) => throw new NotSupportedException(AppendOnly);
+    void IList<double>.RemoveAt(int index) => throw new NotSupportedException(AppendOnly);
+    void ICollection<double>.Add(double item) => throw new NotSupportedException(AppendOnly);
+    void ICollection<double>.Clear() => throw new NotSupportedException(AppendOnly);
+    bool ICollection<double>.Remove(double item) => throw new NotSupportedException(AppendOnly);
+
+    private int Wrap(int index) => index >= _values.Length ? index - _values.Length : index;
 }

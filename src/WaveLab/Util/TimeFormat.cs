@@ -5,7 +5,10 @@ public static class TimeFormat
     /// <summary>hh:mm:ss.mmm from a sample position.</summary>
     public static string Position(long samples, int sampleRate)
     {
-        if (sampleRate <= 0) return "00:00:00.000";
+        // A negative position has no timecode: the 00 specifier does not pad a
+        // negative field, and rounding carries a small negative into a positive
+        // second. Clamp like Compact does.
+        if (sampleRate <= 0 || samples < 0) return "00:00:00.000";
         double totalSec = (double)samples / sampleRate;
         int h = (int)(totalSec / 3600);
         int m = (int)(totalSec / 60) % 60;

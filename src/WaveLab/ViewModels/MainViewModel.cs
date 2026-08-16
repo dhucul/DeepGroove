@@ -25,7 +25,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private int _playbackEditVersion = -1;
     private long _playbackSession;
     private long _stoppedPlaybackSession;
-    private AudioDocument? _stoppedPlaybackSource;
     private DocumentViewModel? _seekDocument;
     private bool _resumeAfterSeek;
     private bool _isPlaying;
@@ -155,7 +154,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RenderCommand = new RelayCommand(RenderMaster, () => HasAudioDocument);
         ApplyChainCommand = new RelayCommand(ApplyChain, () => HasAudioDocument);
         RecordCommand = new RelayCommand(ToggleRecord, () => !IsFinalizingRecording);
-        RecordSetupCommand = new RelayCommand(() => RequestRecordDialog?.Invoke(),
+        RecordSetupCommand = new RelayCommand(OpenRecordDialog,
             () => !IsTransportRecording && !IsFinalizingRecording && !HasPendingTransportRecording);
         SettingsCommand = new RelayCommand(() => RequestSettingsDialog?.Invoke());
         ExportCommand = new RelayCommand(() => RequestExportDialog?.Invoke(), () => HasAudioDocument);
@@ -925,7 +924,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         if (!IsRecordArmed)
         {
-            RequestRecordDialog?.Invoke();
+            OpenRecordDialog();
             return;
         }
 
@@ -944,6 +943,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             MessageBox.Show($"Could not start recording from the selected input:\n{ex.Message}",
                 "Record", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    /// <summary>
+    /// Opens the recording setup dialog. The dialog builds its own recording
+    /// engine, so the output stream has to be released first: capturing while
+    /// WASAPI is still streaming records the playback monitor path when
+    /// software playthrough is on.
+    /// </summary>
+    private void OpenRecordDialog()
+    {
+        if (IsTransportRecording || IsFinalizingRecording || HasPendingTransportRecording) return;
+        if (Engine.IsPlaying || Engine.IsPaused) ReleasePlayback();
+        RequestRecordDialog?.Invoke();
     }
 
     private void StopTransport()
@@ -1136,7 +1148,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool loop = Engine.Loop;
         var document = _playbackDocument;
         var preview = _previewDocument;
+        // ReleasePlayback restores (and clears) a preview's rack bypass, so the
+        // override has to be captured here and re-established for the restart —
+        // otherwise an A/B "dry" audition comes back wet and stopping it no
+        // longer returns the rack to the user's setting.
+        bool? previewRackOverride = _previewRackRestoreState;
         ReleasePlayback(updatePosition: false);
+        if (preview != null && previewRackOverride.HasValue)
+        {
+            _previewRackRestoreState = previewRackOverride;
+            Engine.Master.RackEnabled = false;
+        }
 
         try
         {
@@ -1272,8 +1294,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _previewDocument = null;
             _playbackEditVersion = -1;
             _playbackSession = 0;
+            // The session id is unique per Play(), so it is on its own enough to
+            // correlate a following device-failure event. Holding the document
+            // as well would root its whole sample buffer until the next stop.
             _stoppedPlaybackSession = playbackSession;
-            _stoppedPlaybackSource = sourceDocument;
             IsPlaying = false;
             RestorePreviewRackOverride();
         });
@@ -1283,10 +1307,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         Application.Current?.Dispatcher.BeginInvoke(() =>
         {
-            if (_stoppedPlaybackSession != playbackSession
-                || !ReferenceEquals(_stoppedPlaybackSource, sourceDocument)) return;
+            if (_stoppedPlaybackSession != playbackSession) return;
             _stoppedPlaybackSession = 0;
-            _stoppedPlaybackSource = null;
             MessageBox.Show($"Playback stopped because the audio device failed:\n{error.Message}",
                 "Playback", MessageBoxButton.OK, MessageBoxImage.Warning);
         });
@@ -1307,8 +1329,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (e.PropertyName == nameof(DocumentViewModel.MarkersVersion))
             ReportAction("Markers or regions updated.");
+        // SelStart/SelEnd never move without DocumentViewModel.RaiseSelection
+        // re-raising HasSelection, so listening for the extra two only meant
+        // re-querying all 33 commands three times per mouse-move.
         if (e.PropertyName is nameof(DocumentViewModel.HasSelection)
-            or nameof(DocumentViewModel.SelStart) or nameof(DocumentViewModel.SelEnd)
             or nameof(DocumentViewModel.MarkersVersion))
             RefreshEditCommandStates();
     }
@@ -1685,7 +1709,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnTick()
     {
-        Master.Tick(0.033, IsPlaying);
+        // Nothing feeding the master and the meters already settled: ticking
+        // would only re-format readouts that cannot have changed.
+        if (IsPlaying || IsTransportRecording || Master.NeedsDecay)
+            Master.Tick(0.033, IsPlaying);
         if (IsTransportRecording)
         {
             static double ToDb(float value) => value <= 1e-5f ? -60 : Math.Max(-60, 20 * Math.Log10(value));
