@@ -747,10 +747,17 @@ public static partial class Restoration
             contextPeak = Math.Max(contextPeak, Math.Abs(samples[i]));
         double limit = Math.Max(1e-6, contextPeak * maximumOvershoot);
 
-        double[] reconstruction = gapLength >= 4 &&
-                                  TryBidirectionalLinearPrediction(samples, start, end,
-                                      contextLength, limit, out double[] predicted)
-            ? predicted
+        // Three methods, best first. Janssen fits one model to the signal including the samples
+        // being estimated and refines both together; the bidirectional predictor fits two models
+        // that have never seen the gap and cross-fades their disagreement; the cubic bridge only
+        // matches level and slope at the edges. Each falls through to the next when the geometry or
+        // the audio will not support it, so a repair always happens.
+        double[] reconstruction =
+            Janssen.TryInterpolate(samples, start, end,
+                JanssenOptions.For(gapLength, limit), out double[] janssen) ? janssen
+            : gapLength >= 4 &&
+              TryBidirectionalLinearPrediction(samples, start, end,
+                  contextLength, limit, out double[] predicted) ? predicted
             : CubicImpulseInterpolation(samples, start, end);
 
         for (int i = start; i < end; i++)
