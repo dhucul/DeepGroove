@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
@@ -15,6 +16,7 @@ namespace WaveLab.Views;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
+    private readonly DispatcherTimer _progressTimer;
     private bool _allowClose;
     private bool _closing;
     private bool _longOperationRunning;
@@ -40,6 +42,17 @@ public partial class MainWindow : Window
 
         RestoreWindowPlacement();
 
+        // The progress host stores what workers report and recomputes the visible text here, at a
+        // fixed 10 Hz. Marshalling every individual progress report through the dispatcher instead
+        // would post tens of thousands of callbacks per render and starve the meters and playhead.
+        // Render priority keeps it behind input, which is what lets Cancel stay responsive.
+        _progressTimer = new DispatcherTimer(DispatcherPriority.Render)
+        {
+            Interval = TimeSpan.FromMilliseconds(100),
+        };
+        _progressTimer.Tick += (_, _) => _vm.Progress.Tick();
+        _progressTimer.Start();
+
         Loaded += async (_, _) =>
         {
             var args = Environment.GetCommandLineArgs().Skip(1).Where(System.IO.File.Exists).ToArray();
@@ -63,6 +76,16 @@ public partial class MainWindow : Window
         if (_allowClose) return;
         e.Cancel = true;
         if (_closing) return;
+        // RunBlocking no longer disables the window — that would disable the overlay's own Cancel
+        // button — so the progress host is what says whether something is still running.
+        if (_vm.Progress.Blocking is { } blocking)
+        {
+            blocking.Cancel();
+            MessageBox.Show(
+                $"{blocking.Title} is stopping. It will finish at its next safe point; close WaveLab again once it has.",
+                "Operation in progress", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         if (_longOperationRunning || !IsEnabled)
         {
             MessageBox.Show(
@@ -366,7 +389,22 @@ public partial class MainWindow : Window
     /// dialog is open. Re-reading Doc here applied the tool — and the captured noise profile —
     /// to whichever file happened to become active.
     /// </summary>
-    private async Task<bool> RunRangeTool(string undoName, Func<float[][], int, float[][]?> transform,
+    /// <summary>Tools that cannot report progress; they still get a cancellable indeterminate overlay.</summary>
+    private Task<bool> RunRangeTool(string undoName, Func<float[][], int, float[][]?> transform,
+        DocumentViewModel? target = null) =>
+        RunRangeTool(undoName, null, (input, sampleRate, _, _) => transform(input, sampleRate), target);
+
+    /// <summary>
+    /// Dialog → background transform → one undoable splice, behind the progress overlay.
+    /// </summary>
+    /// <remarks>
+    /// This no longer sets <c>IsEnabled = false</c> to keep the splice range valid: that would also
+    /// disable the overlay's Cancel button. The overlay covers the window instead, and the range is
+    /// re-validated against the document length before the splice regardless — which was always the
+    /// real safety net, since a background transform could never have been trusted to a UI flag.
+    /// </remarks>
+    private async Task<bool> RunRangeTool(string undoName, string? detail,
+        Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
         DocumentViewModel? target = null)
     {
         if (_longOperationRunning) return false;
@@ -377,31 +415,37 @@ public partial class MainWindow : Window
         var channels = d.Doc.Channels.ToArray();
         int sr = d.Doc.SampleRate;
         _longOperationRunning = true;
-        IsEnabled = false; // block edits while the transform runs so the splice range stays valid
         Mouse.OverrideCursor = Cursors.Wait;
+        bool applied = false;
         try
         {
-            var output = await Task.Run(() =>
+            await _vm.Progress.RunBlockingAsync(undoName, detail, async (progress, token) =>
             {
-                var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
-                return transform(input, sr);
+                var output = await Task.Run(() =>
+                {
+                    var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
+                    return transform(input, sr, progress, token);
+                }, token);
+                if (output == null || start + count > d.Doc.Length) return;
+                _vm.PrepareForDocumentEdit(d);
+                d.Doc.ReplaceRange(start, count, output, undoName);
+                applied = true;
             });
-            if (output == null || start + count > d.Doc.Length) return false;
-            _vm.PrepareForDocumentEdit(d);
-            d.Doc.ReplaceRange(start, count, output, undoName);
-            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction($"{undoName} cancelled · document unchanged.");
         }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, undoName, MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
         }
         finally
         {
             Mouse.OverrideCursor = null;
-            IsEnabled = true;
             _longOperationRunning = false;
         }
+        return applied;
     }
 
     private void OnResetAmpZoom(object sender, RoutedEventArgs e)
@@ -443,9 +487,19 @@ public partial class MainWindow : Window
         var channels = d.Doc.Channels.ToArray();
         int start = d.SelStart, count = d.SelEnd - d.SelStart;
         _longOperationRunning = true;
-        IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
-        try { d.NoiseProfile = await Task.Run(() => Restoration.LearnNoiseProfile(channels, start, count)); }
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Learning noise profile",
+                "Averaging the spectrum of the selection",
+                async (_, token) => d.NoiseProfile =
+                    await Task.Run(() => Restoration.LearnNoiseProfile(channels, start, count, token), token));
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction("Learning the noise profile was cancelled.");
+            return;
+        }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Learn Noise Profile", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -454,7 +508,6 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            IsEnabled = true;
             _longOperationRunning = false;
         }
         InfoDialog.Show(this, "Noise Profile Learned",
@@ -609,12 +662,19 @@ public partial class MainWindow : Window
         var channels = document.Doc.Channels.ToArray();
         int sampleRate = document.Doc.SampleRate;
         _longOperationRunning = true;
-        IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
-            return await Task.Run(() => Restoration.DetectSilences(
-                channels, sampleRate, threshold, minimumLength));
+            List<(int Start, int End)>? found = null;
+            await _vm.Progress.RunBlockingAsync("Detecting silences", "Scanning the file for quiet gaps",
+                async (_, token) => found = await Task.Run(() => Restoration.DetectSilences(
+                    channels, sampleRate, threshold, minimumLength), token));
+            return found;
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction("Silence detection cancelled.");
+            return null;
         }
         catch (Exception ex)
         {
@@ -624,7 +684,6 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            IsEnabled = true;
             _longOperationRunning = false;
         }
     }
@@ -668,13 +727,20 @@ public partial class MainWindow : Window
     {
         if (_longOperationRunning || Doc is not { } document) return;
         _longOperationRunning = true;
-        IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
-            var generated = await Task.Run(() => transform(document.Doc));
-            _vm.AddGeneratedDocument(generated,
-                $"{title} completed in a new tab · source audio unchanged.");
+            await _vm.Progress.RunBlockingAsync(title, "Writing to a new tab · source unchanged",
+                async (_, token) =>
+                {
+                    var generated = await Task.Run(() => transform(document.Doc), token);
+                    _vm.AddGeneratedDocument(generated,
+                        $"{title} completed in a new tab · source audio unchanged.");
+                });
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction($"{title} cancelled.");
         }
         catch (Exception ex)
         {
@@ -683,7 +749,6 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            IsEnabled = true;
             _longOperationRunning = false;
         }
     }
@@ -714,7 +779,8 @@ public partial class MainWindow : Window
             _vm.ReportAction("Time Stretch unchanged · no processing applied.");
             return;
         }
-        _ = RunRangeTool("Time Stretch", (data, sr) => TimeStretch.Stretch(data, sr, factor), d);
+        _ = RunRangeTool("Time Stretch", $"WSOLA · {factor:0.###}× duration",
+            (data, sr, progress, token) => TimeStretch.Stretch(data, sr, factor, token, progress), d);
     }
 
     private void OnPitchShift(object sender, RoutedEventArgs e)
@@ -731,7 +797,8 @@ public partial class MainWindow : Window
             _vm.ReportAction("Pitch Shift unchanged · no processing applied.");
             return;
         }
-        _ = RunRangeTool("Pitch Shift", (data, sr) => TimeStretch.PitchShift(data, sr, semitones), d);
+        _ = RunRangeTool("Pitch Shift", $"{semitones:+0.##;-0.##;0} semitones · stretch then resample",
+            (data, sr, progress, token) => TimeStretch.PitchShift(data, sr, semitones, token, progress), d);
     }
 
     private async void OnConvertRate(object sender, RoutedEventArgs e)
@@ -752,13 +819,22 @@ public partial class MainWindow : Window
         }
         var doc = d.Doc;
         _longOperationRunning = true;
-        IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
-            var converted = await Task.Run(() => ChannelTools.ConvertSampleRate(doc, target));
-            _vm.AddGeneratedDocument(converted,
-                $"Sample rate converted to {target / 1000.0:0.###} kHz in a new tab · source audio unchanged.");
+            await _vm.Progress.RunBlockingAsync("Converting sample rate",
+                $"{doc.SampleRate / 1000.0:0.###} → {target / 1000.0:0.###} kHz · windowed-sinc",
+                async (progress, token) =>
+                {
+                    var converted = await Task.Run(
+                        () => ChannelTools.ConvertSampleRate(doc, target, token, progress), token);
+                    _vm.AddGeneratedDocument(converted,
+                        $"Sample rate converted to {target / 1000.0:0.###} kHz in a new tab · source audio unchanged.");
+                });
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction("Sample rate conversion cancelled.");
         }
         catch (Exception ex)
         {
@@ -767,7 +843,6 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            IsEnabled = true;
             _longOperationRunning = false;
         }
     }
@@ -793,32 +868,33 @@ public partial class MainWindow : Window
         int chCount = chans.Length;
         int sampleRate = doc.SampleRate;
         _longOperationRunning = true;
-        IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
-        var result = await Task.Run(() =>
-        {
-            var mono = new float[count];
-            for (int i = 0; i < count; i++)
-            {
-                float v = 0;
-                for (int c = 0; c < chCount; c++) v += chans[c][start + i];
-                mono[i] = v / chCount;
-            }
-            return PitchDetect.Detect(mono, sampleRate);
-        });
-        InfoDialog.Show(this, "Tuner",
-            result.Frequency > 0
-                ? $"Confidence {result.Confidence:P0}. Detected over {TimeFormat.Compact((double)count / doc.SampleRate)} of audio."
-                : "No stable pitch detected — try selecting a sustained note.",
-            result.Frequency > 0 ? PitchDetect.Describe(result.Frequency) : null);
+            (double Frequency, double Confidence) result = default;
+            await _vm.Progress.RunBlockingAsync("Detecting pitch", "YIN over the selection",
+                async (_, token) => result = await Task.Run(() =>
+                {
+                    var mono = new float[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        float v = 0;
+                        for (int c = 0; c < chCount; c++) v += chans[c][start + i];
+                        mono[i] = v / chCount;
+                    }
+                    return PitchDetect.Detect(mono, sampleRate);
+                }, token));
+            InfoDialog.Show(this, "Tuner",
+                result.Frequency > 0
+                    ? $"Confidence {result.Confidence:P0}. Detected over {TimeFormat.Compact((double)count / doc.SampleRate)} of audio."
+                    : "No stable pitch detected — try selecting a sustained note.",
+                result.Frequency > 0 ? PitchDetect.Describe(result.Frequency) : null);
         }
+        catch (OperationCanceledException) { _vm.ReportAction("Pitch detection cancelled."); }
         catch (Exception ex) { MessageBox.Show(ex.Message, "Tuner", MessageBoxButton.OK, MessageBoxImage.Warning); }
         finally
         {
             Mouse.OverrideCursor = null;
-            IsEnabled = true;
             _longOperationRunning = false;
         }
     }
@@ -831,21 +907,23 @@ public partial class MainWindow : Window
         var chans = d.Doc.Channels.ToArray(); // stable refs captured on the UI thread
         int sampleRate = d.Doc.SampleRate;
         _longOperationRunning = true;
-        IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
-            var (bpm, confidence) = await Task.Run(() => TempoDetect.Detect(chans, sampleRate));
+            double bpm = 0, confidence = 0;
+            await _vm.Progress.RunBlockingAsync("Detecting tempo", "Onset autocorrelation",
+                async (_, token) => (bpm, confidence) =
+                    await Task.Run(() => TempoDetect.Detect(chans, sampleRate), token));
             InfoDialog.Show(this, "Tempo Detection",
                 bpm > 0 ? $"Confidence {confidence:P0}. Half/double-time ({bpm / 2:0.#} / {bpm * 2:0.#} BPM) may also fit."
                         : "No clear tempo found — the material may be too sparse or rubato.",
                 bpm > 0 ? $"{bpm:0.#} BPM" : null);
         }
+        catch (OperationCanceledException) { _vm.ReportAction("Tempo detection cancelled."); }
         catch (Exception ex) { MessageBox.Show(ex.Message, "Tempo Detection", MessageBoxButton.OK, MessageBoxImage.Warning); }
         finally
         {
             Mouse.OverrideCursor = null;
-            IsEnabled = true;
             _longOperationRunning = false;
         }
     }

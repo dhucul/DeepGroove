@@ -4,7 +4,13 @@ namespace WaveLab.Audio.Dsp;
 public static class TimeStretch
 {
     /// <summary>Stretch duration by <paramref name="factor"/> (2.0 = twice as long) without changing pitch.</summary>
-    public static float[][] Stretch(IReadOnlyList<float[]> channels, int sampleRate, double factor)
+    /// <remarks>
+    /// The correlation search makes this one of the slowest tools in the app on a whole side, which is
+    /// why it reports progress and can be stopped: the output buffer is only handed back on success,
+    /// so cancelling leaves the document untouched.
+    /// </remarks>
+    public static float[][] Stretch(IReadOnlyList<float[]> channels, int sampleRate, double factor,
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(channels);
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
@@ -65,9 +71,20 @@ public static class TimeStretch
         int outPos = 0;
         double srcPos = 0;
         bool first = true;
+        int sinceReport = 0;
+        progress?.Report(0);
 
         while (outPos < targetLen && (int)srcPos < n)
         {
+            // Checked per synthesis frame rather than per sample: a frame is tens of milliseconds of
+            // audio, so this is responsive without putting an interlocked read in the inner loop.
+            if (++sinceReport >= 32)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                progress?.Report((double)outPos / targetLen);
+                sinceReport = 0;
+            }
+
             int ideal = (int)srcPos;
             int best = ideal;
 
@@ -115,11 +132,13 @@ public static class TimeStretch
             srcPos += anaHop;
         }
 
+        progress?.Report(1);
         return output;
     }
 
     /// <summary>Shift pitch by semitones (+cents) keeping duration: WSOLA stretch then windowed-sinc resample.</summary>
-    public static float[][] PitchShift(IReadOnlyList<float[]> channels, int sampleRate, double semitones)
+    public static float[][] PitchShift(IReadOnlyList<float[]> channels, int sampleRate, double semitones,
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(channels);
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
@@ -166,8 +185,20 @@ public static class TimeStretch
         // the stretch from that representable rate so both stages use one exact ratio
         // and the resample restores the original duration instead of drifting.
         double pitchFactor = virtualRate / (double)sampleRate;
-        var stretched = Stretch(channels, sampleRate, pitchFactor);
+
+        // Two stages of very different cost share one bar. The stretch dominates, so it owns the
+        // first three quarters and the resample the last.
+        var stretched = Stretch(channels, sampleRate, pitchFactor, cancellationToken,
+            progress is null ? null : new ScaledProgress(progress, 0, 0.75));
         // Play the stretched audio "faster" by the same factor.
-        return Resampler.Resample(stretched, virtualRate, sampleRate);
+        return Resampler.Resample(stretched, virtualRate, sampleRate, cancellationToken,
+            progress is null ? null : new ScaledProgress(progress, 0.75, 1));
+    }
+
+    /// <summary>Maps a stage's own 0..1 onto a slice of an overall bar.</summary>
+    private sealed class ScaledProgress(IProgress<double> inner, double from, double to) : IProgress<double>
+    {
+        public void Report(double value) =>
+            inner.Report(from + Math.Clamp(value, 0, 1) * (to - from));
     }
 }

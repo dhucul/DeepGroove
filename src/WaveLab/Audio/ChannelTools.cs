@@ -86,9 +86,10 @@ public static class ChannelTools
         };
     }
 
-    public static AudioDocument ConvertSampleRate(AudioDocument doc, int targetRate)
+    public static AudioDocument ConvertSampleRate(AudioDocument doc, int targetRate,
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
     {
-        var data = Resampler.Resample(doc.Channels, doc.SampleRate, targetRate);
+        var data = Resampler.Resample(doc.Channels, doc.SampleRate, targetRate, cancellationToken, progress);
         // Sample-rate conversion is mathematical processing even when the target
         // happens to be 44.1 kHz; retain that provenance for correct export dither.
         return new AudioDocument(data, targetRate, sourceBitDepth: 32)

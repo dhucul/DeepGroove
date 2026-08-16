@@ -385,6 +385,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string CpuText { get => _cpuText; private set => Set(ref _cpuText, value); }
     public string RamText { get => _ramText; private set => Set(ref _ramText, value); }
 
+    /// <summary>
+    /// Progress and cancellation for long operations. Driven from a UI timer in the window; the DSP
+    /// layer already produces the tokens and progress reports this surfaces.
+    /// </summary>
+    public ProgressHost Progress { get; } = new();
+
     public void ReportAction(string message)
     {
         if (string.IsNullOrWhiteSpace(message)) return;
@@ -436,21 +442,33 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Mouse.OverrideCursor = Cursors.Wait;
             try
             {
-                // decode AND build the peak pyramid off the UI thread — the tab appears fully drawn
-                var (doc, peaks) = await Task.Run(() =>
-                {
-                    var loaded = openAs.HasValue
-                        ? AudioImporter.LoadAs(path, openAs.Value)
-                        : AudioImporter.Load(path);
-                    var store = new PeakStore();
-                    store.Rebuild(loaded);
-                    return (loaded, store);
-                });
-                AddDocument(doc, peaks);
-                ReportAction($"{doc.Title} opened.");
-                AppSettings.Instance.LastOpenFolder = Path.GetDirectoryName(path);
-                if (!AppSettings.Instance.AddRecentFile(path)) ReportSettingsSaveFailure();
-                SyncRecentFiles();
+                // The decoders report no total — Media Foundation in particular cannot — so this is
+                // an indeterminate operation. It is still worth hosting: a long decode used to freeze
+                // the window outright, and now it can at least be seen and abandoned.
+                await Progress.RunBlockingAsync($"Opening {Path.GetFileName(path)}",
+                    "Decoding and building the waveform overview",
+                    async (_, token) =>
+                    {
+                        // decode AND build the peak pyramid off the UI thread — the tab appears fully drawn
+                        var (doc, peaks) = await Task.Run(() =>
+                        {
+                            var loaded = openAs.HasValue
+                                ? AudioImporter.LoadAs(path, openAs.Value, token)
+                                : AudioImporter.Load(path, token);
+                            var store = new PeakStore();
+                            store.Rebuild(loaded);
+                            return (loaded, store);
+                        }, token);
+                        AddDocument(doc, peaks);
+                        ReportAction($"{doc.Title} opened.");
+                        AppSettings.Instance.LastOpenFolder = Path.GetDirectoryName(path);
+                        if (!AppSettings.Instance.AddRecentFile(path)) ReportSettingsSaveFailure();
+                        SyncRecentFiles();
+                    });
+            }
+            catch (OperationCanceledException)
+            {
+                ReportAction($"Opening {Path.GetFileName(path)} cancelled.");
             }
             catch (Exception ex)
             {
@@ -536,7 +554,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         int depth,
         bool dither,
         bool? writeAiff = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
     {
         bool useAiff = writeAiff ?? IsClassicAiffPath(path);
         string extension = Path.GetExtension(path);
@@ -547,9 +566,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             throw new NotSupportedException("WAV output requires a .wav file name.");
 
         if (useAiff)
-            AiffCodec.Save(doc, path, depth, dither, cancellationToken);
+            AiffCodec.Save(doc, path, depth, dither, cancellationToken, progress);
         else
-            WavCodec.Save(doc, path, depth, dither, cancellationToken);
+            WavCodec.Save(doc, path, depth, dither, cancellationToken, progress);
     }
 
     private async void Save()
@@ -569,8 +588,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         int depth = doc.SourceBitDepth;
         try
         {
-            await Task.Run(() => SaveEditableDocument(snapshot, path, depth,
-                dither: depth == 16 && snapshot.Dither16BitOnSave));
+            // Both codecs write to a staged temp file and move it into place at the end, so a
+            // cancelled save abandons the temp and leaves the original file untouched.
+            await Progress.RunBlockingAsync($"Saving {doc.Title}",
+                $"{depth}-bit{(depth == 16 && snapshot.Dither16BitOnSave ? " · dithered" : "")}",
+                (progress, token) => Task.Run(() => SaveEditableDocument(snapshot, path, depth,
+                    dither: depth == 16 && snapshot.Dither16BitOnSave,
+                    writeAiff: null, cancellationToken: token, progress: progress), token));
             // Do not declare the document fully persisted, or discard its
             // recovery copy, while the latest marker sidecar is still pending
             // (or has failed).
@@ -585,6 +609,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ReportAction(doc.EditVersion == version
                 ? $"{doc.Title} saved."
                 : $"{doc.Title} save completed · newer edits remain unsaved.");
+        }
+        catch (OperationCanceledException)
+        {
+            ReportAction($"Saving {doc.Title} cancelled · the file on disk is unchanged.");
         }
         catch (Exception ex)
         {
@@ -1385,14 +1413,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var input = doc.Channels.ToArray();
         int sr = doc.SampleRate;
 
-        await RunBlocking(async () =>
-        {
-            var output = await Task.Run(() => Engine.Master.ProcessOffline(input, sr));
-            AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
+        await RunBlocking("Rendering master chain", "Writing to a new tab · source unchanged",
+            async (progress, token) =>
             {
-                Title = Path.GetFileNameWithoutExtension(doc.Title) + " (rendered copy).wav",
-            }, "Effects rack rendered to a new tab · source audio unchanged.");
-        });
+                var output = await Task.Run(
+                    () => Engine.Master.ProcessOffline(input, sr, token, progress), token);
+                AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
+                {
+                    Title = Path.GetFileNameWithoutExtension(doc.Title) + " (rendered copy).wav",
+                }, "Effects rack rendered to a new tab · source audio unchanged.");
+            });
     }
 
     /// <summary>Render the selection (or whole file) as one undoable document edit.</summary>
@@ -1406,13 +1436,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         int sr = d.Doc.SampleRate;
         int sourceVersion = d.Doc.EditVersion;
 
-        await RunBlocking(async () =>
+        await RunBlocking("Applying effect chain", "Rendering the selection as one undoable edit",
+            async (progress, token) =>
         {
             var output = await Task.Run(() =>
             {
                 var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
-                return Engine.Master.ProcessOffline(input, sr);
-            });
+                return Engine.Master.ProcessOffline(input, sr, token, progress);
+            }, token);
             if (d.Doc.EditVersion != sourceVersion)
                 throw new InvalidOperationException("The source changed while the master render was running. Try again.");
 
@@ -1434,13 +1465,34 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    /// <summary>Disable the main window and show a wait cursor while a long operation runs.</summary>
-    private static async Task RunBlocking(Func<Task> work)
+    /// <summary>
+    /// Runs a long operation behind the progress overlay. Work that cannot report progress still
+    /// gets an indeterminate one, which is the point: the window used to simply freeze.
+    /// </summary>
+    private Task RunBlocking(Func<Task> work) =>
+        RunBlocking("Working", null, (_, _) => work());
+
+    /// <summary>
+    /// Runs a long operation behind the progress overlay, reporting progress and honouring cancel.
+    /// </summary>
+    /// <remarks>
+    /// The window is deliberately no longer disabled outright: <c>IsEnabled = false</c> would take
+    /// the overlay's own Cancel button with it. The overlay covers everything below the title bar
+    /// instead, so nothing underneath can be clicked. The wait cursor stays for the first fraction of
+    /// a second, before the overlay is due to appear.
+    /// </remarks>
+    private async Task RunBlocking(string title, string? detail,
+        Func<IProgress<double>, CancellationToken, Task> work)
     {
-        var win = Application.Current?.MainWindow;
-        if (win != null) win.IsEnabled = false;
         Mouse.OverrideCursor = Cursors.Wait;
-        try { await work(); }
+        try
+        {
+            await Progress.RunBlockingAsync(title, detail, work);
+        }
+        catch (OperationCanceledException)
+        {
+            ReportAction($"{title} cancelled.");
+        }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "WaveLab", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1448,7 +1500,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally
         {
             Mouse.OverrideCursor = null;
-            if (win != null) win.IsEnabled = true;
         }
     }
 

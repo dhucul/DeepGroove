@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — progress &amp; cancel service</title>
+<style>
+  :root {
+    --wave-bg:#0F1114; --panel:#14171B; --chrome:#111419; --line:#1D2228; --line-soft:#252B33;
+    --text:#E7EAEE; --muted:#6A717A; --faint:#4A5058; --accent:#3FD6C2; --accent-bright:#57E6D2;
+    --amber:#FFB454;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0B0D10;color:var(--text);
+    font-family:"Inter","Segoe UI",system-ui,sans-serif}
+  body{padding:28px 32px 44px}
+  h1{font-size:19px;font-weight:600;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 26px;max-width:1180px;line-height:1.6}
+  h2{font-size:11px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;
+    color:var(--muted);margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+
+  /* ── app shell ─────────────────────────────────────── */
+  .app{width:1180px;border:1px solid var(--line-soft);border-radius:5px;overflow:hidden;
+    position:relative;background:var(--wave-bg)}
+  .titlebar{height:34px;background:var(--chrome);display:flex;align-items:center;
+    padding:0 12px;gap:9px;border-bottom:1px solid var(--line)}
+  .logo{width:13px;height:13px;border-radius:3px;
+    background:linear-gradient(135deg,var(--accent),#2B8F82)}
+  .titlebar .t{font-size:11.5px;color:var(--muted)}
+  .winbtns{margin-left:auto;display:flex;gap:14px;color:var(--faint);font-size:11px}
+  .menubar{height:27px;background:var(--chrome);display:flex;align-items:center;gap:17px;
+    padding:0 12px;border-bottom:1px solid var(--line);font-size:11.5px;color:#AEB5BD}
+  .transport{height:50px;background:var(--panel);display:flex;align-items:center;gap:9px;
+    padding:0 12px;border-bottom:1px solid var(--line)}
+  .tbtn{width:28px;height:24px;border-radius:4px;background:#191D23;border:1px solid #232931;
+    display:flex;align-items:center;justify-content:center;color:#9AA2AB;font-size:10px}
+  .tbtn.rec{color:#E06C5A}
+  .clock{margin-left:14px;font-size:15px;letter-spacing:.6px;color:var(--text)}
+  .selinfo{margin-left:auto;display:flex;gap:18px;font-size:10px;color:var(--faint)}
+  .selinfo b{display:block;color:#98A0A9;font-weight:500;font-size:11px;margin-top:2px}
+  .tabstrip{height:30px;background:var(--chrome);display:flex;align-items:flex-end;
+    padding:0 10px;gap:2px;border-bottom:1px solid var(--line)}
+  .tab{padding:5px 15px;font-size:11.5px;background:var(--panel);color:var(--muted);
+    border:1px solid var(--line);border-bottom:none;border-radius:4px 4px 0 0}
+  .tab.on{background:var(--wave-bg);color:var(--text)}
+  .tab .dot{display:inline-block;width:5px;height:5px;border-radius:50%;
+    background:var(--amber);margin-left:7px;vertical-align:middle}
+  .body{display:grid;grid-template-columns:1fr 250px;height:330px}
+  .editor{display:grid;grid-template-rows:44px 20px 1fr;min-width:0;position:relative}
+  .ovr,.rul,.wave{position:relative}
+  .ovr{background:#10131700;border-bottom:1px solid var(--line)}
+  .rul{background:var(--panel);border-bottom:1px solid var(--line)}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .rack{background:var(--panel);border-left:1px solid var(--line);padding:11px 12px}
+  .rack .hd{font-size:10px;letter-spacing:.9px;color:var(--muted);text-transform:uppercase;
+    margin-bottom:9px}
+  .card{background:#171B21;border:1px solid var(--line);border-radius:4px;padding:8px 10px;
+    margin-bottom:6px;font-size:11.5px;color:#B9C0C8;display:flex;justify-content:space-between}
+  .card .st{color:var(--accent);font-size:10px}
+  .statusbar{height:25px;background:var(--chrome);border-top:1px solid var(--line);
+    display:flex;align-items:center;padding:0 12px;gap:16px;font-size:10.5px;color:var(--faint)}
+  .statusbar .mid{margin-left:auto;margin-right:auto}
+
+  /* ── the overlay ───────────────────────────────────── */
+  .scrim{position:absolute;left:0;right:0;top:61px;bottom:0;
+    background:rgba(8,10,12,.60);backdrop-filter:blur(1px);
+    display:flex;align-items:center;justify-content:center}
+  .dlg{width:392px;max-width:100%;background:#14181E;border:1px solid #2A313A;border-radius:7px;
+    box-shadow:0 18px 48px rgba(0,0,0,.62),0 0 0 1px rgba(0,0,0,.35);padding:19px 21px 17px}
+  .dlg h3{margin:0 0 3px;font-size:13.5px;font-weight:600;color:var(--text)}
+  .dlg .det{font-size:11.5px;color:var(--muted);margin:0 0 15px;line-height:1.5}
+  .track{height:5px;border-radius:3px;background:#20262E;overflow:hidden;position:relative}
+  .fill{height:100%;border-radius:3px;
+    background:linear-gradient(90deg,#2E9E90,var(--accent-bright))}
+  /* A band that sweeps left to right in the running control; shown mid-sweep here. */
+  .indet .fill{width:34%;margin-left:41%;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent)}
+  .meta{display:flex;justify-content:space-between;margin-top:9px;
+    font-size:11px;color:var(--muted)}
+  .meta .pct{color:var(--text)}
+  .acts{display:flex;justify-content:flex-end;margin-top:16px}
+  .btn{padding:6px 17px;border-radius:4px;font-size:11.5px;background:#1C222A;
+    border:1px solid #2E3640;color:#C3CAD2}
+  .btn.busy{color:var(--faint);border-color:#242A32;background:#171C22}
+
+  /* ── card state gallery ────────────────────────────── */
+  .gallery{display:flex;gap:22px}
+  .spec{width:370px}
+  .spec .lbl{font-size:11px;color:var(--accent);margin-bottom:9px;letter-spacing:.4px}
+  .spec .lbl span{color:var(--faint);margin-left:7px}
+  .dlg.flat{box-shadow:none}
+
+  /* ── status strip ──────────────────────────────────── */
+  .stripwrap{width:1180px;border:1px solid var(--line-soft);border-radius:5px;overflow:hidden}
+  .strip{height:25px;background:var(--chrome);display:flex;align-items:center;
+    padding:0 12px;gap:14px;font-size:10.5px;color:var(--faint)}
+  .strip .task{display:flex;align-items:center;gap:9px;color:#9AA2AB}
+  .strip .minitrack{width:132px;height:4px;border-radius:2px;background:#20262E;overflow:hidden}
+  .strip .minifill{height:100%;background:linear-gradient(90deg,#2E9E90,var(--accent))}
+  .strip .x{color:var(--faint);font-size:12px;line-height:1}
+  .strip .right{margin-left:auto;display:flex;gap:16px}
+
+  .notes{margin-top:30px;border-top:1px solid var(--line);padding-top:18px;
+    display:grid;grid-template-columns:1fr 1fr;gap:7px 34px;max-width:1180px}
+  .note{font-size:12.5px;line-height:1.6;color:#B9C0C8;padding-left:15px;position:relative}
+  .note::before{content:"•";position:absolute;left:0;color:var(--accent)}
+  .note b{color:var(--text);font-weight:600}
+  code{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--accent)}
+</style>
+</head>
+<body>
+  <h1>Progress &amp; cancel — a shared host for long operations</h1>
+  <p class="sub">Today the DSP layer takes a <code>CancellationToken</code> and reports <code>IProgress&lt;T&gt;</code> almost everywhere, but the main-window commands throw both away and set a wait cursor: open, save, export, render, apply-chain and the sample-rate/stretch/pitch tools all freeze the window with no indication and no way out. Meanwhile five dialogs each hand-roll their own bar, their own token source and their own cancel-on-close handshake. This is one host for both.</p>
+
+  <h2>Blocking work — in the window</h2>
+  <div class="app">
+    <div class="titlebar">
+      <div class="logo"></div><div class="t">WaveLab — side-a.wav</div>
+      <div class="winbtns"><span>—</span><span>▢</span><span>✕</span></div>
+    </div>
+    <div class="menubar"><span>File</span><span>Edit</span><span>View</span><span>Markers</span><span>Transport</span><span>Process</span><span>Restore</span><span>Tools</span><span>Analyze</span><span>Master</span><span>Options</span><span>Help</span></div>
+    <div class="transport">
+      <div class="tbtn">⏮</div><div class="tbtn">▶</div><div class="tbtn">■</div>
+      <div class="tbtn rec">●</div><div class="tbtn">↻</div>
+      <div class="clock mono">00:04:12.380</div>
+      <div class="selinfo">
+        <div>SEL IN<b class="mono">00:03:58.100</b></div>
+        <div>SEL OUT<b class="mono">00:04:44.900</b></div>
+        <div>LENGTH<b class="mono">00:00:46.800</b></div>
+      </div>
+    </div>
+    <div class="tabstrip">
+      <div class="tab on">side-a.wav<span class="dot"></span></div>
+      <div class="tab">side-b.wav</div>
+    </div>
+    <div class="body">
+      <div class="editor">
+        <div class="ovr"><canvas data-ov></canvas></div>
+        <div class="rul"><canvas data-ruler></canvas></div>
+        <div class="wave"><canvas data-wave></canvas></div>
+      </div>
+      <div class="rack">
+        <div class="hd">Master rack</div>
+        <div class="card">Studio EQ <span class="st">ON</span></div>
+        <div class="card">Noise Reduction <span class="st">ON</span></div>
+        <div class="card">Precision Limiter <span class="st">ON</span></div>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span>Rendering…</span><span class="mono">11 289 600 samples</span>
+      <span class="mid">Render master chain to new tab</span>
+      <span class="mono">CPU 34%</span><span class="mono">RAM 812 MB</span>
+    </div>
+
+    <div class="scrim">
+      <div class="dlg">
+        <h3>Rendering master chain</h3>
+        <p class="det">3 effects · latency-compensated · writing to a new tab</p>
+        <div class="track"><div class="fill" style="width:62%"></div></div>
+        <div class="meta"><span class="pct mono">62%</span><span class="mono">about 24 s left</span></div>
+        <div class="acts"><div class="btn">Cancel</div></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>The three states</h2>
+  <div class="gallery">
+    <div class="spec">
+      <div class="lbl">Determinate <span>progress is known</span></div>
+      <div class="dlg flat">
+        <h3>Converting sample rate</h3>
+        <p class="det">44 100 → 96 000 Hz · windowed-sinc, 64 taps</p>
+        <div class="track"><div class="fill" style="width:38%"></div></div>
+        <div class="meta"><span class="pct mono">38%</span><span class="mono">about 1 m 05 s left</span></div>
+        <div class="acts"><div class="btn">Cancel</div></div>
+      </div>
+    </div>
+
+    <div class="spec">
+      <div class="lbl">Indeterminate <span>no total to report against</span></div>
+      <div class="dlg flat">
+        <h3>Opening side-b.wav</h3>
+        <p class="det">Decoding · 24-bit PCM</p>
+        <div class="track indet"><div class="fill"></div></div>
+        <div class="meta"><span class="pct mono">Working…</span><span class="mono">14 s elapsed</span></div>
+        <div class="acts"><div class="btn">Cancel</div></div>
+      </div>
+    </div>
+
+    <div class="spec">
+      <div class="lbl">Cancelling <span>requested, not yet acknowledged</span></div>
+      <div class="dlg flat">
+        <h3>Applying effect chain</h3>
+        <p class="det">Finishing the current block, then rolling back</p>
+        <div class="track"><div class="fill" style="width:71%;filter:saturate(.25)"></div></div>
+        <div class="meta"><span class="pct mono" style="color:var(--muted)">71%</span><span class="mono">cancelling…</span></div>
+        <div class="acts"><div class="btn busy">Cancelling…</div></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Background work — the status strip</h2>
+  <div class="stripwrap">
+    <div class="strip">
+      <span>Ready</span><span class="mono">11 289 600 samples</span>
+      <div class="task">
+        <span>Rebuilding peaks</span>
+        <div class="minitrack"><div class="minifill" style="width:46%"></div></div>
+        <span class="mono">46%</span>
+        <span class="x">✕</span>
+      </div>
+      <div class="right"><span class="mono">Autosaved 2 min ago</span><span class="mono">CPU 12%</span><span class="mono">RAM 640 MB</span></div>
+    </div>
+  </div>
+  <div class="stripwrap" style="margin-top:9px">
+    <div class="strip">
+      <span>Ready</span><span class="mono">11 289 600 samples</span>
+      <div class="task">
+        <span>Analyzing for cleanup</span>
+        <div class="minitrack"><div class="minifill" style="width:88%"></div></div>
+        <span class="mono">88%</span>
+        <span class="x">✕</span>
+      </div>
+      <div class="right"><span class="mono">Autosaved 2 min ago</span><span class="mono">CPU 47%</span><span class="mono">RAM 655 MB</span></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2 style="grid-column:1/-1;margin-top:26px">How it behaves</h2>
+    <div class="note"><b>Two tiers, one service.</b> Work that mutates the document — open, save, export, render, apply chain, stretch, pitch, sample-rate convert — takes the overlay, because starting a second edit midway through the first is the bug you are preventing. Work that does not — peak rebuilds, cleanup analysis, autosave — takes the status strip and leaves the editor live.</div>
+    <div class="note"><b>The scrim starts below the menu bar.</b> The title bar stays reachable so the window can still be moved, and closing during an operation cancels it and waits, exactly as the restoration and CD dialogs already do on their first X click.</div>
+    <div class="note"><b>Cancel is a request, not an event.</b> The button latches to “Cancelling…” and disables, the bar desaturates, and the operation ends at its next cancellation point. Nothing claims to have stopped before it has.</div>
+    <div class="note"><b>Indeterminate is a real state, not 0%.</b> Several existing paths report no total — <code>MediaFoundationReader</code> decode among them. Those get a moving band and an elapsed count rather than a bar that lies.</div>
+    <div class="note"><b>Nothing appears for fast work.</b> The host waits ~400 ms before showing anything, so trimming a selection or saving a short file stays silent instead of flashing a dialog.</div>
+    <div class="note"><b>The five existing dialogs keep their own bars for now.</b> They already work and each owns a bounded modal flow; folding them in is a follow-up, not a prerequisite. The win here is the main window, which has nothing at all.</div>
+    <div class="note"><b>Time remaining is only shown once it is worth trusting</b> — after 5% and 3 s of progress, smoothed. Before that the right-hand slot shows elapsed.</div>
+    <div class="note"><b>Fonts, colours and the 25 px status bar are unchanged.</b> The strip reuses the row that already holds autosave state and CPU/RAM; the overlay reuses the dialog styling from Settings and Export.</div>
+  </div>
+
+<script>
+const DPR=window.devicePixelRatio||1;
+const C={wave:"#0F1114",panel:"#14171B",line:"#1D2228",grid:"rgba(255,255,255,0.035)",
+  centre:"rgba(231,234,238,0.20)",peak:"#31A998",rms:"rgba(87,207,192,0.66)",
+  muted:"#6A717A",faint:"#4A5058",accent:"#3FD6C2",amber:"#FFB454"};
+function ctx(cv){const r=cv.getBoundingClientRect();
+  cv.width=Math.round(r.width*DPR);cv.height=Math.round(r.height*DPR);
+  const g=cv.getContext("2d");g.scale(DPR,DPR);return{g,w:r.width,h:r.height};}
+function env(x,s){const t=x*6.2831853;
+  let v=.5+.30*Math.sin(t*1.6+s)+.17*Math.sin(t*5.1+1.1)+.10*Math.sin(t*11.3+2.4)+.06*Math.sin(t*22.7);
+  if(x>.34&&x<.375)v*=.14; if(x>.71&&x<.735)v*=.16;
+  return Math.min(1,Math.max(.02,v*.8));}
+function wave(cv){const {g,w,h}=ctx(cv);g.fillStyle=C.wave;g.fillRect(0,0,w,h);
+  const ch=h/2;
+  for(let c=0;c<2;c++){const mid=c*ch+ch/2,amp=ch*.46;
+    g.strokeStyle=C.grid;g.lineWidth=1;
+    for(const db of [0,-3,-6,-12,-24]){const o=Math.pow(10,db/20)*amp;
+      if(o>ch/2-2)continue;
+      for(const y of [mid-o,mid+o]){g.beginPath();g.moveTo(0,Math.round(y)+.5);g.lineTo(w,Math.round(y)+.5);g.stroke();}}
+    for(let x=0;x<w;x++){const p=env(x/w,c*.9)*(c?.94:1),r=p*(.5+.18*Math.sin(x*.19+c));
+      g.fillStyle=C.peak;g.fillRect(x,mid-p*amp,1,Math.max(1,2*p*amp));
+      g.fillStyle=C.rms;g.fillRect(x,mid-r*amp,1,Math.max(1,2*r*amp));}
+    g.strokeStyle=C.centre;g.beginPath();g.moveTo(0,Math.round(mid)+.5);g.lineTo(w,Math.round(mid)+.5);g.stroke();
+    g.fillStyle=C.muted;g.font='600 9.5px Inter,sans-serif';g.textBaseline="top";
+    g.fillText(c?"R":"L",8,c*ch+5);
+    if(c>0){g.strokeStyle=C.line;g.beginPath();g.moveTo(0,Math.round(c*ch)+.5);g.lineTo(w,Math.round(c*ch)+.5);g.stroke();}}
+  // selection + playhead
+  g.fillStyle="rgba(63,214,194,0.09)";g.fillRect(w*.52,0,w*.16,h);
+  g.strokeStyle="rgba(63,214,194,0.7)";g.beginPath();g.moveTo(w*.52+.5,0);g.lineTo(w*.52+.5,h);
+  g.moveTo(w*.68+.5,0);g.lineTo(w*.68+.5,h);g.stroke();
+  g.strokeStyle=C.amber;g.lineWidth=1.25;g.beginPath();g.moveTo(w*.41+.5,0);g.lineTo(w*.41+.5,h);g.stroke();}
+function overview(cv){const {g,w,h}=ctx(cv);g.fillStyle="#101317";g.fillRect(0,0,w,h);
+  const mid=h/2,amp=h*.42;
+  for(let x=0;x<w;x++){const p=env(x/w,0);
+    g.fillStyle="rgba(49,169,152,0.85)";g.fillRect(x,mid-p*amp,1,Math.max(1,2*p*amp));}
+  g.fillStyle="rgba(63,214,194,0.10)";g.fillRect(w*.36,0,w*.30,h);
+  g.strokeStyle="rgba(63,214,194,0.45)";g.strokeRect(w*.36+.5,.5,w*.30,h-1);}
+function ruler(cv){const {g,w,h}=ctx(cv);g.fillStyle=C.panel;g.fillRect(0,0,w,h);
+  g.strokeStyle="#333B44";g.fillStyle=C.faint;
+  g.font='9px "JetBrains Mono",monospace';g.textBaseline="alphabetic";
+  for(let i=0;i<=10;i++){const x=Math.round(w*i/10)+.5;
+    g.beginPath();g.moveTo(x,h-6);g.lineTo(x,h);g.stroke();
+    if(i<10)g.fillText(`00:0${i}:00`,x+4,h-7);}}
+document.querySelectorAll("canvas[data-wave]").forEach(wave);
+document.querySelectorAll("canvas[data-ov]").forEach(overview);
+document.querySelectorAll("canvas[data-ruler]").forEach(ruler);
+</script>
+</body>
+</html>

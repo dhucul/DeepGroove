@@ -1,0 +1,48 @@
+<UserControl x:Class="WaveLab.Views.Controls.ProgressOverlay"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Focusable="True">
+    <!-- DataContext is a ProgressHost. Kept as its own control so it can be rendered and reviewed on
+         its own, without the main window's audio engine and resource-assembly context. -->
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+
+    <Border Background="#B4080A0C"
+            Visibility="{Binding IsBlockingVisible, Converter={StaticResource BoolToVis}}">
+        <Border Width="392" VerticalAlignment="Center" HorizontalAlignment="Center"
+                Background="#14181E" BorderBrush="#2A313A" BorderThickness="1" CornerRadius="7"
+                Padding="21,19,21,17" DataContext="{Binding Blocking}">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="34" ShadowDepth="10" Opacity="0.6" Color="Black"/>
+            </Border.Effect>
+            <StackPanel>
+                <TextBlock Text="{Binding Title}" FontSize="13.5" FontWeight="SemiBold"
+                           Foreground="{StaticResource Text}" TextTrimming="CharacterEllipsis"
+                           AutomationProperties.LiveSetting="Polite"/>
+                <TextBlock Text="{Binding Detail}" Margin="0,3,0,0" FontSize="11.5"
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                           Visibility="{Binding HasDetail, Converter={StaticResource BoolToVis}}"/>
+                <ProgressBar Height="5" Margin="0,15,0,0" Minimum="0" Maximum="1"
+                             Value="{Binding Fraction, Mode=OneWay}"
+                             IsIndeterminate="{Binding IsIndeterminate}"
+                             Background="{StaticResource Line}" Foreground="{StaticResource Accent}"
+                             BorderThickness="0"
+                             AutomationProperties.Name="{Binding Title}"/>
+                <Grid Margin="0,9,0,0">
+                    <TextBlock Text="{Binding PercentText}" HorizontalAlignment="Left" FontSize="11"
+                               FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Text}"/>
+                    <TextBlock Text="{Binding RemainingText}" HorizontalAlignment="Right" FontSize="11"
+                               FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Muted}"/>
+                </Grid>
+                <!-- Same pairing the Export and Param dialogs use for a secondary action. -->
+                <Button Content="Cancel" Margin="0,16,0,0" Width="96" Height="32"
+                        HorizontalAlignment="Right"
+                        Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"
+                        Command="{Binding CancelCommand}"
+                        ToolTip="Ask the operation to stop at its next safe point"
+                        AutomationProperties.Name="Cancel the running operation"/>
+            </StackPanel>
+        </Border>
+    </Border>
+</UserControl>

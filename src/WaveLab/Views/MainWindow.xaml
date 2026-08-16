@@ -760,6 +760,30 @@
                         <Run Text="Sel "/><Run Text="{Binding ActiveDocument.SelLenText, Mode=OneWay, FallbackValue=—}"/>
                     </TextBlock>
                     <TextBlock Text="{Binding StatusAutosave}" Margin="22,0,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"/>
+
+                    <!-- Background work: reported here so the editor stays usable while it runs. -->
+                    <StackPanel Orientation="Horizontal" Margin="22,0,0,0" VerticalAlignment="Center"
+                                DataContext="{Binding Progress.Background}"
+                                Visibility="{Binding DataContext.Progress.IsBackgroundVisible,
+                                             RelativeSource={RelativeSource AncestorType=Window},
+                                             Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding Title}" VerticalAlignment="Center" FontSize="10.5"
+                                   Foreground="{StaticResource Muted}"/>
+                        <ProgressBar Width="132" Height="4" Margin="9,0,0,0" VerticalAlignment="Center"
+                                     Minimum="0" Maximum="1" Value="{Binding Fraction, Mode=OneWay}"
+                                     IsIndeterminate="{Binding IsIndeterminate}"
+                                     Background="{StaticResource Line}" Foreground="{StaticResource Accent}"
+                                     BorderThickness="0"/>
+                        <TextBlock Text="{Binding PercentText}" Margin="9,0,0,0" VerticalAlignment="Center"
+                                   FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                                   Foreground="{StaticResource Muted}"/>
+                        <Button Content="✕" Margin="7,0,0,0" Width="18" Height="16"
+                                VerticalAlignment="Center" FontSize="10"
+                                Style="{StaticResource ToolButton}" Foreground="{StaticResource Faint}"
+                                Command="{Binding CancelCommand}"
+                                ToolTip="Cancel this background task"
+                                AutomationProperties.Name="Cancel background task"/>
+                    </StackPanel>
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Muted}">
@@ -777,5 +801,14 @@
                            AutomationProperties.LiveSetting="Polite"/>
             </DockPanel>
         </Border>
+
+        <!-- ═══ blocking-operation overlay ═══
+             Spans the menu bar down through the status bar, deliberately: the whole point is that a
+             second document-mutating command cannot be started while one is running, and the window
+             cannot simply be disabled because that would take the Cancel button with it. Row 0, the
+             title bar, stays live so the window can still be moved and closed. -->
+        <c:ProgressOverlay Grid.Row="1" Grid.RowSpan="5" Panel.ZIndex="100"
+                           DataContext="{Binding Progress}"/>
+
     </Grid>
 </Window>
