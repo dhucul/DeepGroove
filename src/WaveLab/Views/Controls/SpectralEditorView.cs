@@ -12,14 +12,6 @@ namespace WaveLab.Views.Controls;
 /// <summary>Which channel the spectrogram analyses.</summary>
 public enum SpectralChannel { Left, Right, Mid, Side }
 
-/// <summary>A region of the time-frequency plane, in the units the user sees.</summary>
-public readonly record struct SpectralRegion(
-    int StartSample, int EndSample, double LowFrequency, double HighFrequency)
-{
-    public bool IsEmpty => EndSample <= StartSample || HighFrequency <= LowFrequency;
-    public static SpectralRegion None => new(0, 0, 0, 0);
-}
-
 /// <summary>
 /// The spectrogram as an editing surface: analysed in the background, cached as a bitmap, and
 /// selectable in both time and frequency. Distinct from <see cref="SpectrogramView"/>, which is the
@@ -59,7 +51,8 @@ public sealed class SpectralEditorView : FrameworkElement
 
     public static readonly DependencyProperty SelectionProperty = DependencyProperty.Register(
         nameof(Selection), typeof(SpectralRegion), typeof(SpectralEditorView),
-        new FrameworkPropertyMetadata(SpectralRegion.None, FrameworkPropertyMetadataOptions.AffectsRender));
+        new FrameworkPropertyMetadata(SpectralRegion.None,
+            FrameworkPropertyMetadataOptions.AffectsRender | FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
 
     public DocumentViewModel? Document
     {
@@ -94,6 +87,12 @@ public sealed class SpectralEditorView : FrameworkElement
 
     /// <summary>Raised when the user finishes dragging out a selection.</summary>
     public event Action<SpectralRegion>? SelectionCommitted;
+
+    /// <summary>
+    /// Floor for the analysis hop. Below this a zoomed-in view buys overlap it cannot show, at a
+    /// full transform per frame.
+    /// </summary>
+    internal const int MinimumHop = 64;
 
     private WriteableBitmap? _bitmap;
     private uint[] _pixels = [];
@@ -322,8 +321,7 @@ public sealed class SpectralEditorView : FrameworkElement
             int count = (int)Math.Min(mono.Length - from, Math.Max(1, width * samplesPerPixel));
             if (count <= 0) return;
 
-            int hop = Math.Max(1, Math.Min(settings.Hop, Math.Max(1, count / Math.Max(1, width))));
-            hop = settings.FftSize % hop == 0 ? hop : settings.Hop;
+            int hop = HopFor(settings, count, width);
 
             SpectrogramData data = Spectrogram.Analyze(mono, from, count, sampleRate,
                 settings with { Hop = hop }, token);
@@ -345,6 +343,26 @@ public sealed class SpectralEditorView : FrameworkElement
                 InvalidateVisual();
             }));
         }, token);
+    }
+
+    /// <summary>
+    /// The analysis hop for a view covering <paramref name="count"/> samples in
+    /// <paramref name="width"/> pixels: roughly one frame per column.
+    /// </summary>
+    /// <remarks>
+    /// The configured hop is the starting point, not a ceiling. Holding it at 512 however far the
+    /// view was zoomed out meant a fit-to-window view of a whole side analysed tens of thousands of
+    /// frames to draw a fourteen-hundred-pixel image, and nothing appeared for seconds — the feature
+    /// looked broken at exactly the zoom a freshly opened file sits at. Halving and doubling from the
+    /// configured hop keeps it a divisor of the transform length, which the analysis requires.
+    /// </remarks>
+    internal static int HopFor(SpectrogramSettings settings, int count, int width)
+    {
+        int perColumn = Math.Max(1, count / Math.Max(1, width));
+        int hop = settings.Hop;
+        while (hop > MinimumHop && hop / 2 >= perColumn) hop /= 2;
+        while (hop < settings.FftSize && hop * 2 <= perColumn) hop *= 2;
+        return settings.FftSize % hop == 0 ? hop : settings.Hop;
     }
 
     /// <summary>Reduces the document to the one channel being analysed.</summary>

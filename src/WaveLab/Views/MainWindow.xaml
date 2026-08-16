@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:c="clr-namespace:WaveLab.Views.Controls"
         Title="{Binding WindowTitle}"
-        Icon="/Assets/wavelab.ico"
+        Icon="pack://application:,,,/WaveLab;component/Assets/wavelab.ico"
         Width="1680" Height="1010" MinWidth="1180" MinHeight="720"
         Background="{StaticResource Bg}" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5"
@@ -54,7 +54,9 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="40"/>
             <RowDefinition Height="31"/>
-            <RowDefinition Height="62"/>
+            <!-- Auto, not fixed: the spectral bar stacks under the transport in this row and the
+                 row has to grow for it. The transport keeps its own height below. -->
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="36"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="27"/>
@@ -243,7 +245,10 @@
         </Border>
 
         <!-- ═══ transport ═══ -->
-        <Border Grid.Row="2" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+        <!-- Two stacked bars in one grid row, so the spectral bar can appear and disappear without
+             renumbering every row below it. -->
+        <StackPanel Grid.Row="2">
+        <Border Height="62" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
             <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                     <GradientStop Color="#171B20" Offset="0"/>
@@ -434,6 +439,55 @@
             </DockPanel>
         </Border>
 
+        <!-- ═══ spectral repair ═══ -->
+        <!-- Its own bar, per docs/design/spectral_editor.png. The transport row is already full;
+             crammed in beside it the actions were clipped and the view switch collapsed to two
+             letters a segment. It appears only with the spectrogram, so waveform mode is untouched. -->
+        <Border BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"
+                Background="{StaticResource Panel}"
+                Visibility="{Binding ShowsSpectrogram, Converter={StaticResource BoolToVis}}">
+            <DockPanel Margin="14,7" LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left" Text="SPECTRAL" FontSize="9" FontWeight="SemiBold"
+                           VerticalAlignment="Center" Margin="0,0,14,0" Foreground="{StaticResource Faint}"/>
+                <!-- MinWidth rather than Padding: neither the ToolButton nor the AccentButton
+                     template binds Padding, so it is silently ignored on both. -->
+                <Button DockPanel.Dock="Left" Style="{StaticResource AccentButton}" Content="Heal"
+                        Height="30" MinWidth="84"
+                        Click="OnSpectralHeal" IsEnabled="{Binding HasSpectralSelection}"
+                        ToolTip="Rebuild the selected region from the partials running through it"
+                        AutomationProperties.Name="Heal spectral selection"/>
+                <!-- Width released: ToolButton is sized for a 38×38 icon. -->
+                <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Attenuate…"
+                        Width="Auto" MinWidth="116" Height="30" Margin="8,0,0,0"
+                        Click="OnSpectralAttenuate" IsEnabled="{Binding HasSpectralSelection}"
+                        ToolTip="Turn the selected region down by a chosen amount"
+                        AutomationProperties.Name="Attenuate spectral selection"/>
+
+                <Border DockPanel.Dock="Right" Background="{StaticResource Panel2}"
+                        BorderBrush="{StaticResource LineSoft}" BorderThickness="1"
+                        CornerRadius="9" Padding="12,5" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="SELECTION" FontSize="9" FontWeight="SemiBold" VerticalAlignment="Center"
+                                   Foreground="{StaticResource Faint}"/>
+                        <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="11.5" Margin="8,0,0,0"
+                                   VerticalAlignment="Center" Foreground="#CDD3D9"
+                                   Text="{Binding SpectralSpanText, FallbackValue=—}"/>
+                        <TextBlock Text="BAND" FontSize="9" FontWeight="SemiBold" Margin="16,0,0,0"
+                                   VerticalAlignment="Center" Foreground="{StaticResource Faint}"/>
+                        <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="11.5" Margin="8,0,0,0"
+                                   VerticalAlignment="Center" Foreground="#CDD3D9"
+                                   Text="{Binding SpectralBandText, FallbackValue=—}"/>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,14,0"
+                           FontSize="11" Foreground="{StaticResource Faint}"
+                           Text="Drag on the spectrogram to select a region"
+                           Visibility="{Binding NeedsSpectralSelection, Converter={StaticResource BoolToVis}}"/>
+            </DockPanel>
+        </Border>
+        </StackPanel>
+
         <!-- ═══ file tabs ═══ -->
         <Border Grid.Row="3" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
             <ListBox Style="{StaticResource FileTabs}" Margin="10,0,10,-1" VerticalAlignment="Bottom"
@@ -524,8 +578,12 @@
 
                     <c:FrequencyRuler x:Name="frequencyRuler" Grid.Row="2" Grid.Column="0"
                                       Document="{Binding ActiveDocument}"/>
+                    <!-- Two-way: dragging on the spectrogram fills the toolbar's readout, and the
+                         view model clearing the selection erases the drawn rectangle. Bound rather
+                         than pushed one way, so the two can never disagree about what is selected. -->
                     <c:SpectralEditorView x:Name="spectralEditor" Grid.Row="2" Grid.Column="1"
-                                          Document="{Binding ActiveDocument}"/>
+                                          Document="{Binding ActiveDocument}"
+                                          Selection="{Binding SpectralSelection, Mode=TwoWay}"/>
                 </Grid>
 
                 <Border Grid.Row="3" Grid.ColumnSpan="2" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">

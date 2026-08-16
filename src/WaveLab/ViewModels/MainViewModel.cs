@@ -256,6 +256,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Raise(nameof(WindowTitle));
             Raise(nameof(StatusSamples));
             Raise(nameof(IsActiveDocumentPlaying));
+            // A time-frequency region belongs to the file it was drawn on; carrying it to another
+            // tab would offer a repair at a position that means nothing there.
+            SpectralSelection = SpectralRegion.None;
             RefreshEditCommandStates();
         }
     }
@@ -409,6 +412,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Raise(nameof(IsWaveformView));
             Raise(nameof(IsSplitView));
             Raise(nameof(IsSpectrogramView));
+            Raise(nameof(ShowsSpectrogram));
             EditorViewChanged?.Invoke();
         }
     }
@@ -417,12 +421,68 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public bool IsSplitView => _editorView == EditorViewMode.Split;
     public bool IsSpectrogramView => _editorView == EditorViewMode.Spectrogram;
 
+    /// <summary>
+    /// Whether the spectrogram is on screen at all, and so whether the spectral repair controls
+    /// belong in the toolbar. Bound directly rather than through an inverting converter, so the
+    /// rule is one testable property instead of markup.
+    /// </summary>
+    public bool ShowsSpectrogram => _editorView != EditorViewMode.Waveform;
+
     /// <summary>Raised so the window can lay the editor rows out for the new mode.</summary>
     public event Action? EditorViewChanged;
 
     public RelayCommand ShowWaveformCommand { get; }
     public RelayCommand ShowSplitCommand { get; }
     public RelayCommand ShowSpectrogramCommand { get; }
+
+    // ── spectral selection ───────────────────────────────────────
+
+    private SpectralRegion _spectralSelection = SpectralRegion.None;
+
+    /// <summary>
+    /// What the spectral editor currently has selected. It lives here rather than on the control so
+    /// that the repair actions and the readout beside them can bind to it, and so that switching
+    /// away from the spectrogram and back does not quietly lose it.
+    /// </summary>
+    public SpectralRegion SpectralSelection
+    {
+        get => _spectralSelection;
+        set
+        {
+            if (!Set(ref _spectralSelection, value)) return;
+            Raise(nameof(HasSpectralSelection));
+            Raise(nameof(NeedsSpectralSelection));
+            Raise(nameof(SpectralSpanText));
+            Raise(nameof(SpectralBandText));
+        }
+    }
+
+    public bool HasSpectralSelection => !_spectralSelection.IsEmpty;
+
+    /// <summary>Whether to prompt for a selection instead of showing one. The toolbar binds both.</summary>
+    public bool NeedsSpectralSelection => _spectralSelection.IsEmpty;
+
+    /// <summary>The selected time span, as the toolbar shows it.</summary>
+    public string SpectralSpanText
+    {
+        get
+        {
+            DocumentViewModel? document = ActiveDocument;
+            if (document == null || _spectralSelection.IsEmpty) return "—";
+            int rate = document.Doc.SampleRate;
+            return $"{TimeFormat.Position(_spectralSelection.StartSample, rate)} → " +
+                   $"{TimeFormat.Position(_spectralSelection.EndSample, rate)}";
+        }
+    }
+
+    /// <summary>The selected frequency band, as the toolbar shows it.</summary>
+    public string SpectralBandText => _spectralSelection.IsEmpty
+        ? "—"
+        : $"{Hertz(_spectralSelection.LowFrequency)} → {Hertz(_spectralSelection.HighFrequency)}";
+
+    private static string Hertz(double frequency) => frequency >= 1_000
+        ? $"{frequency / 1_000:0.##} kHz"
+        : $"{frequency:0} Hz";
 
     public void ReportAction(string message)
     {

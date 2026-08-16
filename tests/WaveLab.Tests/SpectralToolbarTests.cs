@@ -1,0 +1,234 @@
+using WaveLab.Audio;
+using WaveLab.Audio.Dsp;
+using WaveLab.ViewModels;
+using Xunit;
+using Xunit.Abstractions;
+
+namespace WaveLab.Tests;
+
+/// <summary>
+/// The state the spectral repair toolbar binds to, and the conversion from what the user drew to
+/// the grid the repair works on.
+/// </summary>
+public sealed class SpectralToolbarTests(ITestOutputHelper output)
+{
+    private const int Rate = 44_100, Fft = 2048, Hop = 512;
+
+    // ── selection state ──────────────────────────────────────────
+
+    [Fact]
+    public void NothingIsSelectedUntilSomethingIsDrawn()
+    {
+        var vm = new MainViewModel();
+
+        Assert.False(vm.HasSpectralSelection);
+        Assert.Equal("—", vm.SpectralSpanText);
+        Assert.Equal("—", vm.SpectralBandText);
+    }
+
+    [Fact]
+    public void SelectingARegionEnablesTheActionsAndFillsTheReadout()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        var raised = new List<string>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
+
+        vm.SpectralSelection = new SpectralRegion(44_100, 66_150, 410, 3_200);
+
+        Assert.True(vm.HasSpectralSelection);
+        output.WriteLine($"span {vm.SpectralSpanText}, band {vm.SpectralBandText}");
+        Assert.Contains("→", vm.SpectralSpanText);
+        Assert.Equal("410 Hz → 3.2 kHz", vm.SpectralBandText);
+
+        foreach (string name in new[]
+                 {
+                     nameof(vm.HasSpectralSelection), nameof(vm.SpectralSpanText), nameof(vm.SpectralBandText),
+                 })
+        {
+            Assert.Contains(name, raised);
+        }
+    }
+
+    [Theory]
+    [InlineData(50, "50 Hz")]
+    [InlineData(999, "999 Hz")]
+    [InlineData(1_000, "1 kHz")]
+    [InlineData(3_200, "3.2 kHz")]
+    [InlineData(12_500, "12.5 kHz")]
+    public void FrequenciesReadInWholeHertzOrKilohertz(double frequency, string expected)
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.SpectralSelection = new SpectralRegion(0, 1_000, frequency, frequency + 20_000);
+
+        Assert.StartsWith(expected, vm.SpectralBandText);
+    }
+
+    /// <summary>
+    /// A region belongs to the file it was drawn on. Carrying it across would offer a repair at a
+    /// position that means nothing in the other document.
+    /// </summary>
+    [Fact]
+    public void SwitchingDocumentClearsTheSelection()
+    {
+        var vm = new MainViewModel();
+        DocumentViewModel first = Document(), second = Document();
+        vm.Documents.Add(first);
+        vm.Documents.Add(second);
+
+        vm.ActiveDocument = first;
+        vm.SpectralSelection = new SpectralRegion(1_000, 2_000, 500, 5_000);
+        Assert.True(vm.HasSpectralSelection);
+
+        vm.ActiveDocument = second;
+        Assert.False(vm.HasSpectralSelection);
+    }
+
+    [Fact]
+    public void AnEmptyRegionLeavesTheActionsDisabled()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+
+        vm.SpectralSelection = new SpectralRegion(5_000, 5_000, 500, 5_000);
+        Assert.False(vm.HasSpectralSelection);
+
+        vm.SpectralSelection = new SpectralRegion(5_000, 9_000, 500, 500);
+        Assert.False(vm.HasSpectralSelection);
+    }
+
+    // ── toolbar visibility ───────────────────────────────────────
+
+    [Fact]
+    public void TheRepairControlsAppearOnlyOnceTheSpectrogramDoes()
+    {
+        var vm = new MainViewModel();
+
+        Assert.False(vm.ShowsSpectrogram);
+
+        vm.ShowSplitCommand.Execute(null);
+        Assert.True(vm.ShowsSpectrogram);
+
+        vm.ShowSpectrogramCommand.Execute(null);
+        Assert.True(vm.ShowsSpectrogram);
+
+        vm.ShowWaveformCommand.Execute(null);
+        Assert.False(vm.ShowsSpectrogram);
+    }
+
+    // ── region to grid ───────────────────────────────────────────
+
+    [Fact]
+    public void ADrawnRegionCoversTheCellsItWasDrawnOver()
+    {
+        SpectralMask mask = SpectralMask.ForRegion(
+            44_100, 66_150, 1_000, 4_000, Rate, Fft, Hop, feather: 0);
+
+        // Frame f is centred on sample f·hop, bin b on b·rate/fft.
+        int frameAt = 55_000 / Hop;
+        int binAt = (int)(2_000.0 * Fft / Rate);
+        output.WriteLine($"frames {mask.FrameOffset}..{mask.FrameOffset + mask.Frames}, " +
+                         $"bins {mask.BinOffset}..{mask.BinOffset + mask.Bins}");
+
+        Assert.Equal(1f, mask.At(frameAt, binAt));
+        Assert.Equal(0f, mask.At(frameAt, (int)(500.0 * Fft / Rate)));      // below the band
+        Assert.Equal(0f, mask.At(frameAt, (int)(9_000.0 * Fft / Rate)));    // above it
+        Assert.Equal(0f, mask.At(10, binAt));                               // before the span
+    }
+
+    /// <summary>
+    /// Rounding outward, so a selection that half covers a cell takes it. Rounding inward would
+    /// leave a rim of the defect behind at every edge of every repair.
+    /// </summary>
+    [Fact]
+    public void APartlyCoveredCellIsTakenRatherThanLeft()
+    {
+        // 1500 Hz falls between bins; 20 000 samples falls between frames.
+        SpectralMask mask = SpectralMask.ForRegion(
+            20_000, 20_900, 1_500, 1_600, Rate, Fft, Hop, feather: 0);
+
+        Assert.True(mask.At(20_000 / Hop, (int)(1_500.0 * Fft / Rate)) > 0,
+            "the cell the selection starts inside must be covered");
+        Assert.True(mask.At(20_900 / Hop, (int)(1_600.0 * Fft / Rate)) > 0,
+            "the cell the selection ends inside must be covered");
+    }
+
+    [Fact]
+    public void ABandReachingPastNyquistIsClamped()
+    {
+        SpectralMask mask = SpectralMask.ForRegion(0, 44_100, 1_000, 40_000, Rate, Fft, Hop, feather: 0);
+
+        Assert.True(mask.BinOffset + mask.Bins <= Fft / 2 + 1,
+            $"the mask reached bin {mask.BinOffset + mask.Bins} beyond Nyquist");
+    }
+
+    [Fact]
+    public void ReversedEdgesAreOrderedRatherThanRejected()
+    {
+        SpectralMask forward = SpectralMask.ForRegion(10_000, 30_000, 500, 5_000, Rate, Fft, Hop, feather: 0);
+        SpectralMask backward = SpectralMask.ForRegion(30_000, 10_000, 5_000, 500, Rate, Fft, Hop, feather: 0);
+
+        Assert.Equal(forward.FrameOffset, backward.FrameOffset);
+        Assert.Equal(forward.Frames, backward.Frames);
+        Assert.Equal(forward.BinOffset, backward.BinOffset);
+        Assert.Equal(forward.Bins, backward.Bins);
+    }
+
+    /// <summary>
+    /// The end-to-end path the button takes: what the user drew becomes a mask, the mask becomes a
+    /// repair, and the repair lands inside the document.
+    /// </summary>
+    [Fact]
+    public void ARegionDrawnOnScreenRepairsTheAudioUnderIt()
+    {
+        const int length = 66_150;
+        var clean = new float[length];
+        for (int i = 0; i < length; i++)
+        {
+            double t = i / (double)Rate;
+            clean[i] = (float)(0.4 * Math.Sin(2 * Math.PI * 300 * t) + 0.3 * Math.Sin(2 * Math.PI * 1_500 * t));
+        }
+
+        var damaged = (float[])clean.Clone();
+        var random = new Random(4);
+        for (int i = 28_000; i < 36_000; i++)
+        {
+            double t = i / (double)Rate;
+            double burst = 0;
+            for (int p = 0; p < 40; p++) burst += Math.Sin(2 * Math.PI * (1_200 + p * 45) * t + p);
+            damaged[i] += (float)(burst / Math.Sqrt(40) * 0.8 + (random.NextDouble() - 0.5) * 0.01);
+        }
+
+        var region = new SpectralRegion(28_000, 36_000, 1_100, 3_100);
+        SpectralMask mask = SpectralMask.ForRegion(region.StartSample, region.EndSample,
+            region.LowFrequency, region.HighFrequency, Rate, Fft, Hop);
+        Assert.False(mask.IsEmpty);
+
+        SpectralRepairResult result = SpectralRepair.Heal(damaged, 0, mask,
+            new SpectralRepairOptions(Fft, Hop, SpectralRepairOptions.Default.PartialDriftRadians));
+
+        Assert.InRange(result.Start, 0, length);
+        Assert.InRange(result.End, result.Start, length);
+
+        var merged = (float[])damaged.Clone();
+        result.Samples.CopyTo(merged.AsSpan(result.Start));
+
+        double before = Snr(clean, damaged, result.Start, result.Samples.Length);
+        double after = Snr(clean, merged, result.Start, result.Samples.Length);
+        output.WriteLine($"{before:0.0} dB -> {after:0.0} dB over {result.Start}..{result.End}");
+        Assert.True(after > before + 8, $"the repair gained only {after - before:0.0} dB");
+
+        static double Snr(float[] clean, float[] candidate, int start, int count)
+        {
+            double signal = 0, error = 0;
+            for (int i = start; i < start + count && i < clean.Length; i++)
+            {
+                double d = clean[i] - candidate[i];
+                signal += (double)clean[i] * clean[i];
+                error += d * d;
+            }
+            return 10 * Math.Log10(signal / Math.Max(error, 1e-30));
+        }
+    }
+
+    private static DocumentViewModel Document() =>
+        new(new AudioDocument([new float[132_300], new float[132_300]], Rate, 32));
+}

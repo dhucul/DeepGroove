@@ -488,6 +488,95 @@ public partial class MainWindow : Window
         return applied;
     }
 
+    // ── spectral repair ──────────────────────────────────────────
+
+    private void OnSpectralHeal(object sender, RoutedEventArgs e) =>
+        _ = RunSpectralRepair("Heal", "Rebuilding the selection from the partials running through it",
+            (channel, mask, options, progress, token) =>
+                SpectralRepair.Heal(channel, 0, mask, options, token, progress));
+
+    private void OnSpectralAttenuate(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ParamDialog("Attenuate selection", "Attenuate", null, null, 0,
+            new ParamDialog.SliderSpec("Reduction", 3, 90, 24, value => $"−{value:0} dB", 1))
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        double reduction = dialog.Values[0];
+        _ = RunSpectralRepair("Attenuate", $"{reduction:0} dB across the selected region",
+            (channel, mask, options, _, token) =>
+                SpectralRepair.Attenuate(channel, 0, mask, -reduction, options, token));
+    }
+
+    /// <summary>
+    /// Spectral edits do not go through <see cref="RunRangeTool"/>: that splices the *time* selection,
+    /// and a spectral repair decides its own span. A mask covering a few frames still needs a window
+    /// of context either side to be resynthesised cleanly, so the repair reports back where its
+    /// result belongs and that is what gets spliced.
+    /// </summary>
+    private async Task RunSpectralRepair(string undoName, string detail,
+        Func<float[], SpectralMask, SpectralRepairOptions, IProgress<double>, CancellationToken,
+            SpectralRepairResult> repair)
+    {
+        if (_longOperationRunning) return;
+        var d = Doc;
+        SpectralRegion region = _vm.SpectralSelection;
+        if (d == null || d.Doc.Length == 0 || region.IsEmpty) return;
+
+        SpectrogramSettings analysis = spectralEditor.Settings;
+        var options = new SpectralRepairOptions(analysis.FftSize, analysis.Hop,
+            SpectralRepairOptions.Default.PartialDriftRadians);
+
+        SpectralMask mask = SpectralMask.ForRegion(region.StartSample, region.EndSample,
+            region.LowFrequency, region.HighFrequency, d.Doc.SampleRate, options.FftSize, options.Hop);
+        if (mask.IsEmpty) return;
+
+        float[][] channels = d.Doc.Channels.ToArray();
+        _longOperationRunning = true;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync(undoName, detail, async (progress, token) =>
+            {
+                var results = await Task.Run(() =>
+                {
+                    var repaired = new SpectralRepairResult[channels.Length];
+                    for (int c = 0; c < channels.Length; c++)
+                    {
+                        int index = c;
+                        var scaled = new Progress<double>(value =>
+                            progress.Report((index + value) / channels.Length));
+                        repaired[c] = repair(channels[c], mask, options, scaled, token);
+                    }
+                    return repaired;
+                }, token);
+
+                if (results.Length == 0 || results[0].IsEmpty) return;
+                int start = results[0].Start, count = results[0].Samples.Length;
+                if (start + count > d.Doc.Length) return;
+
+                _vm.PrepareForDocumentEdit(d);
+                d.Doc.ReplaceRange(start, count, Array.ConvertAll(results, r => r.Samples), undoName);
+                _vm.ReportAction($"{undoName} applied over {count} samples.");
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction($"{undoName} cancelled · document unchanged.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, undoName, MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            _longOperationRunning = false;
+        }
+    }
+
     private void OnResetAmpZoom(object sender, RoutedEventArgs e)
     {
         if (Doc != null)

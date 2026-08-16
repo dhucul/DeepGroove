@@ -55,6 +55,56 @@ public sealed class SpectralEditorViewTests(ITestOutputHelper output)
         Assert.Empty(SpectralEditorView.Mix([], SpectralChannel.Mid));
     }
 
+    // ── analysis hop ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Roughly one frame per column, at every zoom. The rule used to hold the hop at its configured
+    /// value however far out the view was, so a fit-to-window view of a whole side analysed tens of
+    /// thousands of frames to fill a fourteen-hundred-pixel image and showed nothing for seconds.
+    /// </summary>
+    [Theory]
+    [InlineData(1, 64)]              // deeply zoomed in: one sample per column
+    [InlineData(64, 64)]
+    [InlineData(256, 256)]
+    [InlineData(512, 512)]           // the configured hop
+    [InlineData(1_024, 1_024)]
+    [InlineData(7_704, 2_048)]       // fit to window: capped at the transform length
+    [InlineData(100_000, 2_048)]
+    public void TheHopTracksWhatAColumnCovers(int samplesPerColumn, int expected)
+    {
+        const int width = 1_400;
+        var settings = SpectrogramSettings.Default;
+
+        int hop = SpectralEditorView.HopFor(settings, samplesPerColumn * width, width);
+
+        output.WriteLine($"{samplesPerColumn} samples per column -> hop {hop}");
+        Assert.Equal(expected, hop);
+    }
+
+    [Fact]
+    public void TheHopAlwaysDividesTheTransformLength()
+    {
+        var settings = SpectrogramSettings.Default;
+
+        for (int perColumn = 1; perColumn <= 20_000; perColumn = perColumn * 3 / 2 + 1)
+        {
+            int hop = SpectralEditorView.HopFor(settings, perColumn * 900, 900);
+            Assert.True(settings.FftSize % hop == 0, $"hop {hop} does not divide {settings.FftSize}");
+            Assert.InRange(hop, SpectralEditorView.MinimumHop, settings.FftSize);
+        }
+    }
+
+    [Fact]
+    public void ADegenerateViewStillYieldsAUsableHop()
+    {
+        var settings = SpectrogramSettings.Default;
+
+        Assert.InRange(SpectralEditorView.HopFor(settings, 0, 0),
+            SpectralEditorView.MinimumHop, settings.FftSize);
+        Assert.InRange(SpectralEditorView.HopFor(settings, -5, 100),
+            SpectralEditorView.MinimumHop, settings.FftSize);
+    }
+
     // ── coordinate mapping ───────────────────────────────────────
 
     /// <summary>

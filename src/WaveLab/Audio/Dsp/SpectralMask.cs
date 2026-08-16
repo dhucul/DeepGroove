@@ -96,6 +96,36 @@ public sealed class SpectralMask
         return new SpectralMask(frameFrom, binFrom, frames, bins, weight, SpectralSelectionKind.Rectangle);
     }
 
+    /// <summary>
+    /// A rectangle given in the units the user sees — samples and hertz — converted onto the
+    /// analysis grid.
+    /// </summary>
+    /// <remarks>
+    /// The grid is anchored at sample zero, matching <see cref="Spectrogram.Analyze"/> called with an
+    /// origin of zero, so a frame index means the same thing wherever the view happens to be scrolled
+    /// to. Both ranges are rounded outward: a selection that half covers a cell is asking for that
+    /// cell, and rounding inward would leave a rim of the defect behind at every edge.
+    /// </remarks>
+    public static SpectralMask ForRegion(int startSample, int endSample, double lowHz, double highHz,
+        int sampleRate, int fftSize, int hop, int feather = 2)
+    {
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        if (fftSize <= 0) throw new ArgumentOutOfRangeException(nameof(fftSize));
+        if (hop <= 0) throw new ArgumentOutOfRangeException(nameof(hop));
+
+        (startSample, endSample) = Order(startSample, endSample);
+        if (lowHz > highHz) (lowHz, highHz) = (highHz, lowHz);
+
+        int bins = fftSize / 2 + 1;
+        int frameFrom = Math.Max(0, (int)Math.Floor(startSample / (double)hop));
+        int frameTo = (int)Math.Ceiling(endSample / (double)hop) + 1;
+        double perHz = fftSize / (double)sampleRate;
+        int binFrom = Math.Clamp((int)Math.Floor(lowHz * perHz), 0, bins - 1);
+        int binTo = Math.Clamp((int)Math.Ceiling(highHz * perHz) + 1, binFrom + 1, bins);
+
+        return Rectangle(frameFrom, frameTo, binFrom, binTo, feather);
+    }
+
     /// <summary>A freehand outline, given as grid-space points.</summary>
     public static SpectralMask Lasso(IReadOnlyList<(double Frame, double Bin)> outline, int feather = 2)
     {

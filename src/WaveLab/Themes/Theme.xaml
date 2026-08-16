@@ -43,9 +43,13 @@
         <GradientStop Color="#171B20" Offset="1"/>
     </LinearGradientBrush>
 
-    <FontFamily x:Key="UiFont">pack://application:,,,/Assets/Fonts/#Inter</FontFamily>
+    <!-- Named assembly rather than a bare path. A bare pack path resolves against
+         Application.ResourceAssembly, which is whatever host happens to be running, so the fonts and
+         the window icon silently fail to load outside the app itself — which is what stopped
+         MainWindow being rendered offscreen for verification. -->
+    <FontFamily x:Key="UiFont">pack://application:,,,/WaveLab;component/Assets/Fonts/#Inter</FontFamily>
 
-    <FontFamily x:Key="MonoFont">pack://application:,,,/Assets/Fonts/#JetBrains Mono</FontFamily>
+    <FontFamily x:Key="MonoFont">pack://application:,,,/WaveLab;component/Assets/Fonts/#JetBrains Mono</FontFamily>
 
     <Style x:Key="KeyboardFocusVisual">
         <Setter Property="Control.Template">
@@ -100,7 +104,10 @@
 
     <!-- Segmented view switch: Waveform / Split / Spectrogram. The checked segment takes the
          accent so the current mode is readable at a glance rather than by elimination. -->
+    <!-- ToolButton is a 38×38 icon square; a segment carries a word, so the fixed width has to go or
+         "Waveform" renders as "Wa". -->
     <Style x:Key="SegmentButton" TargetType="ToggleButton" BasedOn="{StaticResource ToolButton}">
+        <Setter Property="Width" Value="Auto"/>
         <Setter Property="Height" Value="24"/>
         <Setter Property="Padding" Value="11,0"/>
         <Setter Property="FontSize" Value="11"/>
