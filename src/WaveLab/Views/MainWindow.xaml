@@ -506,6 +506,11 @@
                         Click="OnSpectralGain" IsEnabled="{Binding HasSpectralSelection}"
                         ToolTip="Raise or lower the selected region"
                         AutomationProperties.Name="Gain spectral selection"/>
+                <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Learn pattern…"
+                        Width="Auto" MinWidth="128" Height="30" Margin="6,0,0,0"
+                        Click="OnSpectralLearnPattern" IsEnabled="{Binding HasSpectralSelection}"
+                        ToolTip="Learn this sound's signature and remove it from elsewhere in the file"
+                        AutomationProperties.Name="Learn pattern from spectral selection"/>
 
                 <Border DockPanel.Dock="Right" Background="{StaticResource Panel2}"
                         BorderBrush="{StaticResource LineSoft}" BorderThickness="1"

@@ -545,6 +545,111 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Learns the selection's spectral signature and removes it from elsewhere in the file.
+    /// </summary>
+    /// <remarks>
+    /// Two steps behind one button, because the second is useless without the first and the first
+    /// has no effect on its own. The selection should hold the offending sound alone — the signature
+    /// is whatever is in it, so anything else in there is learned too and removed along with it.
+    /// </remarks>
+    private void OnSpectralLearnPattern(object sender, RoutedEventArgs e)
+    {
+        var d = Doc;
+        SpectralSelection selection = _vm.SpectralSelection;
+        if (_longOperationRunning || d == null || d.Doc.Length == 0 || selection.IsEmpty) return;
+
+        var dialog = new ParamDialog("Learn pattern from selection", "Remove",
+            "Remove it from", ["The whole file", "The selection only"], 0,
+            new ParamDialog.SliderSpec("Reduction", 3, 40, 18, value => $"−{value:0} dB", 1),
+            new ParamDialog.SliderSpec("Sensitivity", 0.5, 3.0, 1.0, value => $"{value:0.0}×", 0.1))
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        var options = new SpectralPatternOptions(selection.FftSize, selection.Hop,
+            dialog.Values[0], dialog.Values[1],
+            SpectralPatternOptions.Default.Smoothing,
+            SpectralPatternOptions.Default.AbsenceProbability);
+
+        bool wholeFile = dialog.ComboIndex == 0;
+        SpectralRegion bounds = selection.Bounds;
+        int start = wholeFile ? 0 : Math.Clamp(bounds.StartSample, 0, d.Doc.Length);
+        int count = wholeFile
+            ? d.Doc.Length
+            : Math.Clamp(bounds.EndSample - start, 0, d.Doc.Length - start);
+        if (count <= 0) return;
+
+        _ = RunPatternRemoval(d, selection, options, start, count,
+            wholeFile ? "the whole file" : "the selected span");
+    }
+
+    private async Task RunPatternRemoval(DocumentViewModel d, SpectralSelection selection,
+        SpectralPatternOptions options, int start, int count, string where)
+    {
+        float[][] channels = d.Doc.Channels.ToArray();
+        int rate = d.Doc.SampleRate;
+        _longOperationRunning = true;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Remove Pattern",
+                $"Learned from the selection · removing from {where}", async (progress, token) =>
+            {
+                var learned = 0;
+                var band = (Low: 0.0, High: 0.0);
+
+                var output = await Task.Run(() =>
+                {
+                    var result = new float[channels.Length][];
+                    for (int c = 0; c < channels.Length; c++)
+                    {
+                        // Learned per channel: a buzz is rarely identical on both, and a signature
+                        // averaged across them would fit neither.
+                        SpectralPattern pattern = SpectralPattern.Learn(
+                            channels[c], 0, selection.Mask, rate, options, token);
+                        if (c == 0) { learned = pattern.LearnedBins; band = pattern.Band; }
+
+                        int index = c;
+                        var scaled = new Progress<double>(value =>
+                            progress.Report((index + value) / channels.Length));
+                        float[] cleaned = pattern.Remove(channels[c], start, count, options, token, scaled);
+                        result[c] = cleaned.Length == count
+                            ? cleaned
+                            : channels[c].AsSpan(start, count).ToArray();
+                    }
+                    return result;
+                }, token);
+
+                if (learned == 0)
+                {
+                    _vm.ReportAction("Nothing was learned from that selection · document unchanged.");
+                    return;
+                }
+                if (start + count > d.Doc.Length) return;
+
+                _vm.PrepareForDocumentEdit(d);
+                d.Doc.ReplaceRange(start, count, output, "Remove Pattern");
+                _vm.ReportAction(
+                    $"Pattern removed · learned {learned} bins over {band.Low:0}–{band.High:0} Hz.");
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction("Remove Pattern cancelled · document unchanged.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Remove Pattern", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            _longOperationRunning = false;
+        }
+    }
+
+    /// <summary>
     /// Spectral edits do not go through <see cref="RunRangeTool"/>: that splices the *time* selection,
     /// and a spectral repair decides its own span. A mask covering a few frames still needs a window
     /// of context either side to be resynthesised cleanly, so the repair reports back where its
