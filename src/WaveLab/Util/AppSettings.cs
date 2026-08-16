@@ -8,8 +8,27 @@ namespace WaveLab.Util;
 public sealed class AppSettings
 {
     private static readonly object SaveLock = new();
-    public static string AppDataDir =>
+
+    private static string _appDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WaveLab");
+
+    /// <summary>
+    /// Root directory every path below is derived from. Defaults to %AppData%\WaveLab.
+    /// Tests point it at a private temp directory so they never read or write the real
+    /// user profile; assigning it drops the cached <see cref="Instance"/> so the next
+    /// read loads from the new root instead of the previous one.
+    /// </summary>
+    public static string AppDataDir
+    {
+        get => _appDataDir;
+        set
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value);
+            _appDataDir = value;
+            _instance = null;
+        }
+    }
+
     public static string SettingsPath => Path.Combine(AppDataDir, "settings.json");
     public static string AutosaveDir => Path.Combine(AppDataDir, "Autosave");
     public static string PresetsDir => Path.Combine(AppDataDir, "Presets");

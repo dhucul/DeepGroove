@@ -1,12 +1,37 @@
 using System.Threading;
 using WaveLab.Audio;
+using WaveLab.Util;
 using WaveLab.ViewModels;
 using Xunit;
 
 namespace WaveLab.Tests;
 
-public sealed class GuiActionStatusTests
+public sealed class GuiActionStatusTests : IDisposable
 {
+    // MainViewModel loads AppSettings and publishes factory presets, and
+    // MasterSectionViewModel enumerates the same preset directory. Both are rooted at
+    // AppSettings.AppDataDir, so each test runs against its own temp directory instead
+    // of the developer's %AppData%\WaveLab. xUnit builds one instance of this class per
+    // test, so the sandbox is created and removed around every test in it.
+    private readonly string _originalAppDataDir = AppSettings.AppDataDir;
+    private readonly string _sandbox =
+        Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+
+    public GuiActionStatusTests() => AppSettings.AppDataDir = _sandbox;
+
+    public void Dispose()
+    {
+        AppSettings.AppDataDir = _originalAppDataDir;
+        try
+        {
+            if (Directory.Exists(_sandbox)) Directory.Delete(_sandbox, recursive: true);
+        }
+        catch
+        {
+            // Cleanup of a private temp directory must never fail a test.
+        }
+    }
+
     [Fact]
     public void RemoveDcOffsetReportsAppliedAndUndoable()
     {

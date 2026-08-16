@@ -391,6 +391,10 @@ public sealed class CleanupAnalyzerTests
             EffectFactory.ChainPreset migrated = ReadPreset(defaultPath);
             EffectFactory.ChainPreset preserved = ReadPreset(customPath);
             Assert.Equal(0, Param(State(migrated, "limiter"), "thresh"), 10);
+            // "thresh" is already the LimiterEffect default, so it cannot tell a
+            // migration apart from an untouched file. Flipping the limiter from
+            // enabled to bypassed is what the Default migration actually changes.
+            Assert.False(State(migrated, "limiter").Enabled);
             Assert.Equal(-1.25, Param(State(preserved, "limiter"), "thresh"), 10);
 
         }

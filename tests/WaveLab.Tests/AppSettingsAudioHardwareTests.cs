@@ -167,6 +167,7 @@ public sealed class AppSettingsAudioHardwareTests
     {
         var settings = new AppSettings
         {
+            BufferMs = 12,
             CaptureBufferMs = 7,
             OutputShareMode = "exclusive",
             InputShareMode = "exclusive",

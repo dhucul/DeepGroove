@@ -63,10 +63,15 @@ public sealed class PeakStoreTests
     }
 
     [Fact]
-    public void Query_IsFastEnoughForContinuousGeometryRebuilds()
+    public void Query_AnswersIntermediateZoomFromThePyramidInsteadOfRawSamples()
     {
         // Simulate one stereo geometry build at intermediate zoom: ~3600 pixels
-        // (3× a 1200 px view) × 2 channels × 200 samples/pixel ranges.
+        // (3x a 1200 px view) x 2 channels x 200 samples/pixel ranges. This used to
+        // assert a wall-clock budget, which measures how loaded the machine is rather
+        // than what the code does. The property that actually matters is that Query
+        // answers from the precomputed pyramid, so assert the pyramid signature
+        // instead: results snapped out to whole base bins, which a per-sample scan of
+        // the exact range cannot produce.
         int length = 2_000_000;
         var left = new float[length];
         var right = new float[length];
@@ -76,28 +81,62 @@ public sealed class PeakStoreTests
             left[i] = (float)(rng.NextDouble() * 2 - 1);
             right[i] = (float)(rng.NextDouble() * 2 - 1);
         }
-        var doc = new AudioDocument([left, right], 48_000, 32);
+
+        const int pixels = 3600;
+        const int spp = 200;
+        const int start = 100_000;
+
+        // A marker planted outside the first queried range but inside the base bin that
+        // overlaps it: only a pyramid lookup can see it, because a raw scan of
+        // [start, start + spp) never reads that sample. Its value sits outside the
+        // [-1, 1] programme domain so no random sample can be confused for it.
+        int markerIndex = start / PeakStore.BaseBin * PeakStore.BaseBin;
+        Assert.True(markerIndex < start, "The marker must fall before the queried range.");
+        left[markerIndex] = 2f;
+
+        float[][] channels = [left, right];
+        var doc = new AudioDocument(channels, 48_000, 32);
         var peaks = new PeakStore();
         peaks.Rebuild(doc);
 
-        const int pixels = 3600;
-        const double spp = 200;
-        double start = 100_000;
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        for (int c = 0; c < 2; c++)
+        for (int c = 0; c < channels.Length; c++)
         {
             for (int x = 0; x < pixels; x++)
             {
-                int s0 = (int)(start + x * spp);
-                int s1 = Math.Max(s0 + 1, (int)(start + (x + 1) * spp));
-                peaks.Query(c, s0, s1, out _, out _, out _);
+                int s0 = start + x * spp;
+                int s1 = s0 + spp;
+                peaks.Query(c, s0, s1, out float min, out float max, out float rms);
+
+                // Every one of these ranges is wider than the raw-scan limit, so the
+                // answer must cover the bin-aligned superset of [s0, s1) exactly.
+                int b0 = s0 / PeakStore.BaseBin * PeakStore.BaseBin;
+                int b1 = (s1 + PeakStore.BaseBin - 1) / PeakStore.BaseBin * PeakStore.BaseBin;
+                (float binMin, float binMax, double binRms) = Scan(channels[c], b0, b1);
+
+                Assert.Equal(binMin, min);
+                Assert.Equal(binMax, max);
+                Assert.True(Math.Abs(binRms - rms) < 1e-3,
+                    $"Channel {c} pixel {x}: rms {rms} was not the bin-aligned {binRms}.");
             }
         }
-        sw.Stop();
 
-        // Pyramid lookups should finish a full intermediate-zoom rebuild well
-        // under a frame. The old raw-scan path routinely exceeded this budget.
-        Assert.True(sw.ElapsedMilliseconds < 40,
-            $"Intermediate-zoom geometry query took {sw.ElapsedMilliseconds} ms");
+        // The decisive case: the marker is unreachable from a scan of the queried range,
+        // so reporting it proves the pyramid answered.
+        peaks.Query(0, start, start + spp, out _, out float firstMax, out _);
+        Assert.Equal(2f, firstMax);
+    }
+
+    private static (float Min, float Max, double Rms) Scan(float[] samples, int s0, int s1)
+    {
+        float min = float.MaxValue, max = float.MinValue;
+        double sq = 0;
+        for (int s = s0; s < s1; s++)
+        {
+            float v = samples[s];
+            if (v < min) min = v;
+            if (v > max) max = v;
+            sq += v * v;
+        }
+        return (min, max, Math.Sqrt(sq / (s1 - s0)));
     }
 }
