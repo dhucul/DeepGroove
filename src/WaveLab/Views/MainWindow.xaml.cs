@@ -39,6 +39,8 @@ public partial class MainWindow : Window
         _vm.RequestStatisticsDialog += ShowStatisticsDialog;
         _vm.RequestCommandPalette += ShowCommandPalette;
         _vm.Master.RequestSavePreset += PromptSavePreset;
+        _vm.EditorViewChanged += ApplyEditorViewMode;
+        ApplyEditorViewMode();
 
         RestoreWindowPlacement();
 
@@ -60,6 +62,44 @@ public partial class MainWindow : Window
             await _startupTask;
         };
         Closing += OnWindowClosing;
+    }
+
+    /// <summary>
+    /// Lays the editor rows out for the current mode. Heights are set here rather than bound because
+    /// the split is resizable: once the user has dragged the splitter, the star weights are theirs,
+    /// and a binding would overwrite them on the next mode change.
+    /// </summary>
+    private void ApplyEditorViewMode()
+    {
+        switch (_vm.EditorView)
+        {
+            case EditorViewMode.Waveform:
+                waveformRow.Height = new GridLength(1, GridUnitType.Star);
+                splitterRow.Height = new GridLength(0);
+                spectralRow.Height = new GridLength(0);
+                editorSplitter.Visibility = Visibility.Collapsed;
+                break;
+
+            case EditorViewMode.Split:
+                waveformRow.Height = new GridLength(1, GridUnitType.Star);
+                splitterRow.Height = GridLength.Auto;
+                spectralRow.Height = new GridLength(2, GridUnitType.Star);
+                editorSplitter.Visibility = Visibility.Visible;
+                break;
+
+            default:
+                waveformRow.Height = new GridLength(0);
+                splitterRow.Height = new GridLength(0);
+                spectralRow.Height = new GridLength(1, GridUnitType.Star);
+                editorSplitter.Visibility = Visibility.Collapsed;
+                break;
+        }
+
+        // Nothing is analysed while the spectrogram is hidden: the control only works when it is
+        // asked to render, so the waveform-only mode costs exactly what it did before.
+        bool spectral = _vm.EditorView != EditorViewMode.Waveform;
+        spectralEditor.Visibility = spectral ? Visibility.Visible : Visibility.Collapsed;
+        frequencyRuler.Visibility = spectral ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private async Task RunStartupAsync(string[] args)

@@ -98,6 +98,39 @@
         </Style.Triggers>
     </Style>
 
+    <!-- Segmented view switch: Waveform / Split / Spectrogram. The checked segment takes the
+         accent so the current mode is readable at a glance rather than by elimination. -->
+    <Style x:Key="SegmentButton" TargetType="ToggleButton" BasedOn="{StaticResource ToolButton}">
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="Padding" Value="11,0"/>
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="bd" Background="#171B21" BorderBrush="#262D36" BorderThickness="1"
+                            CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          TextElement.Foreground="{StaticResource Muted}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="#1D232B"/>
+                            <Setter TargetName="bd" Property="BorderBrush" Value="#33404B"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="#193B37"/>
+                            <Setter TargetName="bd" Property="BorderBrush" Value="#2C6B62"/>
+                            <Setter TargetName="bd" Property="TextElement.Foreground" Value="{StaticResource Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="RecordArmButton" TargetType="ToggleButton" BasedOn="{StaticResource ToolButton}">
         <Setter Property="Width" Value="56"/>
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>

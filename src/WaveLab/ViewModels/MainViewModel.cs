@@ -151,6 +151,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }), () => _active is { } d && (d.Markers.Count > 0 || d.Regions.Count > 0));
         SmoothEditCommand = new RelayCommand(SmoothEditPoints, () => HasAudioDocument);
 
+        ShowWaveformCommand = new RelayCommand(() => EditorView = EditorViewMode.Waveform);
+        ShowSplitCommand = new RelayCommand(() => EditorView = EditorViewMode.Split);
+        ShowSpectrogramCommand = new RelayCommand(() => EditorView = EditorViewMode.Spectrogram);
         RenderCommand = new RelayCommand(RenderMaster, () => HasAudioDocument);
         ApplyChainCommand = new RelayCommand(ApplyChain, () => HasAudioDocument);
         RecordCommand = new RelayCommand(ToggleRecord, () => !IsFinalizingRecording);
@@ -390,6 +393,36 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// layer already produces the tokens and progress reports this surfaces.
     /// </summary>
     public ProgressHost Progress { get; } = new();
+
+    private EditorViewMode _editorView = EditorViewMode.Waveform;
+
+    /// <summary>
+    /// Which representation the editor area shows. Waveform is the default so that nothing about
+    /// the app changes until the spectrogram is asked for.
+    /// </summary>
+    public EditorViewMode EditorView
+    {
+        get => _editorView;
+        set
+        {
+            if (!Set(ref _editorView, value)) return;
+            Raise(nameof(IsWaveformView));
+            Raise(nameof(IsSplitView));
+            Raise(nameof(IsSpectrogramView));
+            EditorViewChanged?.Invoke();
+        }
+    }
+
+    public bool IsWaveformView => _editorView == EditorViewMode.Waveform;
+    public bool IsSplitView => _editorView == EditorViewMode.Split;
+    public bool IsSpectrogramView => _editorView == EditorViewMode.Spectrogram;
+
+    /// <summary>Raised so the window can lay the editor rows out for the new mode.</summary>
+    public event Action? EditorViewChanged;
+
+    public RelayCommand ShowWaveformCommand { get; }
+    public RelayCommand ShowSplitCommand { get; }
+    public RelayCommand ShowSpectrogramCommand { get; }
 
     public void ReportAction(string message)
     {

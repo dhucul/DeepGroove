@@ -388,6 +388,27 @@
                     </Border>
                 </StackPanel>
 
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center"
+                            Margin="14,0,0,0" IsEnabled="{Binding HasAudioDocument}">
+                    <!-- IsChecked is one-way: the mode lives on the view model, so clicking the
+                         already-current segment re-asserts rather than unchecking it. -->
+                    <ToggleButton Style="{StaticResource SegmentButton}" Content="Waveform"
+                                  IsChecked="{Binding IsWaveformView, Mode=OneWay}"
+                                  Command="{Binding ShowWaveformCommand}"
+                                  ToolTip="Show the waveform only"
+                                  AutomationProperties.Name="Waveform view"/>
+                    <ToggleButton Style="{StaticResource SegmentButton}" Content="Split" Margin="4,0,0,0"
+                                  IsChecked="{Binding IsSplitView, Mode=OneWay}"
+                                  Command="{Binding ShowSplitCommand}"
+                                  ToolTip="Waveform above, spectrogram below, on one time axis"
+                                  AutomationProperties.Name="Split view"/>
+                    <ToggleButton Style="{StaticResource SegmentButton}" Content="Spectrogram" Margin="4,0,0,0"
+                                  IsChecked="{Binding IsSpectrogramView, Mode=OneWay}"
+                                  Command="{Binding ShowSpectrogramCommand}"
+                                  ToolTip="Show the spectrogram only"
+                                  AutomationProperties.Name="Spectrogram view"/>
+                </StackPanel>
+
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource LineSoft}" BorderThickness="1"
                             CornerRadius="9" Padding="14,8" VerticalAlignment="Center">
@@ -464,8 +485,22 @@
                 </Border>
                 <c:OverviewBar Grid.Row="0" Grid.Column="1" Document="{Binding ActiveDocument}" SeekCommand="{Binding SeekCommand}"/>
                 <c:TimeRuler Grid.Row="1" Grid.Column="1" Document="{Binding ActiveDocument}"/>
-                <c:AmplitudeRuler Grid.Row="2" Grid.Column="0" Document="{Binding ActiveDocument}"/>
-                <c:WaveformView Grid.Row="2" Grid.Column="1" Document="{Binding ActiveDocument}"
+                <!-- Waveform and spectrogram share one time axis, one zoom and one playhead, so the
+                     overview bar, time ruler and transport above keep working unchanged whichever
+                     mode is showing. Row heights are set in code when the mode changes. -->
+                <Grid Grid.Row="2" Grid.ColumnSpan="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="48"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition x:Name="waveformRow" Height="*"/>
+                        <RowDefinition x:Name="splitterRow" Height="0"/>
+                        <RowDefinition x:Name="spectralRow" Height="0"/>
+                    </Grid.RowDefinitions>
+
+                <c:AmplitudeRuler Grid.Row="0" Grid.Column="0" Document="{Binding ActiveDocument}"/>
+                <c:WaveformView Grid.Row="0" Grid.Column="1" Document="{Binding ActiveDocument}"
                                 SeekCommand="{Binding SeekCommand}" IsPlaybackActive="{Binding IsActiveDocumentPlaying}">
                     <c:WaveformView.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
@@ -480,6 +515,18 @@
                         </ContextMenu>
                     </c:WaveformView.ContextMenu>
                 </c:WaveformView>
+
+                    <GridSplitter x:Name="editorSplitter" Grid.Row="1" Grid.ColumnSpan="2"
+                                  Height="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                  Background="{StaticResource Line}" ResizeBehavior="PreviousAndNext"
+                                  ResizeDirection="Rows" Visibility="Collapsed"
+                                  AutomationProperties.Name="Resize the waveform and spectrogram panes"/>
+
+                    <c:FrequencyRuler x:Name="frequencyRuler" Grid.Row="2" Grid.Column="0"
+                                      Document="{Binding ActiveDocument}"/>
+                    <c:SpectralEditorView x:Name="spectralEditor" Grid.Row="2" Grid.Column="1"
+                                          Document="{Binding ActiveDocument}"/>
+                </Grid>
 
                 <Border Grid.Row="3" Grid.ColumnSpan="2" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
                     <TabControl x:Name="analysisTabs" SelectionChanged="OnAnalysisTabChanged">
