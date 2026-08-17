@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — constant-Q spectrogram</title>
+<style>
+  :root{--wave-bg:#0F1114;--panel:#14171B;--panel3:#1A1E24;--chrome:#111419;
+    --line:#1D2228;--line-soft:#252B33;--text:#E7EAEE;--muted:#6A717A;--faint:#4A5058;
+    --accent:#3FD6C2;--amber:#FFB454;--periwinkle:#8DA4F0}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0B0D10;color:var(--text);
+    font-family:"Inter","Segoe UI",system-ui,sans-serif}
+  body{padding:28px 32px 56px}
+  h1{font-size:19px;font-weight:600;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 26px;max-width:1180px;line-height:1.65}
+  h2{font-size:11px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);
+    margin:34px 0 15px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .note{color:var(--faint);font-size:11.5px;line-height:1.7;max-width:1180px;margin:14px 0 0}
+  .note b{color:#98A0A9;font-weight:500}
+  .mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+
+  /* the spectral toolbar, as it ships */
+  .bar{width:1180px;height:40px;background:var(--panel);border:1px solid var(--line);
+    display:flex;align-items:center;padding:0 12px;gap:7px;border-radius:5px}
+  .tag{font-size:9px;font-weight:600;letter-spacing:.9px;color:var(--faint);margin-right:5px}
+  .tool{height:26px;padding:0 11px;border-radius:5px;background:#171B21;border:1px solid #262D36;
+    display:flex;align-items:center;font-size:11.5px;color:#C3CAD2;gap:6px}
+  .tool.on{background:#193B37;border-color:#2C6B62;color:var(--accent)}
+  .divider{width:1px;height:22px;background:var(--line);margin:0 5px}
+  .btn{height:26px;padding:0 13px;border-radius:5px;background:linear-gradient(180deg,#20504A,#173A36);
+    border:1px solid #2E5A54;display:flex;align-items:center;font-size:11.5px;color:#C8F5EE}
+  .readout{margin-left:auto;font-size:10.5px;color:var(--faint);
+    font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+
+  /* the new control */
+  .seg{display:flex;border:1px solid #3A4A78;border-radius:5px;overflow:hidden;height:26px}
+  .seg div{padding:0 10px;display:flex;align-items:center;font-size:10.5px;color:#8DA4F0;
+    background:#181D2C;border-right:1px solid #2A3557}
+  .seg div:last-child{border-right:none}
+  .seg div.on{background:#2A3557;color:#C7D2FF;font-weight:600}
+  .octaves{height:26px;padding:0 9px;border-radius:5px;background:#12151A;border:1px solid var(--line-soft);
+    display:flex;align-items:center;font-size:10.5px;color:#9AA1A9;gap:7px}
+  .octaves b{color:#C6CBD1;font-weight:500;font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+
+  /* panels */
+  .pair{display:flex;gap:18px;margin-top:4px}
+  .panel{width:581px}
+  .panel .cap{font-size:10.5px;color:var(--faint);margin:0 0 7px}
+  .panel .cap b{color:#98A0A9;font-weight:500}
+  .plot{position:relative;height:300px;border:1px solid var(--line-soft);border-radius:4px;
+    overflow:hidden;background:#07080A;display:flex}
+  .ruler{width:46px;position:relative;background:var(--panel);border-right:1px solid var(--line)}
+  .ruler span{position:absolute;right:5px;transform:translateY(-50%);font-size:8.5px;
+    color:var(--faint);font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+  .img{flex:1;position:relative}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .marker{position:absolute;left:0;right:0;height:0;border-top:1px dashed rgba(255,180,84,.55)}
+  .marker span{position:absolute;left:6px;top:-13px;font-size:8.5px;color:var(--amber);
+    background:rgba(11,13,16,.75);padding:0 4px;border-radius:2px}
+</style>
+</head>
+<body>
+
+<h1>WaveLab — constant-Q spectrogram</h1>
+<p class="sub">
+  The spectral editor already draws its frequency axis logarithmically — that shipped, and it is the
+  default. What it does not have is a <b style="color:#98A0A9;font-weight:500">constant-Q
+  analysis</b>. The two sound alike and are not: today a linear transform is <i>stretched</i> onto a
+  log axis, so the bins are still 21.5 Hz apart everywhere. At the bottom of the picture that is four
+  bins spread over a third of the height, and at the top it is two hundred bins crushed into a
+  centimetre. A constant-Q analysis gives every octave the same number of bins instead, which is
+  where a musician's ear already is.
+</p>
+
+<h2>1 · The control, in the spectral bar that already exists</h2>
+
+<div class="bar">
+  <div class="tag">SPECTRAL</div>
+  <div class="tool on">▭ Rectangle</div>
+  <div class="tool">◌ Lasso</div>
+  <div class="tool">✦ Wand</div>
+  <div class="tool">≡ Harmonic</div>
+  <div class="divider"></div>
+  <div class="btn">Heal</div>
+  <div class="tool">Attenuate…</div>
+  <div class="divider"></div>
+  <div class="seg">
+    <div>LINEAR</div>
+    <div>LOG</div>
+    <div class="on">CONSTANT-Q</div>
+  </div>
+  <div class="octaves">PER OCTAVE <b>36</b></div>
+  <div class="readout">0:41.220 – 0:42.870 · 48 – 5 200 Hz</div>
+</div>
+
+<p class="note" style="max-width:1180px">
+  <b>Three scales, not two.</b> LINEAR and LOG are the axis the existing analysis is drawn on and cost
+  nothing to switch between. CONSTANT-Q is a different transform, so it is in the same control rather
+  than a separate one — the user is choosing how the picture is made, and the fact that two of the
+  choices happen to share an analysis is this app's business, not theirs. <b>Bins per octave</b>
+  appears only for constant-Q, because it is the only one for which the phrase means anything.
+</p>
+
+<h2>2 · The same passage, both ways — drawn, not measured</h2>
+<p class="note" style="margin:0 0 14px">
+  <b>These two panels are illustrations.</b> They are drawn from the arithmetic of the two analyses —
+  a fixed 21.5 Hz bandwidth becomes very tall at the bottom of a log axis and vanishingly thin at the
+  top, while a constant-Q bandwidth is even all the way up — and not produced by running either one.
+  Nothing here has been measured; the numbers in section 3 have.
+</p>
+
+<div class="pair">
+  <div class="panel">
+    <p class="cap"><b>Log axis, linear transform</b> — what ships today. 2048 points at 44.1 kHz.</p>
+    <div class="plot">
+      <div class="ruler" id="rulerA"></div>
+      <div class="img"><canvas id="a" width="1070" height="600"></canvas>
+        <div class="marker" style="top:82%"><span>hum harmonics unresolved — 21.5 Hz per bin</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="cap"><b>Constant-Q, 36 bins per octave</b> — bandwidth proportional to frequency.</p>
+    <div class="plot">
+      <div class="ruler" id="rulerB"></div>
+      <div class="img"><canvas id="b" width="1070" height="600"></canvas>
+        <div class="marker" style="top:82%"><span>50 Hz and its harmonics, separately</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>3 · What it buys, and what it costs</h2>
+<p class="note" style="margin-top:0">
+  <b>At the bottom, resolution.</b> A 2048-point transform at 44.1 kHz has bins 21.5 Hz apart, so
+  50 Hz mains and 60 Hz mains are two bins apart and their harmonics smear together — the picture
+  cannot show you which one a transfer has, and that is the first thing anyone wants to know about a
+  hum. Constant-Q at 36 bins per octave puts about 2 Hz between bins down there.<br><br>
+  <b>At the top, time.</b> The same fixed transform spends 1024 bins above 5 kHz and a 46 ms window
+  on all of them, so a click is three frames wide however short it was. Constant-Q shortens the
+  window as the frequency rises, so the top of the picture gets sharper in time exactly where the
+  things worth seeing are brief.<br><br>
+  <b>The cost is that it is a second analysis.</b> Constant-Q is not a re-drawing of what is already
+  computed, so switching to it re-analyses, and it is slower than an FFT per frame. It goes behind
+  the same tiled bitmap cache the existing display uses, keyed on the scale as well as the size and
+  window, so panning and zooming do not pay for it twice.<br><br>
+  <b>It does not change what a repair works on.</b> The mask is already defined in the <i>repair</i>
+  grid — anchored at sample zero, at the hop and transform length spectral edits use — rather than in
+  whatever grid the display happened to analyse at, precisely so the display can change without the
+  edit changing. A selection drawn on a constant-Q picture maps back the same way one drawn at a
+  different zoom already does. <b>Nothing about Heal or Attenuate moves.</b>
+</p>
+
+<script>
+(function () {
+  const LOW = 20, HIGH = 20000;
+  const yOf = (f, h) => h * (1 - Math.log(f / LOW) / Math.log(HIGH / LOW));
+
+  function ruler(el, h) {
+    [50, 100, 200, 500, 1000, 2000, 5000, 10000].forEach(f => {
+      const s = document.createElement('span');
+      s.style.top = (yOf(f, 1) * 100) + '%';
+      s.textContent = f >= 1000 ? (f / 1000) + 'k' : f;
+      el.appendChild(s);
+    });
+  }
+  ruler(document.getElementById('rulerA'));
+  ruler(document.getElementById('rulerB'));
+
+  // viridis-ish ramp
+  function colour(v) {
+    v = Math.max(0, Math.min(1, v));
+    const stops = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+    const t = v * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(t)), f = t - i;
+    const a = stops[i], b = stops[i + 1];
+    return [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f];
+  }
+
+  function draw(id, constantQ) {
+    const c = document.getElementById(id), g = c.getContext('2d');
+    const W = c.width, H = c.height;
+    const img = g.createImageData(W, H);
+    const d = img.data;
+
+    // noise floor
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        const v = 0.06 + 0.05 * Math.random() * (1 - y / H) * 0.6;
+        const [r, gr, bl] = colour(v);
+        const o = (y * W + x) * 4;
+        d[o] = r; d[o+1] = gr; d[o+2] = bl; d[o+3] = 255;
+      }
+
+    function blot(x, y, halfW, halfH, level) {
+      for (let j = -halfH; j <= halfH; j++) {
+        const yy = Math.round(y + j);
+        if (yy < 0 || yy >= H) continue;
+        const fy = 1 - Math.abs(j) / (halfH + 1);
+        for (let i = -halfW; i <= halfW; i++) {
+          const xx = Math.round(x + i);
+          if (xx < 0 || xx >= W) continue;
+          const fx = 1 - Math.abs(i) / (halfW + 1);
+          const v = level * fy * fx;
+          const o = (yy * W + xx) * 4;
+          const cur = (d[o] + d[o+1] + d[o+2]) / 765;
+          if (v <= cur) continue;
+          const [r, gr, bl] = colour(v);
+          d[o] = r; d[o+1] = gr; d[o+2] = bl;
+        }
+      }
+    }
+
+    // sustained partials of a note, with a little vibrato
+    const partials = [[220,.95],[440,.85],[660,.7],[880,.6],[1100,.5],[1540,.42],[2200,.34],[3080,.26],[4400,.2]];
+    for (const [f, lvl] of partials) {
+      // constant-Q: line thickness in pixels is constant per octave, so it is even up the picture.
+      // linear transform on a log axis: a fixed Hz bandwidth becomes very tall at the bottom and
+      // vanishingly thin at the top.
+      const bw = constantQ ? 2 : Math.max(1, (yOf(f - 11, H) - yOf(f + 11, H)) / 2);
+      for (let x = 0; x < W; x++) {
+        const wob = Math.sin(x / 55) * (constantQ ? 1.2 : 0.6);
+        blot(x, yOf(f, H) + wob, 0, Math.round(bw), lvl);
+      }
+    }
+
+    // mains hum and its harmonics at the bottom — the case the whole thing is about
+    for (let n = 1; n <= 6; n++) {
+      const f = 50 * n, lvl = 0.75 - n * 0.07;
+      const bw = constantQ ? 2 : Math.max(3, (yOf(f - 11, H) - yOf(f + 11, H)) / 2);
+      for (let x = 0; x < W; x++) blot(x, yOf(f, H), 0, Math.round(bw), lvl);
+    }
+
+    // clicks: broadband and brief
+    for (const x of [190, 470, 700, 905]) {
+      for (let y = 0; y < H; y++) {
+        // constant-Q shortens the window as frequency rises, so a click is sharp at the top
+        const f = LOW * Math.pow(HIGH / LOW, 1 - y / H);
+        const halfW = constantQ ? Math.max(1, Math.round(9 - 5 * Math.log10(f / 20))) : 7;
+        blot(x, y, halfW, 0, 0.62);
+      }
+    }
+
+    g.putImageData(img, 0, 0);
+  }
+
+  draw('a', false);
+  draw('b', true);
+})();
+</script>
+
+</body>
+</html>
