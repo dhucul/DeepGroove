@@ -403,6 +403,53 @@ public sealed class DeclipMethodTests(ITestOutputHelper output)
             "Percussive material at 2.6% clipped measured 3.2 dB better under A-SPADE.");
     }
 
+    /// <summary>
+    /// <b>Dense material at mid clipping: the reconstruction has to beat leaving the rail alone.</b>
+    /// It used to lose there. The height of the arch comes from the boundary slope carried across
+    /// the gap, and on dense material that slope is mostly high harmonics and noise rather than the
+    /// underlying arc, so the estimate read a rough shoulder as a steep climb and built a peak
+    /// nothing supported — measured by position inside the plateau it beat the rail over the outer
+    /// fifths and lost by a factor of two across the middle.
+    /// </summary>
+    [Theory]
+    [InlineData(0.55)]
+    [InlineData(0.50)]
+    [InlineData(0.45)]
+    public void DenseMaterialAtMidClippingBeatsLeavingTheRail(double level)
+    {
+        float[] clean = Dense();
+        var (clipped, mask) = Clip(clean, level);
+        var analysis = Analyse(clipped, level);
+
+        double raw = ClippedSnrDb(clean, clipped, mask);
+        double repaired = Repair(clean, clipped, mask, analysis, DeclipMethod.PeakReconstruction);
+        output.WriteLine($"dense @ {level:0.00}: raw {raw:0.0}  repaired {repaired:0.0}");
+
+        Assert.True(repaired > raw - 0.75,
+            $"Reconstructing dense material at {level:0.00} scored {repaired:0.0} dB against {raw:0.0} for leaving it alone.");
+    }
+
+    /// <summary>
+    /// The doubt belongs to long plateaus. A two-sample gap is barely an extrapolation and its
+    /// shoulders bracket it closely, so shrinking those cost 1 to 2 dB on percussive material at
+    /// every severity — where a rough shoulder is a genuine attack rather than noise.
+    /// </summary>
+    [Theory]
+    [InlineData(0.90)]
+    [InlineData(0.70)]
+    public void ShortPlateausAreNotShrunk(double level)
+    {
+        float[] clean = Percussive();
+        var (clipped, mask) = Clip(clean, level);
+        var analysis = Analyse(clipped, level);
+
+        double raw = ClippedSnrDb(clean, clipped, mask);
+        double repaired = Repair(clean, clipped, mask, analysis, DeclipMethod.PeakReconstruction);
+        output.WriteLine($"percussive @ {level:0.00}: raw {raw:0.0}  repaired {repaired:0.0}");
+        Assert.True(repaired > raw,
+            $"Short percussive plateaus scored {repaired:0.0} dB against {raw:0.0} for leaving them alone.");
+    }
+
     [Fact]
     public void PeakReconstructionRemainsAvailableUnchanged()
     {

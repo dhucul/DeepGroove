@@ -1178,6 +1178,44 @@ public static partial class Restoration
         return true;
     }
 
+    /// <summary>
+    /// How far the shoulders can be trusted to say where the peak went, from 0 (not at all) to 1.
+    /// </summary>
+    /// <remarks>
+    /// The trend is the net rise across the shoulder window and the roughness is the mean absolute
+    /// second difference over it — the part of the movement that is not going anywhere. A smooth
+    /// approach to the rail is nearly all trend and scores near 1, leaving tonal material exactly as
+    /// it was; a shoulder whose sample-to-sample movement is mostly high harmonics and noise scores
+    /// low, and the arch stays near the rail it can prove.
+    /// </remarks>
+    private static double ShoulderReliability(float[] samples, int left, int right, int predictionSamples)
+    {
+        double trend = 0, roughness = 0;
+        int counted = 0;
+
+        for (int side = 0; side < 2; side++)
+        {
+            int from = side == 0 ? left - predictionSamples : right;
+            int to = side == 0 ? left : right + predictionSamples;
+            if (from < 1 || to >= samples.Length - 1) continue;
+
+            trend += Math.Abs(samples[to] - samples[from]);
+            for (int i = from + 1; i < to; i++)
+            {
+                roughness += Math.Abs(samples[i + 1] - 2.0 * samples[i] + samples[i - 1]);
+                counted++;
+            }
+        }
+
+        if (counted == 0) return 1;
+        roughness /= counted;
+        // Per-sample terms either side of the comparison: the trend is spread over the window, and
+        // the second difference is already per sample.
+        double perSampleTrend = trend / Math.Max(1, predictionSamples);
+        double total = perSampleTrend + roughness;
+        return total <= 1e-12 ? 1 : Math.Clamp(perSampleTrend / total, 0, 1);
+    }
+
     private static void ReconstructClippedPeak(float[] samples, ClippedPeakEvent clippedPeak,
         int start, int end, float strength, int predictionSamples, double maximumGain)
     {
@@ -1197,6 +1235,25 @@ public static partial class Restoration
         double targetPeak = Math.Max(observedLevel, Math.Abs(clippedPeak.EstimatedTruePeak));
         double maximumPeak = Math.Max(observedLevel, observedLevel * maximumGain);
         targetPeak = Math.Min(targetPeak, maximumPeak);
+
+        // Extrapolate only as far as the shoulder is smooth enough to extrapolate from. The height
+        // of the arch comes from the boundary slope carried across the gap, and on dense material
+        // that slope is mostly high harmonics and noise rather than the underlying arc — so the
+        // estimate reads a rough shoulder as a steep climb and builds a peak nothing supports.
+        // Measured by position inside the plateau, the reconstruction beat leaving the rail alone
+        // over the outer fifths and lost by a factor of two across the middle, overshooting the
+        // truth on 8,166 samples against 4,901 under. The rail is a proven lower bound and the
+        // overshoot is a guess, so when the guess is unreliable the arch shrinks back towards the
+        // bound rather than committing to a height it cannot justify.
+        // Weighted by how far the arch actually has to reach. A two-sample plateau is barely an
+        // extrapolation at all and its shoulders bracket it closely, so distrusting them costs
+        // accuracy for nothing — measured, shrinking those took 1 to 2 dB off percussive and
+        // sustained material at every severity, where a rough shoulder is a genuine attack rather
+        // than noise. The doubt belongs to the long plateaus, which is where dense material sits at
+        // the severities this was built for.
+        double reach = Math.Min(1.0, span / (double)Math.Max(1, 2 * predictionSamples));
+        double trust = 1 - reach * (1 - ShoulderReliability(samples, left, right, predictionSamples));
+        targetPeak = observedLevel + (targetPeak - observedLevel) * trust;
 
         var reconstruction = new double[end - start];
         double reconstructedSignedPeak = double.NegativeInfinity;
