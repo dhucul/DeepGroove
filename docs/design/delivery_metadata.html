@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — PQ sheet &amp; tag editor</title>
+<style>
+  :root{--wave-bg:#0F1114;--panel:#14171B;--panel2:#15181D;--panel3:#1A1E24;--chrome:#111419;
+    --line:#1D2228;--line-soft:#252B33;--text:#E7EAEE;--muted:#6A717A;--faint:#4A5058;
+    --accent:#3FD6C2;--amber:#FFB454;--rose:#E0736B;--green:#7BD88F}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0B0D10;color:var(--text);
+    font-family:"Inter","Segoe UI",system-ui,sans-serif}
+  body{padding:28px 32px 56px}
+  h1{font-size:19px;font-weight:600;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 26px;max-width:1180px;line-height:1.65}
+  h2{font-size:11px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);
+    margin:36px 0 13px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .note{color:var(--faint);font-size:11.5px;line-height:1.65;max-width:1180px;margin:12px 0 0}
+  .note b{color:#98A0A9;font-weight:500}
+  .mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+
+  /* dialog shell */
+  .dlg{background:var(--panel2);border:1px solid #313841;border-radius:14px;overflow:hidden;
+    box-shadow:0 18px 46px rgba(0,0,0,.6)}
+  .dlg .head{padding:16px 20px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--amber);margin-right:10px}
+  .dot.teal{background:var(--accent)}
+  .head .ttl{font-size:14px;font-weight:600}
+  .head .hint{font-size:10.5px;color:var(--faint);margin-left:14px;position:relative;top:1px}
+  .foot{border-top:1px solid var(--line-soft);padding:14px 20px;display:flex;align-items:center;gap:12px}
+  .foot .status{font-size:10.5px;color:var(--faint);flex:1}
+  .bar{height:6px;border-radius:3px;background:#1A1E24;overflow:hidden;margin-bottom:7px}
+  .bar i{display:block;height:100%;background:var(--accent);width:0%}
+
+  /* controls */
+  .lbl{font-size:10px;font-weight:700;letter-spacing:.6px;color:var(--faint)}
+  .fld{height:34px;border:1px solid #262D36;border-radius:8px;background:#101318;padding:0 10px;
+    display:flex;align-items:center;font-size:12px;color:#D3D9E0;margin-top:6px}
+  .fld.ph{color:var(--faint)}
+  .fld.mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11.5px}
+  .fld.ro{background:var(--panel);border-color:var(--line);color:var(--muted)}
+  .fld .cursor{width:1px;height:15px;background:var(--accent);margin-left:1px}
+  .btn{height:32px;padding:0 14px;border-radius:8px;background:#171B21;border:1px solid #262D36;
+    color:#B9C0C8;font-size:12px;display:inline-flex;align-items:center;justify-content:center}
+  .btn.primary{background:#1B4A44;border-color:#2C6B62;color:#9BE9DC}
+  .btn.tall{height:38px}
+  .btn.sq{width:34px;height:30px;padding:0}
+  .seg{display:inline-flex;border:1px solid #262D36;border-radius:8px;overflow:hidden;margin-top:6px}
+  .seg div{padding:8px 15px;font-size:11.5px;color:var(--muted);background:#171B21;
+    border-right:1px solid #262D36}
+  .seg div:last-child{border-right:none}
+  .seg div.on{background:#193B37;color:var(--accent)}
+  .chk{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted)}
+  .box{width:13px;height:13px;border-radius:3px;border:1px solid #2E353E;
+    background:#101318;display:inline-flex;align-items:center;justify-content:center}
+  .box.on{background:#1B4A44;border-color:#2C6B62}
+  .box.on:after{content:"";width:6px;height:3px;border-left:1.6px solid #9BE9DC;
+    border-bottom:1.6px solid #9BE9DC;transform:rotate(-45deg);margin-bottom:2px}
+
+  /* PQ table */
+  .card{margin:0 20px 12px;background:var(--panel);border:1px solid var(--line-soft);border-radius:9px}
+  .pq{width:100%;border-collapse:collapse;font-size:11.5px}
+  .pq th{font-size:9px;font-weight:700;letter-spacing:.6px;color:var(--faint);text-align:left;
+    padding:11px 8px;border-bottom:1px solid var(--line-soft);white-space:nowrap}
+  .pq td{padding:6px 8px;border-bottom:1px solid #191E24;color:#B9C0C8;vertical-align:middle}
+  .pq tr:last-child td{border-bottom:none}
+  .pq tr.sel td{background:#21312F}
+  .pq .ord{color:var(--accent);font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+  .cell{height:26px;border:1px solid #262D36;border-radius:6px;background:#101318;padding:0 8px;
+    display:flex;align-items:center;font-size:11.5px;color:#D3D9E0;min-width:0}
+  .cell.mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11px;
+    white-space:nowrap}
+  .cell.ph{color:var(--faint)}
+  .cell.err{border-color:#7A3A36;color:#E0736B}
+  .tc{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;color:var(--muted);font-size:11px;
+    white-space:nowrap}
+  .tc b{color:#C3CAD2;font-weight:500}
+  .flag{width:22px;height:22px;border-radius:5px;border:1px solid #2E353E;background:#101318;
+    display:inline-flex;align-items:center;justify-content:center;font-size:9px;color:var(--faint)}
+  .flag.on{background:#1B4A44;border-color:#2C6B62;color:#9BE9DC}
+  .leadout td{background:#12161A;color:var(--muted)}
+
+  /* two-up */
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .cols3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+  .pad{padding:16px 20px 4px}
+  .stack{margin-top:14px}
+  .cap{font-size:10.5px;color:var(--faint);margin:9px 0 0;line-height:1.6}
+  .cap b{color:#98A0A9;font-weight:500}
+  .warn{margin:0 20px 12px;padding:10px 12px;border-radius:8px;background:#1E1A14;
+    border:1px solid #4A3B22;color:#FFB454;font-size:11px}
+  .ok{margin:0 20px 12px;padding:10px 12px;border-radius:8px;background:#14201A;
+    border:1px solid #26492F;color:#7BD88F;font-size:11px}
+</style>
+</head>
+<body>
+
+<h1>WaveLab — PQ sheet editor &amp; tag editor</h1>
+<p class="sub">
+  The two dialogs left in the professional-delivery tier. The <b>PQ sheet</b> is the per-track
+  catalogue information a pressing plant reads out of a DDP set — ISRC, performer, songwriter,
+  pre-emphasis — none of which a cue sheet has anywhere to put, and none of which the app can fill
+  today. The <b>tag editor</b> is the same idea for a single file: what goes into a WAV's
+  <span class="mono">bext</span> and <span class="mono">LIST/INFO</span> chunks, an AIFF's
+  <span class="mono">NAME</span>/<span class="mono">AUTH</span>/<span class="mono">ANNO</span>, and
+  an MP3's ID3v2.4 frames. Both reuse the existing dialog chrome, field styling and button set.
+</p>
+
+<h2>1 · PQ sheet — the CD transfer dialog, extended</h2>
+
+<div class="dlg" style="width:1100px">
+  <div class="head">
+    <span class="dot"></span>
+    <span class="ttl">Prepare Audio CD</span>
+    <span class="hint">regions → ordered tracks → 44.1 kHz / 16-bit WAV + CUE, or a DDP image set</span>
+  </div>
+
+  <div class="pad">
+    <div class="cols3">
+      <div>
+        <div class="lbl">DISC TITLE</div>
+        <div class="fld">Blue Monk — 1962 needle drop<span class="cursor"></span></div>
+      </div>
+      <div>
+        <div class="lbl">DISC PERFORMER</div>
+        <div class="fld">The Transfer</div>
+      </div>
+      <div>
+        <div class="lbl">UPC / EAN</div>
+        <div class="fld mono">5&nbsp;012345&nbsp;678900</div>
+      </div>
+    </div>
+
+    <div class="stack" style="display:flex;align-items:flex-end;gap:14px">
+      <div style="flex:1">
+        <div class="lbl">DELIVERABLE</div>
+        <div class="seg">
+          <div>WAV + CUE</div><div class="on">DDP 2.00 image set</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;padding-bottom:2px">
+        <span class="btn">Import ISRCs…</span>
+        <span class="btn">Auto-number</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="cap" style="margin:14px 20px 10px">
+    The deliverable switch replaces the choice the export button currently asks for in a separate
+    dialog. Everything below it is enabled only for DDP, because a cue sheet cannot express any of it.
+  </p>
+
+  <div class="card">
+    <table class="pq">
+      <thead>
+        <tr>
+          <th style="width:38px">TRK</th>
+          <th>TITLE</th>
+          <th style="width:138px">PERFORMER</th>
+          <th style="width:130px">SONGWRITER</th>
+          <th style="width:154px">ISRC</th>
+          <th style="width:44px">EMPH</th>
+          <th style="width:96px">START</th>
+          <th style="width:96px">LENGTH</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="sel">
+          <td class="ord">01</td>
+          <td><div class="cell">Blue Monk</div></td>
+          <td><div class="cell">The Transfer</div></td>
+          <td><div class="cell">T. Monk</div></td>
+          <td><div class="cell mono">GB-AAA-24-00001</div></td>
+          <td><span class="flag">—</span></td>
+          <td class="tc"><b>00:02:00</b></td>
+          <td class="tc">05:41:22</td>
+        </tr>
+        <tr>
+          <td class="ord">02</td>
+          <td><div class="cell">Ruby, My Dear</div></td>
+          <td><div class="cell">The Transfer</div></td>
+          <td><div class="cell">T. Monk</div></td>
+          <td><div class="cell mono">GB-AAA-24-00002</div></td>
+          <td><span class="flag on">ON</span></td>
+          <td class="tc"><b>05:43:22</b></td>
+          <td class="tc">06:12:48</td>
+        </tr>
+        <tr>
+          <td class="ord">03</td>
+          <td><div class="cell">Well, You Needn’t</div></td>
+          <td><div class="cell">The Transfer</div></td>
+          <td><div class="cell ph">—</div></td>
+          <td><div class="cell mono err">GB-AAA-24-3</div></td>
+          <td><span class="flag">—</span></td>
+          <td class="tc"><b>11:55:70</b></td>
+          <td class="tc">04:58:05</td>
+        </tr>
+        <tr>
+          <td class="ord">04</td>
+          <td><div class="cell">Straight, No Chaser</div></td>
+          <td><div class="cell">The Transfer</div></td>
+          <td><div class="cell ph">—</div></td>
+          <td><div class="cell mono ph">not set</div></td>
+          <td><span class="flag">—</span></td>
+          <td class="tc"><b>16:54:00</b></td>
+          <td class="tc">07:20:33</td>
+        </tr>
+        <tr class="leadout">
+          <td class="ord">—</td>
+          <td colspan="5" style="color:var(--faint);font-size:11px;letter-spacing:.4px">LEAD-OUT</td>
+          <td class="tc"><b>24:14:33</b></td>
+          <td class="tc">—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="warn">
+    Track 03 · ISRC is 11 characters after punctuation is removed; an ISRC is exactly 12. It will be
+    omitted from the PQ sheet rather than written short.
+  </div>
+
+  <div style="display:flex;align-items:center;gap:8px;padding:0 20px 14px">
+    <span class="btn sq">▲</span>
+    <span class="btn sq">▼</span>
+    <span class="btn">Remove</span>
+    <span class="btn">Split</span>
+    <span class="btn">Sync Regions</span>
+    <span style="flex:1"></span>
+    <span class="chk"><span class="box on"></span> Render the current rack into exported files</span>
+    <span class="btn">▶ Preview Track</span>
+  </div>
+
+  <div class="foot">
+    <div class="status">
+      <div class="bar"><i style="width:0%"></i></div>
+      Program length: 24:12 across 4 tracks, aligned to CD sectors. 3 of 4 ISRCs set.
+    </div>
+    <span class="btn tall">Close</span>
+    <span class="btn tall primary">Export DDP Image Set…</span>
+  </div>
+</div>
+
+<p class="note">
+  <b>What changes.</b> Four columns are added to the existing track list — performer, songwriter,
+  ISRC, pre-emphasis — plus disc performer and UPC beside the disc title, and a deliverable switch
+  that replaces the separate format prompt. <b>Start</b> and <b>length</b> become read-out columns in
+  CD timecode (<span class="mono">mm:ss:ff</span>, 75 frames a second) rather than the editable
+  source-sample fields, because on a DDP those positions are derived from the sector-aligned plan and
+  are not the user's to type. The dialog widens from 790 px to 1100 px to hold them. Validation is the
+  existing one-line strip plus a per-field state: an ISRC that is not twelve characters after
+  punctuation is stripped is marked and omitted rather than written short.
+</p>
+
+<h2>2 · Tag editor — a new dialog, File ▸ File Information…</h2>
+
+<div class="cols" style="align-items:start">
+
+  <div class="dlg">
+    <div class="head">
+      <span class="dot teal"></span>
+      <span class="ttl">File Information</span>
+      <span class="hint">Blue Monk.wav · RIFF · 44.1 kHz / 24-bit</span>
+    </div>
+
+    <div class="pad" style="padding-bottom:16px">
+      <div class="seg" style="margin-bottom:16px">
+        <div class="on">Description</div><div>Broadcast</div><div>Chunks</div>
+      </div>
+
+      <div class="cols">
+        <div>
+          <div class="lbl">TITLE</div>
+          <div class="fld">Blue Monk</div>
+        </div>
+        <div>
+          <div class="lbl">ARTIST</div>
+          <div class="fld">The Transfer</div>
+        </div>
+      </div>
+      <div class="cols stack">
+        <div>
+          <div class="lbl">ALBUM</div>
+          <div class="fld">Side A</div>
+        </div>
+        <div>
+          <div class="lbl">TRACK</div>
+          <div class="fld mono">1/4</div>
+        </div>
+      </div>
+      <div class="cols stack">
+        <div>
+          <div class="lbl">GENRE</div>
+          <div class="fld ph">not set</div>
+        </div>
+        <div>
+          <div class="lbl">YEAR</div>
+          <div class="fld mono">1962</div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="lbl">COMMENT</div>
+        <div class="fld" style="height:62px;align-items:flex-start;padding-top:9px;line-height:1.55">
+          Needle drop, minor surface noise through the intro.
+        </div>
+      </div>
+    </div>
+
+    <div class="foot">
+      <div class="status">Written to <span class="mono">LIST/INFO</span> on save · ID3v2.4 on MP3 export</div>
+      <span class="btn tall">Cancel</span>
+      <span class="btn tall primary">Apply</span>
+    </div>
+  </div>
+
+  <div class="dlg">
+    <div class="head">
+      <span class="dot teal"></span>
+      <span class="ttl">File Information</span>
+      <span class="hint">Blue Monk.wav · RIFF · 44.1 kHz / 24-bit</span>
+    </div>
+
+    <div class="pad" style="padding-bottom:16px">
+      <div class="seg" style="margin-bottom:16px">
+        <div>Description</div><div class="on">Broadcast</div><div>Chunks</div>
+      </div>
+
+      <div>
+        <div class="lbl">DESCRIPTION</div>
+        <div class="fld">Side A, first pass, Shure V15 / Technics 1200</div>
+      </div>
+      <div class="cols stack">
+        <div>
+          <div class="lbl">ORIGINATOR</div>
+          <div class="fld">WaveLab</div>
+        </div>
+        <div>
+          <div class="lbl">ORIGINATOR REFERENCE</div>
+          <div class="fld mono ph">auto</div>
+        </div>
+      </div>
+      <div class="cols3 stack">
+        <div>
+          <div class="lbl">DATE</div>
+          <div class="fld mono">2026-08-16</div>
+        </div>
+        <div>
+          <div class="lbl">TIME</div>
+          <div class="fld mono">14:22:07</div>
+        </div>
+        <div>
+          <div class="lbl">TIME REFERENCE</div>
+          <div class="fld mono ro">0</div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="lbl">CODING HISTORY</div>
+        <div class="fld mono ro" style="height:62px;align-items:flex-start;padding-top:9px;
+             line-height:1.6;font-size:10.5px">
+          A=PCM,F=44100,W=24,M=stereo,T=WaveLab
+        </div>
+      </div>
+      <p class="cap">
+        <b>Time reference</b> is the sample position of the first sample on the recording's own
+        timeline, and it is 64-bit: read as 32 it wraps after 27 hours at 44.1 kHz.
+      </p>
+    </div>
+
+    <div class="foot">
+      <div class="status">Written to the <span class="mono">bext</span> chunk on save</div>
+      <span class="btn tall">Cancel</span>
+      <span class="btn tall primary">Apply</span>
+    </div>
+  </div>
+</div>
+
+<div class="dlg stack" style="width:540px;margin-top:16px">
+  <div class="head">
+    <span class="dot teal"></span>
+    <span class="ttl">File Information</span>
+    <span class="hint">Blue Monk.wav · RIFF · 44.1 kHz / 24-bit</span>
+  </div>
+
+  <div class="pad" style="padding-bottom:14px">
+    <div class="seg" style="margin-bottom:14px">
+      <div>Description</div><div>Broadcast</div><div class="on">Chunks</div>
+    </div>
+    <table class="pq">
+      <thead>
+        <tr><th style="width:74px">ID</th><th style="width:96px">SIZE</th><th>CARRIED FROM</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono" style="color:#C3CAD2">bext</td><td class="tc">858 B</td><td>this session</td></tr>
+        <tr><td class="mono" style="color:#C3CAD2">iXML</td><td class="tc">4.2 kB</td><td>the source file</td></tr>
+        <tr><td class="mono" style="color:#C3CAD2">smpl</td><td class="tc">80 B</td><td>the source file</td></tr>
+        <tr><td class="mono" style="color:#C3CAD2">cue&nbsp;</td><td class="tc">124 B</td><td>markers, rewritten on save</td></tr>
+        <tr><td class="mono" style="color:#C3CAD2">LIST</td><td class="tc">212 B</td><td>markers + description</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="ok">
+    Every chunk listed here survives an edit and a save. Nothing this app does not understand is
+    discarded.
+  </div>
+
+  <div class="foot">
+    <div class="status">Read-only · this is what the file will contain</div>
+    <span class="btn tall">Close</span>
+  </div>
+</div>
+
+<p class="note">
+  <b>What it is.</b> One new dialog behind <span class="mono">File ▸ File Information…</span>, three
+  tabs on the existing segmented control. <b>Description</b> is the human-facing set and is the only
+  one that reaches every format — <span class="mono">LIST/INFO</span> in a WAV,
+  <span class="mono">NAME</span>/<span class="mono">AUTH</span>/<span class="mono">ANNO</span> in an
+  AIFF, ID3v2.4 frames on an MP3 export. <b>Broadcast</b> is the <span class="mono">bext</span> chunk
+  and is WAV-only; on an AIFF document the tab is present but disabled rather than hidden, so the
+  reason it does not apply is visible. <b>Chunks</b> is a read-out, not an editor: it exists so the
+  claim "your file's metadata survived" can be checked rather than believed.
+</p>
+<p class="note">
+  <b>What it reuses.</b> Dialog chrome, header dot, segmented control, field and button styles are all
+  existing. Nothing here needs a new control template.
+</p>
+
+</body>
+</html>
