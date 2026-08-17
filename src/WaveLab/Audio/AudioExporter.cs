@@ -43,6 +43,10 @@ public static class AudioExporter
         format is ExportFormat.Mp3 or ExportFormat.Aac or ExportFormat.Wma;
 
     /// <summary>Export. start/count select a range (0, doc.Length for all). targetRate 0 = keep.</summary>
+    /// <param name="tags">
+    /// What the file should say about itself. Written as ID3v2.4 on MP3; the other encoders here
+    /// take their metadata through Media Foundation and are not tagged.
+    /// </param>
     public static void Export(
         AudioDocument doc,
         string path,
@@ -51,7 +55,8 @@ public static class AudioExporter
         int start,
         int count,
         int targetRate,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Id3Tags tags = default)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -131,6 +136,10 @@ public static class AudioExporter
                 case ExportFormat.Wma:
                 case ExportFormat.Flac:
                     EncodeViaMediaFoundation(data, rate, stagePath, format, bitrateKbps, cancellationToken);
+
+                    // The tag goes on the staged file, so a failure here leaves the destination
+                    // untouched rather than replacing it with an untagged export.
+                    if (format == ExportFormat.Mp3 && !tags.IsEmpty) Id3v2.ApplyTo(stagePath, tags);
                     break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(format));

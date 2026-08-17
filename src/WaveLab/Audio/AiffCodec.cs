@@ -55,6 +55,7 @@ public static class AiffCodec
         uint compression = None;
         long soundPosition = -1;
         long soundLength = 0;
+        RiffMetadata metadata = RiffMetadata.ForAiff();
 
         while (stream.Position + 8 <= formEnd)
         {
@@ -89,6 +90,18 @@ public static class AiffCodec
                     throw new InvalidDataException("The AIFF sound-data offset exceeds its chunk.");
                 soundPosition = checked(stream.Position + offset);
                 soundLength = payloadLength - offset;
+            }
+            else
+            {
+                // Marks, comments, the title, the author, an annotation, whatever else the file
+                // carried — kept verbatim and written back. Discarding it is what forced an
+                // imported AIFF to be saved somewhere else so its metadata could not be destroyed.
+                string id = RiffMetadata.IdFromBig(chunkId);
+                if (chunkSize <= RiffMetadata.MaximumChunkBytes)
+                {
+                    stream.Position = chunkStart;
+                    metadata.Add(id, reader.ReadBytes((int)chunkSize));
+                }
             }
 
             stream.Position = nextChunk;
@@ -139,16 +152,22 @@ public static class AiffCodec
         int sourceBits = floatingPoint ? 32 : bits <= 16 ? 16 : bits;
         return new AudioDocument(channelData, sampleRate, sourceBits)
         {
-            // WaveLab does not preserve ancillary chunks when writing AIFF. Retain the
-            // source association for markers/session restore, but require a new path so
-            // an ordinary Save cannot destroy metadata or replace an AIFF-C container.
             FilePath = path,
-            RequiresSaveAs = true,
+
+            // Ancillary chunks now survive, so a classic AIFF can be written back over itself.
+            // An AIFF-C still cannot: the writer produces classic AIFF PCM, so saving in place
+            // would replace the container as well as the audio, and that is a different file.
+            RequiresSaveAs = compressedContainer,
             Title = Path.GetFileName(path),
+            Riff = metadata,
         };
     }
 
     /// <summary>Writes classic AIFF signed PCM. TPDF dither applies to 16-bit only.</summary>
+    /// <param name="markers">
+    /// Markers to embed as a <c>MARK</c> chunk, so they travel inside the file rather than only in
+    /// a sidecar.
+    /// </param>
     public static void Save(
         AudioDocument doc,
         string path,
@@ -156,7 +175,8 @@ public static class AiffCodec
         bool dither = true,
         CancellationToken cancellationToken = default,
         IProgress<double>? progress = null,
-        DitherKind ditherKind = DitherKind.FlatTpdf)
+        DitherKind ditherKind = DitherKind.FlatTpdf,
+        IReadOnlyList<Marker>? markers = null)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -193,7 +213,26 @@ public static class AiffCodec
                 "Audio exceeds the 2 GB AIFF limit; export a selection or lower bit depth.");
         int dataSize = (int)dataSizeLong;
         int soundChunkSize = checked(8 + dataSize);
-        int formSize = checked(4 + (8 + 18) + (8 + soundChunkSize) + (soundChunkSize & 1));
+
+        // Whatever else the source file carried, written back after the audio — but only if it came
+        // from an AIFF. A WAV's chunks are a different vocabulary in a different byte order.
+        RiffMetadata metadata = doc.Riff is { IsAiff: true } carried ? carried : RiffMetadata.ForAiff();
+        if (markers is { Count: > 0 })
+        {
+            var marks = new List<BroadcastMetadata.CuePoint>(markers.Count);
+            for (int i = 0; i < markers.Count; i++)
+                marks.Add(new BroadcastMetadata.CuePoint(i + 1,
+                    Math.Clamp(markers[i].Position, 0, frames), markers[i].Name));
+
+            metadata = metadata.Clone();
+            metadata.Set("MARK", AiffMetadata.WriteMarkChunk(marks));
+        }
+
+        long extra = metadata.ByteLength;
+        if (extra > int.MaxValue / 4)
+            throw new InvalidOperationException("The metadata carried with this file is too large to write.");
+
+        int formSize = checked(4 + (8 + 18) + (8 + soundChunkSize) + (soundChunkSize & 1) + (int)extra);
 
         string directory = Path.GetDirectoryName(finalPath)
             ?? throw new InvalidOperationException("The AIFF output path has no directory.");
@@ -278,6 +317,7 @@ public static class AiffCodec
 
                 cancellationToken.ThrowIfCancellationRequested();
                 if ((soundChunkSize & 1) == 1) writer.Write((byte)0);
+                metadata.WriteTo(writer);
                 writer.Flush();
                 stream.Flush(flushToDisk: true);
             }

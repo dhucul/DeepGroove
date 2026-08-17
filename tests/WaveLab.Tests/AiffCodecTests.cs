@@ -40,7 +40,10 @@ public sealed class AiffCodecTests
             Assert.Equal(2, loaded.ChannelCount);
             Assert.Equal(samples[0].Length, loaded.Length);
             Assert.Equal(path, loaded.FilePath);
-            Assert.True(loaded.RequiresSaveAs);
+
+            // A classic AIFF now keeps its ancillary chunks through a save, so it can be written
+            // back over itself. Only AIFF-C still cannot, because the writer emits classic AIFF.
+            Assert.False(loaded.RequiresSaveAs);
             Assert.Equal(44_100, independentReader.WaveFormat.SampleRate);
             Assert.Equal(bitDepth, independentReader.WaveFormat.BitsPerSample);
             Assert.Equal(2, independentReader.WaveFormat.Channels);
@@ -133,29 +136,89 @@ public sealed class AiffCodecTests
         }
     }
 
+    /// <summary>
+    /// An AIFF-C's sample format is not one the writer produces, so saving in place would replace
+    /// the container as well as the audio. That is a different file, and it still needs a new name.
+    /// </summary>
     [Fact]
-    public void ImportedAiffCannotOverwriteItsSource()
+    public void ImportedAiffCCannotOverwriteItsSource()
     {
         string directory = CreateTemporaryDirectory();
-        string path = Path.Combine(directory, "source.aiff");
+        string sourcePath = Path.Combine(directory, "source.aifc");
+        string classicPath = Path.Combine(directory, "source.aiff");
         try
         {
-            AiffCodec.Save(new AudioDocument([[0.25f, -0.5f]], 44_100, 16),
-                path, 16, dither: false);
-            byte[] original = File.ReadAllBytes(path);
-            AudioDocument imported = AiffCodec.Load(path);
+            File.WriteAllBytes(sourcePath, CreateSowtAiffC());
+            byte[] original = File.ReadAllBytes(sourcePath);
+            AudioDocument imported = AiffCodec.Load(sourcePath);
+            Assert.True(imported.RequiresSaveAs);
+
+            // The extension check refuses .aifc outright, so the in-place test uses a .aiff name
+            // that the document nonetheless came from.
+            imported.FilePath = classicPath;
+            AiffCodec.Save(new AudioDocument([[0.25f]], 44_100, 16), classicPath, 16, dither: false);
 
             InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
-                AiffCodec.Save(imported, path, 16, dither: false));
+                AiffCodec.Save(imported, classicPath, 16, dither: false));
 
             Assert.Contains("saved to a different path", error.Message);
-            Assert.Equal(original, File.ReadAllBytes(path));
-            Assert.Single(Directory.EnumerateFiles(directory));
+            Assert.Equal(original, File.ReadAllBytes(sourcePath));
         }
         finally
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// The other half of that: a classic AIFF can be written back over itself, because everything
+    /// it carried is still there afterwards.
+    /// </summary>
+    [Fact]
+    public void AClassicAiffCanBeSavedOverItselfWithItsChunksIntact()
+    {
+        string directory = CreateTemporaryDirectory();
+        string path = Path.Combine(directory, "source.aiff");
+        try
+        {
+            AiffCodec.Save(new AudioDocument([[0.25f, -0.5f]], 44_100, 16), path, 16, dither: false);
+
+            // A chunk this app knows nothing about, inserted after the audio.
+            byte[] annotated = WithTrailingChunk(File.ReadAllBytes(path), "ANNO",
+                Encoding.ASCII.GetBytes("Needle drop, 1962 pressing."));
+            File.WriteAllBytes(path, annotated);
+
+            AudioDocument imported = AiffCodec.Load(path);
+            Assert.False(imported.RequiresSaveAs);
+            AiffCodec.Save(imported, path, 16, dither: false);
+
+            AudioDocument reloaded = AiffCodec.Load(path);
+            Assert.Equal([0.25f, -0.5f], reloaded.Channels[0]);
+            Assert.Equal("Needle drop, 1962 pressing.",
+                AiffMetadata.ReadTextChunk(reloaded.Riff.Find("ANNO")?.Data));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>Appends a chunk to an AIFF and re-states the FORM size, big-endian throughout.</summary>
+    private static byte[] WithTrailingChunk(byte[] file, string id, byte[] payload)
+    {
+        int padded = payload.Length + (payload.Length & 1);
+        var result = new byte[file.Length + 8 + padded];
+        file.CopyTo(result, 0);
+
+        int at = file.Length;
+        Encoding.ASCII.GetBytes(id).CopyTo(result, at);
+        at += 4;
+        for (int shift = 24; shift >= 0; shift -= 8) result[at++] = (byte)(payload.Length >> shift);
+        payload.CopyTo(result, at);
+
+        int formSize = result.Length - 8;
+        for (int i = 0, shift = 24; shift >= 0; shift -= 8) result[4 + i++] = (byte)(formSize >> shift);
+        return result;
     }
 
     [Fact]

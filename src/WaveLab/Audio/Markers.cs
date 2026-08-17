@@ -60,10 +60,18 @@ public static class MarkerStore
     public static List<Marker> FromRiff(RiffMetadata? riff)
     {
         var markers = new List<Marker>();
-        if (riff?.Find("cue ") is not { } cue) return markers;
+        if (riff == null) return markers;
 
-        foreach (BroadcastMetadata.CuePoint point in
-                 BroadcastMetadata.ReadCuePoints(cue.Data, riff.Find("LIST")?.Data))
+        // A WAV says this with cue points and a label list; an AIFF says it with one MARK chunk.
+        // Same information either way, so both arrive as the same type and the caller sees neither.
+        IEnumerable<BroadcastMetadata.CuePoint> points =
+            riff.Find("cue ") is { } cue
+                ? BroadcastMetadata.ReadCuePoints(cue.Data, riff.Find("LIST")?.Data)
+                : riff.Find("MARK") is { } mark
+                    ? AiffMetadata.ReadMarkChunk(mark.Data)
+                    : [];
+
+        foreach (BroadcastMetadata.CuePoint point in points)
         {
             markers.Add(new Marker
             {

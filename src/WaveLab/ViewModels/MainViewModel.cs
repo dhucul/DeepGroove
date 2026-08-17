@@ -668,6 +668,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Dither16BitOnSave = doc.Dither16BitOnSave,
             RequiresSaveAs = doc.RequiresSaveAs,
             CaptureNote = doc.CaptureNote,
+
+            // Shared, not copied. The codecs clone before touching a chunk, so the snapshot only
+            // ever reads this — and leaving it out is what would quietly drop the file's broadcast
+            // metadata on the first ordinary Save, which is the whole point of carrying it.
+            Riff = doc.Riff,
         };
     }
 
@@ -686,6 +691,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                extension.Equals(".aiff", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <param name="markers">
+    /// A point-in-time copy of the document's markers, so they are embedded in the file itself as
+    /// well as written to the sidecar. The sidecar is invisible to every other program and is lost
+    /// the moment the audio file is copied on its own.
+    /// </param>
     private static void SaveEditableDocument(
         AudioDocument doc,
         string path,
@@ -693,7 +703,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool dither,
         bool? writeAiff = null,
         CancellationToken cancellationToken = default,
-        IProgress<double>? progress = null)
+        IProgress<double>? progress = null,
+        IReadOnlyList<Marker>? markers = null)
     {
         bool useAiff = writeAiff ?? IsClassicAiffPath(path);
         string extension = Path.GetExtension(path);
@@ -704,10 +715,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             throw new NotSupportedException("WAV output requires a .wav file name.");
 
         if (useAiff)
-            AiffCodec.Save(doc, path, depth, dither, cancellationToken, progress);
+            AiffCodec.Save(doc, path, depth, dither, cancellationToken, progress,
+                Audio.Dsp.DitherKind.FlatTpdf, markers);
         else
-            WavCodec.Save(doc, path, depth, dither, cancellationToken, progress);
+            WavCodec.Save(doc, path, depth, dither, cancellationToken, progress,
+                Audio.Dsp.DitherKind.FlatTpdf, markers);
     }
+
+    /// <summary>The markers as they stand, copied on the UI thread before any background save.</summary>
+    private static List<Marker> MarkerSnapshot(DocumentViewModel d) =>
+        [.. d.Markers.Select(m => new Marker { Name = m.Name, Position = m.Position })];
 
     private async void Save()
     {
@@ -722,6 +739,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (!_savesInFlight.Add(doc.SessionId)) return; // a save for this document is already writing
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
+        var markers = MarkerSnapshot(d);
         string path = doc.FilePath!;
         int depth = doc.SourceBitDepth;
         try
@@ -732,7 +750,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 $"{depth}-bit{(depth == 16 && snapshot.Dither16BitOnSave ? " · dithered" : "")}",
                 (progress, token) => Task.Run(() => SaveEditableDocument(snapshot, path, depth,
                     dither: depth == 16 && snapshot.Dither16BitOnSave,
-                    writeAiff: null, cancellationToken: token, progress: progress), token));
+                    writeAiff: null, cancellationToken: token, progress: progress,
+                    markers: markers), token));
             // Do not declare the document fully persisted, or discard its
             // recovery copy, while the latest marker sidecar is still pending
             // (or has failed).
@@ -800,10 +819,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool writeAiff = dlg.FilterIndex >= 5;
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
+        var markers = MarkerSnapshot(d);
         try
         {
             await Task.Run(() => SaveEditableDocument(snapshot, dlg.FileName, depth,
-                dither: depth == 16 && dither16, writeAiff: writeAiff));
+                dither: depth == 16 && dither16, writeAiff: writeAiff, markers: markers));
             _saveFailures.Remove(doc.SessionId);
             doc.FilePath = dlg.FileName;
             doc.RequiresSaveAs = false;

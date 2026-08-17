@@ -4,9 +4,23 @@ using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
 
+/// <summary>Which RIFF container a WAV is written in.</summary>
+public enum WavContainer
+{
+    /// <summary>Plain RIFF while it fits, RF64 once it does not. What every caller should use.</summary>
+    Automatic,
+
+    /// <summary>Plain RIFF, refusing anything past the 32-bit size field.</summary>
+    Riff,
+
+    /// <summary>RF64 (EBU Tech 3306), whose real sizes live in a <c>ds64</c> chunk.</summary>
+    Rf64,
+}
+
 /// <summary>
 /// Sample-accurate RIFF/WAVE reader and writer.
-/// Reads: PCM 16/24/32-bit int and 32/64-bit IEEE float, plus WAVE_FORMAT_EXTENSIBLE.
+/// Reads: PCM 16/24/32-bit int and 32/64-bit IEEE float, plus WAVE_FORMAT_EXTENSIBLE,
+/// in RIFF, RF64 (EBU Tech 3306) and BW64 (ITU-R BS.2088) containers.
 /// Writes: PCM 16-bit (with optional TPDF dither), PCM 24-bit, and 32-bit IEEE float.
 /// </summary>
 public static class WavCodec
@@ -17,6 +31,41 @@ public static class WavCodec
     private static readonly Guid PcmSubFormat = new("00000001-0000-0010-8000-00AA00389B71");
     private static readonly Guid IeeeFloatSubFormat = new("00000003-0000-0010-8000-00AA00389B71");
 
+    private const uint IdRiff = 0x46464952;   // "RIFF"
+    private const uint IdRf64 = 0x34364652;   // "RF64"
+    private const uint IdBw64 = 0x34365742;   // "BW64"
+    private const uint IdWave = 0x45564157;   // "WAVE"
+    private const uint IdDs64 = 0x34367364;   // "ds64"
+    private const uint IdFmt = 0x20746D66;    // "fmt "
+    private const uint IdData = 0x61746164;   // "data"
+    private const uint IdFact = 0x74636166;   // "fact"
+
+    /// <summary>The fixed part of a <c>ds64</c> chunk, before its optional chunk-size table.</summary>
+    private const int Ds64FixedBytes = 28;
+
+    /// <summary>
+    /// Everything a <c>ds64</c> chunk says. In an RF64 file every 32-bit size field that would
+    /// overflow is written as 0xFFFFFFFF and its real value is found here instead.
+    /// </summary>
+    private sealed class Ds64
+    {
+        public long RiffSize;
+        public long DataSize = -1;
+        public long SampleCount;
+        public readonly Dictionary<uint, long> Table = [];
+
+        /// <summary>
+        /// The real size of a chunk whose 32-bit field is the escape value. Only <c>data</c> has a
+        /// dedicated field; anything else has to be named in the table, and a file that escapes a
+        /// size without doing so has not said how long the chunk is at all.
+        /// </summary>
+        public long SizeFor(uint chunkId) =>
+            chunkId == IdData ? DataSize
+            : Table.TryGetValue(chunkId, out long size) ? size
+            : throw new InvalidDataException(
+                $"The RF64 file escapes the size of '{RiffMetadata.IdFrom(chunkId)}' but does not state it.");
+    }
+
     public static AudioDocument Load(string path, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -25,29 +74,46 @@ public static class WavCodec
         using var br = new BinaryReader(fs);
 
         if (fs.Length < 12) throw new InvalidDataException("The WAV header is truncated.");
-        if (br.ReadUInt32() != 0x46464952) throw new InvalidDataException("Not a RIFF file."); // "RIFF"
-        br.ReadUInt32(); // RIFF size
-        if (br.ReadUInt32() != 0x45564157) throw new InvalidDataException("Not a WAVE file."); // "WAVE"
+        uint form = br.ReadUInt32();
+        bool rf64 = form is IdRf64 or IdBw64;
+        if (form != IdRiff && !rf64) throw new InvalidDataException("Not a RIFF file.");
+        br.ReadUInt32(); // RIFF size; 0xFFFFFFFF in an RF64 file, whose real size is in ds64
+        if (br.ReadUInt32() != IdWave) throw new InvalidDataException("Not a WAVE file.");
 
         ushort format = 0, channels = 0, bits = 0;
         uint sampleRate = 0, declaredByteRate = 0;
         ushort declaredBlockAlign = 0;
         long dataStart = -1;
-        int dataSize = 0;
+        long dataSize = 0;
+        Ds64? ds64 = null;
         var metadata = new RiffMetadata();
 
         while (fs.Position + 8 <= fs.Length)
         {
             cancellationToken.ThrowIfCancellationRequested();
             uint chunkId = br.ReadUInt32();
-            uint chunkSize = br.ReadUInt32();
+            uint declaredSize = br.ReadUInt32();
+
+            // ds64 is required to come first, so by the time an escaped size is met it is known.
+            long chunkSize = rf64 && declaredSize == uint.MaxValue
+                ? (ds64 ?? throw new InvalidDataException(
+                       "The RF64 file escapes a chunk size before its ds64 chunk.")).SizeFor(chunkId)
+                : declaredSize;
+            if (chunkSize < 0) throw new InvalidDataException("The WAV contains a negative chunk size.");
+
             long chunkStart = fs.Position;
             long chunkEnd = checked(chunkStart + chunkSize);
             long nextChunk = checked(chunkEnd + (chunkSize & 1));
             if (chunkEnd > fs.Length || nextChunk > fs.Length)
                 throw new InvalidDataException("The WAV contains a truncated chunk.");
 
-            if (chunkId == 0x20746D66) // "fmt "
+            if (chunkId == IdDs64)
+            {
+                if (!rf64) throw new InvalidDataException("A plain RIFF file cannot carry a ds64 chunk.");
+                if (ds64 != null) throw new InvalidDataException("The RF64 file has more than one ds64 chunk.");
+                ds64 = ReadDs64(br, chunkSize);
+            }
+            else if (chunkId == IdFmt)
             {
                 if (chunkSize < 16)
                     throw new InvalidDataException("The WAV format chunk is truncated.");
@@ -86,14 +152,12 @@ public static class WavCodec
                             "Extensible WAV valid bits must match the container size.");
                 }
             }
-            else if (chunkId == 0x61746164) // "data"
+            else if (chunkId == IdData)
             {
-                if ((ulong)chunkSize > (ulong)Array.MaxLength)
-                    throw new InvalidDataException("The WAV data chunk is too large to load into memory.");
                 // Located now, decoded block by block below: buffering the whole
                 // chunk would hold the raw bytes and the float output at once.
                 dataStart = chunkStart;
-                dataSize = (int)chunkSize;
+                dataSize = chunkSize;
             }
             else
             {
@@ -112,6 +176,8 @@ public static class WavCodec
             fs.Position = nextChunk;
         }
 
+        if (rf64 && ds64 == null)
+            throw new InvalidDataException("The RF64 file has no ds64 chunk, so its real sizes are unstated.");
         if (dataStart < 0 || channels == 0 || sampleRate == 0 || sampleRate > int.MaxValue)
             throw new InvalidDataException("Missing or invalid fmt/data chunk.");
         if (format != FormatPcm && format != FormatIeeeFloat)
@@ -132,7 +198,13 @@ public static class WavCodec
         int blockAlign = declaredBlockAlign;
         if (dataSize % blockAlign != 0)
             throw new InvalidDataException("The WAV data chunk ends in a partial sample frame.");
-        int frameCount = dataSize / blockAlign;
+
+        // The ceiling is one channel's float array, not the file: an RF64 data chunk may be many
+        // gigabytes, and what has to fit in memory is `frames` floats per channel.
+        long frameCountLong = dataSize / blockAlign;
+        if (frameCountLong > Array.MaxLength)
+            throw new InvalidDataException("The WAV holds more sample frames than can be loaded into memory.");
+        var frameCount = (int)frameCountLong;
         var channelData = new float[channels][];
         for (int channel = 0; channel < channels; channel++)
             channelData[channel] = new float[frameCount];
@@ -147,6 +219,48 @@ public static class WavCodec
             Title = Path.GetFileName(path),
             Riff = metadata,
         };
+    }
+
+    /// <summary>
+    /// Reads a <c>ds64</c> chunk: three 64-bit sizes as low/high pairs, then an optional table
+    /// naming any other chunk that needed the escape.
+    /// </summary>
+    private static Ds64 ReadDs64(BinaryReader reader, long chunkSize)
+    {
+        if (chunkSize < Ds64FixedBytes)
+            throw new InvalidDataException("The RF64 ds64 chunk is truncated.");
+
+        var ds64 = new Ds64
+        {
+            RiffSize = ReadInt64Pair(reader),
+            DataSize = ReadInt64Pair(reader),
+            SampleCount = ReadInt64Pair(reader),
+        };
+        uint entries = reader.ReadUInt32();
+
+        // The table is trusted only as far as the chunk's own length allows, so a wrong count
+        // cannot make the reader walk off into the audio and read sizes out of it.
+        long available = (chunkSize - Ds64FixedBytes) / 12;
+        if (entries > available)
+            throw new InvalidDataException("The RF64 ds64 table claims more entries than it contains.");
+
+        for (uint i = 0; i < entries; i++)
+        {
+            uint id = reader.ReadUInt32();
+            long size = ReadInt64Pair(reader);
+            ds64.Table[id] = size;
+        }
+        return ds64;
+
+        static long ReadInt64Pair(BinaryReader reader)
+        {
+            ulong low = reader.ReadUInt32();
+            ulong high = reader.ReadUInt32();
+            ulong value = low | (high << 32);
+            if (value > long.MaxValue)
+                throw new InvalidDataException("The RF64 file states a size larger than a file can be.");
+            return (long)value;
+        }
     }
 
     /// <summary>
@@ -277,9 +391,14 @@ public static class WavCodec
     /// <param name="markers">
     /// Markers to embed as cue points, so they travel inside the file rather than only in a sidecar.
     /// </param>
+    /// <param name="container">
+    /// Which container to write. The default steps up to RF64 exactly when plain RIFF's 32-bit size
+    /// fields stop being able to describe the file.
+    /// </param>
     public static void Save(AudioDocument doc, string path, int bitDepth, bool dither = true,
         CancellationToken cancellationToken = default, IProgress<double>? progress = null,
-        DitherKind ditherKind = DitherKind.FlatTpdf, IReadOnlyList<Marker>? markers = null)
+        DitherKind ditherKind = DitherKind.FlatTpdf, IReadOnlyList<Marker>? markers = null,
+        WavContainer container = WavContainer.Automatic)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -303,19 +422,16 @@ public static class WavCodec
         int blockAlign = checked(bytesPerSample * channels);
         if (blockAlign > ushort.MaxValue)
             throw new InvalidOperationException("The WAV channel layout exceeds the block-alignment limit.");
-        long dataSizeLong = (long)frames * blockAlign;
-        if (dataSizeLong > int.MaxValue - 1024)
-            throw new InvalidOperationException("Audio exceeds the 2 GB WAV limit; export a selection or lower bit depth.");
+        long dataSize = (long)frames * blockAlign;
         long byteRate = (long)sampleRate * blockAlign;
         if (byteRate > uint.MaxValue)
             throw new InvalidOperationException("The WAV byte rate exceeds the format limit.");
 
-        int dataSize = (int)dataSizeLong;
         bool fact = formatTag == FormatIeeeFloat;
 
         // Whatever else the source file carried, written back after the audio. Ancillary chunks sit
         // after data by convention, and a reader that does not recognise one skips it by its length.
-        RiffMetadata metadata = doc.Riff ?? new RiffMetadata();
+        RiffMetadata metadata = doc.Riff is { IsAiff: false } carried ? carried : new RiffMetadata();
         if (markers is { Count: > 0 })
         {
             // Written into the file rather than only into the sidecar. A .wlmeta.json is invisible
@@ -333,12 +449,28 @@ public static class WavCodec
             metadata.Set("LIST", BroadcastMetadata.WriteLabelList(points));
         }
 
-        long extraLength = metadata.ByteLength;
-        if (extraLength > int.MaxValue / 4)
+        long extra = metadata.ByteLength;
+        if (extra > int.MaxValue / 4)
             throw new InvalidOperationException("The metadata carried with this file is too large to write.");
-        var extra = (int)extraLength;
 
-        int riffSize = 4 + (8 + 16) + (fact ? 8 + 4 : 0) + (8 + dataSize) + (dataSize & 1) + extra;
+        long bodySize = 4 + (8 + 16) + (fact ? 8 + 4 : 0) + (8 + dataSize) + (dataSize & 1) + extra;
+
+        // Plain RIFF describes everything in 32 bits. Many readers take those fields as *signed*,
+        // so 2 GB rather than 4 is where a file stops being safely readable — which is why the
+        // automatic step-up happens there and not at the arithmetic limit.
+        const long RiffCeiling = int.MaxValue - 1024;
+        bool rf64 = container switch
+        {
+            WavContainer.Rf64 => true,
+            WavContainer.Riff => false,
+            _ => bodySize > RiffCeiling,
+        };
+        if (!rf64 && bodySize > RiffCeiling)
+            throw new InvalidOperationException(
+                "Audio exceeds the 2 GB WAV limit; save as RF64, export a selection, or lower the bit depth.");
+
+        // ds64 is part of the form, so it counts toward the size ds64 itself states.
+        long riffSize = rf64 ? bodySize + 8 + Ds64FixedBytes : bodySize;
 
         string finalPath = Path.GetFullPath(path);
         string directory = Path.GetDirectoryName(finalPath)
@@ -352,10 +484,23 @@ public static class WavCodec
                        64 * 1024, FileOptions.SequentialScan))
             using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
             {
-                writer.Write(0x46464952u);            // RIFF
-                writer.Write(riffSize);
-                writer.Write(0x45564157u);            // WAVE
-                writer.Write(0x20746D66u);            // fmt_
+                writer.Write(rf64 ? IdRf64 : IdRiff);
+                writer.Write(rf64 ? uint.MaxValue : (uint)riffSize);
+                writer.Write(IdWave);
+
+                if (rf64)
+                {
+                    // First chunk in the form, by definition: every escaped size after it is only
+                    // meaningful once this has been read.
+                    writer.Write(IdDs64);
+                    writer.Write(Ds64FixedBytes);
+                    WriteInt64Pair(writer, riffSize);
+                    WriteInt64Pair(writer, dataSize);
+                    WriteInt64Pair(writer, frames);
+                    writer.Write(0);                  // no table: only data needed the escape
+                }
+
+                writer.Write(IdFmt);
                 writer.Write(16);
                 writer.Write(formatTag);
                 writer.Write((ushort)channels);
@@ -365,12 +510,12 @@ public static class WavCodec
                 writer.Write((ushort)bitDepth);
                 if (fact)
                 {
-                    writer.Write(0x74636166u);        // fact
+                    writer.Write(IdFact);
                     writer.Write(4);
                     writer.Write(frames);
                 }
-                writer.Write(0x61746164u);            // data
-                writer.Write(dataSize);
+                writer.Write(IdData);
+                writer.Write(rf64 ? uint.MaxValue : (uint)dataSize);
 
                 // One shaper for the whole file, holding per-channel error state: noise shaping is a
                 // feedback loop, so it cannot be created per sample or shared across channels.
@@ -446,6 +591,13 @@ public static class WavCodec
         }
 
         progress?.Report(1);
+    }
+
+    /// <summary>A 64-bit size as the low/high 32-bit pair an RF64 file states it in.</summary>
+    private static void WriteInt64Pair(BinaryWriter writer, long value)
+    {
+        writer.Write((uint)value);
+        writer.Write((uint)(value >> 32));
     }
 }
 

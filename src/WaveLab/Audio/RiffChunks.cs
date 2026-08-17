@@ -47,10 +47,43 @@ public sealed class RiffMetadata
     /// imported — and when markers are written they replace the carried chunk through
     /// <see cref="Set"/> rather than being added beside it.
     /// </remarks>
-    private static readonly HashSet<string> Owned =
+    private static readonly HashSet<string> WaveOwned =
         new(StringComparer.Ordinal) { "fmt ", "data", "fact" };
 
+    /// <summary>
+    /// The same idea for AIFF. <c>FVER</c> is here because it declares an AIFF-C version and the
+    /// writer emits classic AIFF: carrying it through would describe the file as something it is not.
+    /// </summary>
+    private static readonly HashSet<string> AiffOwned =
+        new(StringComparer.Ordinal) { "COMM", "SSND", "FVER" };
+
+    private readonly HashSet<string> _owned;
+    private readonly bool _bigEndian;
     private readonly List<RiffChunk> _chunks = [];
+
+    /// <summary>Chunks of a little-endian RIFF file — a WAV.</summary>
+    public RiffMetadata() : this(bigEndian: false) { }
+
+    private RiffMetadata(bool bigEndian)
+    {
+        _bigEndian = bigEndian;
+        _owned = bigEndian ? AiffOwned : WaveOwned;
+    }
+
+    /// <summary>
+    /// Chunks of an AIFF. The container is the same shape — a four-character id, a length, an
+    /// even-padded payload — but its lengths are big-endian and its audio chunks are named
+    /// differently, which is the whole of the difference.
+    /// </summary>
+    public static RiffMetadata ForAiff() => new(bigEndian: true);
+
+    /// <summary>
+    /// Which container these chunks came from. A codec carries chunks only from its own kind: a
+    /// WAV's <c>cue </c> is not an AIFF chunk, and writing one into an AIFF would produce a file
+    /// stating something no AIFF reader can make sense of. Marks still cross between the two,
+    /// because they are rebuilt from the marker list rather than copied as bytes.
+    /// </summary>
+    public bool IsAiff => _bigEndian;
 
     public IReadOnlyList<RiffChunk> Chunks => _chunks;
 
@@ -72,7 +105,7 @@ public sealed class RiffMetadata
     {
         ArgumentNullException.ThrowIfNull(id);
         ArgumentNullException.ThrowIfNull(data);
-        if (id.Length != 4 || Owned.Contains(id)) return;
+        if (id.Length != 4 || _owned.Contains(id)) return;
 
         // A sane ceiling: a stray length field in a damaged file should not be allowed to ask for
         // hundreds of megabytes of metadata.
@@ -108,22 +141,26 @@ public sealed class RiffMetadata
 
     public bool Remove(string id) => _chunks.RemoveAll(c => string.Equals(c.Id, id, StringComparison.Ordinal)) > 0;
 
-    /// <summary>Writes every carried chunk, each padded to an even length as RIFF requires.</summary>
+    /// <summary>Writes every carried chunk, each padded to an even length as the container requires.</summary>
     public void WriteTo(BinaryWriter writer)
     {
         ArgumentNullException.ThrowIfNull(writer);
         foreach (RiffChunk chunk in _chunks)
         {
             writer.Write(Encoding.ASCII.GetBytes(chunk.Id));
-            writer.Write(chunk.Data.Length);
+            int length = chunk.Data.Length;
+            if (_bigEndian)
+                for (int shift = 24; shift >= 0; shift -= 8) writer.Write((byte)(length >> shift));
+            else
+                writer.Write(length);
             writer.Write(chunk.Data);
-            if ((chunk.Data.Length & 1) != 0) writer.Write((byte)0);
+            if ((length & 1) != 0) writer.Write((byte)0);
         }
     }
 
     public RiffMetadata Clone()
     {
-        var copy = new RiffMetadata();
+        var copy = new RiffMetadata(_bigEndian);
         foreach (RiffChunk chunk in _chunks) copy._chunks.Add(new RiffChunk(chunk.Id, (byte[])chunk.Data.Clone()));
         return copy;
     }
@@ -132,4 +169,9 @@ public sealed class RiffMetadata
     public static string IdFrom(uint value) =>
         new([(char)(value & 0xFF), (char)((value >> 8) & 0xFF),
              (char)((value >> 16) & 0xFF), (char)((value >> 24) & 0xFF)]);
+
+    /// <summary>A four-character id from a big-endian identifier, which is how AIFF stores them.</summary>
+    public static string IdFromBig(uint value) =>
+        new([(char)((value >> 24) & 0xFF), (char)((value >> 16) & 0xFF),
+             (char)((value >> 8) & 0xFF), (char)(value & 0xFF)]);
 }

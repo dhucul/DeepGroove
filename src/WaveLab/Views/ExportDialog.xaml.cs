@@ -133,8 +133,14 @@ public partial class ExportDialog : Window
         try
         {
             var doc = _doc.Doc;
+            string outputPath = dlg.FileName;
+
+            // Enough for the file to identify itself. Full tag entry waits on a tag editor;
+            // an MP3 with no title at all is the worse of the two states.
+            var tags = new Id3Tags(Title: Path.GetFileNameWithoutExtension(outputPath));
             await Task.Run(() => AudioExporter.Export(
-                doc, dlg.FileName, f.Format, bitrate, start, count, targetRate, cts.Token), cts.Token);
+                doc, outputPath, f.Format, bitrate, start, count, targetRate, cts.Token, tags),
+                cts.Token);
             _allowClose = true;
             DialogResult = true;
             Close();
