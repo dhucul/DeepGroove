@@ -18,8 +18,8 @@ public enum OpenBitDepth
 public static class AudioImporter
 {
     public const string OpenFilter =
-        "Audio files (*.wav;*.aif;*.aiff;*.aifc;*.mp3;*.flac;*.m4a;*.wma)|*.wav;*.aif;*.aiff;*.aifc;*.mp3;*.flac;*.m4a;*.wma|" +
-        "Wave files (*.wav)|*.wav|AIFF files (*.aif;*.aiff;*.aifc)|*.aif;*.aiff;*.aifc|" +
+        "Audio files (*.wav;*.w64;*.aif;*.aiff;*.aifc;*.mp3;*.flac;*.m4a;*.wma)|*.wav;*.w64;*.aif;*.aiff;*.aifc;*.mp3;*.flac;*.m4a;*.wma|" +
+        "Wave files (*.wav;*.w64)|*.wav;*.w64|AIFF files (*.aif;*.aiff;*.aifc)|*.aif;*.aiff;*.aifc|" +
         "All files (*.*)|*.*";
 
     public static AudioDocument Load(string path, CancellationToken cancellationToken = default)
@@ -27,8 +27,17 @@ public static class AudioImporter
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         cancellationToken.ThrowIfCancellationRequested();
         string extension = Path.GetExtension(path);
+        if (extension.Equals(".w64", StringComparison.OrdinalIgnoreCase))
+            return Wave64Codec.Load(path, cancellationToken);
         if (extension.Equals(".wav", StringComparison.OrdinalIgnoreCase))
-            return WavCodec.Load(path, cancellationToken);
+        {
+            // Asked rather than assumed: Wave64 is written to .w64 by convention and to .wav by
+            // more than one application that ought to know better, and the two containers share
+            // nothing but their samples.
+            return Wave64Codec.IsWave64(path)
+                ? Wave64Codec.Load(path, cancellationToken)
+                : WavCodec.Load(path, cancellationToken);
+        }
         if (extension.Equals(".aif", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".aiff", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".aifc", StringComparison.OrdinalIgnoreCase))

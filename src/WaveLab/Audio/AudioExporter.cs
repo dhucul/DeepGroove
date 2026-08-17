@@ -12,6 +12,8 @@ public enum ExportFormat
     Wav24,
     Wav16,
     Wav16Undithered,
+    Wave64Float,
+    Wave64_24,
     Aiff32,
     Aiff24,
     Aiff16,
@@ -36,6 +38,7 @@ public static class AudioExporter
         ExportFormat.Flac => "FLAC|*.flac",
         ExportFormat.Aiff32 or ExportFormat.Aiff24 or ExportFormat.Aiff16 or
             ExportFormat.Aiff16Undithered => "AIFF|*.aiff",
+        ExportFormat.Wave64Float or ExportFormat.Wave64_24 => "Wave64|*.w64",
         _ => "WAV|*.wav",
     };
 
@@ -111,6 +114,15 @@ public static class AudioExporter
                     };
                     var snapshot = new AudioDocument(data, rate, depth);
                     WavCodec.Save(snapshot, stagePath, depth, dither: format == ExportFormat.Wav16,
+                        cancellationToken: cancellationToken);
+                    break;
+                }
+                case ExportFormat.Wave64Float:
+                case ExportFormat.Wave64_24:
+                {
+                    int depth = format == ExportFormat.Wave64_24 ? 24 : 32;
+                    var snapshot = new AudioDocument(data, rate, depth);
+                    Wave64Codec.Save(snapshot, stagePath, depth, dither: false,
                         cancellationToken: cancellationToken);
                     break;
                 }

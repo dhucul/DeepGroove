@@ -45,6 +45,12 @@ public partial class ExportDialog : Window
                 "WAV stores uncompressed audio. TPDF dither is applied when reducing processed audio to 16-bit PCM."),
             new(ExportFormat.Wav16Undithered, "wav16nodither", "WAV · 16-bit PCM (no dither)", "UNCOMPRESSED",
                 "WAV stores uncompressed audio. No dither is added before 16-bit quantization."),
+            new(ExportFormat.Wave64Float, "w64f32", "Wave64 · 32-bit float", "UNCOMPRESSED",
+                "Wave64 is Sony's container: the same audio as a WAV, with 64-bit sizes so it cannot "
+                + "run out of numbers on a long recording. Read by Sound Forge and Sonar."),
+            new(ExportFormat.Wave64_24, "w64pcm24", "Wave64 · 24-bit PCM", "UNCOMPRESSED",
+                "Wave64 with 24-bit PCM samples. WaveLab's own WAV export already steps up to RF64 "
+                + "past four gigabytes, so choose this for what will read it, not for its length."),
             new(ExportFormat.Aiff32, "aiff32", "AIFF · 32-bit PCM", "UNCOMPRESSED",
                 "AIFF stores portable, uncompressed big-endian audio as 32-bit integer PCM."),
             new(ExportFormat.Aiff24, "aiff24", "AIFF · 24-bit PCM", "UNCOMPRESSED",

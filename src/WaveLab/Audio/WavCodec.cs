@@ -314,7 +314,7 @@ public static class WavCodec
         }
     }
 
-    private static void Decode(
+    internal static void Decode(
         byte[] data,
         ushort format,
         int bits,
@@ -533,47 +533,7 @@ public static class WavCodec
                         progress?.Report(frames > 0 ? (double)frame / frames : 1);
                     }
 
-                    int output = 0;
-                    for (int channel = 0; channel < channels; channel++)
-                    {
-                        float sample = sourceChannels[channel][frame];
-                        switch (bitDepth)
-                        {
-                            case 16:
-                            {
-                                if (!float.IsFinite(sample)) sample = 0;
-                                sample = Math.Clamp(sample, -1f, 1f);
-
-                                // The shaper owns the quantiser: there is no error to feed back
-                                // until the rounding has happened, so it cannot be bolted on
-                                // beforehand the way a plain noise source can.
-                                double value = shaper.Process(channel, sample) * 32768.0;
-                                int quantized = Math.Clamp((int)Math.Round(value), short.MinValue, short.MaxValue);
-                                buffer[output++] = (byte)quantized;
-                                buffer[output++] = (byte)(quantized >> 8);
-                                break;
-                            }
-                            case 24:
-                            {
-                                if (!float.IsFinite(sample)) sample = 0;
-                                int quantized = (int)Math.Round(Math.Clamp(sample, -1f, 1f) * 8388608.0);
-                                quantized = Math.Clamp(quantized, -8388608, 8388607);
-                                buffer[output++] = (byte)quantized;
-                                buffer[output++] = (byte)(quantized >> 8);
-                                buffer[output++] = (byte)(quantized >> 16);
-                                break;
-                            }
-                            default:
-                            {
-                                int value = BitConverter.SingleToInt32Bits(sample);
-                                buffer[output++] = (byte)value;
-                                buffer[output++] = (byte)(value >> 8);
-                                buffer[output++] = (byte)(value >> 16);
-                                buffer[output++] = (byte)(value >> 24);
-                                break;
-                            }
-                        }
-                    }
+                    EncodeFrame(sourceChannels, frame, channels, bitDepth, shaper, buffer);
                     writer.Write(buffer);
                 }
 
@@ -594,6 +554,61 @@ public static class WavCodec
         }
 
         progress?.Report(1);
+    }
+
+    /// <summary>
+    /// Encodes one frame of samples into <paramref name="buffer"/>, which must be one block long.
+    /// </summary>
+    /// <remarks>
+    /// Shared with <see cref="Wave64Codec"/> rather than written twice. The two containers differ in
+    /// how they describe where the samples are and agree exactly on what a sample is, so the byte
+    /// that ends up in the file has to come from one place — a test asserts a Wave64 file and a WAV
+    /// of the same audio decode identically, and it can only mean anything if this is shared.
+    /// </remarks>
+    internal static void EncodeFrame(IReadOnlyList<float[]> source, int frame, int channels,
+        int bitDepth, Dither shaper, byte[] buffer)
+    {
+        int output = 0;
+        for (int channel = 0; channel < channels; channel++)
+        {
+            float sample = source[channel][frame];
+            switch (bitDepth)
+            {
+                case 16:
+                {
+                    if (!float.IsFinite(sample)) sample = 0;
+                    sample = Math.Clamp(sample, -1f, 1f);
+
+                    // The shaper owns the quantiser: there is no error to feed back until the
+                    // rounding has happened, so it cannot be bolted on beforehand the way a plain
+                    // noise source can.
+                    double value = shaper.Process(channel, sample) * 32768.0;
+                    int quantized = Math.Clamp((int)Math.Round(value), short.MinValue, short.MaxValue);
+                    buffer[output++] = (byte)quantized;
+                    buffer[output++] = (byte)(quantized >> 8);
+                    break;
+                }
+                case 24:
+                {
+                    if (!float.IsFinite(sample)) sample = 0;
+                    int quantized = (int)Math.Round(Math.Clamp(sample, -1f, 1f) * 8388608.0);
+                    quantized = Math.Clamp(quantized, -8388608, 8388607);
+                    buffer[output++] = (byte)quantized;
+                    buffer[output++] = (byte)(quantized >> 8);
+                    buffer[output++] = (byte)(quantized >> 16);
+                    break;
+                }
+                default:
+                {
+                    int value = BitConverter.SingleToInt32Bits(sample);
+                    buffer[output++] = (byte)value;
+                    buffer[output++] = (byte)(value >> 8);
+                    buffer[output++] = (byte)(value >> 16);
+                    buffer[output++] = (byte)(value >> 24);
+                    break;
+                }
+            }
+        }
     }
 
     /// <summary>A 64-bit size as the low/high 32-bit pair an RF64 file states it in.</summary>
