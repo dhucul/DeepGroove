@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — convolution reverb</title>
+<style>
+  :root{--wave-bg:#0F1114;--panel:#14171B;--panel3:#1A1E24;--chrome:#111419;
+    --line:#1D2228;--line-soft:#252B33;--text:#E7EAEE;--muted:#6A717A;--faint:#4A5058;
+    --accent:#3FD6C2;--amber:#FFB454;--periwinkle:#8DA4F0;--violet:#9B8CE0}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0B0D10;color:var(--text);
+    font-family:"Inter","Segoe UI",system-ui,sans-serif}
+  body{padding:28px 32px 56px}
+  h1{font-size:19px;font-weight:600;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 26px;max-width:1180px;line-height:1.65}
+  h2{font-size:11px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);
+    margin:34px 0 15px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .note{color:var(--faint);font-size:11.5px;line-height:1.7;max-width:620px;margin:0}
+  .note b{color:#98A0A9;font-weight:500}
+  .mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+  .row{display:flex;gap:34px;align-items:flex-start;flex-wrap:wrap}
+
+  /* rack card, matching the shipped one */
+  .card{width:290px;background:linear-gradient(180deg,#1F242B,#171B20);border:1px solid #272E36;
+    border-radius:10px;padding:9px 10px 10px 16px;position:relative}
+  .card .strip{position:absolute;left:5px;top:10px;bottom:10px;width:3px;border-radius:2px;
+    background:var(--periwinkle)}
+  .card .top{display:flex;align-items:center;gap:9px}
+  .num{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:9px;color:var(--faint);
+    background:#12151A;border:1px solid var(--line-soft);border-radius:4px;padding:1.5px 6px}
+  .nm{font-size:12.5px;font-weight:600}
+  .cat{font-size:7.5px;font-weight:700;color:var(--faint);margin-top:1.5px;letter-spacing:.4px}
+  .btns{margin-left:auto;display:flex;align-items:center;gap:4px}
+  .led{width:11px;height:11px;border-radius:50%;background:#1F5A52;border:1px solid #2C6B62;
+    box-shadow:0 0 5px rgba(63,214,194,.5)}
+  .mini{width:17px;height:17px;border-radius:4px;background:#171B21;border:1px solid #262D36;
+    display:flex;align-items:center;justify-content:center;font-size:8px;color:#8C939B}
+  .hr{height:1px;background:var(--line-soft);margin:8px 0 0}
+
+  /* the response row — the only new thing */
+  .ir{margin-top:8px;background:#12151A;border:1px solid var(--line-soft);border-radius:6px;
+    padding:7px 9px;display:flex;align-items:center;gap:9px}
+  .ir .icon{color:var(--periwinkle);font-size:11px}
+  .ir .body{min-width:0;flex:1}
+  .ir .name{font-size:11px;color:#C6CBD1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ir .meta{font-size:9px;color:var(--faint);margin-top:2px;
+    font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+  .ir .pick{font-size:9.5px;color:var(--periwinkle);border:1px solid #3A4A78;background:#181D2C;
+    border-radius:4px;padding:3px 8px;white-space:nowrap}
+  .ir.empty .name{color:var(--faint)}
+  .ir.missing{border-color:#4A3A1B}
+  .ir.missing .name{color:#F0C486}
+  .ir.missing .icon{color:var(--amber)}
+
+  .prm{display:grid;grid-template-columns:82px 1fr auto;align-items:center;gap:2px;margin-top:5px}
+  .pl{font-size:8.5px;font-weight:700;color:var(--faint);letter-spacing:.3px}
+  .track{height:3px;background:#12151A;border-radius:2px;position:relative;margin-right:8px}
+  .track i{position:absolute;left:0;top:0;bottom:0;background:#2C6B62;border-radius:2px}
+  .track b{position:absolute;top:-3.5px;width:10px;height:10px;border-radius:50%;background:#C3CAD2;
+    border:1px solid #0C0E11}
+  .val{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:9.5px;color:#C6CBD1;
+    background:#12151A;border:1px solid var(--line-soft);border-radius:4px;padding:1px 7px;
+    min-width:58px;text-align:center}
+  .readout{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10px;
+    color:var(--amber);text-align:right;margin-top:6px}
+  .caption{font-size:10.5px;color:var(--faint);margin:10px 0 0;text-align:center;width:290px}
+</style>
+</head>
+<body>
+
+<h1>WaveLab — convolution reverb</h1>
+<p class="sub">
+  The processor is built, tested and in the Add Effect menu; its output matches a direct
+  time-domain convolution to 149 dB. It has one thing no other built-in has: its identity is a
+  <b style="color:#98A0A9;font-weight:500">file</b>, and the rack card only knows how to draw sliders.
+  This is the one row that has to be added — the same shape as the plugin editor button already on a
+  VST3 card, and nothing else about the card changes.
+</p>
+
+<h2>The response row, in its three states</h2>
+
+<div class="row">
+
+  <div>
+    <div class="card">
+      <div class="strip"></div>
+      <div class="top">
+        <div class="num">03</div>
+        <div><div class="nm">Convolution Reverb</div><div class="cat">TIME &amp; MOD</div></div>
+        <div class="btns"><div class="led"></div><div class="mini">▲</div><div class="mini">▼</div>
+          <div class="mini">↺</div><div class="mini">✕</div></div>
+      </div>
+      <div class="hr"></div>
+
+      <div class="ir">
+        <div class="icon">◫</div>
+        <div class="body">
+          <div class="name">Concertgebouw — stage</div>
+          <div class="meta">stereo · 3.42 s · 48 kHz</div>
+        </div>
+        <div class="pick">Change…</div>
+      </div>
+
+      <div class="prm"><div class="pl">MIX</div>
+        <div class="track"><i style="width:25%"></i><b style="left:21%"></b></div>
+        <div class="val">25 %</div></div>
+      <div class="prm"><div class="pl">PRE-DELAY</div>
+        <div class="track"><i style="width:8%"></i><b style="left:4%"></b></div>
+        <div class="val">20 ms</div></div>
+      <div class="prm"><div class="pl">TRIM</div>
+        <div class="track"><i style="width:67%"></i><b style="left:63%"></b></div>
+        <div class="val">0.0 dB</div></div>
+      <div class="prm"><div class="pl">DAMPING</div>
+        <div class="track"><i style="width:100%"></i><b style="left:96%"></b></div>
+        <div class="val">20.0 kHz</div></div>
+    </div>
+    <p class="caption">loaded</p>
+  </div>
+
+  <div>
+    <div class="card">
+      <div class="strip"></div>
+      <div class="top">
+        <div class="num">03</div>
+        <div><div class="nm">Convolution Reverb</div><div class="cat">TIME &amp; MOD</div></div>
+        <div class="btns"><div class="led"></div><div class="mini">▲</div><div class="mini">▼</div>
+          <div class="mini">↺</div><div class="mini">✕</div></div>
+      </div>
+      <div class="hr"></div>
+
+      <div class="ir empty">
+        <div class="icon" style="color:#4A5058">◫</div>
+        <div class="body">
+          <div class="name">No impulse response</div>
+          <div class="meta">the effect passes audio through</div>
+        </div>
+        <div class="pick">Load…</div>
+      </div>
+
+      <div class="prm"><div class="pl">MIX</div>
+        <div class="track"><i style="width:25%"></i><b style="left:21%"></b></div>
+        <div class="val">25 %</div></div>
+      <div class="prm"><div class="pl">PRE-DELAY</div>
+        <div class="track"><i style="width:0%"></i><b style="left:-2%"></b></div>
+        <div class="val">0 ms</div></div>
+      <div class="prm"><div class="pl">TRIM</div>
+        <div class="track"><i style="width:67%"></i><b style="left:63%"></b></div>
+        <div class="val">0.0 dB</div></div>
+      <div class="prm"><div class="pl">DAMPING</div>
+        <div class="track"><i style="width:100%"></i><b style="left:96%"></b></div>
+        <div class="val">20.0 kHz</div></div>
+      <div class="readout">no impulse response loaded</div>
+    </div>
+    <p class="caption">empty — the state it is added in</p>
+  </div>
+
+  <div>
+    <div class="card">
+      <div class="strip"></div>
+      <div class="top">
+        <div class="num">03</div>
+        <div><div class="nm">Convolution Reverb</div><div class="cat">TIME &amp; MOD</div></div>
+        <div class="btns"><div class="led"></div><div class="mini">▲</div><div class="mini">▼</div>
+          <div class="mini">↺</div><div class="mini">✕</div></div>
+      </div>
+      <div class="hr"></div>
+
+      <div class="ir missing">
+        <div class="icon">◫</div>
+        <div class="body">
+          <div class="name">Concertgebouw — stage</div>
+          <div class="meta">not where the preset left it</div>
+        </div>
+        <div class="pick">Find…</div>
+      </div>
+
+      <div class="prm"><div class="pl">MIX</div>
+        <div class="track"><i style="width:40%"></i><b style="left:36%"></b></div>
+        <div class="val">40 %</div></div>
+      <div class="prm"><div class="pl">PRE-DELAY</div>
+        <div class="track"><i style="width:8%"></i><b style="left:4%"></b></div>
+        <div class="val">20 ms</div></div>
+      <div class="prm"><div class="pl">TRIM</div>
+        <div class="track"><i style="width:67%"></i><b style="left:63%"></b></div>
+        <div class="val">0.0 dB</div></div>
+      <div class="prm"><div class="pl">DAMPING</div>
+        <div class="track"><i style="width:60%"></i><b style="left:56%"></b></div>
+        <div class="val">8.0 kHz</div></div>
+      <div class="readout">no impulse response loaded</div>
+    </div>
+    <p class="caption">a preset naming a file this machine has not got</p>
+  </div>
+
+</div>
+
+<h2>Why it is a row and not a button</h2>
+<p class="note">
+  <b>A button would say what you can do and never what you did.</b> The plugin editor button on a
+  VST3 card gets away with that because the card already carries the plugin's name — here the file
+  <i>is</i> the setting, and a card that reads only <span class="mono">Load…</span> cannot tell you
+  which room you are in. So the row names the response and states what it is: how many channels,
+  how long, and the rate it was recorded at.<br><br>
+  <b>The third state is the one worth designing for.</b> A preset stores the path, so a rack moved
+  between machines — or a drive that was not plugged in — arrives naming a file that is not there.
+  It keeps the name, says plainly that it is missing, and offers to find it, rather than silently
+  loading nothing and leaving the reverb apparently switched on and inaudible. The effect passes
+  audio through untouched in the meantime, which the amber readout already says.<br><br>
+  <b>Nothing else about the card changes.</b> Same strip colour as the other time-and-modulation
+  effects, same header, same auto-generated sliders. The row sits between the divider and the first
+  parameter, which is where a VST3 card's editor button sits, and is the only markup being added.
+</p>
+
+</body>
+</html>
