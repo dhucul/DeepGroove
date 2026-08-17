@@ -21,7 +21,20 @@ public sealed class HumRemovalEffect : EffectBase
 
     private const int MaxHarmonics = 12; // the HARMONICS parameter maximum
 
-    private Biquad[][] _notches = [];
+    /// <summary>What the parameters ask the notch bank to be, published whole by whichever thread
+    /// moved a knob.</summary>
+    /// <remarks>
+    /// The other effects publish finished coefficients. This one publishes the request instead,
+    /// because the auto-detector retunes the same bank from inside <see cref="Process"/>, and only
+    /// one thread may write it. So the audio thread is the one that turns a tuning into
+    /// coefficients — twelve notches is a dozen sine and cosine pairs, and only when the tuning
+    /// actually moves — and the parameter path never touches a filter at all.
+    /// </remarks>
+    private sealed record HumTuning(double Frequency, double Q, int Requested, bool AutoDetect);
+
+    private Biquad[][] _notches = [];        // audio-thread state only, [channel][harmonic]
+    private HumTuning _requested = new(60, 35, 6, false);
+    private HumTuning? _applied;             // audio-thread only
     private int _activeHarmonics;
     private double _detectedFundamental = 60;
     private double _appliedFundamental = 60; // the frequency the notch bank is tuned to
@@ -36,62 +49,61 @@ public sealed class HumRemovalEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        _harmonicEnergy = new double[12];
-        _harmonicSmoothing = new double[12];
-        Rebuild();
+        _harmonicEnergy = new double[MaxHarmonics];
+        _harmonicSmoothing = new double[MaxHarmonics];
+
+        // The bank is allocated here and nowhere else, always sized for the maximum harmonic count
+        // so its shape is fixed: the audio thread owns it, and the detector retunes it from inside
+        // Process, where allocating is not allowed.
+        var bank = new Biquad[ChannelCount][];
+        for (int channel = 0; channel < ChannelCount; channel++)
+            bank[channel] = new Biquad[MaxHarmonics];
+        _notches = bank;
+        _applied = null;
+        _activeHarmonics = 0;
     }
 
-    protected override void OnParamsChanged() => Rebuild();
+    protected override void OnParamsChanged() => Volatile.Write(ref _requested, new HumTuning(
+        GetParam("frequency"),
+        GetParam("q"),
+        (int)Math.Round(GetParam("harmonics")),
+        GetParam("autoDetect") > 0.5));
 
-    private void Rebuild()
+    /// <summary>The frequency the bank should be tuned to, manual until the detector has locked.</summary>
+    private double EffectiveFundamental(HumTuning tuning) =>
+        tuning.AutoDetect && _fundamentalConfidence > 0.3 ? _detectedFundamental : tuning.Frequency;
+
+    /// <summary>
+    /// Retune the bank in place. Audio thread only, and it allocates nothing: keeping the existing
+    /// bank is what carries every notch's delay-line state across a retune mid-stream.
+    /// </summary>
+    private void ApplyTuning(HumTuning tuning, double fundamental)
     {
-        double frequency = GetParam("frequency");
-        bool autoDetect = GetParam("autoDetect") > 0.5;
-
-        double effectiveFreq = autoDetect && _fundamentalConfidence > 0.3
-            ? _detectedFundamental
-            : frequency;
-
-        int requested = (int)Math.Round(GetParam("harmonics"));
-        double q = GetParam("q");
+        var bank = _notches;
         int active = 0;
-        for (int harmonic = 1; harmonic <= requested; harmonic++)
-            if (effectiveFreq * harmonic < SampleRate * 0.475) active++;
-
-        // Reuse the bank and copy coefficients in: rebuilding whole structs would
-        // discard every notch's delay-line state mid-stream, and the auto-detector
-        // calls this from the audio thread, where allocating is not allowed. The
-        // bank is always sized for the maximum harmonic count so its shape is fixed.
-        var bank = Volatile.Read(ref _notches);
-        bool rebuilt = bank.Length != ChannelCount || bank.Length == 0 || bank[0].Length != MaxHarmonics;
-        if (rebuilt)
-        {
-            bank = new Biquad[ChannelCount][];
-            for (int channel = 0; channel < ChannelCount; channel++)
-                bank[channel] = new Biquad[MaxHarmonics];
-        }
+        for (int harmonic = 1; harmonic <= tuning.Requested; harmonic++)
+            if (fundamental * harmonic < SampleRate * 0.475) active++;
 
         for (int harmonic = 1; harmonic <= active; harmonic++)
         {
-            Biquad proto = Biquad.Notch(SampleRate, effectiveFreq * harmonic, q);
-            for (int channel = 0; channel < ChannelCount; channel++)
+            Biquad proto = Biquad.Notch(SampleRate, fundamental * harmonic, tuning.Q);
+            for (int channel = 0; channel < bank.Length; channel++)
                 bank[channel][harmonic - 1].CopyCoefficientsFrom(proto);
         }
 
         // Stages coming back into use start from a stale delay line — clear those.
-        if (!rebuilt)
-            for (int harmonic = _activeHarmonics; harmonic < active; harmonic++)
-                for (int channel = 0; channel < ChannelCount; channel++)
-                    bank[channel][harmonic].Reset();
+        for (int harmonic = _activeHarmonics; harmonic < active; harmonic++)
+            for (int channel = 0; channel < bank.Length; channel++)
+                bank[channel][harmonic].Reset();
 
-        _appliedFundamental = effectiveFreq;
-        Volatile.Write(ref _notches, bank);
+        _applied = tuning;
+        _appliedFundamental = fundamental;
         Volatile.Write(ref _activeHarmonics, active);
     }
 
     public override void ResetState()
     {
-        var notches = Volatile.Read(ref _notches);
+        var notches = _notches;
         for (int channel = 0; channel < notches.Length; channel++)
             for (int harmonic = 0; harmonic < notches[channel].Length; harmonic++)
                 notches[channel][harmonic].Reset();
@@ -99,24 +111,30 @@ public sealed class HumRemovalEffect : EffectBase
         Array.Clear(_harmonicSmoothing);
         _detectedFundamental = GetParam("frequency");
         _fundamentalConfidence = 0;
-        // The detector has been rewound, so retune the bank to the manual frequency.
-        Rebuild();
+        // The detector has been rewound, so the next block retunes to the manual frequency.
+        _applied = null;
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
+        var notches = _notches;
+        if (notches.Length != ChannelCount) return;
+
         float amount = (float)GetParam("amount");
         float dry = 1 - amount;
-        bool autoDetect = GetParam("autoDetect") > 0.5;
         bool dynamic = GetParam("dynamic") > 0.5;
 
-        // Adaptive fundamental detection via energy-gated Goertzel analysis.
-        // It can retune (and therefore republish) the bank, so read it afterwards.
-        if (autoDetect) DetectFundamental(buffer, offset, count);
+        var tuning = Volatile.Read(ref _requested);
 
-        var notches = Volatile.Read(ref _notches);
-        if (notches.Length != ChannelCount) return;
-        int active = Math.Min(Volatile.Read(ref _activeHarmonics), notches[0].Length);
+        // Adaptive fundamental detection via energy-gated Goertzel analysis. It runs before the
+        // retune below, so a lock acquired this block is acted on in this block.
+        if (tuning.AutoDetect) DetectFundamental(buffer, offset, count);
+
+        double fundamental = EffectiveFundamental(tuning);
+        if (!ReferenceEquals(tuning, _applied) || Math.Abs(fundamental - _appliedFundamental) > 0.05)
+            ApplyTuning(tuning, fundamental);
+
+        int active = Math.Min(_activeHarmonics, notches[0].Length);
 
         for (int i = 0; i < count; i++)
         {
@@ -199,13 +217,10 @@ public sealed class HumRemovalEffect : EffectBase
         // Smooth the detection
         if (confidence > 0)
         {
+            // The caller retunes the notch bank once the locked estimate has actually moved —
+            // updating the readout alone left the notches on the manual frequency.
             _detectedFundamental = 0.9 * _detectedFundamental + 0.1 * candidate;
             _fundamentalConfidence = 0.9 * _fundamentalConfidence + 0.1 * confidence;
-
-            // Retune the notch bank once the locked estimate has actually moved —
-            // updating the readout alone left the notches on the manual frequency.
-            if (_fundamentalConfidence > 0.3 && Math.Abs(_detectedFundamental - _appliedFundamental) > 0.05)
-                Rebuild();
         }
         else
         {

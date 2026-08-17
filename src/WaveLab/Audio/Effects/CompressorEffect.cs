@@ -30,7 +30,8 @@ public sealed class CompressorEffect : EffectBase
     private float[][] _lookaheadBuf = [];
     private int _lookaheadPos;
     private int _lookaheadLen;
-    private Biquad[] _sidechainHpf = [];
+    private Biquad[] _sidechainHpf = [];   // audio-thread state only
+    private BiquadCoefficients _sidechainCoefficients = BiquadCoefficients.Identity;
     private double _msState;       // one-pole mean-square detector state (RMS mode)
     private double _autoMakeupDb;  // slow follower restoring average gain reduction
 
@@ -62,15 +63,13 @@ public sealed class CompressorEffect : EffectBase
 
     private void RebuildSidechain()
     {
-        if (_sidechainHpf.Length != ChannelCount) return;
-
         double hpfFreq = GetParam("scHpf");
-        // In-place coefficient update: a whole-struct rebuild would zero the
-        // detector filter's delay line on every unrelated parameter tick.
-        Biquad proto = hpfFreq > 25
+        // Publish the coefficients rather than writing them into the live filters: this runs on
+        // whichever thread moved the knob. Process copies them in, which is what keeps the
+        // detector's delay line across a parameter tick without the write crossing threads.
+        Volatile.Write(ref _sidechainCoefficients, new BiquadCoefficients(hpfFreq > 25
             ? Biquad.FirstOrderHighPass(SampleRate, hpfFreq)
-            : Biquad.Identity();
-        for (int c = 0; c < ChannelCount; c++) _sidechainHpf[c].CopyCoefficientsFrom(proto);
+            : Biquad.Identity()));
     }
 
     protected override void OnParamsChanged() => RebuildSidechain();
@@ -90,6 +89,8 @@ public sealed class CompressorEffect : EffectBase
     public override void Process(float[] buffer, int offset, int count)
     {
         if (_lookaheadBuf.Length == 0) return;
+        if (_sidechainHpf.Length != ChannelCount) return;
+        Volatile.Read(ref _sidechainCoefficients).ApplyTo(_sidechainHpf);
 
         double thresh = GetParam("thresh");
         double ratio = GetParam("ratio");

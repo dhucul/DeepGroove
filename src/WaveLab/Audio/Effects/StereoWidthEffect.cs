@@ -24,7 +24,8 @@ public sealed class StereoWidthEffect : EffectBase
     private double _sideEnergy;
     private double _safetyGain = 1;
     private double _correlation = 1;
-    private Biquad _sideSplit;   // SPLIT FREQ low band of the side signal
+    private Biquad _sideSplit;   // SPLIT FREQ low band of the side signal — audio-thread state only
+    private BiquadCoefficients _splitCoefficients = BiquadCoefficients.Identity;
     private float[] _haasDelayLine = [];
     private int _haasWritePos;
 
@@ -41,9 +42,11 @@ public sealed class StereoWidthEffect : EffectBase
 
     private void RebuildSplitFilters()
     {
-        // In-place coefficient update: a whole-struct rebuild would discard the
-        // split filter's delay-line state on every unrelated parameter tick.
-        _sideSplit.CopyCoefficientsFrom(Biquad.LowPass12Db(SampleRate, GetParam("splitFreq")));
+        // Publish the coefficients rather than writing them into the live filter: this runs on
+        // whichever thread moved the knob. Process copies them in, so the split filter's
+        // delay-line state survives an unrelated parameter tick.
+        Volatile.Write(ref _splitCoefficients,
+            new BiquadCoefficients(Biquad.LowPass12Db(SampleRate, GetParam("splitFreq"))));
     }
 
     protected override void OnParamsChanged() => RebuildSplitFilters();
@@ -63,6 +66,7 @@ public sealed class StereoWidthEffect : EffectBase
     public override void Process(float[] buffer, int offset, int count)
     {
         if (ChannelCount < 2) return;
+        _sideSplit.CopyCoefficientsFrom(Volatile.Read(ref _splitCoefficients)[0]);
 
         double width = GetParam("width");
         double lowWidth = GetParam("lowWidth");

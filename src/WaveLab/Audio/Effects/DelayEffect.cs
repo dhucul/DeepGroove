@@ -22,7 +22,8 @@ public sealed class DelayEffect : EffectBase
     private float[][] _lines = [];
     private int _pos;
     private int _lineLen;
-    private Biquad[] _fbFilters = [];
+    private Biquad[] _fbFilters = [];   // audio-thread state only
+    private BiquadCoefficients _fbCoefficients = BiquadCoefficients.Identity;
     private double _duckEnv;
     private double _duckGain = 1;
     private double _delaySmoothed;
@@ -47,20 +48,17 @@ public sealed class DelayEffect : EffectBase
 
     private void RebuildFeedbackFilters()
     {
-        if (_fbFilters.Length != ChannelCount) return;
-
         int filterType = (int)GetParam("fbFilter");
         double freq = GetParam("fbFreq");
-        // In-place coefficient update: a whole-struct rebuild would hard-reset a
-        // filter that sits *inside* the feedback loop, so moving MIX or TIME would
-        // make running repeats step discontinuously.
-        Biquad proto = filterType switch
+        // Publish the coefficients rather than writing them into the live filters: this runs on
+        // whichever thread moved the knob, and this filter sits *inside* the feedback loop, so
+        // Process copies them in — moving MIX or TIME leaves running repeats continuous.
+        Volatile.Write(ref _fbCoefficients, new BiquadCoefficients(filterType switch
         {
             1 => Biquad.LowPass12Db(SampleRate, freq),
             2 => Biquad.HighPass12Db(SampleRate, freq),
             _ => Biquad.Identity(),
-        };
-        for (int c = 0; c < ChannelCount; c++) _fbFilters[c].CopyCoefficientsFrom(proto);
+        }));
     }
 
     protected override void OnParamsChanged() => RebuildFeedbackFilters();
@@ -79,6 +77,9 @@ public sealed class DelayEffect : EffectBase
     public override void Process(float[] buffer, int offset, int count)
     {
         if (_lines.Length == 0) return;
+        if (_fbFilters.Length != ChannelCount) return;
+        Volatile.Read(ref _fbCoefficients).ApplyTo(_fbFilters);
+
         double targetDelay = Math.Clamp(GetParam("time") / 1000.0 * SampleRate, 1, _lineLen - 2);
         float feedback = (float)GetParam("feedback");
         float mix = (float)GetParam("mix");

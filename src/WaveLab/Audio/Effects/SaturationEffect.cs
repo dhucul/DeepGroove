@@ -28,7 +28,8 @@ public sealed class SaturationEffect : EffectBase
     /// <summary>Largest factor offered, which is what the per-sample scratch span is sized for.</summary>
     private const int MaximumFactor = 8;
 
-    private Biquad[] _tone = [];
+    private Biquad[] _tone = [];   // audio-thread state only
+    private BiquadCoefficients _toneCoefficients = BiquadCoefficients.Identity;
     private double _toneCutoff = double.NaN;
     private SaturationParameters _parameters = new(1f, 1f, 1f, 0, true);
     private Oversampler? _sampler;
@@ -58,6 +59,9 @@ public sealed class SaturationEffect : EffectBase
     protected override void OnConfigure()
     {
         Volatile.Write(ref _sampler, new Oversampler(FactorFromParam(), ChannelCount));
+        // The bank is allocated here and nowhere else. Sizing it from the parameter path meant
+        // the thread moving TONE could hand the audio thread a freshly-zeroed array.
+        _tone = new Biquad[ChannelCount];
         RebuildTone(EffectiveToneCutoff());
     }
 
@@ -103,24 +107,24 @@ public sealed class SaturationEffect : EffectBase
 
     private void RebuildTone(double cutoff)
     {
-        if (_tone.Length != ChannelCount) _tone = new Biquad[ChannelCount];
-        // In-place coefficient update: tone sweeps don't reset filter state.
-        Biquad proto = Biquad.LowPass(SampleRate, cutoff, 0.707);
-        for (int c = 0; c < ChannelCount; c++) _tone[c].CopyCoefficientsFrom(proto);
+        // Publish the coefficients rather than writing them into the live filters: this runs on
+        // whichever thread moved TONE. Process copies them in, so a tone sweep does not reset
+        // filter state.
+        Volatile.Write(ref _toneCoefficients, new BiquadCoefficients(Biquad.LowPass(SampleRate, cutoff, 0.707)));
         Volatile.Write(ref _toneCutoff, cutoff);
     }
 
     public override void ResetState()
     {
-        var tone = Volatile.Read(ref _tone);
-        for (int c = 0; c < tone.Length; c++) tone[c].Reset();
+        for (int c = 0; c < _tone.Length; c++) _tone[c].Reset();
         Volatile.Read(ref _sampler)?.Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
-        var tone = Volatile.Read(ref _tone);
+        var tone = _tone;
         if (tone.Length != ChannelCount) return;
+        Volatile.Read(ref _toneCoefficients).ApplyTo(tone);
         var parameters = Volatile.Read(ref _parameters);
         float drive = parameters.Drive;
         float comp = parameters.Compensation;

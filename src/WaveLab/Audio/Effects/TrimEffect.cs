@@ -30,7 +30,8 @@ public sealed class TrimEffect : EffectBase
     private double _targetMidGain = 1;
     private double _currentSideGain = 1;
     private double _targetSideGain = 1;
-    private Biquad[] _phaseAllPass = [];
+    private Biquad[] _phaseAllPass = [];   // audio-thread state only
+    private BiquadCoefficients _phaseCoefficients = BiquadCoefficients.Identity;
 
     public override string TypeId => "trim";
     public override string DisplayName => "Gain & Trim";
@@ -50,19 +51,16 @@ public sealed class TrimEffect : EffectBase
 
     private void RebuildPhaseRotator()
     {
-        // Presets set parameters before MasterSection configures the effect. The
-        // filter bank does not exist at that point; OnConfigure will build it.
-        if (_phaseAllPass.Length != ChannelCount) return;
-
         double degrees = GetParam("phaseRotate");
         // Phase rotation via all-pass filter at ~600Hz with Q adjusted for phase shift
         double q = degrees > 1 ? 0.3 + degrees / 180.0 * 1.5 : 0;
-        // In-place coefficient update: a whole-struct rebuild would discard the
-        // all-pass delay line on every unrelated parameter tick.
-        Biquad proto = degrees > 1
+        // Publish the coefficients rather than writing them into the live filters: this runs on
+        // whichever thread moved the knob — including a preset load before MasterSection has
+        // configured the effect, which is why nothing here touches the bank. Process copies them
+        // in, so the all-pass delay line survives an unrelated parameter tick.
+        Volatile.Write(ref _phaseCoefficients, new BiquadCoefficients(degrees > 1
             ? Biquad.AllPass(SampleRate, 600, q)
-            : Biquad.Identity();
-        for (int c = 0; c < ChannelCount; c++) _phaseAllPass[c].CopyCoefficientsFrom(proto);
+            : Biquad.Identity()));
     }
 
     protected override void OnParamsChanged()
@@ -85,6 +83,7 @@ public sealed class TrimEffect : EffectBase
     public override void Process(float[] buffer, int offset, int count)
     {
         if (_phaseAllPass.Length != ChannelCount) return;
+        Volatile.Read(ref _phaseCoefficients).ApplyTo(_phaseAllPass);
 
         double smoothing = 1 - Math.Exp(-1.0 / (SampleRate * 0.005));
         bool invertL = GetParam("polarityL") > 0.5;

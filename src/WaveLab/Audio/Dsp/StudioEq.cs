@@ -5,8 +5,8 @@ public sealed class StudioEq
 {
     public const double LowFreq = 80, MidFreq = 650, HighFreq = 8000, MidQ = 0.9;
 
-    private readonly object _lock = new();
-    private Biquad[][] _filters = []; // [band][channel]
+    private Biquad[][] _filters = []; // [band][channel] — audio-thread state only
+    private BiquadCoefficients _bands = BiquadCoefficients.Identity;
     private int _sampleRate, _channels;
     private double _lowDb, _midDb, _highDb;
 
@@ -26,44 +26,47 @@ public sealed class StudioEq
     private void Rebuild()
     {
         if (_sampleRate <= 0 || _channels <= 0) return;
-        lock (_lock)
+
+        // Only the coefficients change on a gain move, so the bank is left alone and the delay
+        // lines survive — a slider tick cannot click. The bank itself is replaced only when the
+        // stream's shape changes, which is the one case where there is no state worth carrying.
+        var bank = Volatile.Read(ref _filters);
+        if (bank.Length != 3 || bank[0].Length != _channels)
         {
-            // Only the coefficients change on a gain move: keep the existing bank so
-            // the delay lines survive and a slider tick cannot click.
-            if (_filters.Length != 3 || _filters[0].Length != _channels)
-            {
-                _filters = new Biquad[3][];
-                for (int b = 0; b < 3; b++) _filters[b] = new Biquad[_channels];
-            }
-            for (int b = 0; b < 3; b++)
-            {
-                Biquad prototype = b switch
-                {
-                    0 => Biquad.LowShelf(_sampleRate, LowFreq, _lowDb),
-                    1 => Biquad.Peaking(_sampleRate, MidFreq, MidQ, _midDb),
-                    _ => Biquad.HighShelf(_sampleRate, HighFreq, _highDb),
-                };
-                for (int c = 0; c < _channels; c++) _filters[b][c].CopyCoefficientsFrom(prototype);
-            }
+            bank = new Biquad[3][];
+            for (int b = 0; b < 3; b++) bank[b] = new Biquad[_channels];
+            Volatile.Write(ref _filters, bank);
         }
+
+        Volatile.Write(ref _bands, new BiquadCoefficients(
+            Biquad.LowShelf(_sampleRate, LowFreq, _lowDb),
+            Biquad.Peaking(_sampleRate, MidFreq, MidQ, _midDb),
+            Biquad.HighShelf(_sampleRate, HighFreq, _highDb)));
     }
 
     public void Process(float[] interleaved, int offset, int count)
     {
         if (!Enabled) return;
-        lock (_lock)
+
+        // No lock on the audio path. A monitor is not priority-inheriting, so a gain setter
+        // preempted between taking it and releasing it would stall the render callback for a
+        // whole scheduler quantum; the setters publish a coefficient snapshot instead.
+        var filters = Volatile.Read(ref _filters);
+        // Guard on the bank that actually exists: Configure(0, n) leaves it empty.
+        if (filters.Length != 3) return;
+        int channels = filters[0].Length;
+        if (channels <= 0 || filters[1].Length != channels || filters[2].Length != channels) return;
+
+        var bands = Volatile.Read(ref _bands);
+        if (bands.Count != 3) return;
+        for (int b = 0; b < 3; b++) bands.ApplyTo(filters[b], b);
+
+        for (int i = offset; i < offset + count; i++)
         {
-            // Guard on the bank that actually exists: Configure(0, n) leaves it empty.
-            if (_filters.Length != 3) return;
-            int channels = _filters[0].Length;
-            if (channels <= 0 || _filters[1].Length != channels || _filters[2].Length != channels) return;
-            for (int i = offset; i < offset + count; i++)
-            {
-                int c = (i - offset) % channels;
-                float v = interleaved[i];
-                for (int b = 0; b < 3; b++) v = _filters[b][c].Process(v);
-                interleaved[i] = v;
-            }
+            int c = (i - offset) % channels;
+            float v = interleaved[i];
+            for (int b = 0; b < 3; b++) v = filters[b][c].Process(v);
+            interleaved[i] = v;
         }
     }
 

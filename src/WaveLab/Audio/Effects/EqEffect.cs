@@ -37,7 +37,7 @@ public sealed class EqEffect : EffectBase
     ];
 
     private Biquad[][] _filters = [];      // audio-thread state only
-    private Biquad[] _bandCoefficients = []; // immutable snapshot published to the audio thread
+    private BiquadCoefficients _bandCoefficients = BiquadCoefficients.Identity;
     private const int BandCount = 5;
 
     public override string TypeId => "eq";
@@ -58,7 +58,7 @@ public sealed class EqEffect : EffectBase
         // could stall the render callback for a whole scheduler quantum.
         var updated = new Biquad[BandCount];
         for (int b = 0; b < BandCount; b++) updated[b] = BuildBand(b);
-        Volatile.Write(ref _bandCoefficients, updated);
+        Volatile.Write(ref _bandCoefficients, new BiquadCoefficients(updated));
     }
 
 
@@ -87,14 +87,12 @@ public sealed class EqEffect : EffectBase
     {
         var filters = _filters;
         var coefficients = Volatile.Read(ref _bandCoefficients);
-        if (filters.Length != BandCount || coefficients.Length != BandCount) return;
+        if (filters.Length != BandCount || coefficients.Count != BandCount) return;
         if (filters[0].Length != ChannelCount) return;
 
         // Copy the published coefficients in once per block. Preserving each
         // biquad's delay-line state keeps live sweeps free of clicks and zipper noise.
-        for (int b = 0; b < BandCount; b++)
-            for (int c = 0; c < ChannelCount; c++)
-                filters[b][c].CopyCoefficientsFrom(coefficients[b]);
+        for (int b = 0; b < BandCount; b++) coefficients.ApplyTo(filters[b], b);
 
         for (int i = offset; i < offset + count; i++)
         {

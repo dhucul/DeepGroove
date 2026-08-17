@@ -26,7 +26,8 @@ public sealed class GateEffect : EffectBase
     private bool _open = true;
     private int _holdSamples;
     private int _holdCounter;
-    private Biquad[] _sidechainFilters = [];
+    private Biquad[] _sidechainFilters = [];   // audio-thread state only
+    private BiquadCoefficients _sidechainCoefficients = BiquadCoefficients.Identity;
 
     public override string TypeId => "gate";
     public override string DisplayName => "Noise Gate";
@@ -41,20 +42,17 @@ public sealed class GateEffect : EffectBase
 
     private void RebuildSidechain()
     {
-        if (_sidechainFilters.Length != ChannelCount) return;
-
         int filterType = (int)GetParam("scFilter");
         double freq = GetParam("scFreq");
-        // In-place coefficient update: a whole-struct rebuild would zero the
-        // sidechain filter's delay line whenever any other knob moves, and the
-        // detector would then see a step.
-        Biquad proto = filterType switch
+        // Publish the coefficients rather than writing them into the live filters: this runs on
+        // whichever thread moved the knob. Process copies them in, so the sidechain's delay line
+        // survives an unrelated knob move and the detector never sees a step.
+        Volatile.Write(ref _sidechainCoefficients, new BiquadCoefficients(filterType switch
         {
             1 => Biquad.LowPass12Db(SampleRate, freq),
             2 => Biquad.HighPass12Db(SampleRate, freq),
             _ => Biquad.Identity(),
-        };
-        for (int c = 0; c < ChannelCount; c++) _sidechainFilters[c].CopyCoefficientsFrom(proto);
+        }));
     }
 
     protected override void OnParamsChanged() => RebuildSidechain();
@@ -71,6 +69,9 @@ public sealed class GateEffect : EffectBase
 
     public override void Process(float[] buffer, int offset, int count)
     {
+        if (_sidechainFilters.Length != ChannelCount) return;
+        Volatile.Read(ref _sidechainCoefficients).ApplyTo(_sidechainFilters);
+
         double openLin = Math.Pow(10, GetParam("thresh") / 20.0);
         double closeLin = Math.Pow(10, (GetParam("thresh") - GetParam("hyst")) / 20.0);
         double attCoeff = Math.Exp(-1.0 / (SampleRate * GetParam("attack") / 1000.0));

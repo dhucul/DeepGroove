@@ -22,9 +22,6 @@ public sealed class FilterEffect : EffectBase
         new("slope", "SLOPE", 0, 1, 0, v => v > 0.5 ? "24dB" : "12dB"),
     ];
 
-    /// <summary>Immutable coefficient snapshot handed from the UI thread to the audio thread.</summary>
-    private sealed record Stages(Biquad One, Biquad Two);
-
     private Biquad[] _filters1 = [];   // audio-thread state only
     /// <summary>Q of a second-order Butterworth: the reference the user's Q is expressed against.</summary>
     private const double ButterworthQ = 0.70710678118654752;
@@ -33,7 +30,7 @@ public sealed class FilterEffect : EffectBase
     private static readonly double[] FourthOrderQ = [0.54119610014619698, 1.30656296487637652];
 
     private Biquad[] _filters2 = [];   // second stage for 24dB
-    private Stages _stages = new(Biquad.Identity(), Biquad.Identity());
+    private BiquadCoefficients _stages = new(Biquad.Identity(), Biquad.Identity());
 
     public override string TypeId => "filter";
     public override string DisplayName => "Multi-Mode Filter";
@@ -84,7 +81,7 @@ public sealed class FilterEffect : EffectBase
             stage1 = BuildStage(mode, cutoff, q);
             stage2 = Biquad.Identity();
         }
-        Volatile.Write(ref _stages, new Stages(stage1, stage2));
+        Volatile.Write(ref _stages, new BiquadCoefficients(stage1, stage2));
     }
 
     public override void ResetState()
@@ -106,11 +103,8 @@ public sealed class FilterEffect : EffectBase
         // biquad's delay-line state keeps cutoff and resonance sweeps free of
         // clicks and zipper noise, and the audio thread owns that state alone.
         var stages = Volatile.Read(ref _stages);
-        for (int c = 0; c < ChannelCount; c++)
-        {
-            filters1[c].CopyCoefficientsFrom(stages.One);
-            filters2[c].CopyCoefficientsFrom(stages.Two);
-        }
+        stages.ApplyTo(filters1, 0);
+        stages.ApplyTo(filters2, 1);
 
         for (int i = offset; i < offset + count; i++)
         {
