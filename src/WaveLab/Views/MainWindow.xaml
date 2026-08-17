@@ -82,7 +82,7 @@
                               StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="Uniform" Margin="3"/>
                     </Border>
                     <TextBlock VerticalAlignment="Center" Margin="9,0,0,0" FontSize="14" FontWeight="Bold">
-                        <Run Text="WAVE" Foreground="{StaticResource Text}"/><Run Text="LAB" Foreground="{StaticResource Accent}"/>
+                        <Run Text="DEEP " Foreground="{StaticResource Text}"/><Run Text="GROOVE" Foreground="{StaticResource Accent}"/>
                     </TextBlock>
                     <TextBlock VerticalAlignment="Center" Margin="22,0,0,0" FontSize="12.5"
                                Foreground="{StaticResource Muted}" Text="{Binding WindowTitle}"/>

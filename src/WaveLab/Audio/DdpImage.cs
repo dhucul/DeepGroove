@@ -242,7 +242,7 @@ public static class DdpImage
         text.Append("DDP 2.00LEVEL A ");
         text.Append(Fixed(disc.Title, 32));
         text.Append(Fixed(disc.NormalisedUpc, 13));
-        text.Append(Fixed("WAVELAB", 16));
+        text.Append(Fixed("DEEP GROOVE", 16));
         text.AppendLine();
         return text.ToString();
     }

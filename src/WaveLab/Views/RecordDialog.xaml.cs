@@ -414,7 +414,7 @@ public partial class RecordDialog : Window
         }
 
         string reason = info.CapacityReached
-            ? "The recording reached WaveLab's in-memory safety limit. The captured audio was kept."
+            ? "The recording reached Deep Groove's in-memory safety limit. The captured audio was kept."
             : info.Error != null
                 ? $"The input device stopped unexpectedly. Audio captured before the failure was kept.\n\n{info.Error.Message}"
                 : "The input device stopped. The captured audio was kept.";

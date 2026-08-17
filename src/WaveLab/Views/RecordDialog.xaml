@@ -117,7 +117,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="WAVELAB FINE TRIM" Style="{StaticResource UpperLabel}"/>
+                    <TextBlock Text="DEEP GROOVE FINE TRIM" Style="{StaticResource UpperLabel}"/>
                     <TextBlock Grid.Column="1" Text="{Binding InputFineTrimText}"
                                FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                Foreground="{StaticResource Accent}"/>
