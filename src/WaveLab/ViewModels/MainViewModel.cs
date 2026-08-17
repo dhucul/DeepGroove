@@ -12,6 +12,8 @@ using WaveLab.Audio.Effects;
 using WaveLab.Audio.Montage;
 using WaveLab.Util;
 
+using WaveLab.Views.Controls;
+
 namespace WaveLab.ViewModels;
 
 public sealed class MainViewModel : ObservableObject, IDisposable
@@ -160,6 +162,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         UseLassoToolCommand = new RelayCommand(() => SpectralTool = SpectralTool.Lasso);
         UseMagicWandToolCommand = new RelayCommand(() => SpectralTool = SpectralTool.MagicWand);
         UseHarmonicToolCommand = new RelayCommand(() => SpectralTool = SpectralTool.Harmonic);
+        UseLinearScaleCommand = new RelayCommand(() => SpectralScale = SpectralFrequencyScale.Linear);
+        UseLogarithmicScaleCommand = new RelayCommand(() => SpectralScale = SpectralFrequencyScale.Logarithmic);
+        UseConstantQScaleCommand = new RelayCommand(() => SpectralScale = SpectralFrequencyScale.ConstantQ);
         RenderCommand = new RelayCommand(RenderMaster, () => HasAudioDocument);
         ApplyChainCommand = new RelayCommand(ApplyChain, () => HasAudioDocument);
         RecordCommand = new RelayCommand(ToggleRecord, () => !IsFinalizingRecording);
@@ -514,6 +519,48 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private SpectralSelection _spectralSelection = SpectralSelection.None;
     private SpectralTool _spectralTool = SpectralTool.Rectangle;
+    private SpectralFrequencyScale _spectralScale = SpectralFrequencyScale.Logarithmic;
+    private int _spectralBinsPerOctave = 36;
+
+    /// <summary>
+    /// Which analysis and axis the spectral picture is made with. Design:
+    /// <c>docs/design/constant_q.png</c>.
+    /// </summary>
+    public SpectralFrequencyScale SpectralScale
+    {
+        get => _spectralScale;
+        set
+        {
+            if (!Set(ref _spectralScale, value)) return;
+            Raise(nameof(IsLinearScale));
+            Raise(nameof(IsLogarithmicScale));
+            Raise(nameof(IsConstantQScale));
+            Raise(nameof(ShowsBinsPerOctave));
+        }
+    }
+
+    public bool IsLinearScale => _spectralScale == SpectralFrequencyScale.Linear;
+    public bool IsLogarithmicScale => _spectralScale == SpectralFrequencyScale.Logarithmic;
+    public bool IsConstantQScale => _spectralScale == SpectralFrequencyScale.ConstantQ;
+
+    /// <summary>
+    /// Shown only for constant-Q, because it is the only scale for which the phrase means anything:
+    /// the other two draw an analysis whose bins are evenly spaced in hertz.
+    /// </summary>
+    public bool ShowsBinsPerOctave => _spectralScale == SpectralFrequencyScale.ConstantQ;
+
+    /// <summary>Constant-Q resolution. 12 is a semitone; 36 is a third of one.</summary>
+    public int SpectralBinsPerOctave
+    {
+        get => _spectralBinsPerOctave;
+        set => Set(ref _spectralBinsPerOctave, Math.Clamp(value, 6, 96));
+    }
+
+    public IReadOnlyList<int> BinsPerOctaveChoices { get; } = [12, 24, 36, 48];
+
+    public RelayCommand UseLinearScaleCommand { get; }
+    public RelayCommand UseLogarithmicScaleCommand { get; }
+    public RelayCommand UseConstantQScaleCommand { get; }
 
     /// <summary>
     /// What the spectral editor currently has selected. It lives here rather than on the control so

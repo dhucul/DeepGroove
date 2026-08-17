@@ -888,6 +888,35 @@
     </Style>
 
     <!-- ── rack effect category strip ──────────────────────── -->
+    <!-- One cell of the spectral scale switch. A radio button rather than a toggle, because the
+         three are exclusive and a keyboard should know it. -->
+    <Style x:Key="ScaleSegment" TargetType="RadioButton">
+        <Setter Property="FontSize" Value="10.5"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="face" Background="#181D2C" Padding="11,0" BorderThickness="0,0,1,0"
+                            BorderBrush="#2A3557">
+                        <TextBlock Text="{TemplateBinding Content}" VerticalAlignment="Center"
+                                   Foreground="{StaticResource Periwinkle}" x:Name="label"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="face" Property="Background" Value="#2A3557"/>
+                            <Setter TargetName="label" Property="Foreground" Value="#C7D2FF"/>
+                            <Setter TargetName="label" Property="FontWeight" Value="SemiBold"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="label" Property="Foreground" Value="#C7D2FF"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="CategoryStrip" TargetType="Border">
         <Setter Property="Width" Value="3"/>
         <Setter Property="CornerRadius" Value="1.5"/>

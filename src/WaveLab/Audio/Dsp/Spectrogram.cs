@@ -36,7 +36,7 @@ public readonly record struct SpectrogramSettings(
 public sealed class SpectrogramData
 {
     internal SpectrogramData(int frames, int bins, float[] magnitudeDb, int sampleRate,
-        int fftSize, int hop, int firstSample)
+        int fftSize, int hop, int firstSample, double[]? binFrequencies = null)
     {
         Frames = frames;
         Bins = bins;
@@ -45,7 +45,19 @@ public sealed class SpectrogramData
         FftSize = fftSize;
         Hop = hop;
         FirstSample = firstSample;
+        BinFrequencies = binFrequencies;
     }
+
+    /// <summary>
+    /// Centre frequency of every bin, when they are not evenly spaced. Null for the linear analysis,
+    /// whose bins are at <c>bin·rate/size</c> and need no table.
+    /// </summary>
+    /// <remarks>
+    /// This is what lets a constant-Q analysis travel through the same display as a linear one. The
+    /// image asks which bins fall in a row rather than assuming an arithmetic there, so the two only
+    /// have to agree about what a bin's frequency <em>is</em>.
+    /// </remarks>
+    public double[]? BinFrequencies { get; }
 
     public int Frames { get; }
     public int Bins { get; }
@@ -62,7 +74,28 @@ public sealed class SpectrogramData
     public float this[int frame, int bin] => MagnitudeDb[frame * Bins + bin];
 
     /// <summary>Centre frequency of a bin, in Hz.</summary>
-    public double Frequency(int bin) => (double)bin * SampleRate / FftSize;
+    public double Frequency(int bin) => BinFrequencies is { } table
+        ? table[Math.Clamp(bin, 0, table.Length - 1)]
+        : (double)bin * SampleRate / FftSize;
+
+    /// <summary>
+    /// Where a frequency falls on the bin axis — the inverse of <see cref="Frequency"/>, and
+    /// fractional, because a row of pixels rarely lands on a bin boundary.
+    /// </summary>
+    public double BinForFrequency(double hz)
+    {
+        if (BinFrequencies is not { Length: > 1 } table)
+            return hz * FftSize / SampleRate;
+
+        // Geometric, which is what a constant-Q axis is, so the inverse is a logarithm rather than
+        // a search. Taken from the two ends so it does not assume which spacing was chosen.
+        double lowest = table[0], highest = table[^1];
+        if (!(hz > lowest)) return 0;
+        if (hz >= highest) return table.Length - 1;
+
+        double ratio = Math.Log(highest / lowest);
+        return ratio > 0 ? Math.Log(hz / lowest) / ratio * (table.Length - 1) : 0;
+    }
 
     /// <summary>Sample position of a frame's centre.</summary>
     public int SampleAt(int frame) => FirstSample + frame * Hop;

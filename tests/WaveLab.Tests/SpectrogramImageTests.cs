@@ -25,12 +25,19 @@ public sealed class SpectrogramImageTests(ITestOutputHelper output)
         return Analysed(frames, bins, image);
     }
 
+    /// <summary>
+    /// Built by calling the constructor, not by reflecting onto it.
+    /// </summary>
+    /// <remarks>
+    /// It was reflection, and it did not need to be — this project already sees the assembly's
+    /// internals. The cost showed up the first time the constructor gained an optional parameter:
+    /// reflection wants every argument whether or not the language does, so thirteen tests failed
+    /// with a parameter count mismatch over a change that could not break a direct call.
+    /// </remarks>
     private static SpectrogramData Analysed(int frames, int bins, float[] image)
     {
         int fftSize = (bins - 1) * 2;
-        var constructor = typeof(SpectrogramData).GetConstructors(
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)[0];
-        return (SpectrogramData)constructor.Invoke([frames, bins, image, SampleRate, fftSize, fftSize / 4, 0]);
+        return new SpectrogramData(frames, bins, image, SampleRate, fftSize, fftSize / 4, 0);
     }
 
     // ── palettes ─────────────────────────────────────────────────

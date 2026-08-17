@@ -24,6 +24,26 @@ public enum SpectrogramPalette
 /// <param name="MaximumFrequency">Frequency at the top edge; clamped to Nyquist.</param>
 /// <param name="Logarithmic">Log frequency axis, which is how pitch is actually spaced.</param>
 /// <param name="Gamma">Applied to the normalized level; above 1 darkens the floor.</param>
+/// <summary>How the spectral editor's picture is made.</summary>
+/// <remarks>
+/// Two of these differ only in the axis the same analysis is drawn on; the third is a different
+/// transform. They are one setting because that is one decision from where the user sits.
+/// </remarks>
+public enum SpectralFrequencyScale
+{
+    /// <summary>Even hertz up the side. Honest about the transform, and unlike hearing.</summary>
+    Linear,
+
+    /// <summary>The same analysis on a log axis. What ships, and the default.</summary>
+    Logarithmic,
+
+    /// <summary>
+    /// A constant-Q analysis: every octave gets the same number of bins, so the bottom gains
+    /// frequency resolution and the top gains time resolution. A second analysis, not a redrawing.
+    /// </summary>
+    ConstantQ,
+}
+
 public readonly record struct SpectrogramImageSettings(
     SpectrogramPalette Palette = SpectrogramPalette.Viridis,
     double MinimumFrequency = 20,
@@ -141,8 +161,10 @@ public static class SpectrogramImage
             // y = 0 is the top of the image and the top of the band.
             double upper = FrequencyAt(1.0 - y / (double)height);
             double lower = FrequencyAt(1.0 - (y + 1) / (double)height);
-            int from = (int)Math.Floor(lower * binsPerHz);
-            int to = (int)Math.Ceiling(upper * binsPerHz);
+            // Asked of the data rather than computed from a bins-per-hertz constant, because a
+            // constant-Q analysis has no such constant — its bins are geometric.
+            int from = (int)Math.Floor(data.BinForFrequency(lower));
+            int to = (int)Math.Ceiling(data.BinForFrequency(upper));
             rowFromBin[y] = Math.Clamp(from, 0, data.Bins - 1);
             rowToBin[y] = Math.Clamp(Math.Max(to, from + 1), 1, data.Bins);
         }

@@ -45,6 +45,43 @@ public sealed class SpectralEditorView : FrameworkElement
         nameof(ImageSettings), typeof(SpectrogramImageSettings), typeof(SpectralEditorView),
         new FrameworkPropertyMetadata(SpectrogramImageSettings.Default, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    /// <summary>
+    /// Which analysis and axis the picture is made with. Design: docs/design/constant_q.png.
+    /// </summary>
+    /// <remarks>
+    /// One control for three choices, two of which share an analysis. The user is choosing how the
+    /// picture is made; that LINEAR and LOG differ only in the axis while CONSTANT-Q is a different
+    /// transform is this app's business, not theirs.
+    /// </remarks>
+    public static readonly DependencyProperty ScaleProperty = DependencyProperty.Register(
+        nameof(Scale), typeof(SpectralFrequencyScale), typeof(SpectralEditorView),
+        new FrameworkPropertyMetadata(SpectralFrequencyScale.Logarithmic,
+            FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public static readonly DependencyProperty BinsPerOctaveProperty = DependencyProperty.Register(
+        nameof(BinsPerOctave), typeof(int), typeof(SpectralEditorView),
+        new FrameworkPropertyMetadata(36, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public SpectralFrequencyScale Scale
+    {
+        get => (SpectralFrequencyScale)GetValue(ScaleProperty);
+        set => SetValue(ScaleProperty, value);
+    }
+
+    public int BinsPerOctave
+    {
+        get => (int)GetValue(BinsPerOctaveProperty);
+        set => SetValue(BinsPerOctaveProperty, value);
+    }
+
+    /// <summary>
+    /// The image settings the scale implies. Constant-Q bins are geometric, so its axis has to be
+    /// logarithmic — offering the combination of a constant-Q analysis on a linear axis would be
+    /// offering a picture with most of its height empty.
+    /// </summary>
+    private SpectrogramImageSettings EffectiveImageSettings =>
+        ImageSettings with { Logarithmic = Scale != SpectralFrequencyScale.Linear };
+
     public static readonly DependencyProperty ChannelProperty = DependencyProperty.Register(
         nameof(Channel), typeof(SpectralChannel), typeof(SpectralEditorView),
         new FrameworkPropertyMetadata(SpectralChannel.Mid, FrameworkPropertyMetadataOptions.AffectsRender));
@@ -137,7 +174,8 @@ public sealed class SpectralEditorView : FrameworkElement
         double ViewStart, double SamplesPerPixel, int PixelWidth, int PixelHeight,
         int FftSize, int Hop, WindowKind Window, bool Reassign, double FloorDb, double CeilingDb,
         SpectrogramPalette Palette, double MinimumFrequency, double MaximumFrequency,
-        bool Logarithmic, double Gamma, SpectralChannel Channel, int PeaksVersion, object? Document);
+        bool Logarithmic, double Gamma, SpectralChannel Channel, int PeaksVersion, object? Document,
+        SpectralFrequencyScale Scale, int BinsPerOctave);
 
     public SpectralEditorView()
     {
@@ -440,13 +478,13 @@ public sealed class SpectralEditorView : FrameworkElement
     private PaintKey BuildKey(DocumentViewModel vm)
     {
         SpectrogramSettings settings = Settings;
-        SpectrogramImageSettings image = ImageSettings;
+        SpectrogramImageSettings image = EffectiveImageSettings;
         return new PaintKey(
             vm.ViewStart, vm.SamplesPerPixel, _pixelWidth, _pixelHeight,
             settings.FftSize, settings.Hop, settings.Window, settings.Reassign,
             settings.FloorDb, settings.CeilingDb,
             image.Palette, image.MinimumFrequency, image.MaximumFrequency, image.Logarithmic, image.Gamma,
-            Channel, vm.PeaksVersion, vm.Doc);
+            Channel, vm.PeaksVersion, vm.Doc, Scale, BinsPerOctave);
     }
 
     private bool EnsureBitmap(double width, double height, DpiScale dpi)
@@ -482,8 +520,10 @@ public sealed class SpectralEditorView : FrameworkElement
         int width = _pixelWidth, height = _pixelHeight;
         double viewStart = vm.ViewStart, samplesPerPixel = vm.SamplesPerPixel;
         SpectrogramSettings settings = Settings;
-        SpectrogramImageSettings image = ImageSettings;
+        SpectrogramImageSettings image = EffectiveImageSettings;
         SpectralChannel channel = Channel;
+        SpectralFrequencyScale scale = Scale;
+        int perOctave = BinsPerOctave;
         CancellationToken token = cancellation.Token;
 
         Task.Run(() =>
@@ -495,8 +535,18 @@ public sealed class SpectralEditorView : FrameworkElement
 
             int hop = HopFor(settings, count, width);
 
-            SpectrogramData data = Spectrogram.Analyze(mono, from, count, sampleRate,
-                settings with { Hop = hop }, token);
+            // Only the picture changes. The magic wand and every repair keep analysing linearly,
+            // because the mask lives in the repair grid rather than in whatever the display was
+            // drawn from — which is precisely what lets the display change without the edit changing.
+            SpectrogramData data = scale == SpectralFrequencyScale.ConstantQ
+                ? ConstantQ.Analyze(mono, from, count, sampleRate, new ConstantQSettings(
+                    BinsPerOctave: perOctave,
+                    MinimumFrequency: image.MinimumFrequency,
+                    MaximumFrequency: image.MaximumFrequency,
+                    MaximumWindow: ConstantQSettings.Default.MaximumWindow,
+                    Hop: hop), token)
+                : Spectrogram.Analyze(mono, from, count, sampleRate,
+                    settings with { Hop = hop }, token);
 
             var pixels = new uint[width * height];
             SpectrogramImage.Render(data, pixels, width, height,

@@ -548,6 +548,48 @@
                                    Text="{Binding SpectralBandText, FallbackValue=—}"/>
                     </StackPanel>
                 </Border>
+                <!-- How the picture is made. Three choices, two of which share an analysis and
+                     differ only in the axis; the third is a constant-Q transform. One control, because from
+                     where the user sits it is one decision. Docked right with the readout: it
+                     describes the picture rather than acting on it, and the left of the bar had
+                     run out of room.
+                     Design: docs/design/constant_q.png -->
+                <Border DockPanel.Dock="Right" Width="1" Margin="10,3" Background="{StaticResource Line}"/>
+                <Border DockPanel.Dock="Right" BorderBrush="#3A4A78" BorderThickness="1" CornerRadius="5"
+                        Height="30" Margin="0,0,10,0" VerticalAlignment="Center" ClipToBounds="True">
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton Style="{StaticResource ScaleSegment}" Content="LINEAR"
+                                     GroupName="spectralScale" IsChecked="{Binding IsLinearScale, Mode=OneWay}"
+                                     Command="{Binding UseLinearScaleCommand}"
+                                     ToolTip="Even hertz up the side"
+                                     AutomationProperties.Name="Linear frequency scale"/>
+                        <RadioButton Style="{StaticResource ScaleSegment}" Content="LOG"
+                                     GroupName="spectralScale" IsChecked="{Binding IsLogarithmicScale, Mode=OneWay}"
+                                     Command="{Binding UseLogarithmicScaleCommand}"
+                                     ToolTip="The same analysis on a logarithmic axis"
+                                     AutomationProperties.Name="Logarithmic frequency scale"/>
+                        <RadioButton Style="{StaticResource ScaleSegment}" Content="CONSTANT-Q"
+                                     GroupName="spectralScale" IsChecked="{Binding IsConstantQScale, Mode=OneWay}"
+                                     Command="{Binding UseConstantQScaleCommand}"
+                                     ToolTip="A constant-Q analysis: every octave gets the same number of bins"
+                                     AutomationProperties.Name="Constant-Q frequency scale"/>
+                    </StackPanel>
+                </Border>
+                <Border DockPanel.Dock="Right" Background="{StaticResource WellDeep}"
+                        BorderBrush="{StaticResource LineSoft}" BorderThickness="1" CornerRadius="5"
+                        Height="30" Margin="0,0,8,0" Padding="9,0" VerticalAlignment="Center"
+                        Visibility="{Binding ShowsBinsPerOctave, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="PER OCTAVE" FontSize="9" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Foreground="{StaticResource Faint}"/>
+                        <ComboBox Margin="8,0,0,0" Width="66" VerticalAlignment="Center"
+                                  ItemsSource="{Binding BinsPerOctaveChoices}"
+                                  SelectedItem="{Binding SpectralBinsPerOctave}"
+                                  ToolTip="Constant-Q resolution: 12 is a semitone, 36 a third of one"
+                                  AutomationProperties.Name="Bins per octave"/>
+                    </StackPanel>
+                </Border>
+
 
                 <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,14,0"
                            FontSize="11" Foreground="{StaticResource Faint}"
@@ -660,6 +702,8 @@
                     <c:SpectralEditorView x:Name="spectralEditor" Grid.Row="2" Grid.Column="1"
                                           Document="{Binding ActiveDocument}"
                                           Tool="{Binding SpectralTool}"
+                                          Scale="{Binding SpectralScale}"
+                                          BinsPerOctave="{Binding SpectralBinsPerOctave}"
                                           Selection="{Binding SpectralSelection, Mode=TwoWay}"/>
                 </Grid>
 
