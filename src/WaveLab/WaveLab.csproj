@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -9,11 +9,17 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>WaveLab</RootNamespace>
     <AssemblyName>WaveLab</AssemblyName>
+    <!-- Program.Main runs ahead of WPF so a plugin scan never starts an application. -->
+    <StartupObject>WaveLab.Program</StartupObject>
     <Version>2.0.14</Version>
     <Product>WaveLab</Product>
     <Description>Audio editor and mastering suite for Windows</Description>
     <ApplicationIcon>Assets\wavelab.ico</ApplicationIcon>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- VST3 is a C++ vtable ABI. The interop in Audio/Vst3 dispatches through it with function
+         pointers rather than CLR COM interop: the layouts are then written down explicitly where
+         they can be checked, and no RCW lifetime rule sits between this app and a plugin. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 

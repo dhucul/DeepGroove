@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Threading;
+using WaveLab.Audio.Vst3;
 using NAudio.MediaFoundation;
 
 namespace WaveLab;
@@ -8,6 +9,20 @@ public partial class App : Application
 {
     /// <summary>Guards against stacking one error dialog on top of another.</summary>
     private bool _reportingFailure;
+
+    /// <summary>
+    /// Re-entry as a plugin scanner: <c>WaveLab.exe --vst3-scan &lt;path&gt;</c> loads one VST3, prints
+    /// what it is, and exits.
+    /// </summary>
+    /// <remarks>
+    /// One binary rather than a second executable, so the scan exercises exactly the interop the host
+    /// will use rather than a parallel copy of it. This runs <b>before</b> anything WPF touches: the
+    /// scanner has no window, and starting a message loop only to tear it down would make loading a
+    /// plugin slower and give it a UI thread to misbehave on.
+    /// </remarks>
+    internal static bool IsScanRequest(string[] arguments) =>
+        arguments.Length >= 2 &&
+        string.Equals(arguments[0], Vst3Catalogue.ScanArgument, StringComparison.Ordinal);
 
     protected override void OnStartup(StartupEventArgs e)
     {
