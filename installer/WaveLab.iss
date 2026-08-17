@@ -1,10 +1,10 @@
-; WaveLab — Inno Setup script
+﻿; WaveLab — Inno Setup script
 ; Build: dotnet publish first (self-contained win-x64), then compile this script.
 ;   dotnet publish src\WaveLab\WaveLab.csproj -c Release -r win-x64 --self-contained true
 ;   ISCC.exe installer\WaveLab.iss
 
 #define MyAppName "WaveLab"
-#define MyAppVersion "2.0.14"
+#define MyAppVersion "2.0.15"
 #define MyAppExeName "WaveLab.exe"
 #define PublishDir "..\src\WaveLab\bin\Release\net10.0-windows\win-x64\publish"
 
