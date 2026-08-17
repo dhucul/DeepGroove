@@ -27,6 +27,7 @@ public static class EffectFactory
         ("dehum", "Hum Removal"),
         ("gate", "Noise Gate"),
         ("reverb", "Reverb"),
+        ("convolution", "Convolution Reverb"),
         ("delay", "Stereo Delay"),
         ("chorus", "Chorus"),
         ("saturation", "Saturation"),
@@ -67,6 +68,7 @@ public static class EffectFactory
         "dehum" => new HumRemovalEffect(),
         "gate" => new GateEffect(),
         "reverb" => new ReverbEffect(),
+        "convolution" => new ConvolutionReverbEffect(),
         "delay" => new DelayEffect(),
         "chorus" => new ChorusEffect(),
         "saturation" => new SaturationEffect(),
@@ -84,17 +86,26 @@ public static class EffectFactory
         public Dictionary<string, double> Params { get; set; } = [];
 
         /// <summary>
-        /// A VST3 plugin's own settings, base64. Null for the built-ins, whose state is entirely in
-        /// <see cref="Params"/>.
+        /// Whatever the effect carries that is not a number. Null for the built-ins, whose state is
+        /// entirely in <see cref="Params"/>.
         /// </summary>
         /// <remarks>
-        /// A plugin's parameters are not its state. Anything with an impulse response, a wavetable or
+        /// <para>
+        /// A plugin's parameters are not its state: anything with an impulse response, a wavetable or
         /// a modulation matrix keeps far more than a host can see, and the plugins installed on the
         /// machine this was written on publish no parameters at all — for those this field is the
-        /// only thing a preset carries. Written last and read first, so an older preset without it
-        /// still loads.
+        /// only thing a preset carries. A convolution reverb has the same problem for a different
+        /// reason: its identity is which file it loaded.
+        /// </para>
+        /// <para>
+        /// The JSON name is still <c>PluginState</c>, which is what it was called when only plugins
+        /// used it. Renaming the field would have quietly dropped the state out of every preset
+        /// already saved, and a preset that loads a plugin with its settings forgotten is worse than
+        /// a slightly wrong name.
+        /// </para>
         /// </remarks>
-        public string? PluginState { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("PluginState")]
+        public string? State { get; set; }
     }
 
     public sealed class ChainPreset
@@ -111,7 +122,7 @@ public static class EffectFactory
             TypeId = e.TypeId,
             Enabled = e.Enabled,
             Params = e.Params.ToDictionary(p => p.Key, p => e.GetParam(p.Key)),
-            PluginState = e is Vst3Effect plugin ? NullIfEmpty(plugin.SaveStateBase64()) : null,
+            State = e is IEffectState stateful ? NullIfEmpty(stateful.SaveStateText() ?? "") : null,
         }).ToList(),
     };
 
@@ -135,7 +146,7 @@ public static class EffectFactory
             // The plugin's own state first, then the individual parameters over the top: the state
             // is the whole picture and the parameter list is the part a host can see, so the second
             // is a correction to the first rather than a competitor with it.
-            if (fx is Vst3Effect plugin) plugin.ApplyStateNow(state.PluginState);
+            if (fx is IEffectState stateful) stateful.RestoreStateText(state.State);
             if (state.Params is { } parameters)
                 foreach (var (key, value) in parameters)
                     if (!string.IsNullOrWhiteSpace(key) && double.IsFinite(value))
@@ -154,6 +165,10 @@ public static class EffectFactory
 
         var copy = Create(source.TypeId);
         copy.Enabled = source.Enabled;
+
+        // State before parameters, for the same reason Instantiate does it in that order: the state
+        // is the whole picture and the parameters are the part expressible as numbers.
+        if (source is IEffectState from && copy is IEffectState to) to.RestoreStateText(from.SaveStateText());
         foreach (var p in source.Params) copy.SetParam(p.Key, source.GetParam(p.Key));
         return copy;
     }

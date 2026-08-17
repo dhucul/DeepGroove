@@ -26,7 +26,7 @@ namespace WaveLab.Audio.Effects;
 /// behaves that way. The rack says so rather than showing an empty card.
 /// </para>
 /// </remarks>
-public sealed class Vst3Effect : IAudioEffect, IDisposable
+public sealed class Vst3Effect : IAudioEffect, IEffectState, IDisposable
 {
     /// <summary>What marks a rack effect as a plugin rather than one of the built-ins.</summary>
     public const string TypeIdPrefix = "vst3:";
@@ -215,6 +215,14 @@ public sealed class Vst3Effect : IAudioEffect, IDisposable
         : null;
 
     // ── state ────────────────────────────────────────────────────
+
+    /// <summary>The plugin's settings, for a chain preset. <see cref="IEffectState"/>.</summary>
+    public string? SaveStateText() => NullIfEmpty(SaveStateBase64());
+
+    /// <summary><see cref="IEffectState"/>. Immediate, for the reason on <see cref="ApplyStateNow"/>.</summary>
+    public void RestoreStateText(string? state) => ApplyStateNow(state);
+
+    private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
 
     /// <summary>The plugin's settings, for a chain preset.</summary>
     public string SaveStateBase64()

@@ -217,7 +217,7 @@ public sealed class Vst3EffectTests(ITestOutputHelper output)
                 new EffectFactory.EffectState
                 {
                     TypeId = Vst3Effect.TypeIdPrefix + @"Z:\nothing\here\Absent.vst3",
-                    PluginState = Convert.ToBase64String([1, 2, 3]),
+                    State = Convert.ToBase64String([1, 2, 3]),
                 },
                 new EffectFactory.EffectState { TypeId = "limiter" },
             ],
@@ -243,7 +243,7 @@ public sealed class Vst3EffectTests(ITestOutputHelper output)
                 {
                     TypeId = Vst3Effect.TypeIdPrefix + @"C:\x\Y.vst3",
                     Params = { ["p3"] = 0.25 },
-                    PluginState = Convert.ToBase64String([9, 8, 7, 6]),
+                    State = Convert.ToBase64String([9, 8, 7, 6]),
                 },
             ],
         };
@@ -253,7 +253,7 @@ public sealed class Vst3EffectTests(ITestOutputHelper output)
 
         Assert.NotNull(read);
         EffectFactory.EffectState state = read!.Effects[0];
-        Assert.Equal(Convert.ToBase64String([9, 8, 7, 6]), state.PluginState);
+        Assert.Equal(Convert.ToBase64String([9, 8, 7, 6]), state.State);
         Assert.Equal(0.25, state.Params["p3"], 9);
     }
 
@@ -268,7 +268,7 @@ public sealed class Vst3EffectTests(ITestOutputHelper output)
         EffectFactory.ChainPreset? preset =
             JsonSerializer.Deserialize<EffectFactory.ChainPreset>(json);
         Assert.NotNull(preset);
-        Assert.Null(preset!.Effects[0].PluginState);
+        Assert.Null(preset!.Effects[0].State);
 
         List<IAudioEffect> chain = EffectFactory.Instantiate(preset);
         Assert.Single(chain);
@@ -282,7 +282,7 @@ public sealed class Vst3EffectTests(ITestOutputHelper output)
         EffectFactory.ChainPreset captured = EffectFactory.Capture("built-ins", master.ChainSnapshot);
 
         Assert.NotEmpty(captured.Effects);
-        Assert.All(captured.Effects, state => Assert.Null(state.PluginState));
+        Assert.All(captured.Effects, state => Assert.Null(state.State));
     }
 
     // ── the real thing ───────────────────────────────────────────
