@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
 using WaveLab.Audio;
@@ -23,6 +24,7 @@ public partial class RestorationWorkbenchDialog : Window
         bool Declip,
         double DeclipStrength,
         double DeclipHeadroomDb,
+        DeclipMethod DeclipMethod,
         bool ReduceNoise,
         double NoiseReductionDb,
         double NoiseSensitivityDb,
@@ -632,6 +634,7 @@ public partial class RestorationWorkbenchDialog : Window
                 {
                     Strength = settings.DeclipStrength,
                     MaximumReconstructionDb = settings.DeclipHeadroomDb,
+                    Method = settings.DeclipMethod,
                 }, cancellationToken);
         }
         at += step;
@@ -793,6 +796,98 @@ public partial class RestorationWorkbenchDialog : Window
         _previewWetCache = null;
     }
 
+    private DeclipMethod SelectedDeclipMethod() =>
+        declipSparse.IsChecked == true ? DeclipMethod.Sparse
+        : declipPeaks.IsChecked == true ? DeclipMethod.PeakReconstruction
+        : DeclipMethod.Automatic;
+
+    /// <summary>
+    /// Three segments, one choice. WPF toggle buttons are independent, so the exclusion is here —
+    /// and clicking the checked one leaves it checked rather than turning the whole control off,
+    /// because "no method" is not a state the repair has.
+    /// </summary>
+    private void OnDeclipMethodChanged(object sender, RoutedEventArgs e)
+    {
+        if (_suppressControlEvents) return;
+        var clicked = (ToggleButton)sender;
+
+        _suppressControlEvents = true;
+        try
+        {
+            clicked.IsChecked = true;
+            foreach (var segment in (ToggleButton[])[declipAuto, declipSparse, declipPeaks])
+                if (!ReferenceEquals(segment, clicked)) segment.IsChecked = false;
+        }
+        finally
+        {
+            _suppressControlEvents = false;
+        }
+
+        UpdateDeclipMethodReadout();
+        OnParameterChanged(sender, new RoutedPropertyChangedEventArgs<double>(0, 0));
+    }
+
+    /// <summary>
+    /// Says which method will run and, for the automatic choice, the two numbers it was made from.
+    /// A-SPADE costs about 700× the peak reconstruction, so a side that suddenly takes minutes needs
+    /// an explanation that can be checked rather than taken on trust.
+    /// </summary>
+    private void UpdateDeclipMethodReadout()
+    {
+        if (declipMethodText == null) return;
+
+        var clipping = _analysisForReadout;
+        if (_source == null || clipping == null)
+        {
+            declipMethodText.Text = "Run analysis to see the choice.";
+            return;
+        }
+        if (clipping.Events.Count == 0)
+        {
+            declipMethodText.Text = "No clipping detected.";
+            return;
+        }
+
+        DeclipMethod requested = SelectedDeclipMethod();
+        if (requested != DeclipMethod.Automatic)
+        {
+            declipMethodText.Text = requested == DeclipMethod.Sparse
+                ? "Sparse on every channel."
+                : "Peak reconstruction on every channel.";
+            return;
+        }
+
+        IReadOnlyList<DeclipChannelChoice> choices;
+        try
+        {
+            choices = Restoration.DescribeDeclipChoices(_source, clipping.Events);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        if (choices.Count == 0)
+        {
+            declipMethodText.Text = "No clipping detected.";
+            return;
+        }
+
+        static string Name(DeclipChannelChoice c) => c.Method == DeclipMethod.Sparse ? "sparse" : "peaks";
+        static string Detail(DeclipChannelChoice c) =>
+            $"{c.ClippedFraction * 100:0.#}% clipped, {c.EffectiveSparsity:0} bins";
+
+        // Two channels' worth of numbers does not fit the card, and a line that trims to an ellipsis
+        // tells the user less than a short one does. When the channels agree — the ordinary case —
+        // the numbers are on the line; when they disagree, the line says which and the tool tip
+        // carries the evidence.
+        bool agree = choices.All(c => c.Method == choices[0].Method);
+        declipMethodText.Text = agree
+            ? $"Chose {Name(choices[0])} · {Detail(choices[0])}."
+            : string.Join(" · ", choices.Select(c => $"Ch {c.Channel + 1} {Name(c)}"));
+        declipMethodText.ToolTip = string.Join(Environment.NewLine,
+            choices.Select(c => $"Channel {c.Channel + 1}: {Name(c)} — {Detail(c)}"));
+    }
+
     private RestorationSettings CaptureSettings() => new(
         clickEnabled.IsChecked == true,
         clickSensitivity.Value,
@@ -800,6 +895,7 @@ public partial class RestorationWorkbenchDialog : Window
         declipEnabled.IsChecked == true,
         declipStrength.Value / 100.0,
         declipHeadroom.Value,
+        SelectedDeclipMethod(),
         noiseEnabled.IsChecked == true,
         noiseReduction.Value,
         noiseSensitivity.Value,
@@ -811,8 +907,14 @@ public partial class RestorationWorkbenchDialog : Window
         globalMix.Value / 100.0,
         bypassCheck.IsChecked == true);
 
+    /// <summary>The clipping analysis the method readout describes, so the two cannot disagree.</summary>
+    private ClippingAnalysisResult? _analysisForReadout;
+
     private void UpdateAnalysisSummary(AnalysisBundle analyses)
     {
+        _analysisForReadout = analyses.Clipping;
+        UpdateDeclipMethodReadout();
+
         int clicks = analyses.Clicks.ClickCount;
         int pops = analyses.Clicks.PopCount;
         clickCountText.Text = $"{clicks:N0} {Plural(clicks, "click", "clicks")} · {pops:N0} {Plural(pops, "pop", "pops")}";

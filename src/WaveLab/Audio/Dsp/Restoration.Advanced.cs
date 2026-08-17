@@ -524,7 +524,22 @@ public static partial class Restoration
         if (strength <= 0f || events.Count == 0) return 0;
 
         var ordered = events.OrderBy(e => e.Channel).ThenBy(e => e.StartSample).ToArray();
+
+        // Channels the sparse solver takes are reconstructed whole, before the per-event loop, and
+        // then skipped by it. The two methods must not both run over the same audio: A-SPADE decides
+        // its own frame boundaries and drawing an arch through its output afterwards would replace
+        // the waveform it reconstructed with the shape the other method assumed.
+        var sparseChannels = SelectSparseChannels(data, ordered, options.Method, cancellationToken);
         int repaired = 0;
+        foreach (int channel in sparseChannels)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            repaired += RepairChannelSparse(data[channel], ordered, channel, strength, maximumGain,
+                cancellationToken);
+            progress?.Report(new RestorationProgress(RestorationStage.RepairingClipping,
+                (double)(repaired) / ordered.Length, channel, data.Length, repaired, ordered.Length));
+        }
+
         int previousChannel = -1;
         int previousEnd = -1;
         for (int eventIndex = 0; eventIndex < ordered.Length; eventIndex++)
@@ -532,6 +547,7 @@ public static partial class Restoration
             cancellationToken.ThrowIfCancellationRequested();
             var clippedPeak = ordered[eventIndex];
             if (clippedPeak.Channel < 0 || clippedPeak.Channel >= data.Length) continue;
+            if (sparseChannels.Contains(clippedPeak.Channel)) continue;
             var samples = data[clippedPeak.Channel];
             if (clippedPeak.Channel != previousChannel)
             {
@@ -555,6 +571,112 @@ public static partial class Restoration
             }
         }
         return repaired;
+    }
+
+    /// <summary>
+    /// Which channels A-SPADE should reconstruct. Empty for
+    /// <see cref="DeclipMethod.PeakReconstruction"/>, every damaged channel for
+    /// <see cref="DeclipMethod.Sparse"/>, and per-channel measurement for
+    /// <see cref="DeclipMethod.Automatic"/>.
+    /// </summary>
+    private static HashSet<int> SelectSparseChannels(float[][] data,
+        ClippedPeakEvent[] ordered, DeclipMethod method, CancellationToken cancellationToken)
+    {
+        var chosen = new HashSet<int>();
+        foreach (var choice in DescribeDeclipChoices(data, ordered, method, cancellationToken))
+            if (choice.Method == DeclipMethod.Sparse) chosen.Add(choice.Channel);
+        return chosen;
+    }
+
+    /// <summary>
+    /// What each damaged channel would be repaired with, and the two measurements behind it. The
+    /// repair calls this, and so does the workbench readout — a report that were computed separately
+    /// could disagree with what actually ran, which is the one thing it must never do.
+    /// </summary>
+    public static IReadOnlyList<DeclipChannelChoice> DescribeDeclipChoices(
+        IReadOnlyList<float[]> channels,
+        IReadOnlyList<ClippedPeakEvent> events,
+        DeclipMethod method = DeclipMethod.Automatic,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        ArgumentNullException.ThrowIfNull(events);
+
+        var choices = new List<DeclipChannelChoice>();
+        foreach (var group in events.GroupBy(e => e.Channel).OrderBy(g => g.Key))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int channel = group.Key;
+            if (channel < 0 || channel >= channels.Count) continue;
+            var samples = channels[channel];
+            if (samples == null || samples.Length == 0) continue;
+
+            // The damage is counted from the events rather than from the raw sample values, so the
+            // decision rests on the same evidence the repair does.
+            long clipped = 0;
+            foreach (var e in group) clipped += Math.Max(0, e.EndSample - e.StartSample);
+            double fraction = (double)clipped / samples.Length;
+
+            if (method == DeclipMethod.PeakReconstruction)
+            {
+                choices.Add(new DeclipChannelChoice(channel, method, fraction, double.NaN));
+                continue;
+            }
+            if (method == DeclipMethod.Sparse)
+            {
+                choices.Add(new DeclipChannelChoice(channel, method, fraction, double.NaN));
+                continue;
+            }
+
+            double clipLevel = MedianClipLevel(group);
+            double sparsity = DeclipMethodChooser.EffectiveSparsity(samples, clipLevel, cancellationToken);
+            choices.Add(new DeclipChannelChoice(channel,
+                DeclipMethodChooser.PrefersSparse(fraction, sparsity)
+                    ? DeclipMethod.Sparse
+                    : DeclipMethod.PeakReconstruction,
+                fraction, sparsity));
+        }
+        return choices;
+    }
+
+    /// <summary>
+    /// The clipping threshold to treat a whole channel as having.
+    /// </summary>
+    /// <remarks>
+    /// The median, not the minimum: one misdetected event at a low threshold would otherwise declare
+    /// most of the programme unreliable, and hand the solver a signal with nothing left to fit a
+    /// model to.
+    /// </remarks>
+    private static double MedianClipLevel(IEnumerable<ClippedPeakEvent> events)
+    {
+        var levels = events.Select(e => (double)e.AbsoluteClipLevel).Where(l => l > 0).ToList();
+        if (levels.Count == 0) return 0;
+        levels.Sort();
+        return levels[levels.Count / 2];
+    }
+
+    /// <summary>
+    /// Reconstructs one channel with A-SPADE, then blends and bounds it the way the per-event path
+    /// does, so STRENGTH and the reconstruction ceiling mean the same thing whichever method ran.
+    /// </summary>
+    private static int RepairChannelSparse(float[] samples, ClippedPeakEvent[] ordered, int channel,
+        float strength, double maximumGain, CancellationToken cancellationToken)
+    {
+        int count = ordered.Count(e => e.Channel == channel);
+        double clipLevel = MedianClipLevel(ordered.Where(e => e.Channel == channel));
+        if (count == 0 || !(clipLevel > 0)) return 0;
+
+        var working = (float[])samples.Clone();
+        Spade.Declip(working, clipLevel, SpadeOptions.Default, cancellationToken);
+
+        double ceiling = clipLevel * maximumGain;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            double value = Math.Clamp(working[i], -ceiling, ceiling);
+            if (!double.IsFinite(value)) continue;
+            samples[i] += (float)((value - samples[i]) * strength);
+        }
+        return count;
     }
 
     private static bool TryCreateClickEvent(float[] samples, float[] curvature,

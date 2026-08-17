@@ -153,8 +153,23 @@
                                     <CheckBox x:Name="declipEnabled" HorizontalAlignment="Right" IsChecked="True"
                                               Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
                                 </Grid>
-                                <TextBlock Text="Reconstructs flat-topped peaks from clean waveform shoulders."
-                                           Margin="0,5,0,12" Foreground="{StaticResource Faint}" FontSize="10.5"/>
+                                <TextBlock Text="Rebuilds peaks that clipping flattened, from the audio that survived."
+                                           Margin="0,5,0,10" Foreground="{StaticResource Faint}" FontSize="10.5"/>
+                                <TextBlock Text="METHOD" Style="{StaticResource UpperLabel}"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                    <ToggleButton x:Name="declipAuto" Style="{StaticResource SegmentButton}"
+                                                  Content="Automatic" IsChecked="True" Click="OnDeclipMethodChanged"
+                                                  ToolTip="Chooses per channel from how much is clipped and how sparse the material is. Neither method wins everywhere."/>
+                                    <ToggleButton x:Name="declipSparse" Style="{StaticResource SegmentButton}"
+                                                  Content="Sparse" Margin="4,0,0,0" Click="OnDeclipMethodChanged"
+                                                  ToolTip="A-SPADE. Reconstructs the waveform from a sparse model. Much better while enough clean samples survive, and around 700× slower."/>
+                                    <ToggleButton x:Name="declipPeaks" Style="{StaticResource SegmentButton}"
+                                                  Content="Peaks" Margin="4,0,0,0" Click="OnDeclipMethodChanged"
+                                                  ToolTip="Draws an arch between the clean shoulders either side of each flat top. Degrades gracefully, so it wins on heavily crushed material."/>
+                                </StackPanel>
+                                <TextBlock x:Name="declipMethodText" Margin="0,7,0,12" FontSize="10.5"
+                                           Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis"
+                                           Text="Run analysis to see the choice."/>
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
                                     <TextBlock Text="Reconstruction strength" Foreground="{StaticResource Muted}"/>

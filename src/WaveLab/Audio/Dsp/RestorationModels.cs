@@ -145,11 +145,50 @@ public sealed record ClippingAnalysisResult(
     int SampleRate,
     bool UsedAutomaticThreshold);
 
+/// <summary>Which reconstruction a declipping pass uses.</summary>
+public enum DeclipMethod
+{
+    /// <summary>
+    /// Choose per channel from how much of it is clipped and how sparse the material is. Neither
+    /// method dominates; see <see cref="DeclipMethodChooser"/> for what was measured.
+    /// </summary>
+    Automatic,
+
+    /// <summary>
+    /// An arch drawn between the shoulders either side of each flattened peak. Degrades gracefully
+    /// when there is little left to infer from, which is why it wins on heavily crushed material.
+    /// </summary>
+    PeakReconstruction,
+
+    /// <summary>
+    /// A-SPADE sparse declipping (<see cref="Spade"/>). Reconstructs the waveform rather than
+    /// drawing over it, and is far better while enough reliable samples survive to fit a model to.
+    /// </summary>
+    Sparse,
+}
+
+/// <summary>
+/// What a declipping pass decided for one channel, and the two measurements it decided from.
+/// </summary>
+/// <remarks>
+/// A-SPADE costs roughly 700× the peak reconstruction, so a side that takes minutes where the last
+/// one took seconds needs an explanation that is checkable rather than magic. Reporting the numbers
+/// the choice was made from is that explanation.
+/// </remarks>
+public readonly record struct DeclipChannelChoice(
+    int Channel,
+    DeclipMethod Method,
+    double ClippedFraction,
+    double EffectiveSparsity);
+
 /// <summary>Controls clipped-waveform reconstruction.</summary>
 public sealed class DeclippingOptions
 {
     /// <summary>Repair amount from 0 (dry) to 1 (fully reconstructed).</summary>
     public double Strength { get; init; } = 1.0;
+
+    /// <summary>Which reconstruction to use. Automatic decides per channel from the audio.</summary>
+    public DeclipMethod Method { get; init; } = DeclipMethod.Automatic;
 
     /// <summary>Clean samples on each shoulder used to estimate boundary slopes.</summary>
     public int PredictionSamples { get; init; } = 6;

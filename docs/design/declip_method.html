@@ -1,0 +1,300 @@
+<div id="wavelab-declip-method">
+  <style>
+    #wavelab-declip-method {
+      font-family: "Segoe UI", Inter, sans-serif;
+      color: #dfe4e9;
+      width: 100%;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    #wavelab-declip-method * { box-sizing: border-box; }
+    #wavelab-declip-method .wl-sheet {
+      width: min(1000px, 100%);
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+    #wavelab-declip-method .wl-note {
+      color: #8d969f;
+      font-size: 11px;
+      line-height: 1.55;
+    }
+    #wavelab-declip-method .wl-note b { color: #b8c0c8; font-weight: 600; }
+    #wavelab-declip-method .wl-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 18px;
+      align-items: start;
+    }
+
+    /* ── the card, matching Themes/Theme.xaml Card ── */
+    #wavelab-declip-method .wl-card {
+      background: #1b2127;
+      border: 1px solid #2b323a;
+      border-radius: 10px;
+      padding: 16px;
+    }
+    #wavelab-declip-method .wl-cardhead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    #wavelab-declip-method .wl-cardtitle { font-size: 14px; font-weight: 600; }
+    #wavelab-declip-method .wl-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: #b8c0c8;
+      font-size: 12.5px;
+      white-space: nowrap;
+    }
+    #wavelab-declip-method .wl-box {
+      width: 14px; height: 14px;
+      border-radius: 3px;
+      border: 1px solid #3fd6c2;
+      background: #3fd6c2;
+      display: grid; place-items: center;
+      color: #10161a; font-size: 10px; font-weight: 800;
+    }
+    #wavelab-declip-method .wl-blurb {
+      margin: 5px 0 12px;
+      color: #6f7880;
+      font-size: 10.5px;
+      line-height: 1.5;
+    }
+
+    /* ── the new control ── */
+    #wavelab-declip-method .wl-label {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      color: #8d969f;
+      font-size: 12.5px;
+    }
+    #wavelab-declip-method .wl-readout {
+      font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      color: #3fd6c2;
+      text-align: right;
+      white-space: nowrap;
+    }
+    #wavelab-declip-method .wl-seg {
+      margin-top: 7px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border: 1px solid #37414b;
+      border-radius: 7px;
+      overflow: hidden;
+    }
+    #wavelab-declip-method .wl-seg button {
+      appearance: none;
+      border: 0;
+      border-right: 1px solid #37414b;
+      background: #161b20;
+      color: #b8c0c8;
+      font: inherit;
+      font-size: 11.5px;
+      padding: 8px 4px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #wavelab-declip-method .wl-seg button:last-child { border-right: 0; }
+    #wavelab-declip-method .wl-seg button[aria-pressed="true"] {
+      background: #173a36;
+      color: #3fd6c2;
+      font-weight: 600;
+      box-shadow: inset 0 -2px 0 #3fd6c2;
+    }
+    #wavelab-declip-method .wl-chosen {
+      margin-top: 9px;
+      padding: 9px 11px;
+      border-radius: 7px;
+      background: #12181d;
+      border: 1px solid #2b323a;
+      font-size: 11px;
+      color: #8d969f;
+      line-height: 1.5;
+    }
+    #wavelab-declip-method .wl-chosen .wl-k {
+      font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+      color: #dfe4e9;
+    }
+    #wavelab-declip-method .wl-chosen .wl-teal { color: #3fd6c2; }
+
+    /* ── sliders, drawn as the existing ones look ── */
+    #wavelab-declip-method .wl-slider { margin: 7px 0 0; }
+    #wavelab-declip-method .wl-track {
+      position: relative;
+      height: 4px;
+      border-radius: 2px;
+      background: #2b323a;
+    }
+    #wavelab-declip-method .wl-fill {
+      position: absolute; inset: 0 auto 0 0;
+      border-radius: 2px;
+      background: #3fd6c2;
+    }
+    #wavelab-declip-method .wl-thumb {
+      position: absolute; top: 50%;
+      width: 13px; height: 13px;
+      margin: -6.5px 0 0 -6.5px;
+      border-radius: 50%;
+      background: #dfe4e9;
+      border: 2px solid #10161a;
+    }
+    #wavelab-declip-method .wl-gap { height: 13px; }
+
+    #wavelab-declip-method .wl-caption {
+      margin-top: 4px;
+      font-size: 10px;
+      color: #6f7880;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    #wavelab-declip-method table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    #wavelab-declip-method th, #wavelab-declip-method td {
+      text-align: left;
+      padding: 5px 8px;
+      border-bottom: 1px solid #232a31;
+    }
+    #wavelab-declip-method th { color: #6f7880; font-weight: 600; }
+    #wavelab-declip-method td.wl-num {
+      font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+      text-align: right;
+    }
+    #wavelab-declip-method .wl-win { color: #3fd6c2; }
+    #wavelab-declip-method .wl-lose { color: #d9a441; }
+  </style>
+
+  <div class="wl-sheet">
+
+    <div>
+      <div class="wl-caption">Restoration workbench · declip card · proposed</div>
+      <p class="wl-note">
+        A-SPADE sparse declipping is wired in and <b>already runs by default</b> — the workbench builds its
+        options without naming a method, so it gets <span class="wl-k">Automatic</span>. This mockup is only
+        about making that visible and overridable. Nothing below changes what the engine does.
+      </p>
+    </div>
+
+    <div class="wl-row">
+
+      <!-- ── A: as it ships today ── -->
+      <div>
+        <div class="wl-caption">A · today</div>
+        <div class="wl-card" style="margin-top:6px">
+          <div class="wl-cardhead">
+            <div class="wl-cardtitle">Declip Distorted Peaks</div>
+            <span class="wl-check"><span class="wl-box">✓</span>Enabled</span>
+          </div>
+          <div class="wl-blurb">Reconstructs flat-topped peaks from clean waveform shoulders.</div>
+
+          <div class="wl-label"><span>Reconstruction strength</span><span class="wl-readout">70 %</span></div>
+          <div class="wl-slider"><div class="wl-track"><div class="wl-fill" style="right:30%"></div>
+            <div class="wl-thumb" style="left:70%"></div></div></div>
+          <div class="wl-gap"></div>
+          <div class="wl-label"><span>Maximum reconstruction</span><span class="wl-readout">6.0 dB</span></div>
+          <div class="wl-slider"><div class="wl-track"><div class="wl-fill" style="right:55%"></div>
+            <div class="wl-thumb" style="left:45%"></div></div></div>
+        </div>
+        <p class="wl-note" style="margin-top:8px">
+          The blurb is now wrong: shoulders are what one of the two methods uses.
+        </p>
+      </div>
+
+      <!-- ── B: proposed ── -->
+      <div>
+        <div class="wl-caption">B · proposed</div>
+        <div class="wl-card" style="margin-top:6px">
+          <div class="wl-cardhead">
+            <div class="wl-cardtitle">Declip Distorted Peaks</div>
+            <span class="wl-check"><span class="wl-box">✓</span>Enabled</span>
+          </div>
+          <div class="wl-blurb">Rebuilds peaks that clipping flattened, from the audio that survived.</div>
+
+          <div class="wl-label"><span>Method</span></div>
+          <div class="wl-seg">
+            <button type="button" aria-pressed="true">Automatic</button>
+            <button type="button" aria-pressed="false">Sparse</button>
+            <button type="button" aria-pressed="false">Peaks</button>
+          </div>
+          <div class="wl-chosen">
+            Chose <span class="wl-teal">sparse</span> for both channels —
+            <span class="wl-k">18%</span> clipped, <span class="wl-k">12</span> bins.
+          </div>
+
+          <div class="wl-gap"></div>
+          <div class="wl-label"><span>Reconstruction strength</span><span class="wl-readout">70 %</span></div>
+          <div class="wl-slider"><div class="wl-track"><div class="wl-fill" style="right:30%"></div>
+            <div class="wl-thumb" style="left:70%"></div></div></div>
+          <div class="wl-gap"></div>
+          <div class="wl-label"><span>Maximum reconstruction</span><span class="wl-readout">6.0 dB</span></div>
+          <div class="wl-slider"><div class="wl-track"><div class="wl-fill" style="right:55%"></div>
+            <div class="wl-thumb" style="left:45%"></div></div></div>
+        </div>
+        <p class="wl-note" style="margin-top:8px">
+          <b>The readout is the point, not the switch.</b> Sparse costs roughly 700× the peak method, so a
+          user who waits five minutes on one side and seconds on the next deserves to see why. It states
+          the two numbers the choice was actually made from, so the answer is checkable rather than magic.
+          It reads <span class="wl-k">per channel</span> when the two disagree.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── what the switch is for ── -->
+    <div class="wl-card">
+      <div class="wl-cardtitle" style="margin-bottom:4px">Why an override exists at all</div>
+      <p class="wl-note" style="margin-bottom:10px">
+        Measured head to head on the samples clipping destroyed. Automatic picks the better of the two in
+        26 of 32 cells; the rows below are where it does not, and they are the reason the switch is worth
+        its space. <b>Sustained material past 40% clipped is the known miss</b> — its envelope barely
+        decays, so no clean frame survives to read the material from.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Material</th><th class="wl-num">Clipped</th><th class="wl-num">Peaks</th>
+              <th class="wl-num">Sparse</th><th>Automatic picks</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Tonal</td><td class="wl-num">28%</td><td class="wl-num">22.3</td>
+              <td class="wl-num wl-win">30.3</td><td class="wl-win">sparse ✓</td></tr>
+          <tr><td>Tonal</td><td class="wl-num">48%</td><td class="wl-num wl-win">19.5</td>
+              <td class="wl-num">15.9</td><td class="wl-win">peaks ✓</td></tr>
+          <tr><td>Percussive</td><td class="wl-num">30%</td><td class="wl-num">3.3</td>
+              <td class="wl-num wl-win">4.8</td><td class="wl-win">sparse ✓</td></tr>
+          <tr><td>Dense + noise</td><td class="wl-num">18%</td><td class="wl-num">12.2</td>
+              <td class="wl-num wl-win">16.6</td><td class="wl-win">sparse ✓</td></tr>
+          <tr><td>Sustained</td><td class="wl-num">42%</td><td class="wl-num">9.7</td>
+              <td class="wl-num wl-win">16.3</td><td class="wl-lose">peaks — 6.7 dB left behind</td></tr>
+          <tr><td>Dense + noise</td><td class="wl-num">60%</td><td class="wl-num">10.1</td>
+              <td class="wl-num wl-win">12.1</td><td class="wl-lose">peaks — 2.1 dB left behind</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="wl-card">
+      <div class="wl-cardtitle" style="margin-bottom:4px">Open questions for you</div>
+      <p class="wl-note">
+        <b>1. Three segments or two?</b> Drawn as three. If the override is only ever an escape hatch,
+        a checkbox reading “Choose method automatically” plus one segment pair may be less to explain.<br>
+        <b>2. Labels.</b> “Sparse” and “Peaks” are the engine's names. “Rebuild” and “Bridge” describe
+        what they do to the audio, which may travel better to someone who has not read the papers.<br>
+        <b>3. Should the readout warn about cost?</b> It could add “≈4 min” when sparse is chosen over a
+        long side. Against: the operation already has a progress bar and a cancel button, and a time
+        estimate that is wrong is worse than none.<br>
+        <b>4. Segment width.</b> Three buttons across this card is about 78 px each. “Automatic” fits;
+        anything longer needs the shorter labels from (2) — the rack has been bitten by exactly this,
+        twice.
+      </p>
+    </div>
+
+  </div>
+</div>
