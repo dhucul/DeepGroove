@@ -144,6 +144,7 @@ WaveLab-style audio editor for Windows. C# / WPF / .NET 10 (`net10.0-windows`), 
 - Theme: dark studio, teal accent #3FD6C2, Inter + JetBrains Mono embedded from `Assets/Fonts` (referenced as `#Inter` / `#JetBrains Mono`).
 - Custom window chrome (`WindowChrome`, CaptionHeight 40); menus/combos/sliders fully re-templated in `Themes/Theme.xaml`.
 - David wants to SEE UI mockups as pictures before UI changes are coded — render HTML mockups (docs/design/) and get approval first.
+- **A caption wider than the control it sits in is cut mid-glyph at both ends**, which reads as a drawing fault rather than as text that did not fit. The rack's render buttons are about 150 px each and carried 28-character mono captions; they came out as `NDOABLE · SELECTION OR FIL`. Captions now say the one thing their title does not — the sentence lives in the tool tip, where there is room — and every one carries `TextTrimming` so a later squeeze degrades to an ellipsis instead. Same fault, same fix, as the plugin name running under the rack card's power LED.
 
 ## v2 additions
 

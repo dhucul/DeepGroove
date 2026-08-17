@@ -944,19 +944,28 @@
                         <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="46"
                                 Command="{Binding ApplyChainCommand}" ToolTip="Render the selection or whole file in this tab as one undoable edit"
                                 AutomationProperties.Name="Render effects in place">
+                            <!-- The captions say the one thing each title does not, and no more. The
+                                 rack column is about 150 px a button, and the sentences these used to
+                                 carry were wider than that — they came out cut mid-glyph at both ends,
+                                 which reads as a drawing fault rather than as text that did not fit.
+                                 The full sentence is in the tool tip, where there is room for it. -->
                             <StackPanel>
-                                <TextBlock Text="Render in Place" FontSize="11.5" HorizontalAlignment="Center"/>
-                                <TextBlock Text="UNDOABLE · SELECTION OR FILE" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
-                                           FontSize="8.5" Foreground="{StaticResource Faint}" HorizontalAlignment="Center"/>
+                                <TextBlock Text="Render in Place" FontSize="11.5" HorizontalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="UNDOABLE" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
+                                           FontSize="8.5" Foreground="{StaticResource Faint}" HorizontalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </Button>
                         <Button Grid.Column="2" Style="{StaticResource AccentButton}" Height="46" Command="{Binding RenderCommand}"
                                 AutomationProperties.Name="Render effects to a new file tab"
                                 ToolTip="Render the whole file through the chain into a new tab without changing the source">
                             <StackPanel>
-                                <TextBlock Text="Render Copy" FontSize="11.5" HorizontalAlignment="Center"/>
-                                <TextBlock Text="SOURCE UNCHANGED · NEW TAB" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
-                                           FontSize="8.5" Foreground="#8DD7CC" HorizontalAlignment="Center"/>
+                                <TextBlock Text="Render Copy" FontSize="11.5" HorizontalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="NEW TAB" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
+                                           FontSize="8.5" Foreground="#8DD7CC" HorizontalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </Button>
                     </Grid>
