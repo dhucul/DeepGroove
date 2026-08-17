@@ -6,7 +6,7 @@
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
 
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/>
         </Border.Effect>
@@ -32,11 +32,11 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource Muted}" FontSize="11.5"/>
+                                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource Muted}" FontSize="10.5"/>
                                     <TextBlock Grid.Column="1" Text="{Binding Left}" FontFamily="{StaticResource MonoFont}"
-                                               FontSize="11.5" Foreground="#DFE4E9" TextAlignment="Right"/>
+                                               FontSize="10.5" Foreground="{StaticResource Text}" TextAlignment="Right"/>
                                     <TextBlock Grid.Column="2" Text="{Binding Right}" FontFamily="{StaticResource MonoFont}"
-                                               FontSize="11.5" Foreground="#DFE4E9" TextAlignment="Right"/>
+                                               FontSize="10.5" Foreground="{StaticResource Text}" TextAlignment="Right"/>
                                 </Grid>
                             </Border>
                         </DataTemplate>
@@ -44,7 +44,7 @@
                 </ItemsControl>
             </Grid>
 
-            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="16,13">
+            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="20,14">
                 <DockPanel>
                     <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="34" Width="90"
                             Click="OnCopy" Content="Copy" HorizontalAlignment="Left"/>

@@ -6,12 +6,12 @@
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
 
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="30" ShadowDepth="8" Opacity="0.6" Color="#000000"/>
         </Border.Effect>
         <StackPanel Margin="20,18">
-            <TextBlock x:Name="promptText" Text="Name" FontSize="13.5" FontWeight="SemiBold"/>
+            <TextBlock x:Name="promptText" Text="Name" FontSize="14" FontWeight="SemiBold"/>
             <TextBox x:Name="input" Margin="0,12,0,0" KeyDown="OnKeyDown"/>
             <Grid Margin="0,14,0,0">
                 <Grid.ColumnDefinitions>

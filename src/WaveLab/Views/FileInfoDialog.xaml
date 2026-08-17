@@ -5,7 +5,7 @@
         WindowStartupLocation="CenterOwner" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect><DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/></Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
@@ -13,7 +13,7 @@
                 <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,16"
+            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,15"
                     MouseLeftButtonDown="OnDragMove" Background="Transparent">
                 <StackPanel Orientation="Horizontal">
                     <Ellipse Width="9" Height="9" Fill="{StaticResource Accent}" VerticalAlignment="Center"/>
@@ -41,40 +41,40 @@
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
 
                 <StackPanel>
-                    <TextBlock Text="TITLE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="TITLE" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="titleBox" Margin="0,6,0,0" Padding="10,7"
                              AutomationProperties.Name="Title"/>
                 </StackPanel>
                 <StackPanel Grid.Column="2">
-                    <TextBlock Text="ARTIST" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="ARTIST" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="artistBox" Margin="0,6,0,0" Padding="10,7"
                              AutomationProperties.Name="Artist"/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="1" Margin="0,12,0,0">
-                    <TextBlock Text="ALBUM" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="ALBUM" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="albumBox" Margin="0,6,0,0" Padding="10,7"
                              AutomationProperties.Name="Album"/>
                 </StackPanel>
                 <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,12,0,0">
-                    <TextBlock Text="TRACK" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="TRACK" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="trackBox" Margin="0,6,0,0" Padding="10,7" FontFamily="{StaticResource MonoFont}"
                              ToolTip="Either 3 or 3/12."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="2" Margin="0,12,0,0">
-                    <TextBlock Text="GENRE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="GENRE" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="genreBox" Margin="0,6,0,0" Padding="10,7"
                              AutomationProperties.Name="Genre"/>
                 </StackPanel>
                 <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,12,0,0">
-                    <TextBlock Text="YEAR" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="YEAR" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="yearBox" Margin="0,6,0,0" Padding="10,7" FontFamily="{StaticResource MonoFont}"
                              ToolTip="A year, or a fuller date as yyyy-MM-dd."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Margin="0,12,0,0">
-                    <TextBlock Text="COMMENT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="COMMENT" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="commentBox" Margin="0,6,0,0" Padding="10,7" Height="72"
                              AcceptsReturn="True" TextWrapping="Wrap"
                              VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top"
@@ -96,39 +96,39 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.ColumnSpan="5">
-                    <TextBlock Text="DESCRIPTION" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="DESCRIPTION" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="bextDescription" Margin="0,6,0,0" Padding="10,7" MaxLength="256"/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,12,0,0">
-                    <TextBlock Text="ORIGINATOR" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="ORIGINATOR" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="bextOriginator" Margin="0,6,0,0" Padding="10,7" MaxLength="32"/>
                 </StackPanel>
                 <StackPanel Grid.Row="1" Grid.Column="4" Margin="0,12,0,0">
-                    <TextBlock Text="REFERENCE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="REFERENCE" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="bextReference" Margin="0,6,0,0" Padding="10,7" MaxLength="32"
                              ToolTip="An unambiguous reference to this take."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="2" Margin="0,12,0,0">
-                    <TextBlock Text="DATE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="DATE" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="bextDate" Margin="0,6,0,0" Padding="10,7" MaxLength="10"
                              FontFamily="{StaticResource MonoFont}" ToolTip="yyyy-MM-dd"/>
                 </StackPanel>
                 <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,12,0,0">
-                    <TextBlock Text="TIME" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="TIME" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="bextTime" Margin="0,6,0,0" Padding="10,7" MaxLength="8"
                              FontFamily="{StaticResource MonoFont}" ToolTip="HH:mm:ss"/>
                 </StackPanel>
                 <StackPanel Grid.Row="2" Grid.Column="4" Margin="0,12,0,0">
-                    <TextBlock Text="TIME REFERENCE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="TIME REFERENCE" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="bextTimeReference" Margin="0,6,0,0" Padding="10,7"
                              FontFamily="{StaticResource MonoFont}"
                              ToolTip="Samples since midnight to the first sample. 64-bit."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="3" Grid.ColumnSpan="5" Margin="0,12,0,0">
-                    <TextBlock Text="CODING HISTORY" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="CODING HISTORY" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="bextHistory" Margin="0,6,0,0" Padding="10,7" Height="60"
                              FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                              AcceptsReturn="True" TextWrapping="Wrap"
@@ -148,9 +148,9 @@
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <Grid Margin="14,10" IsHitTestVisible="False">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="86"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <TextBlock Text="ID" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                            <TextBlock Grid.Column="1" Text="SIZE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                            <TextBlock Grid.Column="2" Text="WHAT IT CARRIES" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                            <TextBlock Text="ID" Style="{StaticResource UpperLabel}"/>
+                            <TextBlock Grid.Column="1" Text="SIZE" Style="{StaticResource UpperLabel}"/>
+                            <TextBlock Grid.Column="2" Text="WHAT IT CARRIES" Style="{StaticResource UpperLabel}"/>
                         </Grid>
                         <ListBox x:Name="chunkList" Grid.Row="1" Background="Transparent" BorderThickness="0"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -167,10 +167,10 @@
                             </ListBox.ItemContainerStyle>
                             <ListBox.ItemTemplate><DataTemplate><Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="86"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="{Binding Id}" FontFamily="{StaticResource MonoFont}" FontSize="11.5" Foreground="#C3CAD2"/>
+                                <TextBlock Text="{Binding Id}" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource TextDim}"/>
                                 <TextBlock Grid.Column="1" Text="{Binding SizeText}" FontFamily="{StaticResource MonoFont}"
-                                           FontSize="11" Foreground="{StaticResource Muted}"/>
-                                <TextBlock Grid.Column="2" Text="{Binding Meaning}" FontSize="11.5"
+                                           FontSize="10.5" Foreground="{StaticResource Muted}"/>
+                                <TextBlock Grid.Column="2" Text="{Binding Meaning}" FontSize="10.5"
                                            Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis"/>
                             </Grid></DataTemplate></ListBox.ItemTemplate>
                         </ListBox>

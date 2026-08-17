@@ -13,9 +13,9 @@
         <!-- The target-ceiling chip: a readout at rest, a button on approach. -->
         <Style x:Key="CeilingChip" TargetType="Button">
             <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Foreground" Value="#9FD8CF"/>
+            <Setter Property="Foreground" Value="{StaticResource TealText}"/>
             <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
-            <Setter Property="FontSize" Value="9.5"/>
+            <Setter Property="FontSize" Value="9"/>
             <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -36,7 +36,7 @@
         </Style>
     </Window.Resources>
 
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/>
         </Border.Effect>
@@ -46,7 +46,7 @@
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
-            <Border Grid.Row="0" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,16"
+            <Border Grid.Row="0" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,15"
                     MouseLeftButtonDown="OnDragMove" Background="Transparent">
                 <StackPanel Orientation="Horizontal">
                     <Ellipse Width="10" Height="10" Fill="{StaticResource Red}" VerticalAlignment="Center"/>
@@ -57,7 +57,7 @@
             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                           CanContentScroll="False">
             <StackPanel Margin="20,17,20,16">
-                <TextBlock Text="INPUT DEVICE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                <TextBlock Text="INPUT DEVICE" Style="{StaticResource UpperLabel}"/>
                 <ComboBox x:Name="deviceCombo" Margin="0,6,0,0" ItemsSource="{Binding Devices}"
                           SelectedItem="{Binding SelectedDevice}" AutomationProperties.Name="Input device">
                     <ComboBox.ItemTemplate>
@@ -71,17 +71,17 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="{Binding DeviceMemoryText}" FontSize="10.5" Foreground="#7FA69F"
+                    <TextBlock Text="{Binding DeviceMemoryText}" FontSize="10.5" Foreground="{StaticResource TealMuted}"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                                ToolTip="The safest level-check outcome remembered for this input"/>
                     <Button Grid.Column="1" x:Name="useRememberedBtn" Content="Use last setting"
-                            Margin="8,0,0,0" FontSize="10" Style="{StaticResource MiniButton}"
+                            Margin="8,0,0,0" FontSize="10.5" Style="{StaticResource MiniButton}"
                             Foreground="{StaticResource Accent}"
                             IsEnabled="{Binding CanUseRememberedSetting}" Click="OnUseRememberedSetting"
                             AutomationProperties.Name="Restore the input setting remembered for this device"
                             ToolTip="Sets the device level and fine trim back to what this input used last time"/>
                     <Button Grid.Column="2" x:Name="forgetMemoryBtn" Content="Forget"
-                            Margin="6,0,0,0" FontSize="10" Style="{StaticResource MiniButton}"
+                            Margin="6,0,0,0" FontSize="10.5" Style="{StaticResource MiniButton}"
                             IsEnabled="{Binding CanForgetDeviceMemory}"
                             Click="OnForgetDeviceMemory"
                             AutomationProperties.Name="Forget the remembered setting for this device"
@@ -94,8 +94,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="DEVICE INPUT LEVEL" FontSize="10" FontWeight="Bold"
-                               Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="DEVICE INPUT LEVEL" Style="{StaticResource UpperLabel}"/>
                     <TextBlock Grid.Column="1" Text="{Binding InputLevelText}"
                                FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                Foreground="{StaticResource Accent}"/>
@@ -118,8 +117,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="WAVELAB FINE TRIM" FontSize="10" FontWeight="Bold"
-                               Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="WAVELAB FINE TRIM" Style="{StaticResource UpperLabel}"/>
                     <TextBlock Grid.Column="1" Text="{Binding InputFineTrimText}"
                                FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                Foreground="{StaticResource Accent}"/>
@@ -141,16 +139,16 @@
                 <TextBlock Text="{Binding SoftwarePlaythroughStatusText}" Margin="22,4,0,0" FontSize="10.5"
                            Foreground="{StaticResource Amber}" TextWrapping="Wrap"/>
 
-                <TextBlock Text="FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
-                           Margin="0,13,0,0"/>
+                <TextBlock Text="FORMAT"
+                           Margin="0,13,0,0" Style="{StaticResource UpperLabel}"/>
                 <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1"
                         CornerRadius="8" Padding="12,9" Margin="0,6,0,0">
-                    <TextBlock Text="{Binding FormatText}" Foreground="#CDD3D9" FontSize="12"/>
+                    <TextBlock Text="{Binding FormatText}" Foreground="{StaticResource TextDim}" FontSize="12.5"/>
                 </Border>
 
                 <Grid Margin="0,14,0,0">
-                    <TextBlock Text="INPUT LEVEL" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                    <TextBlock Text="Peak · RMS · held peak" HorizontalAlignment="Right" FontSize="10"
+                    <TextBlock Text="INPUT LEVEL" Style="{StaticResource UpperLabel}"/>
+                    <TextBlock Text="Peak · RMS · held peak" HorizontalAlignment="Right" FontSize="10.5"
                                Foreground="{StaticResource Faint}"/>
                 </Grid>
                 <Grid Margin="0,8,0,0">
@@ -163,13 +161,13 @@
                         <RowDefinition Height="5"/>
                         <RowDefinition Height="18"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Text="L" FontFamily="{StaticResource MonoFont}" FontSize="10" Foreground="{StaticResource Muted}"
+                    <TextBlock Text="L" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Muted}"
                                VerticalAlignment="Center"/>
                     <c:LevelMeter Grid.Column="1" Height="16" Orientation="Horizontal" ShowTargetRange="True"
                                   PeakDb="{Binding PeakLDb}" RmsDb="{Binding RmsLDb}" PeakHoldDb="{Binding HoldLDb}"
                                   TargetMinimumDb="{Binding TargetMeterMinimumDb}"
                                   TargetMaximumDb="{Binding TargetMeterMaximumDb}"/>
-                    <TextBlock Grid.Row="2" Text="R" FontFamily="{StaticResource MonoFont}" FontSize="10"
+                    <TextBlock Grid.Row="2" Text="R" FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
                     <c:LevelMeter Grid.Row="2" Grid.Column="1" Height="16" Orientation="Horizontal" ShowTargetRange="True"
                                   PeakDb="{Binding PeakRDb}" RmsDb="{Binding RmsRDb}" PeakHoldDb="{Binding HoldRDb}"
@@ -200,17 +198,17 @@
                                         Click="OnOpenTargetCeiling"
                                         AutomationProperties.Name="Change the recording level assistant target ceiling"
                                         ToolTip="Peak this transfer is aimed at — click to change it without leaving the dialog">
-                                    <TextBlock><Run Text="{Binding TargetCeilingText, Mode=OneWay}"/><Run Text=" ▾" FontSize="7.5"/></TextBlock>
+                                    <TextBlock><Run Text="{Binding TargetCeilingText, Mode=OneWay}"/><Run Text=" ▾" FontSize="9"/></TextBlock>
                                 </Button>
                                 <TextBlock Text="{Binding SafetyReserveText}" Margin="7,0,0,0"
-                                           FontFamily="{StaticResource MonoFont}" FontSize="9.5" Foreground="#7FA69F"
+                                           FontFamily="{StaticResource MonoFont}" FontSize="9" Foreground="{StaticResource TealMuted}"
                                            VerticalAlignment="Center"
                                            ToolTip="Held back for transients the scan has not seen yet — derived, not set"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="✦" Foreground="{StaticResource Accent}" FontSize="15" VerticalAlignment="Center"/>
+                                <TextBlock Text="✦" Foreground="{StaticResource Accent}" FontSize="14" VerticalAlignment="Center"/>
                                 <TextBlock Text="Recording Level Assistant" Margin="8,0,0,0" FontWeight="SemiBold"
-                                           Foreground="#D7F8F2" VerticalAlignment="Center"/>
+                                           Foreground="{StaticResource TealBright}" VerticalAlignment="Center"/>
                             </StackPanel>
                         </DockPanel>
 
@@ -225,30 +223,30 @@
                                 </Border.Effect>
                                 <StackPanel Width="290">
                                     <TextBlock Text="TARGET CEILING" FontSize="9" FontWeight="Bold"
-                                               Foreground="#7FA69F"/>
+                                               Foreground="{StaticResource TealMuted}"/>
                                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                                         <Slider x:Name="sldCardCeiling" Width="186" VerticalAlignment="Center"
                                                 AutomationProperties.Name="Target ceiling"
                                                 ValueChanged="OnCardCeilingChanged"
                                                 Thumb.DragCompleted="OnCeilingDragCompleted"/>
                                         <TextBlock x:Name="lblCardCeiling" Margin="12,0,0,0"
-                                                   FontFamily="{StaticResource MonoFont}" FontSize="11.5"
-                                                   Foreground="#CFFFF4" VerticalAlignment="Center"/>
+                                                   FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                                                   Foreground="{StaticResource TealBright}" VerticalAlignment="Center"/>
                                     </StackPanel>
                                     <Canvas x:Name="cardCeilingLandmarks" Width="186" Height="16" Margin="0,1,0,0"
                                             HorizontalAlignment="Left"/>
-                                    <TextBlock Margin="0,6,0,0" FontSize="9.5" Foreground="#6E8B86" TextWrapping="Wrap"
+                                    <TextBlock Margin="0,6,0,0" FontSize="9" Foreground="{StaticResource TealFaint}" TextWrapping="Wrap"
                                                LineHeight="15"
                                                Text="Lower leaves more room for the declicking and peak reconstruction that follow a transfer. A running scan re-derives from what it has already measured — nothing restarts."/>
-                                    <TextBlock Margin="0,7,0,0" FontSize="9.5" Foreground="{StaticResource Amber}"
+                                    <TextBlock Margin="0,7,0,0" FontSize="9" Foreground="{StaticResource Amber}"
                                                TextWrapping="Wrap" LineHeight="15"
                                                Visibility="{Binding CeilingChangeDiscardsHeldCheck, Converter={StaticResource BoolToVis}}"
                                                Text="The finished check was measured against the current ceiling and will be discarded — run it again afterwards."/>
                                     <DockPanel Margin="0,13,0,0">
-                                        <Button DockPanel.Dock="Right" Content="Done" FontSize="10"
+                                        <Button DockPanel.Dock="Right" Content="Done" FontSize="10.5"
                                                 Style="{StaticResource MiniButton}" Foreground="{StaticResource Accent}"
                                                 Click="OnCloseTargetCeiling"/>
-                                        <Button x:Name="resetCeilingBtn" HorizontalAlignment="Left" FontSize="10"
+                                        <Button x:Name="resetCeilingBtn" HorizontalAlignment="Left" FontSize="10.5"
                                                 Style="{StaticResource MiniButton}" Click="OnResetTargetCeiling"
                                                 AutomationProperties.Name="Reset the target ceiling to the default"/>
                                     </DockPanel>
@@ -262,33 +260,33 @@
                                 <ColumnDefinition Width="232"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel Margin="0,0,16,0">
-                                <TextBlock Text="{Binding LevelStatusTitle}" FontSize="15" FontWeight="SemiBold"
-                                           Foreground="#DDF5EF"/>
+                                <TextBlock Text="{Binding LevelStatusTitle}" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{StaticResource TealBright}"/>
                                 <TextBlock Text="{Binding LevelStatusDetail}" Margin="0,4,0,0" TextWrapping="Wrap"
-                                           Foreground="#95A7A3" FontSize="11.5" LineHeight="17"/>
+                                           Foreground="{StaticResource TealMuted}" FontSize="10.5" LineHeight="17"/>
                             </StackPanel>
                             <Border Grid.Column="1" Background="#172724" BorderBrush="#37675E" BorderThickness="1"
                                     CornerRadius="8" Padding="11,8" VerticalAlignment="Top"
                                     ToolTip="Held conservatively across everything scanned. Play the whole side for a whole-record setting.">
                                 <StackPanel>
-                                    <TextBlock Text="SAFE SETTING FOR THIS SIDE" FontSize="8.5" FontWeight="Bold"
-                                               Foreground="#77958E" HorizontalAlignment="Right"/>
+                                    <TextBlock Text="SAFE SETTING FOR THIS SIDE" FontSize="9" FontWeight="Bold"
+                                               Foreground="{StaticResource TealMuted}" HorizontalAlignment="Right"/>
                                     <TextBlock Text="{Binding RecommendedInputSettingText}" Margin="0,4,0,0"
                                                FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Bold"
-                                               Foreground="#CFFFF4" HorizontalAlignment="Right"/>
+                                               Foreground="{StaticResource TealBright}" HorizontalAlignment="Right"/>
                                     <TextBlock Text="{Binding RecommendedInputBreakdownText}" Margin="0,4,0,0"
-                                               FontFamily="{StaticResource MonoFont}" FontSize="8.5"
-                                               Foreground="#77958E" TextWrapping="Wrap" TextAlignment="Right"/>
+                                               FontFamily="{StaticResource MonoFont}" FontSize="9"
+                                               Foreground="{StaticResource TealMuted}" TextWrapping="Wrap" TextAlignment="Right"/>
                                     <Button x:Name="applyRecommendationBtn" Margin="0,9,0,0" Height="27"
-                                            Style="{StaticResource AccentButton}" FontSize="11"
+                                            Style="{StaticResource AccentButton}" FontSize="10.5"
                                             Content="{Binding ApplyRecommendationText}"
                                             IsEnabled="{Binding CanApplyRecommendedInputSetting}"
                                             Click="OnApplyRecommendation"
                                             AutomationProperties.Name="Apply the recommended device level and fine trim"
                                             ToolTip="Sets the Windows device level and WaveLab fine trim to the safe setting, then restarts the measurement"/>
                                     <TextBlock Text="{Binding ApplyRecommendationStatusText}" Margin="0,5,0,0"
-                                               FontFamily="{StaticResource MonoFont}" FontSize="8.5"
-                                               Foreground="#77958E" TextWrapping="Wrap" TextAlignment="Right"/>
+                                               FontFamily="{StaticResource MonoFont}" FontSize="9"
+                                               Foreground="{StaticResource TealMuted}" TextWrapping="Wrap" TextAlignment="Right"/>
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -298,32 +296,32 @@
                                 <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Border Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8">
-                                <StackPanel><TextBlock Text="TRUE PEAK" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8">
+                                <StackPanel><TextBlock Text="TRUE PEAK" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="Absolute 4× oversampled peak, including isolated artifacts"/>
                                     <TextBlock Text="{Binding TruePeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="1" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="PROG PEAK" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Grid.Column="1" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="PROG PEAK" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="Click-resistant programme peak that drives the gain recommendation"/>
                                     <TextBlock Text="{Binding ProgramPeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="2" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="CLICKS ABOVE" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Grid.Column="2" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="CLICKS ABOVE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="How far isolated clicks sit above the programme; excluded from the recommendation"/>
                                     <TextBlock Text="{Binding ClickMarginText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="3" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="PROJECTED" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Grid.Column="3" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="PROJECTED" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="Programme peak plus the unseen-transient safety reserve"/>
                                     <TextBlock Text="{Binding ProjectedPeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="4" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="PROG RMS" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
+                            <Border Grid.Column="4" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="PROG RMS" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"/>
                                     <TextBlock Text="{Binding ProgramRmsText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="5" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="LOUDNESS" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Grid.Column="5" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="LOUDNESS" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="EBU R128 integrated loudness of the scanned passage"/>
                                     <TextBlock Text="{Binding LoudnessText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
@@ -334,21 +332,21 @@
                                 <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <Border Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8">
-                                <StackPanel><TextBlock Text="CREST" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
+                            <Border Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8">
+                                <StackPanel><TextBlock Text="CREST" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"/>
                                     <TextBlock Text="{Binding CrestFactorText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="1" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="NOISE FLOOR" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Grid.Column="1" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="NOISE FLOOR" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="Quiet-passage level above 150 Hz — surface noise and hiss. Rumble and mains hum are excluded; see the HUM tile. Shown as — when the passage is too steady to have a separate floor."/>
                                     <TextBlock Text="{Binding NoiseFloorText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="2" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="L / R" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
+                            <Border Grid.Column="2" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="L / R" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"/>
                                     <TextBlock Text="{Binding BalanceText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
-                            <Border Grid.Column="3" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="DC OFFSET" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Grid.Column="3" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="DC OFFSET" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="DC riding on the programme; wastes headroom and suggests a cabling or interface fault"/>
                                     <TextBlock Text="{Binding DcText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5">
                                         <TextBlock.Style>
@@ -356,18 +354,18 @@
                                                 <Setter Property="Foreground" Value="{StaticResource Red}"/>
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding DcText}" Value="OK">
-                                                        <Setter Property="Foreground" Value="#73E6AE"/>
+                                                        <Setter Property="Foreground" Value="{StaticResource Green}"/>
                                                     </DataTrigger>
                                                     <DataTrigger Binding="{Binding DcText}" Value="—">
-                                                        <Setter Property="Foreground" Value="#71817C"/>
+                                                        <Setter Property="Foreground" Value="{StaticResource TealFaint}"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </TextBlock.Style>
                                     </TextBlock></StackPanel>
                             </Border>
-                            <Border Grid.Column="4" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="HUM" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Grid.Column="4" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="HUM" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="Mains hum dominating the quiet passages; usually a turntable ground-lead issue"/>
                                     <TextBlock Text="{Binding HumText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5">
                                         <TextBlock.Style>
@@ -375,15 +373,15 @@
                                                 <Setter Property="Foreground" Value="{StaticResource Red}"/>
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding HumText}" Value="NONE">
-                                                        <Setter Property="Foreground" Value="#73E6AE"/>
+                                                        <Setter Property="Foreground" Value="{StaticResource Green}"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </TextBlock.Style>
                                     </TextBlock></StackPanel>
                             </Border>
-                            <Border Grid.Column="5" Background="#0F1715" BorderBrush="#293532" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="CLIPPING" FontSize="8" FontWeight="Bold" Foreground="#71817C"
+                            <Border Grid.Column="5" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
+                                <StackPanel><TextBlock Text="CLIPPING" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
                                                        ToolTip="Sustained digital rail hits warn; isolated stylus clicks are labeled but excluded from gain advice"/>
                                     <TextBlock Text="{Binding ClippingText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5">
                                         <TextBlock.Style>
@@ -391,7 +389,7 @@
                                                 <Setter Property="Foreground" Value="{StaticResource Red}"/>
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding ClippingText}" Value="NONE">
-                                                        <Setter Property="Foreground" Value="#73E6AE"/>
+                                                        <Setter Property="Foreground" Value="{StaticResource Green}"/>
                                                     </DataTrigger>
                                                     <DataTrigger Binding="{Binding HasOnlyIsolatedClipping}" Value="True">
                                                         <Setter Property="Foreground" Value="{StaticResource Amber}"/>
@@ -404,8 +402,8 @@
                         </Grid>
 
                         <Grid Margin="0,12,0,0">
-                            <TextBlock Text="RECENT INPUT LEVEL" FontSize="8" FontWeight="Bold" Foreground="#71817C"/>
-                            <TextBlock Text="30 s window" HorizontalAlignment="Right" FontSize="8" Foreground="#71817C"/>
+                            <TextBlock Text="RECENT INPUT LEVEL" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"/>
+                            <TextBlock Text="30 s window" HorizontalAlignment="Right" FontSize="9" Foreground="{StaticResource TealFaint}"/>
                         </Grid>
                         <c:LevelHistoryGraph Margin="0,5,0,0" Height="46"
                                              Values="{Binding LevelHistory}"
@@ -429,7 +427,7 @@
                                              Value="{Binding LevelConfidencePercent, Mode=OneWay}"
                                              Foreground="{StaticResource Accent}"/>
                                 <TextBlock Text="{Binding LevelProgressText}" Margin="0,5,0,0"
-                                           FontFamily="{StaticResource MonoFont}" FontSize="9.5" Foreground="#7F918C"/>
+                                           FontFamily="{StaticResource MonoFont}" FontSize="9" Foreground="{StaticResource TealMuted}"/>
                             </StackPanel>
                             <Button Grid.Column="1" x:Name="resetLevelCheckBtn" Content="Reset Check"
                                     Width="94" Height="32" Margin="14,0,0,0" IsEnabled="False"
@@ -443,8 +441,8 @@
                     </StackPanel>
                 </Border>
 
-                <TextBlock Text="AUTOMATIC START" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
-                           Margin="0,14,0,0"/>
+                <TextBlock Text="AUTOMATIC START"
+                           Margin="0,14,0,0" Style="{StaticResource UpperLabel}"/>
                 <Border Background="#101918" BorderBrush="#2D4742" BorderThickness="1" CornerRadius="8"
                         Padding="12,10" Margin="0,7,0,0">
                     <StackPanel>
@@ -457,8 +455,8 @@
                     </StackPanel>
                 </Border>
 
-                <TextBlock Text="AUTOMATIC STOP" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
-                           Margin="0,14,0,0"/>
+                <TextBlock Text="AUTOMATIC STOP"
+                           Margin="0,14,0,0" Style="{StaticResource UpperLabel}"/>
                 <Border Background="#101918" BorderBrush="#2D4742" BorderThickness="1" CornerRadius="8"
                         Padding="12,10" Margin="0,7,0,0">
                     <StackPanel>
@@ -471,14 +469,14 @@
                                    Margin="22,4,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"
                                    TextWrapping="Wrap"/>
                         <StackPanel x:Name="runOutHoldRow" Orientation="Horizontal" Margin="25,10,0,0">
-                            <TextBlock Text="Wait" Foreground="#B7BEC6" FontSize="11.5" VerticalAlignment="Center"/>
-                            <TextBox x:Name="txtRunOutHold" Width="52" Margin="9,0,0,0" Padding="8,5" FontSize="12"
+                            <TextBlock Text="Wait" Foreground="{StaticResource TextDim}" FontSize="10.5" VerticalAlignment="Center"/>
+                            <TextBox x:Name="txtRunOutHold" Width="52" Margin="9,0,0,0" Padding="8,5" FontSize="12.5"
                                      VerticalAlignment="Center" TextAlignment="Center"
                                      LostFocus="OnRunOutHoldChanged"
                                      ToolTip="5 to 60 seconds; 12 is long enough to sit through a gap between tracks"
                                      AutomationProperties.Name="Seconds of run-out to wait before stopping"/>
-                            <TextBlock Text="s of run-out before stopping" Margin="9,0,0,0" Foreground="#B7BEC6"
-                                       FontSize="11.5" VerticalAlignment="Center"/>
+                            <TextBlock Text="s of run-out before stopping" Margin="9,0,0,0" Foreground="{StaticResource TextDim}"
+                                       FontSize="10.5" VerticalAlignment="Center"/>
                         </StackPanel>
 
                         <Border Height="1" Background="#1E332F" Margin="0,11,0,11"/>
@@ -488,12 +486,12 @@
                                       IsChecked="{Binding AutoStopOnDuration, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                       Checked="OnAutoStopOptionChanged" Unchecked="OnAutoStopOptionChanged"
                                       AutomationProperties.Name="Stop recording after a fixed length"/>
-                            <TextBox x:Name="txtAutoStopMinutes" Width="56" Margin="9,0,0,0" Padding="8,5" FontSize="12"
+                            <TextBox x:Name="txtAutoStopMinutes" Width="56" Margin="9,0,0,0" Padding="8,5" FontSize="12.5"
                                      VerticalAlignment="Center" TextAlignment="Center"
                                      LostFocus="OnAutoStopMinutesChanged"
                                      ToolTip="1 to 180 minutes. A take also ends at WaveLab's in-memory limit — about 35 minutes at 48 kHz stereo, and proportionally less at higher rates."
                                      AutomationProperties.Name="Maximum take length in minutes"/>
-                            <TextBlock Text="minutes" Margin="9,0,0,0" Foreground="#CDD3D9" FontSize="12"
+                            <TextBlock Text="minutes" Margin="9,0,0,0" Foreground="{StaticResource TextDim}" FontSize="12.5"
                                        VerticalAlignment="Center"/>
                         </StackPanel>
                         <TextBlock Text="Safety limit — fires whether or not the run-out is ever detected."
@@ -502,17 +500,17 @@
                     </StackPanel>
                 </Border>
 
-                <TextBlock Text="METRONOME" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"
-                           Margin="0,14,0,0"/>
+                <TextBlock Text="METRONOME"
+                           Margin="0,14,0,0" Style="{StaticResource UpperLabel}"/>
                 <Grid Margin="0,8,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/><ColumnDefinition Width="12"/><ColumnDefinition Width="64"/>
                         <ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <CheckBox x:Name="chkCountIn" Content="Count-in" VerticalAlignment="Center"/>
-                    <TextBox x:Name="txtBpm" Grid.Column="2" Text="120" Padding="8,5" FontSize="12" VerticalAlignment="Center"
+                    <TextBox x:Name="txtBpm" Grid.Column="2" Text="120" Padding="8,5" FontSize="12.5" VerticalAlignment="Center"
                              AutomationProperties.Name="Metronome tempo in BPM"/>
-                    <TextBlock Grid.Column="4" Text="BPM ·" Foreground="{StaticResource Faint}" FontSize="11" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="4" Text="BPM ·" Foreground="{StaticResource Faint}" FontSize="10.5" VerticalAlignment="Center"/>
                     <StackPanel Grid.Column="5" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center">
                         <ComboBox x:Name="cmbBars" Width="86" Height="30" AutomationProperties.Name="Count-in bars"/>
                         <CheckBox x:Name="chkMetronome" Content="Click while recording" Margin="12,0,0,0" VerticalAlignment="Center"/>
@@ -521,13 +519,13 @@
 
                 <CheckBox x:Name="chkPunch" Content="Insert into selection on stop (punch)" Margin="0,12,0,0"
                           Visibility="Collapsed"/>
-                <TextBlock x:Name="countInText" Text="COUNT-IN…" FontSize="11" FontWeight="Bold"
+                <TextBlock x:Name="countInText" Text="COUNT-IN…" FontSize="10.5" FontWeight="Bold"
                            Foreground="{StaticResource Amber}" HorizontalAlignment="Center" Margin="0,9,0,0"
                            Visibility="Collapsed"/>
-                <TextBlock Text="{Binding AutoStopStatusText}" FontSize="11" FontWeight="Bold"
+                <TextBlock Text="{Binding AutoStopStatusText}" FontSize="10.5" FontWeight="Bold"
                            Foreground="{StaticResource Amber}" HorizontalAlignment="Center" Margin="0,9,0,0"
                            Visibility="{Binding HasAutoStopStatus, Converter={StaticResource BoolToVis}}"/>
-                <TextBlock Text="{Binding ElapsedText}" FontFamily="{StaticResource MonoFont}" FontSize="28"
+                <TextBlock Text="{Binding ElapsedText}" FontFamily="{StaticResource MonoFont}" FontSize="26"
                            Foreground="{StaticResource Red}" HorizontalAlignment="Center" Margin="0,8,0,2"/>
             </StackPanel>
             </ScrollViewer>

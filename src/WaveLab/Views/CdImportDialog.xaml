@@ -5,7 +5,7 @@
         WindowStartupLocation="CenterOwner" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/>
         </Border.Effect>
@@ -18,7 +18,7 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,16"
+            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,15"
                     MouseLeftButtonDown="OnDragMove" Background="Transparent">
                 <StackPanel Orientation="Horizontal">
                     <Ellipse Width="9" Height="9" Fill="{StaticResource Accent}" VerticalAlignment="Center"/>
@@ -35,7 +35,7 @@
                     <ColumnDefinition Width="92"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel>
-                    <TextBlock Text="OPTICAL DRIVE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="OPTICAL DRIVE" Style="{StaticResource UpperLabel}"/>
                     <ComboBox x:Name="driveCombo" Margin="0,6,0,0" SelectionChanged="OnDriveChanged"
                               DisplayMemberPath="DisplayText" AutomationProperties.Name="Optical drive"/>
                 </StackPanel>
@@ -52,10 +52,10 @@
                             <ColumnDefinition Width="42"/><ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="110"/><ColumnDefinition Width="90"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="USE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="1" Text="TRACK" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="2" Text="START" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="3" Text="DURATION" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}" TextAlignment="Right"/>
+                        <TextBlock Text="USE" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="1" Text="TRACK" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="2" Text="START" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="3" Text="DURATION" TextAlignment="Right" Style="{StaticResource UpperLabel}"/>
                     </Grid>
                     <ListBox x:Name="trackList" Grid.Row="1" Background="Transparent" BorderThickness="0"
                              AutomationProperties.Name="CD tracks"
@@ -107,7 +107,7 @@
                 <ProgressBar x:Name="progressBar" Height="6" Minimum="0" Maximum="1" Margin="0,12,0,0"
                              Foreground="{StaticResource Accent}" Background="{StaticResource Panel3}" Value="0"/>
                 <TextBlock x:Name="statusText" Text="Scanning optical drives…" Margin="0,8,0,0"
-                           FontSize="11" Foreground="{StaticResource Faint}" TextTrimming="CharacterEllipsis"/>
+                           FontSize="10.5" Foreground="{StaticResource Faint}" TextTrimming="CharacterEllipsis"/>
             </StackPanel>
 
             <Border Grid.Row="4" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="20,14">

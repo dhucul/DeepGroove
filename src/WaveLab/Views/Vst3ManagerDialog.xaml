@@ -10,7 +10,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </Window.Resources>
 
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/>
         </Border.Effect>
@@ -32,7 +32,7 @@
                         <Ellipse Width="8" Height="8" Fill="{StaticResource Violet}" VerticalAlignment="Center"/>
                         <TextBlock Text="VST3 Plugins" Margin="10,0,0,0" FontSize="14" FontWeight="SemiBold"/>
                     </StackPanel>
-                    <Button Content="✕" Width="24" Height="22" FontSize="11" HorizontalAlignment="Right"
+                    <Button Content="✕" Width="24" Height="22" FontSize="10.5" HorizontalAlignment="Right"
                             Style="{StaticResource ToolButton}" Foreground="{StaticResource Muted}"
                             Click="OnClose" AutomationProperties.Name="Close"/>
                 </Grid>
@@ -40,7 +40,7 @@
 
             <!-- ── scan folders ── -->
             <StackPanel Grid.Row="1" Margin="18,14,18,0">
-                <TextBlock Text="SCAN FOLDERS" FontSize="8.5" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                <TextBlock Text="SCAN FOLDERS" Style="{StaticResource UpperLabel}"/>
                 <Border Background="{StaticResource WellDeep}" BorderBrush="{StaticResource LineSoft}"
                         BorderThickness="1" CornerRadius="6" Margin="0,6,0,0" Padding="9,7">
                     <StackPanel>
@@ -56,7 +56,7 @@
                                         <TextBlock Text="{Binding Path}" FontFamily="{StaticResource MonoFont}"
                                                    FontSize="10.5" Foreground="{Binding PathBrush}"
                                                    TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding CountText}" FontSize="9.5"
+                                        <TextBlock Grid.Column="1" Text="{Binding CountText}" FontSize="9"
                                                    Foreground="{StaticResource Faint}" Margin="12,0,0,0"
                                                    VerticalAlignment="Center"/>
                                         <Button Grid.Column="2" Content="✕" Width="18" Height="18" FontSize="9"
@@ -97,11 +97,11 @@
                              TextChanged="OnFilterChanged" AutomationProperties.Name="Filter plugins"
                              ToolTip="Filter by name or vendor"/>
                     <TextBlock x:Name="filterHint" Text="Filter by name or vendor…" IsHitTestVisible="False"
-                               Margin="9,0,0,0" VerticalAlignment="Center" FontSize="11"
+                               Margin="9,0,0,0" VerticalAlignment="Center" FontSize="10.5"
                                Foreground="{StaticResource Faint}"/>
                 </Grid>
                 <CheckBox x:Name="showFailed" Grid.Column="3" Content="Show rejected" VerticalAlignment="Center"
-                          FontSize="11" IsChecked="True" Click="OnFilterChanged"
+                          FontSize="10.5" IsChecked="True" Click="OnFilterChanged"
                           AutomationProperties.Name="Show rejected plugins"/>
             </Grid>
 
@@ -116,7 +116,7 @@
 
                     <Border Background="{StaticResource Panel3}" BorderBrush="{StaticResource Line}"
                             BorderThickness="0,0,0,1" CornerRadius="5,5,0,0" Padding="10,0" Height="26">
-                        <Grid TextBlock.FontSize="8.5" TextBlock.FontWeight="Bold"
+                        <Grid TextBlock.FontSize="9" TextBlock.FontWeight="Bold"
                               TextBlock.Foreground="{StaticResource Faint}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="26"/>
@@ -165,7 +165,7 @@
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid TextBlock.FontSize="11">
+                                <Grid TextBlock.FontSize="10.5">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="26"/>
                                         <ColumnDefinition Width="*"/>
@@ -186,15 +186,15 @@
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/>
                                     <TextBlock Grid.Column="3" Text="{Binding Category}" Foreground="{StaticResource Faint}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/>
-                                    <TextBlock Grid.Column="4" Text="{Binding ChannelsText}" FontSize="10"
-                                               FontFamily="{StaticResource MonoFont}" Foreground="#9AA1A9"
+                                    <TextBlock Grid.Column="4" Text="{Binding ChannelsText}" FontSize="10.5"
+                                               FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Muted}"
                                                VerticalAlignment="Center" TextAlignment="Right" Margin="0,0,10,0"/>
-                                    <TextBlock Grid.Column="5" Text="{Binding ParametersText}" FontSize="10"
-                                               FontFamily="{StaticResource MonoFont}" Foreground="#9AA1A9"
+                                    <TextBlock Grid.Column="5" Text="{Binding ParametersText}" FontSize="10.5"
+                                               FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Muted}"
                                                VerticalAlignment="Center" TextAlignment="Right" Margin="0,0,10,0"/>
                                     <Border Grid.Column="6" Background="{Binding StatusBackground}" CornerRadius="3"
                                             Padding="6,1.5" HorizontalAlignment="Left" VerticalAlignment="Center">
-                                        <TextBlock Text="{Binding StatusText}" FontSize="8.5" FontWeight="Bold"
+                                        <TextBlock Text="{Binding StatusText}" FontSize="9" FontWeight="Bold"
                                                    Foreground="{Binding StatusForeground}"/>
                                     </Border>
                                 </Grid>
@@ -208,7 +208,7 @@
             <Border Grid.Row="4" Margin="18,10,18,0" Background="{StaticResource Panel3}"
                     BorderBrush="{StaticResource LineSoft}" BorderThickness="1" CornerRadius="6" Padding="11,9">
                 <StackPanel>
-                    <TextBlock x:Name="detailPath" FontFamily="{StaticResource MonoFont}" FontSize="10"
+                    <TextBlock x:Name="detailPath" FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                Foreground="{StaticResource Faint}" TextTrimming="CharacterEllipsis"/>
                     <TextBlock x:Name="detailFacts" Margin="0,5,0,0" FontSize="10.5"
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>

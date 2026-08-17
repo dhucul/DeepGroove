@@ -5,7 +5,7 @@
         WindowStartupLocation="CenterOwner" WindowStyle="None" AllowsTransparency="False"
         Background="{StaticResource Panel2}" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
-    <Border BorderBrush="#313841" BorderThickness="1">
+    <Border BorderBrush="{StaticResource WindowEdge}" BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
@@ -18,7 +18,7 @@
                 <Grid>
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <Ellipse Width="8" Height="8" Fill="{StaticResource Accent}" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="pluginName" Margin="9,0,0,0" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="pluginName" Margin="9,0,0,0" FontSize="12.5" FontWeight="SemiBold"/>
                         <TextBlock x:Name="pluginVendor" Margin="12,1,0,0" FontSize="10.5"
                                    Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
                     </StackPanel>
@@ -26,7 +26,7 @@
                         <TextBlock x:Name="latencyText" Margin="0,0,12,0" FontSize="10.5"
                                    FontFamily="{StaticResource MonoFont}"
                                    Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
-                        <Button Content="✕" Width="24" Height="22" FontSize="11"
+                        <Button Content="✕" Width="24" Height="22" FontSize="10.5"
                                 Style="{StaticResource ToolButton}" Foreground="{StaticResource Muted}"
                                 Click="OnClose" AutomationProperties.Name="Close plugin editor"/>
                     </StackPanel>
@@ -42,7 +42,7 @@
                 <StackPanel MaxWidth="420">
                     <TextBlock x:Name="fallbackTitle" FontSize="12.5" FontWeight="SemiBold"
                                Foreground="{StaticResource Amber}" TextWrapping="Wrap"/>
-                    <TextBlock x:Name="fallbackText" Margin="0,8,0,0" FontSize="11.5"
+                    <TextBlock x:Name="fallbackText" Margin="0,8,0,0" FontSize="10.5"
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18"/>
                 </StackPanel>
             </Border>

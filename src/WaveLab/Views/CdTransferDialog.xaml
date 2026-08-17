@@ -5,7 +5,7 @@
         WindowStartupLocation="CenterOwner" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect><DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/></Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
@@ -14,7 +14,7 @@
                 <RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,16"
+            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,15"
                     MouseLeftButtonDown="OnDragMove" Background="Transparent">
                 <StackPanel Orientation="Horizontal">
                     <Ellipse Width="9" Height="9" Fill="{StaticResource Amber}" VerticalAlignment="Center"/>
@@ -31,16 +31,16 @@
                     <ColumnDefinition Width="190"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel>
-                    <TextBlock Text="DISC TITLE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="DISC TITLE" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="discTitle" Margin="0,6,0,0" Padding="10,7" TextChanged="OnPlanChanged"/>
                 </StackPanel>
                 <StackPanel Grid.Column="2">
-                    <TextBlock Text="DISC PERFORMER" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="DISC PERFORMER" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="discPerformer" Margin="0,6,0,0" Padding="10,7"
                              ToolTip="CD-TEXT performer for the disc. DDP only."/>
                 </StackPanel>
                 <StackPanel Grid.Column="4">
-                    <TextBlock Text="UPC / EAN" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="UPC / EAN" Style="{StaticResource UpperLabel}"/>
                     <TextBox x:Name="discUpc" Margin="0,6,0,0" Padding="10,7" FontFamily="{StaticResource MonoFont}"
                              TextChanged="OnPlanChanged"
                              ToolTip="Thirteen digits, or twelve which are padded. Blank if the disc has none."/>
@@ -50,7 +50,7 @@
             <Grid Grid.Row="2" Margin="20,0,20,10">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel>
-                    <TextBlock Text="DELIVERABLE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="DELIVERABLE" Style="{StaticResource UpperLabel}"/>
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                         <ToggleButton x:Name="wavCueBtn" Style="{StaticResource SegmentButton}" Height="30"
                                       Content="WAV + CUE" IsChecked="True" Click="OnDeliverableChanged"
@@ -81,7 +81,7 @@
                         <ColumnDefinition Width="130"/><ColumnDefinition Width="125"/><ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="95"/><ColumnDefinition Width="10"/><ColumnDefinition Width="112"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="AUTO SPLIT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
+                    <TextBlock Text="AUTO SPLIT" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
                     <TextBlock Grid.Column="1" Text="Quiet below" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                         <Slider x:Name="thresholdSlider" Width="150" Minimum="-70" Maximum="-25" Value="-45" ValueChanged="OnThresholdChanged"/>
@@ -108,15 +108,15 @@
                             <ColumnDefinition Width="110"/><ColumnDefinition Width="110"/>
                             <ColumnDefinition Width="78"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="TRK" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="1" Text="TITLE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="2" Text="PERFORMER" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="3" Text="SONGWRITER" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="4" Text="ISRC" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="5" Text="EMPH" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="6" Text="SOURCE IN" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="7" Text="SOURCE OUT" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                        <TextBlock Grid.Column="8" Text="CD LENGTH" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                        <TextBlock Text="TRK" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="1" Text="TITLE" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="2" Text="PERFORMER" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="3" Text="SONGWRITER" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="4" Text="ISRC" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="5" Text="EMPH" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="6" Text="SOURCE IN" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="7" Text="SOURCE OUT" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock Grid.Column="8" Text="CD LENGTH" Style="{StaticResource UpperLabel}"/>
                     </Grid>
                     <ListBox x:Name="trackList" Grid.Row="1" Background="Transparent" BorderThickness="0"
                              SelectionChanged="OnTrackSelected" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -151,7 +151,7 @@
                                      Padding="8,4" Margin="0,0,6,0" IsEnabled="{Binding DdpFields}"
                                      ToolTip="CD-TEXT songwriter for this track. DDP only."/>
                             <TextBox Grid.Column="4" Text="{Binding Isrc, UpdateSourceTrigger=PropertyChanged}"
-                                     FontFamily="{StaticResource MonoFont}" FontSize="11" Padding="8,4" Margin="0,0,6,0"
+                                     FontFamily="{StaticResource MonoFont}" FontSize="10.5" Padding="8,4" Margin="0,0,6,0"
                                      BorderBrush="{Binding IsrcBrush}" LostFocus="OnIsrcCommitted"
                                      IsEnabled="{Binding DdpFields}"
                                      ToolTip="Twelve characters; punctuation is ignored. Blank if the track has none."/>
@@ -161,13 +161,13 @@
                                           IsEnabled="{Binding DdpFields}"
                                           ToolTip="Whether this track was cut with pre-emphasis. DDP only."/>
                             <TextBox x:Name="startEditor" Grid.Column="6" Text="{Binding StartText, Mode=OneWay}"
-                                     FontFamily="{StaticResource MonoFont}" FontSize="11" Padding="5,4" Margin="0,0,6,0"
+                                     FontFamily="{StaticResource MonoFont}" FontSize="10.5" Padding="5,4" Margin="0,0,6,0"
                                      ToolTip="Seconds, mm:ss, or hh:mm:ss.mmm" LostFocus="OnRangeEditCommitted"/>
                             <TextBox x:Name="endEditor" Grid.Column="7" Text="{Binding EndText, Mode=OneWay}"
-                                     FontFamily="{StaticResource MonoFont}" FontSize="11" Padding="5,4" Margin="0,0,8,0"
+                                     FontFamily="{StaticResource MonoFont}" FontSize="10.5" Padding="5,4" Margin="0,0,8,0"
                                      ToolTip="Seconds, mm:ss, or hh:mm:ss.mmm" LostFocus="OnRangeEditCommitted"/>
                             <TextBlock Grid.Column="8" Text="{Binding CdLengthText}" FontFamily="{StaticResource MonoFont}"
-                                       FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                       FontSize="10.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
                                        ToolTip="Length on the disc in minutes, seconds and CD frames, after sector alignment."/>
                         </Grid></DataTemplate></ListBox.ItemTemplate>
                     </ListBox>

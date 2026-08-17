@@ -6,7 +6,7 @@
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
 
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/>
         </Border.Effect>
@@ -26,8 +26,8 @@
                         <TextBlock Text="Batch Converter" Margin="10,0,0,0" FontSize="14" FontWeight="SemiBold"/>
                     </StackPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Style="{StaticResource MiniButton}" Click="OnAddFiles" Content="＋ Add Files" FontSize="11"/>
-                        <Button Style="{StaticResource MiniButton}" Click="OnClearFiles" Content="Clear" FontSize="11" Margin="8,0,0,0"/>
+                        <Button Style="{StaticResource MiniButton}" Click="OnAddFiles" Content="＋ Add Files" FontSize="10.5"/>
+                        <Button Style="{StaticResource MiniButton}" Click="OnClearFiles" Content="Clear" FontSize="10.5" Margin="8,0,0,0"/>
                     </StackPanel>
                 </DockPanel>
             </Border>
@@ -41,8 +41,8 @@
                                 <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="12,8">
                                     <DockPanel>
                                         <TextBlock DockPanel.Dock="Right" Text="{Binding Status}" FontFamily="{StaticResource MonoFont}"
-                                                   FontSize="10" Foreground="{Binding StatusBrush}" VerticalAlignment="Center"/>
-                                        <TextBlock Text="{Binding Name}" FontSize="11.5" Foreground="#CDD3D9" TextTrimming="CharacterEllipsis"/>
+                                                   FontSize="10.5" Foreground="{Binding StatusBrush}" VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding Name}" FontSize="10.5" Foreground="{StaticResource TextDim}" TextTrimming="CharacterEllipsis"/>
                                     </DockPanel>
                                 </Border>
                             </DataTemplate>
@@ -61,19 +61,19 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel>
-                        <TextBlock Text="FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                        <TextBlock Text="FORMAT" Style="{StaticResource UpperLabel}"/>
                         <ComboBox x:Name="cmbFormat" Margin="0,5,0,0" Height="32" AutomationProperties.Name="Output format"/>
                     </StackPanel>
                     <StackPanel Grid.Column="2">
-                        <TextBlock Text="NORMALIZE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                        <TextBlock Text="NORMALIZE" Style="{StaticResource UpperLabel}"/>
                         <ComboBox x:Name="cmbNormalize" Margin="0,5,0,0" Height="32" AutomationProperties.Name="Normalization"/>
                     </StackPanel>
                     <StackPanel Grid.Column="4">
-                        <TextBlock Text="EFFECT CHAIN" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                        <TextBlock Text="EFFECT CHAIN" Style="{StaticResource UpperLabel}"/>
                         <ComboBox x:Name="cmbChain" Margin="0,5,0,0" Height="32" AutomationProperties.Name="Effects chain"/>
                     </StackPanel>
                 </Grid>
-                <TextBlock Text="OUTPUT FOLDER" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}" Margin="0,12,0,0"/>
+                <TextBlock Text="OUTPUT FOLDER" Margin="0,12,0,0" Style="{StaticResource UpperLabel}"/>
                 <DockPanel Margin="0,5,0,0">
                     <Button DockPanel.Dock="Right" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"
                             Height="32" Width="80" Margin="8,0,0,0" Click="OnBrowse" Content="Browse…"/>
@@ -83,7 +83,7 @@
                 <TextBlock x:Name="statusText" Margin="0,6,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"/>
             </StackPanel>
 
-            <Border Grid.Row="3" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="16,13">
+            <Border Grid.Row="3" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="20,14">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>

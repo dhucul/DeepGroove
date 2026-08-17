@@ -9,7 +9,7 @@
 
     <Window.Resources>
         <Style x:Key="SettingsCaption" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontSize" Value="10.5"/>
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="Foreground" Value="{StaticResource Faint}"/>
         </Style>
@@ -18,17 +18,13 @@
             <Setter Property="Foreground" Value="{StaticResource Faint}"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
-        <Style x:Key="HardwareCard" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource Panel}"/>
-            <Setter Property="BorderBrush" Value="{StaticResource LineSoft}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="9"/>
-            <Setter Property="Padding" Value="14"/>
+        <!-- Card, plus the margin that stacks them down the hardware page. -->
+        <Style x:Key="HardwareCard" TargetType="Border" BasedOn="{StaticResource Card}">
             <Setter Property="Margin" Value="0,0,0,12"/>
         </Style>
     </Window.Resources>
 
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/>
         </Border.Effect>
@@ -73,7 +69,7 @@
                             <Slider x:Name="sldUndo" Width="300" Minimum="64" Maximum="4096" TickFrequency="64" IsSnapToTickEnabled="True"
                                     AutomationProperties.Name="Undo history memory limit"
                                     ValueChanged="OnUndoSliderChanged"/>
-                            <TextBlock x:Name="lblUndo" Margin="12,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                            <TextBlock x:Name="lblUndo" Margin="12,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                        Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
                         </StackPanel>
                         <TextBlock Margin="0,6,0,0" Style="{StaticResource SettingsHint}"
@@ -94,7 +90,7 @@
                                             Margin="8,0,0,0" Content="● Test Input" Click="OnTestInput"/>
                                 </StackPanel>
                                 <StackPanel Margin="0,0,12,0">
-                                    <TextBlock Text="AUDIO HARDWARE" FontSize="15" FontWeight="SemiBold"/>
+                                    <TextBlock Text="AUDIO HARDWARE" FontSize="14" FontWeight="SemiBold"/>
                                     <TextBlock x:Name="txtHardwareStatus" Margin="0,4,0,0" Style="{StaticResource SettingsHint}"/>
                                 </StackPanel>
                             </DockPanel>
@@ -185,7 +181,7 @@
                                             <TextBlock Text="PLAYBACK REQUEST" Style="{StaticResource SettingsCaption}"/>
                                             <DockPanel Margin="0,8,0,0">
                                                 <TextBlock x:Name="lblBuffer" DockPanel.Dock="Right" Margin="12,0,0,0"
-                                                           FontFamily="{StaticResource MonoFont}" FontSize="11.5" Foreground="{StaticResource Muted}"/>
+                                                           FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Muted}"/>
                                                 <Slider x:Name="sldBuffer" Minimum="3" Maximum="500" TickFrequency="1"
                                                         AutomationProperties.Name="Playback buffer duration" ValueChanged="OnBufferSliderChanged"/>
                                             </DockPanel>
@@ -194,7 +190,7 @@
                                             <TextBlock Text="CAPTURE REQUEST" Style="{StaticResource SettingsCaption}"/>
                                             <DockPanel Margin="0,8,0,0">
                                                 <TextBlock x:Name="lblCaptureBuffer" DockPanel.Dock="Right" Margin="12,0,0,0"
-                                                           FontFamily="{StaticResource MonoFont}" FontSize="11.5" Foreground="{StaticResource Muted}"/>
+                                                           FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Muted}"/>
                                                 <Slider x:Name="sldCaptureBuffer" Minimum="3" Maximum="500" TickFrequency="1"
                                                         AutomationProperties.Name="Capture buffer duration" ValueChanged="OnBufferSliderChanged"/>
                                             </DockPanel>
@@ -218,14 +214,14 @@
                                             <StackPanel>
                                                 <TextBlock Text="OUTPUT" Style="{StaticResource SettingsCaption}" Foreground="{StaticResource Accent}"/>
                                                 <TextBlock x:Name="txtOutputDetails" Margin="0,7,0,0" FontFamily="{StaticResource MonoFont}"
-                                                           FontSize="9.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                                                           FontSize="9" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                                             </StackPanel>
                                         </Border>
                                         <Border Grid.Column="2" Background="#101317" BorderBrush="{StaticResource LineSoft}" BorderThickness="1" CornerRadius="7" Padding="11">
                                             <StackPanel>
                                                 <TextBlock Text="INPUT" Style="{StaticResource SettingsCaption}" Foreground="{StaticResource Accent}"/>
                                                 <TextBlock x:Name="txtInputDetails" Margin="0,7,0,0" FontFamily="{StaticResource MonoFont}"
-                                                           FontSize="9.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                                                           FontSize="9" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                                             </StackPanel>
                                         </Border>
                                     </Grid>
@@ -243,7 +239,7 @@
                                     AutomationProperties.Name="Recording level assistant target ceiling"
                                     ValueChanged="OnTargetCeilingSliderChanged"/>
                             <TextBlock x:Name="lblTargetCeiling" Margin="12,0,0,0" FontFamily="{StaticResource MonoFont}"
-                                       FontSize="11.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                       FontSize="10.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
                         </StackPanel>
                         <Canvas x:Name="ceilingLandmarks" Width="300" Height="16" Margin="0,1,0,0"
                                 HorizontalAlignment="Left"/>
@@ -277,7 +273,7 @@
                 </Grid>
             </Grid>
 
-            <Border Grid.Row="2" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="16,13">
+            <Border Grid.Row="2" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="20,14">
                 <DockPanel>
                     <Button Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Height="34" Padding="14,0"
                             Click="OnRestoreDefaults" Content="↺ Restore Defaults" HorizontalAlignment="Left"/>

@@ -6,7 +6,7 @@
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
 
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect>
             <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/>
         </Border.Effect>
@@ -20,7 +20,7 @@
             </Border>
 
             <StackPanel Margin="20,18">
-                <TextBlock Text="FORMAT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                <TextBlock Text="FORMAT" Style="{StaticResource UpperLabel}"/>
                 <ComboBox x:Name="cmbFormat" Margin="0,6,0,0" MaxDropDownHeight="420"
                           AutomationProperties.Name="Export format"
                           SelectionChanged="OnFormatChanged">
@@ -28,8 +28,7 @@
                         <GroupStyle>
                             <GroupStyle.HeaderTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding Name}" Margin="10,9,10,4" FontSize="9.5"
-                                               FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                                    <TextBlock Text="{Binding Name}" Margin="10,9,10,4" Style="{StaticResource UpperLabel}"/>
                                 </DataTemplate>
                             </GroupStyle.HeaderTemplate>
                         </GroupStyle>
@@ -45,23 +44,23 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel x:Name="bitratePanel">
-                        <TextBlock Text="BITRATE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                        <TextBlock Text="BITRATE" Style="{StaticResource UpperLabel}"/>
                         <ComboBox x:Name="cmbBitrate" Margin="0,6,0,0" AutomationProperties.Name="Export bitrate"/>
                     </StackPanel>
                     <StackPanel Grid.Column="2">
-                        <TextBlock Text="SAMPLE RATE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                        <TextBlock Text="SAMPLE RATE" Style="{StaticResource UpperLabel}"/>
                         <ComboBox x:Name="cmbRate" Margin="0,6,0,0" AutomationProperties.Name="Export sample rate"/>
                     </StackPanel>
                 </Grid>
 
-                <TextBlock Text="RANGE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}" Margin="0,14,0,0"/>
+                <TextBlock Text="RANGE" Margin="0,14,0,0" Style="{StaticResource UpperLabel}"/>
                 <ComboBox x:Name="cmbRange" Margin="0,6,0,0" AutomationProperties.Name="Export range"/>
 
-                <TextBlock x:Name="busyText" Margin="0,14,0,0" FontSize="11.5" Foreground="{StaticResource Accent}"
+                <TextBlock x:Name="busyText" Margin="0,14,0,0" FontSize="10.5" Foreground="{StaticResource Accent}"
                            Text="Exporting…" Visibility="Collapsed"/>
             </StackPanel>
 
-            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="16,13">
+            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="20,14">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>

@@ -1,4 +1,4 @@
-﻿<Window x:Class="WaveLab.Views.MainWindow"
+<Window x:Class="WaveLab.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:c="clr-namespace:WaveLab.Views.Controls"
@@ -71,17 +71,17 @@
             <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                     <GradientStop Color="#181C21" Offset="0"/>
-                    <GradientStop Color="#14171B" Offset="1"/>
+                    <GradientStop Color="{StaticResource PanelColor}" Offset="1"/>
                 </LinearGradientBrush>
             </Border.Background>
             <DockPanel LastChildFill="False">
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="14,0,0,0">
-                    <Border Width="20" Height="20" CornerRadius="5" Background="#173A36" VerticalAlignment="Center">
+                    <Border Width="20" Height="20" CornerRadius="5" Background="{StaticResource AccentWell}" VerticalAlignment="Center">
                         <Path Data="M2,10 L3.5,10 4.5,6.5 6,13 7.5,3 9,16 10.5,7 11.5,10 17,10"
                               Stroke="{StaticResource Accent}" StrokeThickness="1.4" StrokeLineJoin="Round"
                               StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="Uniform" Margin="3"/>
                     </Border>
-                    <TextBlock VerticalAlignment="Center" Margin="9,0,0,0" FontSize="13.5" FontWeight="Bold">
+                    <TextBlock VerticalAlignment="Center" Margin="9,0,0,0" FontSize="14" FontWeight="Bold">
                         <Run Text="WAVE" Foreground="{StaticResource Text}"/><Run Text="LAB" Foreground="{StaticResource Accent}"/>
                     </TextBlock>
                     <TextBlock VerticalAlignment="Center" Margin="22,0,0,0" FontSize="12.5"
@@ -272,26 +272,26 @@
             <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                     <GradientStop Color="#171B20" Offset="0"/>
-                    <GradientStop Color="#14171B" Offset="1"/>
+                    <GradientStop Color="{StaticResource PanelColor}" Offset="1"/>
                 </LinearGradientBrush>
             </Border.Background>
             <DockPanel Margin="14,0" LastChildFill="True">
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Style="{StaticResource ToolButton}" Width="32" Height="32" Command="{Binding OpenCommand}" ToolTip="Open (Ctrl+O)"
                             AutomationProperties.Name="Open file">
-                        <Path Data="M1,4 L1,12 13,12 13,5 6.5,5 5,3 1,3 Z" Stroke="#CFD4DA" StrokeThickness="1.2" StrokeLineJoin="Round"/>
+                        <Path Data="M1,4 L1,12 13,12 13,5 6.5,5 5,3 1,3 Z" Stroke="{StaticResource TextDim}" StrokeThickness="1.2" StrokeLineJoin="Round"/>
                     </Button>
                     <Button Style="{StaticResource ToolButton}" Width="32" Height="32" Margin="6,0,0,0" Command="{Binding SaveCommand}" ToolTip="Save (Ctrl+S)"
                             AutomationProperties.Name="Save active file">
                         <Path Data="M2,2 L10,2 12,4 12,12 2,12 Z M4,2 L4,5.5 9,5.5 9,2 M4,8.5 L10,8.5 10,12 4,12 Z"
-                              Stroke="#CFD4DA" StrokeThickness="1.1" StrokeLineJoin="Round"/>
+                              Stroke="{StaticResource TextDim}" StrokeThickness="1.1" StrokeLineJoin="Round"/>
                     </Button>
 
                     <Rectangle Width="1" Height="34" Fill="{StaticResource Line}" Margin="14,0"/>
 
                     <Button Style="{StaticResource ToolButton}" Command="{Binding GoToStartCommand}" ToolTip="Go to start (Home)"
                             AutomationProperties.Name="Go to start">
-                        <Path Data="M2,1.5 L2,13.5 M13,1.5 L5,7.5 13,13.5 Z" Stroke="#CFD4DA" StrokeThickness="1.4" StrokeLineJoin="Round"/>
+                        <Path Data="M2,1.5 L2,13.5 M13,1.5 L5,7.5 13,13.5 Z" Stroke="{StaticResource TextDim}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
                     </Button>
                     <Button x:Name="playBtn" Style="{StaticResource ToolButton}" Width="46" Margin="6,0,0,0"
                             Command="{Binding PlayCommand}" ToolTip="Play / Pause (Space)"
@@ -332,7 +332,7 @@
                     </Button>
                     <Button Style="{StaticResource ToolButton}" Margin="6,0,0,0" Command="{Binding StopCommand}" ToolTip="Stop"
                             AutomationProperties.Name="Stop playback or recording">
-                        <Rectangle Width="11" Height="11" RadiusX="1.5" RadiusY="1.5" Fill="#CFD4DA"/>
+                        <Rectangle Width="11" Height="11" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource TextDim}"/>
                     </Button>
                     <ToggleButton Style="{StaticResource RecordArmButton}" Margin="6,0,0,0"
                                   IsChecked="{Binding IsRecordArmed}" IsEnabled="{Binding CanChangeRecordArm}"
@@ -370,7 +370,7 @@
                     </Button>
                     <ToggleButton Style="{StaticResource ToolButton}" Margin="6,0,0,0" IsChecked="{Binding IsLooping}" ToolTip="Loop playback"
                                   AutomationProperties.Name="Loop playback">
-                        <Path Data="M3,8 A5,4.5 0 1 1 4.5,11.2 M3,8 L3,4.5 M3,8 L6.5,8" Stroke="#CFD4DA"
+                        <Path Data="M3,8 A5,4.5 0 1 1 4.5,11.2 M3,8 L3,4.5 M3,8 L6.5,8" Stroke="{StaticResource TextDim}"
                               StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </ToggleButton>
 
@@ -381,11 +381,11 @@
                     <Rectangle Width="1" Height="34" Fill="{StaticResource Line}" Margin="14,0"/>
 
                     <!-- timecode -->
-                    <Border Background="#0B0D0F" BorderBrush="{StaticResource Line}" BorderThickness="1"
+                    <Border Background="{StaticResource MeterBg}" BorderBrush="{StaticResource Line}" BorderThickness="1"
                             CornerRadius="9" Padding="16,5" VerticalAlignment="Center" MinWidth="225">
                         <StackPanel>
                             <TextBlock Text="POSITION" FontSize="9" FontWeight="SemiBold" Foreground="{StaticResource Faint}"/>
-                            <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="23" Foreground="{StaticResource Accent}"
+                            <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="26" Foreground="{StaticResource Accent}"
                                        Text="{Binding ActiveDocument.PositionText, FallbackValue=00:00:00.000}"/>
                         </StackPanel>
                     </Border>
@@ -396,17 +396,17 @@
                         <StackPanel Orientation="Horizontal">
                             <StackPanel Margin="0,0,18,0">
                                 <TextBlock Text="SEL IN" FontSize="9" FontWeight="SemiBold" Foreground="{StaticResource Faint}"/>
-                                <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="13" Foreground="#CDD3D9"
+                                <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="12.5" Foreground="{StaticResource TextDim}"
                                            Text="{Binding ActiveDocument.SelInText, FallbackValue=—}"/>
                             </StackPanel>
                             <StackPanel Margin="0,0,18,0">
                                 <TextBlock Text="SEL OUT" FontSize="9" FontWeight="SemiBold" Foreground="{StaticResource Faint}"/>
-                                <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="13" Foreground="#CDD3D9"
+                                <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="12.5" Foreground="{StaticResource TextDim}"
                                            Text="{Binding ActiveDocument.SelOutText, FallbackValue=—}"/>
                             </StackPanel>
                             <StackPanel>
                                 <TextBlock Text="LENGTH" FontSize="9" FontWeight="SemiBold" Foreground="{StaticResource Faint}"/>
-                                <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="13" Foreground="#CDD3D9"
+                                <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="12.5" Foreground="{StaticResource TextDim}"
                                            Text="{Binding ActiveDocument.SelLenText, FallbackValue=—}"/>
                             </StackPanel>
                         </StackPanel>
@@ -437,23 +437,23 @@
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource LineSoft}" BorderThickness="1"
                             CornerRadius="9" Padding="14,8" VerticalAlignment="Center">
-                        <TextBlock FontSize="11.5" Foreground="{StaticResource Muted}"
+                        <TextBlock FontSize="10.5" Foreground="{StaticResource Muted}"
                                    Text="{Binding ActiveDocument.FormatText, FallbackValue=No file loaded}"/>
                     </Border>
                     <Button Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="14,0,0,0"
                             Command="{Binding ZoomOutCommand}" ToolTip="Zoom out (Ctrl+-)" AutomationProperties.Name="Zoom out">
                         <Path Data="M5.5,1 A4.5,4.5 0 1 0 5.5,10 A4.5,4.5 0 1 0 5.5,1 M9,9 L12.5,12.5 M3.5,5.5 L7.5,5.5"
-                              Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                              Stroke="{StaticResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </Button>
                     <Button Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
                             Command="{Binding ZoomInCommand}" ToolTip="Zoom in (Ctrl+=)" AutomationProperties.Name="Zoom in">
                         <Path Data="M5.5,1 A4.5,4.5 0 1 0 5.5,10 A4.5,4.5 0 1 0 5.5,1 M9,9 L12.5,12.5 M3.5,5.5 L7.5,5.5 M5.5,3.5 L5.5,7.5"
-                              Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                              Stroke="{StaticResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </Button>
                     <Button Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
                             Command="{Binding ZoomFitCommand}" ToolTip="Zoom to fit (Ctrl+0)" AutomationProperties.Name="Zoom to fit">
                         <Path Data="M1,5 L1,1 5,1 M9,1 L13,1 13,5 M13,9 L13,13 9,13 M5,13 L1,13 1,9"
-                              Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                              Stroke="{StaticResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                     </Button>
                 </StackPanel>
             </DockPanel>
@@ -477,7 +477,7 @@
                               Command="{Binding UseRectangleToolCommand}"
                               ToolTip="Rectangle — a time span crossed with a frequency band"
                               AutomationProperties.Name="Rectangle selection tool">
-                    <Rectangle Width="13" Height="11" Stroke="#9AA1A9" StrokeThickness="1.3"
+                    <Rectangle Width="13" Height="11" Stroke="{StaticResource Muted}" StrokeThickness="1.3"
                                StrokeDashArray="2.5 2" Fill="Transparent"/>
                 </ToggleButton>
                 <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
@@ -486,7 +486,7 @@
                               ToolTip="Lasso — follow the shape of the defect"
                               AutomationProperties.Name="Lasso selection tool">
                     <Path Data="M2,7 C2,3 5,1 8,2 C12,3 13,7 10,9 C7,11 3,10 2,7 M6,10 L5,13"
-                          Stroke="#9AA1A9" StrokeThickness="1.3" StrokeDashArray="2.5 2"
+                          Stroke="{StaticResource Muted}" StrokeThickness="1.3" StrokeDashArray="2.5 2"
                           StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                 </ToggleButton>
                 <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
@@ -495,7 +495,7 @@
                               ToolTip="Magic wand — grow a region through connected energy"
                               AutomationProperties.Name="Magic wand selection tool">
                     <Path Data="M7,1 L8.4,5 L12.5,6.4 L8.4,7.8 L7,12 L5.6,7.8 L1.5,6.4 L5.6,5 Z"
-                          Stroke="#9AA1A9" StrokeThickness="1.2" StrokeLineJoin="Round"/>
+                          Stroke="{StaticResource Muted}" StrokeThickness="1.2" StrokeLineJoin="Round"/>
                 </ToggleButton>
                 <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
                               IsChecked="{Binding IsHarmonicTool, Mode=OneWay}"
@@ -503,7 +503,7 @@
                               ToolTip="Harmonic — a fundamental and its partials together"
                               AutomationProperties.Name="Harmonic selection tool">
                     <Path Data="M1,12 L13,12 M1,9 L13,9 M1,5.5 L13,5.5 M1,1.5 L13,1.5"
-                          Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round"
+                          Stroke="{StaticResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round"
                           StrokeEndLineCap="Round"/>
                 </ToggleButton>
 
@@ -538,13 +538,13 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="SELECTION" FontSize="9" FontWeight="SemiBold" VerticalAlignment="Center"
                                    Foreground="{StaticResource Faint}"/>
-                        <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="11.5" Margin="8,0,0,0"
-                                   VerticalAlignment="Center" Foreground="#CDD3D9"
+                        <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="10.5" Margin="8,0,0,0"
+                                   VerticalAlignment="Center" Foreground="{StaticResource TextDim}"
                                    Text="{Binding SpectralSpanText, FallbackValue=—}"/>
                         <TextBlock Text="BAND" FontSize="9" FontWeight="SemiBold" Margin="16,0,0,0"
                                    VerticalAlignment="Center" Foreground="{StaticResource Faint}"/>
-                        <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="11.5" Margin="8,0,0,0"
-                                   VerticalAlignment="Center" Foreground="#CDD3D9"
+                        <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="10.5" Margin="8,0,0,0"
+                                   VerticalAlignment="Center" Foreground="{StaticResource TextDim}"
                                    Text="{Binding SpectralBandText, FallbackValue=—}"/>
                     </StackPanel>
                 </Border>
@@ -592,7 +592,7 @@
 
 
                 <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,14,0"
-                           FontSize="11" Foreground="{StaticResource Faint}"
+                           FontSize="10.5" Foreground="{StaticResource Faint}"
                            Text="{Binding SpectralToolHint}"
                            Visibility="{Binding NeedsSpectralSelection, Converter={StaticResource BoolToVis}}"/>
             </DockPanel>
@@ -614,14 +614,14 @@
                                      Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}"/>
                             <Border Margin="0,0,7,0" Padding="5,1" CornerRadius="3" Background="#20262E"
                                     VerticalAlignment="Center">
-                                <TextBlock Text="{Binding Kind}" FontSize="8.5" Foreground="{StaticResource Faint}"/>
+                                <TextBlock Text="{Binding Kind}" FontSize="9" Foreground="{StaticResource Faint}"/>
                             </Border>
-                            <TextBlock Text="{Binding Title}" FontSize="12" Foreground="{StaticResource Text}"/>
+                            <TextBlock Text="{Binding Title}" FontSize="12.5" Foreground="{StaticResource Text}"/>
                             <Button Margin="8,0,0,0" Padding="2" Background="Transparent" BorderThickness="0"
                                     Foreground="{StaticResource Faint}" Cursor="Hand"
                                     Command="{Binding DataContext.CloseTabCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                     CommandParameter="{Binding}" AutomationProperties.Name="Close file tab">
-                                <TextBlock Text="×" FontSize="13"/>
+                                <TextBlock Text="×" FontSize="12.5"/>
                             </Button>
                         </StackPanel>
                     </DataTemplate>
@@ -652,7 +652,7 @@
                 <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
                         Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}"
                         BorderThickness="0,0,1,0">
-                    <TextBlock Text="dBFS" FontFamily="{StaticResource MonoFont}" FontSize="8.5"
+                    <TextBlock Text="dBFS" FontFamily="{StaticResource MonoFont}" FontSize="9"
                                Foreground="{StaticResource Faint}" HorizontalAlignment="Center"
                                VerticalAlignment="Bottom" Margin="0,0,0,6"/>
                 </Border>
@@ -740,8 +740,7 @@
                     <Border Grid.Row="0" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
                         <DockPanel Margin="14,0" VerticalAlignment="Center">
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding Master.RackStateText}" Margin="0,0,7,0" FontSize="8.5"
-                                           FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding Master.RackStateText}" Margin="0,0,7,0" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
                                 <ToggleButton Style="{StaticResource Switch}" IsChecked="{Binding Master.RackEnabled}"
                                               ToolTip="Enable or bypass the entire effects rack"
                                               AutomationProperties.Name="Enable or bypass effects rack"/>
@@ -781,22 +780,22 @@
                                     Command="{Binding Master.SavePresetCommand}" ToolTip="Save current chain as preset"
                                     AutomationProperties.Name="Save rack preset">
                                 <Path Data="M2,2 L10,2 12,4 12,12 2,12 Z M4,2 L4,5.5 9,5.5 9,2 M4,8.5 L10,8.5 10,12 4,12 Z"
-                                      Stroke="#9AA1A9" StrokeThickness="1.1" StrokeLineJoin="Round"/>
+                                      Stroke="{StaticResource Muted}" StrokeThickness="1.1" StrokeLineJoin="Round"/>
                             </Button>
                             <Button Grid.Column="2" Style="{StaticResource ToolButton}" Width="30" Height="30" Margin="6,0,0,0"
                                     Command="{Binding Master.ResetChainCommand}" ToolTip="Reset chain to EQ + Limiter"
                                     AutomationProperties.Name="Reset effects rack">
-                                <Path Data="M3,7 A5,4.5 0 1 1 4.5,10.2 M3,7 L3,3.5 M3,7 L6.5,7" Stroke="#9AA1A9"
+                                <Path Data="M3,7 A5,4.5 0 1 1 4.5,10.2 M3,7 L3,3.5 M3,7 L6.5,7" Stroke="{StaticResource Muted}"
                                       StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                             </Button>
                             <Button x:Name="analyzeCleanupBtn" Grid.Column="3" Style="{StaticResource ToolButton}"
-                                    Width="30" Height="30" Margin="6,0,0,0" Content="✦" FontSize="13"
+                                    Width="30" Height="30" Margin="6,0,0,0" Content="✦" FontSize="12.5"
                                     Foreground="{StaticResource Accent}" Click="OnAnalyzeCleanupMenu"
                                     IsEnabled="{Binding CanAnalyzeCleanup}"
                                     ToolTip="Analyze this file and tune Vinyl Cleanup or Clean Transfer"
                                     AutomationProperties.Name="Analyze and tune cleanup"/>
                         </Grid>
-                        <TextBlock Text="{Binding Master.RackStatusText}" Margin="14,5,12,0" FontSize="9.5"
+                        <TextBlock Text="{Binding Master.RackStatusText}" Margin="14,5,12,0" FontSize="9"
                                    Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
                     </StackPanel>
 
@@ -822,13 +821,13 @@
                                                             <ToggleButton Style="{StaticResource PowerLed}" IsChecked="{Binding Enabled}"
                                                                           ToolTip="Enable or bypass this effect" AutomationProperties.Name="Enable or bypass effect"/>
                                                             <Button Style="{StaticResource MiniButton}" Margin="4,0,0,0" VerticalAlignment="Center"
-                                                                    Command="{Binding MoveUpCommand}" ToolTip="Move up" Content="▲" FontSize="8" AutomationProperties.Name="Move effect up"/>
+                                                                    Command="{Binding MoveUpCommand}" ToolTip="Move up" Content="▲" FontSize="9" AutomationProperties.Name="Move effect up"/>
                                                             <Button Style="{StaticResource MiniButton}" VerticalAlignment="Center"
-                                                                    Command="{Binding MoveDownCommand}" ToolTip="Move down" Content="▼" FontSize="8" AutomationProperties.Name="Move effect down"/>
+                                                                    Command="{Binding MoveDownCommand}" ToolTip="Move down" Content="▼" FontSize="9" AutomationProperties.Name="Move effect down"/>
                                                             <Button Style="{StaticResource MiniButton}" VerticalAlignment="Center"
-                                                                    Command="{Binding ResetCommand}" ToolTip="Set to defaults" Content="↺" FontSize="11" AutomationProperties.Name="Reset effect parameters"/>
+                                                                    Command="{Binding ResetCommand}" ToolTip="Set to defaults" Content="↺" FontSize="10.5" AutomationProperties.Name="Reset effect parameters"/>
                                                             <Button Style="{StaticResource MiniButton}" VerticalAlignment="Center" Command="{Binding RemoveCommand}"
-                                                                    ToolTip="Remove from rack and stop processing" Content="✕" FontSize="10" AutomationProperties.Name="Remove effect"/>
+                                                                    ToolTip="Remove from rack and stop processing" Content="✕" FontSize="10.5" AutomationProperties.Name="Remove effect"/>
                                                         </StackPanel>
                                                         <!-- Trimmed, because a plugin names itself and some of them are long.
                                                              Without this the name runs under the power LED and is cut mid-glyph,
@@ -836,7 +835,7 @@
                                                         <StackPanel Margin="9,0,0,0" VerticalAlignment="Center">
                                                             <TextBlock Text="{Binding DisplayName}" FontSize="12.5" FontWeight="SemiBold"
                                                                        TextTrimming="CharacterEllipsis" ToolTip="{Binding DisplayName}"/>
-                                                            <TextBlock Text="{Binding CategoryLabel}" FontSize="7.5" FontWeight="Bold"
+                                                            <TextBlock Text="{Binding CategoryLabel}" FontSize="9" FontWeight="Bold"
                                                                        Foreground="{StaticResource Faint}" Margin="0,1.5,0,0"
                                                                        TextTrimming="CharacterEllipsis"/>
                                                         </StackPanel>
@@ -868,7 +867,7 @@
                                                                 <ColumnDefinition Width="Auto"/>
                                                             </Grid.ColumnDefinitions>
 
-                                                            <TextBlock Text="◫" FontSize="11" VerticalAlignment="Center" Margin="0,0,9,0">
+                                                            <TextBlock Text="◫" FontSize="10.5" VerticalAlignment="Center" Margin="0,0,9,0">
                                                                 <TextBlock.Style>
                                                                     <Style TargetType="TextBlock">
                                                                         <Setter Property="Foreground" Value="{StaticResource Faint}"/>
@@ -885,7 +884,7 @@
                                                             </TextBlock>
 
                                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                                <TextBlock Text="{Binding ResponseTitle}" FontSize="11"
+                                                                <TextBlock Text="{Binding ResponseTitle}" FontSize="10.5"
                                                                            TextTrimming="CharacterEllipsis"
                                                                            ToolTip="{Binding ResponseTooltip}">
                                                                     <TextBlock.Style>
@@ -893,7 +892,7 @@
                                                                             <Setter Property="Foreground" Value="{StaticResource Faint}"/>
                                                                             <Style.Triggers>
                                                                                 <DataTrigger Binding="{Binding ResponseLoaded}" Value="True">
-                                                                                    <Setter Property="Foreground" Value="#C6CBD1"/>
+                                                                                    <Setter Property="Foreground" Value="{StaticResource TextDim}"/>
                                                                                 </DataTrigger>
                                                                                 <DataTrigger Binding="{Binding ResponseMissing}" Value="True">
                                                                                     <Setter Property="Foreground" Value="#F0C486"/>
@@ -902,7 +901,7 @@
                                                                         </Style>
                                                                     </TextBlock.Style>
                                                                 </TextBlock>
-                                                                <TextBlock Text="{Binding ResponseDetail}" FontSize="8.5" Margin="0,2,0,0"
+                                                                <TextBlock Text="{Binding ResponseDetail}" FontSize="9" Margin="0,2,0,0"
                                                                            FontFamily="{StaticResource MonoFont}"
                                                                            Foreground="{StaticResource Faint}"
                                                                            TextTrimming="CharacterEllipsis"/>
@@ -916,7 +915,7 @@
                                                                     <ControlTemplate TargetType="Button">
                                                                         <Border x:Name="face" CornerRadius="4" Background="#181D2C"
                                                                                 BorderBrush="#3A4A78" BorderThickness="1" Padding="8,3">
-                                                                            <TextBlock Text="{Binding ResponseAction}" FontSize="9.5"
+                                                                            <TextBlock Text="{Binding ResponseAction}" FontSize="9"
                                                                                        Foreground="{StaticResource Periwinkle}"/>
                                                                         </Border>
                                                                         <ControlTemplate.Triggers>
@@ -946,20 +945,19 @@
                                                                             <ColumnDefinition Width="*"/>
                                                                             <ColumnDefinition Width="Auto"/>
                                                                         </Grid.ColumnDefinitions>
-                                                                        <TextBlock Text="{Binding Label}" FontSize="8.5" FontWeight="Bold"
-                                                                                   Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
+                                                                        <TextBlock Text="{Binding Label}" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
                                                                         <Slider Grid.Column="1" Minimum="{Binding Min}" Maximum="{Binding Max}"
                                                                                 Value="{Binding Value}" Margin="2,0,8,0" VerticalAlignment="Center" AutomationProperties.Name="{Binding Label}"/>
                                                                         <Border Grid.Column="2" Background="{StaticResource WellDeep}" BorderBrush="{StaticResource LineSoft}"
                                                                                 BorderThickness="1" CornerRadius="4" Padding="7,1" MinWidth="58" VerticalAlignment="Center">
                                                                             <TextBlock Text="{Binding ValueText}" FontFamily="{StaticResource MonoFont}"
-                                                                                       FontSize="9.5" Foreground="#C6CBD1" TextAlignment="Center"/>
+                                                                                       FontSize="9" Foreground="{StaticResource TextDim}" TextAlignment="Center"/>
                                                                         </Border>
                                                                     </Grid>
                                                                 </DataTemplate>
                                                             </ItemsControl.ItemTemplate>
                                                         </ItemsControl>
-                                                        <TextBlock Text="{Binding Readout}" FontFamily="{StaticResource MonoFont}" FontSize="10"
+                                                        <TextBlock Text="{Binding Readout}" FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                                                    Foreground="{StaticResource Amber}" HorizontalAlignment="Right" Margin="0,4,0,0"
                                                                    Visibility="{Binding HasReadout, Converter={StaticResource BoolToVis}}"/>
 
@@ -967,7 +965,7 @@
                                                         <Border Background="{StaticResource WellDeep}" BorderBrush="{StaticResource LineSoft}"
                                                                 BorderThickness="1" CornerRadius="6" Padding="8,6" Margin="0,7,0,0"
                                                                 Visibility="{Binding HasPluginNote, Converter={StaticResource BoolToVis}}">
-                                                            <TextBlock Text="{Binding PluginNote}" FontSize="10" LineHeight="15"
+                                                            <TextBlock Text="{Binding PluginNote}" FontSize="10.5" LineHeight="15"
                                                                        Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
                                                         </Border>
 
@@ -1009,12 +1007,12 @@
                                         <Grid Margin="0,1,0,0">
                                             <Rectangle x:Name="dash" RadiusX="10" RadiusY="10" Stroke="{StaticResource Line}"
                                                        StrokeThickness="1.2" StrokeDashArray="5 4"/>
-                                            <TextBlock x:Name="txt" Text="＋  Add Effect" FontSize="11.5" Foreground="{StaticResource Faint}"
+                                            <TextBlock x:Name="txt" Text="＋  Add Effect" FontSize="10.5" Foreground="{StaticResource Faint}"
                                                        HorizontalAlignment="Center" Margin="0,10"/>
                                         </Grid>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="dash" Property="Stroke" Value="#2E5A54"/>
+                                                <Setter TargetName="dash" Property="Stroke" Value="{StaticResource AccentEdge}"/>
                                                 <Setter TargetName="txt" Property="Foreground" Value="{StaticResource Muted}"/>
                                             </Trigger>
                                         </ControlTemplate.Triggers>
@@ -1046,22 +1044,22 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
                                 </Grid.RowDefinitions>
-                                <TextBlock Text="LUFS INT" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="1" Text="{Binding Master.LufsIntText}" FontFamily="{StaticResource MonoFont}" FontSize="15" Foreground="{StaticResource Accent}" TextAlignment="Right"/>
-                                <TextBlock Grid.Row="1" Text="SHORT-TERM" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Master.LufsSText}" FontFamily="{StaticResource MonoFont}" FontSize="11" Foreground="#DFE4E9" TextAlignment="Right"/>
-                                <TextBlock Grid.Row="2" Text="TRUE PEAK" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Master.TruePeakText}" FontFamily="{StaticResource MonoFont}" FontSize="11" Foreground="{StaticResource Green}" TextAlignment="Right"/>
-                                <TextBlock Grid.Row="3" Text="RANGE (LU)" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Master.LraText}" FontFamily="{StaticResource MonoFont}" FontSize="11" Foreground="#DFE4E9" TextAlignment="Right"/>
-                                <TextBlock Grid.Row="4" Text="CORRELATION" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding Master.CorrelationText}" FontFamily="{StaticResource MonoFont}" FontSize="11" Foreground="#DFE4E9" TextAlignment="Right"/>
+                                <TextBlock Text="LUFS INT" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Master.LufsIntText}" FontFamily="{StaticResource MonoFont}" FontSize="14" Foreground="{StaticResource Accent}" TextAlignment="Right"/>
+                                <TextBlock Grid.Row="1" Text="SHORT-TERM" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Master.LufsSText}" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Text}" TextAlignment="Right"/>
+                                <TextBlock Grid.Row="2" Text="TRUE PEAK" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Master.TruePeakText}" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Green}" TextAlignment="Right"/>
+                                <TextBlock Grid.Row="3" Text="RANGE (LU)" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
+                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Master.LraText}" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Text}" TextAlignment="Right"/>
+                                <TextBlock Grid.Row="4" Text="CORRELATION" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
+                                <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding Master.CorrelationText}" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Text}" TextAlignment="Right"/>
                             </Grid>
                             <Button Grid.Column="2" Style="{StaticResource MiniButton}" Width="24" Height="24" Margin="7,0,0,0"
                                     VerticalAlignment="Top" Command="{Binding Master.ResetMetersCommand}"
                                     ToolTip="Reset level and loudness meters" AutomationProperties.Name="Reset meters">
                                 <Path Data="M3,7 A5,4.5 0 1 1 4.5,10.2 M3,7 L3,3.5 M3,7 L6.5,7"
-                                      Stroke="#9AA1A9" StrokeThickness="1.3" StrokeStartLineCap="Round"
+                                      Stroke="{StaticResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round"
                                       StrokeEndLineCap="Round"/>
                             </Button>
                         </Grid>
@@ -1083,10 +1081,10 @@
                                  which reads as a drawing fault rather than as text that did not fit.
                                  The full sentence is in the tool tip, where there is room for it. -->
                             <StackPanel>
-                                <TextBlock Text="Render in Place" FontSize="11.5" HorizontalAlignment="Center"
+                                <TextBlock Text="Render in Place" FontSize="10.5" HorizontalAlignment="Center"
                                            TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Text="UNDOABLE" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
-                                           FontSize="8.5" Foreground="{StaticResource Faint}" HorizontalAlignment="Center"
+                                           FontSize="9" Foreground="{StaticResource Faint}" HorizontalAlignment="Center"
                                            TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </Button>
@@ -1094,10 +1092,10 @@
                                 AutomationProperties.Name="Render effects to a new file tab"
                                 ToolTip="Render the whole file through the chain into a new tab without changing the source">
                             <StackPanel>
-                                <TextBlock Text="Render Copy" FontSize="11.5" HorizontalAlignment="Center"
+                                <TextBlock Text="Render Copy" FontSize="10.5" HorizontalAlignment="Center"
                                            TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Text="NEW TAB" Margin="0,2,0,0" FontFamily="{StaticResource MonoFont}"
-                                           FontSize="8.5" Foreground="#8DD7CC" HorizontalAlignment="Center"
+                                           FontSize="9" Foreground="{StaticResource TealText}" HorizontalAlignment="Center"
                                            TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </Button>
@@ -1170,39 +1168,37 @@
                     BorderBrush="{StaticResource Line}" BorderThickness="1,0,0,0">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="montageInspector" Margin="12,11">
-                        <TextBlock x:Name="montageClipTitle" FontSize="10" FontWeight="Bold"
+                        <TextBlock x:Name="montageClipTitle" FontSize="10.5" FontWeight="Bold"
                                    Foreground="{StaticResource Muted}" Text="NO CLIP SELECTED"/>
                         <Border Margin="0,7,0,0" Height="1" Background="{StaticResource Line}"/>
 
                         <StackPanel x:Name="montageClipPanel" Visibility="Collapsed">
-                            <TextBlock Text="NAME" FontSize="9" FontWeight="Bold" Margin="0,11,0,0"
-                                       Foreground="{StaticResource Faint}"/>
+                            <TextBlock Text="NAME" Margin="0,11,0,0" Style="{StaticResource UpperLabel}"/>
                             <TextBox x:Name="montageClipName" Margin="0,5,0,0" Padding="9,5"
                                      LostFocus="OnMontageClipNameChanged"/>
 
                             <Grid Margin="0,9,0,0">
-                                <TextBlock Text="Source" Foreground="{StaticResource Muted}" FontSize="11.5"/>
-                                <TextBlock x:Name="montageClipSource" HorizontalAlignment="Right" FontSize="11"
-                                           Foreground="#C3CAD2" TextTrimming="CharacterEllipsis" MaxWidth="150"/>
+                                <TextBlock Text="Source" Foreground="{StaticResource Muted}" FontSize="10.5"/>
+                                <TextBlock x:Name="montageClipSource" HorizontalAlignment="Right" FontSize="10.5"
+                                           Foreground="{StaticResource TextDim}" TextTrimming="CharacterEllipsis" MaxWidth="150"/>
                             </Grid>
                             <Grid Margin="0,6,0,0">
-                                <TextBlock Text="Source in" Foreground="{StaticResource Muted}" FontSize="11.5"/>
-                                <TextBlock x:Name="montageClipIn" HorizontalAlignment="Right" FontSize="11"
+                                <TextBlock Text="Source in" Foreground="{StaticResource Muted}" FontSize="10.5"/>
+                                <TextBlock x:Name="montageClipIn" HorizontalAlignment="Right" FontSize="10.5"
                                            FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
                             </Grid>
                             <Grid Margin="0,6,0,0">
-                                <TextBlock Text="Length" Foreground="{StaticResource Muted}" FontSize="11.5"/>
-                                <TextBlock x:Name="montageClipLength" HorizontalAlignment="Right" FontSize="11"
+                                <TextBlock Text="Length" Foreground="{StaticResource Muted}" FontSize="10.5"/>
+                                <TextBlock x:Name="montageClipLength" HorizontalAlignment="Right" FontSize="10.5"
                                            FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
                             </Grid>
                             <Grid Margin="0,6,0,0">
-                                <TextBlock Text="At" Foreground="{StaticResource Muted}" FontSize="11.5"/>
-                                <TextBlock x:Name="montageClipAt" HorizontalAlignment="Right" FontSize="11"
+                                <TextBlock Text="At" Foreground="{StaticResource Muted}" FontSize="10.5"/>
+                                <TextBlock x:Name="montageClipAt" HorizontalAlignment="Right" FontSize="10.5"
                                            FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
                             </Grid>
 
-                            <TextBlock Text="GAIN" FontSize="9" FontWeight="Bold" Margin="0,13,0,0"
-                                       Foreground="{StaticResource Faint}"/>
+                            <TextBlock Text="GAIN" Margin="0,13,0,0" Style="{StaticResource UpperLabel}"/>
                             <Grid Margin="0,5,0,0">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/><ColumnDefinition Width="54"/>
@@ -1210,12 +1206,12 @@
                                 <Slider x:Name="montageClipGain" Minimum="-24" Maximum="12" Value="0"
                                         VerticalAlignment="Center" ValueChanged="OnMontageGainChanged"/>
                                 <TextBlock x:Name="montageClipGainText" Grid.Column="1" TextAlignment="Right"
-                                           FontFamily="{StaticResource MonoFont}" FontSize="11"
+                                           FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                            Foreground="{StaticResource Accent}" VerticalAlignment="Center"/>
                             </Grid>
 
-                            <TextBlock x:Name="montageFadeInLabel" Text="FADE IN" FontSize="9" FontWeight="Bold"
-                                       Margin="0,13,0,0" Foreground="{StaticResource Faint}"/>
+                            <TextBlock x:Name="montageFadeInLabel" Text="FADE IN"
+                                       Margin="0,13,0,0" Style="{StaticResource UpperLabel}"/>
                             <UniformGrid Rows="1" Margin="0,5,0,0">
                                 <ToggleButton x:Name="fadeInLin" Style="{StaticResource SegmentButton}" Content="Lin" Click="OnFadeInShape"/>
                                 <ToggleButton x:Name="fadeInPow" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="Pow" Click="OnFadeInShape"/>
@@ -1223,8 +1219,8 @@
                                 <ToggleButton x:Name="fadeInDb" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="dB" Click="OnFadeInShape"/>
                             </UniformGrid>
 
-                            <TextBlock x:Name="montageFadeOutLabel" Text="FADE OUT" FontSize="9" FontWeight="Bold"
-                                       Margin="0,11,0,0" Foreground="{StaticResource Faint}"/>
+                            <TextBlock x:Name="montageFadeOutLabel" Text="FADE OUT"
+                                       Margin="0,11,0,0" Style="{StaticResource UpperLabel}"/>
                             <UniformGrid Rows="1" Margin="0,5,0,0">
                                 <ToggleButton x:Name="fadeOutLin" Style="{StaticResource SegmentButton}" Content="Lin" Click="OnFadeOutShape"/>
                                 <ToggleButton x:Name="fadeOutPow" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="Pow" Click="OnFadeOutShape"/>
@@ -1233,29 +1229,29 @@
                             </UniformGrid>
 
                             <StackPanel x:Name="montageCrossfadePanel" Visibility="Collapsed">
-                                <TextBlock x:Name="montageCrossfadeLabel" FontSize="9" FontWeight="Bold"
-                                           Margin="0,15,0,0" Foreground="{StaticResource Faint}"
-                                           TextTrimming="CharacterEllipsis"/>
+                                <TextBlock x:Name="montageCrossfadeLabel"
+                                           Margin="0,15,0,0"
+                                           TextTrimming="CharacterEllipsis" Style="{StaticResource UpperLabel}"/>
                                 <Border Margin="0,6,0,0" Height="64" CornerRadius="6"
                                         Background="#0E1115" BorderBrush="#262D36" BorderThickness="1">
                                     <c:CrossfadeCurveView x:Name="montageCrossfadeCurve"/>
                                 </Border>
                                 <Grid Margin="0,8,0,0">
-                                    <TextBlock Text="Correlation" Foreground="{StaticResource Muted}" FontSize="11.5"/>
-                                    <TextBlock x:Name="montageCorrelation" HorizontalAlignment="Right" FontSize="11"
+                                    <TextBlock Text="Correlation" Foreground="{StaticResource Muted}" FontSize="10.5"/>
+                                    <TextBlock x:Name="montageCorrelation" HorizontalAlignment="Right" FontSize="10.5"
                                                FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
                                 </Grid>
                                 <Grid Margin="0,6,0,0">
-                                    <TextBlock Text="Length" Foreground="{StaticResource Muted}" FontSize="11.5"/>
-                                    <TextBlock x:Name="montageCrossfadeLength" HorizontalAlignment="Right" FontSize="11"
+                                    <TextBlock Text="Length" Foreground="{StaticResource Muted}" FontSize="10.5"/>
+                                    <TextBlock x:Name="montageCrossfadeLength" HorizontalAlignment="Right" FontSize="10.5"
                                                FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
                                 </Grid>
                                 <Border x:Name="montageLawPill" Margin="0,9,0,0" Padding="7,3" CornerRadius="9"
                                         HorizontalAlignment="Left" Background="#1B4A44" BorderBrush="#2C6B62"
                                         BorderThickness="1">
-                                    <TextBlock x:Name="montageLawText" FontSize="9.5" Foreground="#9BE9DC"/>
+                                    <TextBlock x:Name="montageLawText" FontSize="9" Foreground="{StaticResource TealText}"/>
                                 </Border>
-                                <TextBlock x:Name="montageCrossfadeNote" Margin="0,9,0,0" FontSize="10"
+                                <TextBlock x:Name="montageCrossfadeNote" Margin="0,9,0,0" FontSize="10.5"
                                            TextWrapping="Wrap" Foreground="{StaticResource Faint}"/>
                             </StackPanel>
                         </StackPanel>
@@ -1279,7 +1275,7 @@
             <DockPanel Margin="14,0" LastChildFill="False">
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse Width="6" Height="6" Fill="{StaticResource Green}" VerticalAlignment="Center"/>
-                    <TextBlock Text="{Binding StatusEngine}" Margin="7,0,0,0" FontSize="11" Foreground="{StaticResource Faint}"/>
+                    <TextBlock Text="{Binding StatusEngine}" Margin="7,0,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"/>
                     <TextBlock Text="{Binding StatusSamples}" Margin="22,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Muted}"/>
                     <TextBlock Margin="22,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Foreground="{StaticResource Muted}">
                         <Run Text="Sel "/><Run Text="{Binding ActiveDocument.SelLenText, Mode=OneWay, FallbackValue=—}"/>
@@ -1303,7 +1299,7 @@
                                    FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                    Foreground="{StaticResource Muted}"/>
                         <Button Content="✕" Margin="7,0,0,0" Width="18" Height="16"
-                                VerticalAlignment="Center" FontSize="10"
+                                VerticalAlignment="Center" FontSize="10.5"
                                 Style="{StaticResource ToolButton}" Foreground="{StaticResource Faint}"
                                 Command="{Binding CancelCommand}"
                                 ToolTip="Cancel this background task"

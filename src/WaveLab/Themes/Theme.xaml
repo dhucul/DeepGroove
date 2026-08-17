@@ -1,5 +1,6 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
 
     <!-- ── palette ─────────────────────────────────────────── -->
     <Color x:Key="BgColor">#0D0F12</Color>
@@ -16,6 +17,9 @@
     <Color x:Key="AmberColor">#FFB454</Color>
     <Color x:Key="RedColor">#FF5C5C</Color>
     <Color x:Key="GreenColor">#3FD07A</Color>
+    <!-- The one step between Text and Muted. The dialogs had grown eight unnamed greys across that
+         gap (#DFE4E9 … #AAB3BC), which is why "secondary text" did not match between two of them. -->
+    <Color x:Key="TextDimColor">#CDD3D9</Color>
 
     <SolidColorBrush x:Key="Bg" Color="{StaticResource BgColor}"/>
     <SolidColorBrush x:Key="Panel" Color="{StaticResource PanelColor}"/>
@@ -31,7 +35,36 @@
     <SolidColorBrush x:Key="Amber" Color="{StaticResource AmberColor}"/>
     <SolidColorBrush x:Key="Red" Color="{StaticResource RedColor}"/>
     <SolidColorBrush x:Key="Green" Color="{StaticResource GreenColor}"/>
+    <SolidColorBrush x:Key="TextDim" Color="{StaticResource TextDimColor}"/>
     <SolidColorBrush x:Key="MeterBg" Color="#0B0D0F"/>
+
+    <!-- The outer edge every dialog window draws. It was #313841 written out in nine files, which
+         made it the most-used colour in the app with no name. -->
+    <SolidColorBrush x:Key="WindowEdge" Color="#313841"/>
+
+    <!-- Teal-tinted neutrals. The record and restoration surfaces sit on a green-tinted ground and
+         had grown a complete second neutral ramp to match it — seven unnamed values doing the work
+         of Text/Muted/Faint. It is a deliberate second ramp, so it is named as one rather than
+         flattened into the grey it is not. -->
+    <SolidColorBrush x:Key="TealBright" Color="#D7F8F2"/>
+    <SolidColorBrush x:Key="TealText" Color="#9FD8CF"/>
+    <SolidColorBrush x:Key="TealMuted" Color="#7FA69F"/>
+    <SolidColorBrush x:Key="TealFaint" Color="#71817C"/>
+    <SolidColorBrush x:Key="TealWell" Color="#0F1715"/>
+    <SolidColorBrush x:Key="TealWellEdge" Color="#293532"/>
+    <SolidColorBrush x:Key="AccentWell" Color="#173A36"/>
+    <SolidColorBrush x:Key="AccentEdge" Color="#2E5A54"/>
+
+    <!-- ── type scale ──────────────────────────────────────────
+         Six steps. Before this the dialogs used twenty sizes on a half-point continuum, where 10.5,
+         11 and 11.5 were all in heavy use and none of them was distinguishable from the others. A
+         step is only worth having if two of them are obviously different. -->
+    <sys:Double x:Key="LabelSize">9</sys:Double>
+    <sys:Double x:Key="SecondarySize">10.5</sys:Double>
+    <sys:Double x:Key="BodySize">12.5</sys:Double>
+    <sys:Double x:Key="TitleSize">14</sys:Double>
+    <sys:Double x:Key="SectionSize">18</sys:Double>
+    <sys:Double x:Key="DisplaySize">26</sys:Double>
 
     <!-- rack effect slots -->
     <SolidColorBrush x:Key="Periwinkle" Color="#8DA4F0"/>
@@ -989,6 +1022,28 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+    <!-- ── shared dialog furniture ─────────────────────────────
+         Both of these existed already, several times over: UpperLabel was declared byte-identically
+         in two dialogs and written out inline as three separate attributes in fifty-seven more
+         places, and the card was three styles under three names (AnalysisCard, SectionCard,
+         HardwareCard) differing only by a pixel of radius or padding. One definition each. -->
+
+    <!-- The small bold label that sits above a field. -->
+    <Style x:Key="UpperLabel" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{StaticResource Faint}"/>
+        <Setter Property="FontSize" Value="{StaticResource LabelSize}"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+    </Style>
+
+    <!-- A panel that groups related controls inside a dialog. -->
+    <Style x:Key="Card" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource Panel}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource LineSoft}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="10"/>
+        <Setter Property="Padding" Value="14"/>
     </Style>
 
 </ResourceDictionary>

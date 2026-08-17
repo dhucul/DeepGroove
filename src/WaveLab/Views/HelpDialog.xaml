@@ -21,13 +21,13 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel VerticalAlignment="Center">
-                    <TextBlock Text="WaveLab Help" FontSize="20" FontWeight="SemiBold"/>
+                    <TextBlock Text="WaveLab Help" FontSize="18" FontWeight="SemiBold"/>
                     <TextBlock Text="Searchable guidance for recording, editing, restoration, mastering, and export"
-                               Margin="0,4,0,0" Foreground="{StaticResource Muted}" FontSize="11.5"/>
+                               Margin="0,4,0,0" Foreground="{StaticResource Muted}" FontSize="10.5"/>
                 </StackPanel>
                 <TextBlock Grid.Column="1" Text="F1 HELP  ·  CTRL+F SEARCH  ·  ESC CLOSE"
                            VerticalAlignment="Center" FontFamily="{StaticResource MonoFont}"
-                           FontSize="9.5" Foreground="{StaticResource Faint}"/>
+                           FontSize="9" Foreground="{StaticResource Faint}"/>
             </Grid>
         </Border>
 
@@ -44,8 +44,7 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBlock Text="SEARCH HELP" FontSize="9.5" FontWeight="Bold"
-                           Foreground="{StaticResource Faint}"/>
+                <TextBlock Text="SEARCH HELP" Style="{StaticResource UpperLabel}"/>
                 <TextBox x:Name="searchBox" Grid.Row="1" Margin="0,7,0,12" Padding="11,8"
                          ToolTip="Search topic titles and all help text (Ctrl+F)"
                          TextChanged="OnSearchChanged"/>
@@ -64,16 +63,15 @@
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel Margin="10,8">
-                                    <TextBlock Text="{Binding Category}" FontSize="8.5" FontWeight="Bold"
-                                               Foreground="{StaticResource Faint}"/>
-                                    <TextBlock Text="{Binding Title}" Margin="0,3,0,0" FontSize="12"
+                                    <TextBlock Text="{Binding Category}" Style="{StaticResource UpperLabel}"/>
+                                    <TextBlock Text="{Binding Title}" Margin="0,3,0,0" FontSize="12.5"
                                                TextWrapping="Wrap"/>
                                 </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
                     <StackPanel x:Name="noResults" VerticalAlignment="Center" Visibility="Collapsed">
-                        <TextBlock Text="No help topics found" FontSize="13" FontWeight="SemiBold"
+                        <TextBlock Text="No help topics found" FontSize="12.5" FontWeight="SemiBold"
                                    TextAlignment="Center"/>
                         <TextBlock Text="Try fewer or broader words." Margin="0,5,0,0"
                                    Foreground="{StaticResource Muted}" TextAlignment="Center"/>
@@ -86,21 +84,21 @@
             <ScrollViewer x:Name="contentScroll" Grid.Column="2" VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled" Padding="34,28,28,34">
                 <StackPanel x:Name="topicContent" MaxWidth="760" HorizontalAlignment="Left">
-                    <TextBlock Text="{Binding Category}" FontSize="9.5" FontWeight="Bold"
+                    <TextBlock Text="{Binding Category}" FontSize="9" FontWeight="Bold"
                                Foreground="{StaticResource Accent}"/>
                     <TextBlock Text="{Binding Title}" Margin="0,7,0,0" FontSize="26"
                                FontWeight="SemiBold" TextWrapping="Wrap"/>
                     <TextBlock Text="{Binding Summary}" Margin="0,9,0,0" FontSize="14"
-                               Foreground="#B7C0C8" TextWrapping="Wrap" LineHeight="21"/>
+                               Foreground="{StaticResource TextDim}" TextWrapping="Wrap" LineHeight="21"/>
                     <Border Height="1" Background="{StaticResource Line}" Margin="0,22,0,4"/>
                     <ItemsControl ItemsSource="{Binding Sections}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel Margin="0,17,0,0">
-                                    <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="#E5E9ED" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{StaticResource Text}" TextWrapping="Wrap"/>
                                     <TextBlock Text="{Binding Body}" Margin="0,7,0,0" FontSize="12.5"
-                                               Foreground="#AAB3BC" TextWrapping="Wrap" LineHeight="19"/>
+                                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="19"/>
                                 </StackPanel>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>

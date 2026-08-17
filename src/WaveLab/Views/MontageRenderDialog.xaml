@@ -5,10 +5,10 @@
         WindowStartupLocation="CenterOwner" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
-    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect><DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/></Border.Effect>
         <StackPanel>
-            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,16"
+            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,15"
                     MouseLeftButtonDown="OnDragMove" Background="Transparent">
                 <StackPanel Orientation="Horizontal">
                     <Ellipse Width="9" Height="9" Fill="{StaticResource Accent}" VerticalAlignment="Center"/>
@@ -19,7 +19,7 @@
             </Border>
 
             <StackPanel Margin="20,16,20,0">
-                <TextBlock Text="DESTINATION" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                <TextBlock Text="DESTINATION" Style="{StaticResource UpperLabel}"/>
                 <UniformGrid Rows="1" Margin="0,6,0,0">
                     <ToggleButton x:Name="newTabBtn" Style="{StaticResource SegmentButton}" Height="30"
                                   Content="New tab" IsChecked="True" Click="OnDestinationChanged"
