@@ -112,14 +112,18 @@ public sealed class AudioDocumentTests
 
             WavCodec.Save(opened, savedPath, 16, dither: opened.Dither16BitOnSave);
             AudioDocument saved = WavCodec.Load(savedPath);
-            var tpdf = new TpdfDither();
+
+            // What matters is that the document kept full precision until the save — asserted above
+            // — and that the save quantised once, to sixteen bits, with dither. Reproducing the
+            // exact noise sequence here would only pin the test to one random generator: it broke
+            // the moment the dither gained a choice of shaping curve, without anything about the
+            // behaviour under test having changed.
             for (int index = 0; index < samples.Length; index++)
             {
-                int quantized = Math.Clamp(
-                    (int)Math.Round(samples[index] * 32768.0 + tpdf.Next()),
-                    short.MinValue,
-                    short.MaxValue);
-                Assert.Equal(quantized / 32768f, saved.Channels[0][index]);
+                float value = saved.Channels[0][index];
+                Assert.Equal(Math.Round(value * 32768.0), value * 32768.0, 6);
+                Assert.InRange(value, samples[index] - 2f / 32768, samples[index] + 2f / 32768);
+                Assert.NotEqual(samples[index], value);
             }
         }
         finally

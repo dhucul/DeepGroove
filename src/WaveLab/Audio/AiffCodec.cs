@@ -155,7 +155,8 @@ public static class AiffCodec
         int bitDepth,
         bool dither = true,
         CancellationToken cancellationToken = default,
-        IProgress<double>? progress = null)
+        IProgress<double>? progress = null,
+        DitherKind ditherKind = DitherKind.FlatTpdf)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -219,7 +220,10 @@ public static class AiffCodec
                 WriteUInt32Big(writer, 0); // offset
                 WriteUInt32Big(writer, 0); // block size
 
-                var tpdf = new TpdfDither();
+                // One shaper for the file, holding per-channel error state: noise shaping is a
+                // feedback loop and cannot be shared across channels or rebuilt per sample.
+                var shaper = new Dither(dither ? ditherKind : DitherKind.None, 16, channels,
+                    doc.SampleRate, autoBlank: true);
                 var buffer = new byte[blockAlign];
                 for (int frame = 0; frame < frames; frame++)
                 {
@@ -239,8 +243,9 @@ public static class AiffCodec
                         {
                             case 16:
                             {
-                                double value = sample * 32768.0;
-                                if (dither) value += tpdf.Next();
+                                // The shaper owns the quantiser: there is no error to feed back
+                                // until the rounding has happened.
+                                double value = shaper.Process(channel, sample) * 32768.0;
                                 int quantized = Math.Clamp((int)Math.Round(value),
                                     short.MinValue, short.MaxValue);
                                 buffer[output++] = (byte)(quantized >> 8);
@@ -487,3 +492,4 @@ public static class AiffCodec
         (char)(value & 0xFF),
     ]);
 }
+

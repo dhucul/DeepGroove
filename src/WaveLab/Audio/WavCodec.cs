@@ -252,9 +252,16 @@ public static class WavCodec
         cancellationToken.ThrowIfCancellationRequested();
     }
 
-    /// <summary>Write the document. bitDepth: 16, 24, or 32 (IEEE float). TPDF dither applies to 16-bit only.</summary>
+    /// <summary>
+    /// Write the document. bitDepth: 16, 24, or 32 (IEEE float). Dither applies to 16-bit only.
+    /// </summary>
+    /// <param name="ditherKind">
+    /// Which dither, when <paramref name="dither"/> is set. Flat triangular is the safe default;
+    /// the shaped curves trade more noise above 10 kHz for less across the rest of the band.
+    /// </param>
     public static void Save(AudioDocument doc, string path, int bitDepth, bool dither = true,
-        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null,
+        DitherKind ditherKind = DitherKind.FlatTpdf)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -321,7 +328,10 @@ public static class WavCodec
                 writer.Write(0x61746164u);            // data
                 writer.Write(dataSize);
 
-                var tpdf = new TpdfDither();
+                // One shaper for the whole file, holding per-channel error state: noise shaping is a
+                // feedback loop, so it cannot be created per sample or shared across channels.
+                var shaper = new Dither(dither ? ditherKind : DitherKind.None, 16, channels,
+                    doc.SampleRate, autoBlank: true);
                 var buffer = new byte[blockAlign];
                 for (int frame = 0; frame < frames; frame++)
                 {
@@ -341,8 +351,11 @@ public static class WavCodec
                             {
                                 if (!float.IsFinite(sample)) sample = 0;
                                 sample = Math.Clamp(sample, -1f, 1f);
-                                double value = sample * 32768.0;
-                                if (dither) value += tpdf.Next();
+
+                                // The shaper owns the quantiser: there is no error to feed back
+                                // until the rounding has happened, so it cannot be bolted on
+                                // beforehand the way a plain noise source can.
+                                double value = shaper.Process(channel, sample) * 32768.0;
                                 int quantized = Math.Clamp((int)Math.Round(value), short.MinValue, short.MaxValue);
                                 buffer[output++] = (byte)quantized;
                                 buffer[output++] = (byte)(quantized >> 8);
