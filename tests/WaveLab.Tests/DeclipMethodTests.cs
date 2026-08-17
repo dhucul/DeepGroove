@@ -322,6 +322,87 @@ public sealed class DeclipMethodTests(ITestOutputHelper output)
         Assert.True(rightMatchesSparse || rightMatchesPeak, "Right channel matched neither method exactly.");
     }
 
+    /// <summary>
+    /// <b>A railed sample was at least the rail, and the reconstruction may not come back under it.</b>
+    /// The arch is drawn between two shoulders that both sit below the plateau, so away from the
+    /// centre — where the restoring bump has died away — it used to dip back under. That is not
+    /// merely inaccurate but inconsistent with the observation, and it lands further from the truth
+    /// than leaving the sample alone: measured at 0.672 and 0.696 against a 0.700 plateau.
+    /// </summary>
+    [Theory]
+    [InlineData("percussive", 0.70)]
+    [InlineData("percussive", 0.50)]
+    [InlineData("dense", 0.90)]
+    [InlineData("dense", 0.60)]
+    [InlineData("tonal", 0.50)]
+    public void TheReconstructionNeverComesBackUnderTheRail(string material, double level)
+    {
+        float[] clean = material switch
+        {
+            "dense" => Dense(),
+            "percussive" => Percussive(),
+            _ => Tonal(),
+        };
+        var (clipped, _) = Clip(clean, level);
+        var analysis = Analyse(clipped, level);
+        var repaired = Restoration.RepairClipping([(float[])clipped.Clone()], analysis.Events,
+            new DeclippingOptions { Method = DeclipMethod.PeakReconstruction });
+
+        int under = 0;
+        double worst = 0;
+        foreach (var e in analysis.Events)
+        {
+            for (int i = e.StartSample; i < e.EndSample; i++)
+            {
+                double recorded = Math.Abs(clipped[i]);
+                double got = Math.Abs(repaired[0][i]);
+                if (got < recorded - 1e-5) { under++; worst = Math.Max(worst, recorded - got); }
+            }
+        }
+        Assert.True(under == 0,
+            $"{under} reconstructed samples fell under what was recorded, worst by {worst:0.0000}.");
+    }
+
+    /// <summary>
+    /// The repair may only ever move a clipped sample outward. That is the whole of the guarantee —
+    /// it is what makes the fix above provably non-worsening rather than a tuning that happened to
+    /// measure better on the material it was tried on.
+    /// </summary>
+    [Fact]
+    public void TheRepairOnlyEverPushesClippedSamplesOutward()
+    {
+        float[] clean = Percussive();
+        var (clipped, _) = Clip(clean, 0.6);
+        var analysis = Analyse(clipped, 0.6);
+
+        foreach (var method in (DeclipMethod[])[DeclipMethod.PeakReconstruction, DeclipMethod.Sparse])
+        {
+            var repaired = Restoration.RepairClipping([(float[])clipped.Clone()], analysis.Events,
+                new DeclippingOptions { Method = method });
+            foreach (var e in analysis.Events)
+                for (int i = e.StartSample; i < e.EndSample; i++)
+                    Assert.True(Math.Abs(repaired[0][i]) >= Math.Abs(clipped[i]) - 1e-4,
+                        $"{method} pulled sample {i} inward, {clipped[i]} to {repaired[0][i]}.");
+        }
+    }
+
+    /// <summary>
+    /// Once the arch stopped dipping under the rail it became the better method at the shallow end,
+    /// so A-SPADE now has to clear a damage floor before it is worth 700× the cost. The floor is 1%
+    /// rather than 3% on a worst case: 3% gains two tenths of a decibel and swallows a 3.2 dB loss
+    /// on percussive material at 2.6% clipped.
+    /// </summary>
+    [Fact]
+    public void SparseHasToEarnItsCostBeforeItIsChosen()
+    {
+        Assert.False(DeclipMethodChooser.PrefersSparse(0.004, effectiveSparsity: 10),
+            "Dense material at 0.4% clipped measured 6.3 dB better under the arch.");
+        Assert.False(DeclipMethodChooser.PrefersSparse(0.005, effectiveSparsity: 13),
+            "Sustained material at 0.5% clipped measured 1.5 dB better under the arch.");
+        Assert.True(DeclipMethodChooser.PrefersSparse(0.026, effectiveSparsity: 9),
+            "Percussive material at 2.6% clipped measured 3.2 dB better under A-SPADE.");
+    }
+
     [Fact]
     public void PeakReconstructionRemainsAvailableUnchanged()
     {

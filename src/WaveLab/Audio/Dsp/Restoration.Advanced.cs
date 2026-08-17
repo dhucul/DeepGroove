@@ -1239,6 +1239,17 @@ public static partial class Restoration
             double bump = Math.Sin(Math.PI * t);
             double value = reconstruction[i - start] + sign * missingPeak * bump * bump;
             value = Math.Clamp(value, -maximumPeak, maximumPeak);
+
+            // Never come back under what was recorded. A railed sample was *at least* the rail —
+            // that is the one thing clipping actually tells us — and the arch is drawn between two
+            // shoulders that both sit below it, so away from the centre, where the restoring bump
+            // has died away, it can dip back under. That is not merely inaccurate, it is
+            // inconsistent with the observation, and it lands further from the truth than leaving
+            // the sample alone would have. Measured on percussive material it was the whole of the
+            // regression: reconstructions of 0.672 and 0.696 against a 0.700 plateau.
+            double recorded = samples[i];
+            value = sign > 0 ? Math.Max(value, recorded) : Math.Min(value, recorded);
+
             samples[i] += ((float)value - samples[i]) * strength;
         }
     }

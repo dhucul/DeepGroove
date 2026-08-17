@@ -30,16 +30,19 @@ namespace WaveLab.Audio.Dsp;
 /// which is presumably why it is the one that predicts A-SPADE's behaviour.
 /// </para>
 /// <para>
-/// <b>The rule picks the better method in 26 of the 32 measured cells, and every miss is bounded.</b>
-/// Tonal and percussive material are called correctly at every severity. The misses are dense
-/// material past 60% clipped (−2.1 dB, twice) and sustained material at 42% and 60% (−6.7 and
-/// −3.8) — sustained is the hard case, because its envelope barely decays, so past about 40%
-/// clipping it offers no clean frame to read the material from and the reading falls back to the
-/// damage. Two further misses sit at 0.4% and 0.0% clipped, where a handful of destroyed samples
-/// carry the whole score; at that severity the peak reconstruction is itself 2.2 dB <em>worse than
-/// leaving the audio alone</em>, so those cells say more about the incumbent than about the choice.
-/// Against a single conservative threshold on damage alone this is about three times better summed
-/// over every cell.
+/// <b>The rule picks the better method outright in 23 of the 32 measured cells, and the total
+/// shortfall against a perfect oracle is 15.9 dB.</b> Tonal is called correctly at every severity.
+/// Four of the nine misses are near-ties of 0.4 to 0.7 dB. The two that matter are sustained
+/// material at 42% and 60% clipped (−5.8 and −3.4), which is the hard case: its envelope barely
+/// decays, so past about 40% clipping no clean frame survives to read the material from and the
+/// reading falls back to the damage.
+/// </para>
+/// <para>
+/// These numbers are worse-looking and better than the ones they replace. Before the peak
+/// reconstruction was fixed to stop returning under the rail the rule was optimal in 26 cells, but
+/// the shortfall was 27.4 dB — the incumbent has since improved by up to 5.1 dB, which turns former
+/// blowouts into near-ties and moves the shallow end into its column. Count the decibels, not the
+/// cells.
 /// </para>
 /// </remarks>
 public static class DeclipMethodChooser
@@ -74,9 +77,30 @@ public static class DeclipMethodChooser
         return SparseTolerance + (DenseTolerance - SparseTolerance) * t;
     }
 
+    /// <summary>
+    /// Damage below which the peak reconstruction is preferred whatever the material.
+    /// </summary>
+    /// <remarks>
+    /// <b>A-SPADE has to earn its 700×, and below a few percent it does not.</b> Once the arch stopped
+    /// returning under the rail it became the better method at the shallow end — by 6.3 dB on dense
+    /// material at 0.4% clipped, 8.8 on sustained at 0.0% and 2.4 on percussive — because short runs
+    /// leave excellent shoulders to draw between, while a frame-level sparse model has almost no
+    /// damage to justify the assumptions it makes about the rest of the frame.
+    /// <para>
+    /// <b>1%, not 3%, and the difference is a worst case rather than a total.</b> Every large win for
+    /// the arch is below 1% — 8.8 dB, 6.3, 2.4, 1.5 — while 1% to 3% is a scatter of small
+    /// disagreements no threshold separates: dense at 2.2% and sustained at 2.5% want the arch by
+    /// 0.4 and 0.5, and percussive at 2.6% wants A-SPADE by 3.2. Set at 3% the rule gains those two
+    /// tenths and swallows that 3.2; set at 1% it gives up 0.9 in total and its worst single miss is
+    /// 1.6. Material decides this band, and neither sparsity nor damage predicts which way.
+    /// </para>
+    /// </remarks>
+    public const double MinimumClippedFraction = 0.01;
+
     /// <summary>Whether A-SPADE should be preferred for this channel.</summary>
     public static bool PrefersSparse(double clippedFraction, double effectiveSparsity) =>
-        clippedFraction > 0 && clippedFraction < ToleratedClippedFraction(effectiveSparsity);
+        clippedFraction >= MinimumClippedFraction &&
+        clippedFraction < ToleratedClippedFraction(effectiveSparsity);
 
     /// <summary>Share of a frame that may be clipped before it is too damaged to read sparsity from.</summary>
     private const double MaximumFrameDamage = 0.05;
