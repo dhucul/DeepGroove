@@ -1,9 +1,13 @@
-﻿; WaveLab — Inno Setup script
+﻿; Deep Groove — Inno Setup script
 ; Build: dotnet publish first (self-contained win-x64), then compile this script.
 ;   dotnet publish src\WaveLab\WaveLab.csproj -c Release -r win-x64 --self-contained true
 ;   ISCC.exe installer\WaveLab.iss
 
-#define MyAppName "WaveLab"
+; Display name only: the wizard, the Start Menu group, the desktop shortcut and the
+; Add/Remove Programs entry. MyAppExeName stays WaveLab.exe because that is what
+; dotnet publish produces from AssemblyName, and AppId below is what Inno matches an
+; upgrade on — so an existing install is still recognised and updated in place.
+#define MyAppName "Deep Groove"
 #define MyAppVersion "2.0.17"
 #define MyAppExeName "WaveLab.exe"
 #define PublishDir "..\src\WaveLab\bin\Release\net10.0-windows\win-x64\publish"
@@ -20,7 +24,7 @@ SetupIconFile=..\src\WaveLab\Assets\wavelab.ico
 Compression=lzma2/max
 SolidCompression=yes
 OutputDir=Output
-OutputBaseFilename=WaveLab-Setup-{#MyAppVersion}
+OutputBaseFilename=DeepGroove-Setup-{#MyAppVersion}
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 WizardStyle=modern
