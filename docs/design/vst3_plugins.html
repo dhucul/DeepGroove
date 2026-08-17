@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — VST3 plugins</title>
+<style>
+  :root{--wave-bg:#0F1114;--panel:#14171B;--panel2:#15181D;--panel3:#1A1E24;--chrome:#111419;
+    --line:#1D2228;--line-soft:#252B33;--text:#E7EAEE;--muted:#6A717A;--faint:#4A5058;
+    --accent:#3FD6C2;--amber:#FFB454;--rose:#E0736B;--violet:#9B8CE0}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0B0D10;color:var(--text);
+    font-family:"Inter","Segoe UI",system-ui,sans-serif}
+  body{padding:28px 32px 56px}
+  h1{font-size:19px;font-weight:600;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 26px;max-width:1240px;line-height:1.65}
+  h2{font-size:11px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);
+    margin:36px 0 13px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .note{color:var(--faint);font-size:11.5px;line-height:1.7;max-width:1240px;margin:13px 0 0}
+  .note b{color:#98A0A9;font-weight:500}
+  .mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+
+  /* ── dialog shell ─────────────────────────────────────────── */
+  .dlg{width:1000px;border:1px solid var(--line-soft);border-radius:7px;overflow:hidden;
+    background:var(--panel);box-shadow:0 18px 60px rgba(0,0,0,.55)}
+  .dlg .bar{height:36px;background:var(--chrome);display:flex;align-items:center;padding:0 13px;
+    gap:9px;border-bottom:1px solid var(--line)}
+  .dlg .bar .t{font-size:12px;color:#C3CAD2}
+  .dlg .bar .x{margin-left:auto;color:var(--faint);font-size:12px}
+  .logo{width:12px;height:12px;border-radius:3px;background:linear-gradient(135deg,var(--accent),#2B8F82)}
+
+  /* folder strip */
+  .folders{padding:13px 14px 0}
+  .lbl{font-size:8.5px;font-weight:700;letter-spacing:.8px;color:var(--faint);
+    text-transform:uppercase;margin:0 0 6px}
+  .folderbox{background:#0C0E11;border:1px solid var(--line-soft);border-radius:6px;
+    padding:7px 9px;display:flex;flex-direction:column;gap:4px}
+  .folderbox .f{font-size:10.5px;color:#9AA1A9;display:flex;align-items:center;gap:8px}
+  .folderbox .f .n{margin-left:auto;color:var(--faint);font-size:9.5px}
+  .folderbox .f.add{color:var(--faint)}
+  .row{display:flex;align-items:center;gap:7px;margin-top:10px}
+  .btn{height:27px;padding:0 12px;border-radius:5px;background:#171B21;border:1px solid #262D36;
+    display:flex;align-items:center;font-size:11.5px;color:#C3CAD2;gap:6px}
+  .btn.pri{background:#193B37;border-color:#2C6B62;color:var(--accent)}
+  .btn.dim{color:var(--faint)}
+  .search{flex:1;height:27px;border-radius:5px;background:#0C0E11;border:1px solid var(--line-soft);
+    display:flex;align-items:center;padding:0 9px;font-size:11px;color:var(--faint);gap:7px}
+  .spacer{flex:1}
+
+  /* table */
+  .tbl{margin:12px 14px 0;border:1px solid var(--line-soft);border-radius:6px;overflow:hidden;
+    background:#0C0E11}
+  .th,.tr{display:grid;grid-template-columns:22px 1fr 132px 96px 62px 58px 96px;
+    align-items:center;gap:0;padding:0 10px;font-size:11px}
+  .th{height:26px;background:var(--panel3);color:var(--faint);font-size:8.5px;font-weight:700;
+    letter-spacing:.7px;text-transform:uppercase;border-bottom:1px solid var(--line)}
+  .tr{height:31px;border-bottom:1px solid #14181D;color:#B9C0C8}
+  .tr:last-child{border-bottom:none}
+  .tr.sel{background:#132B28}
+  .tr .nm{color:var(--text);display:flex;align-items:center;gap:8px;min-width:0}
+  .tr .nm span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tr .dim{color:var(--faint)}
+  .tr.bad{color:#7A6A68}
+  .tr.bad .nm{color:#9C8480}
+  .num{text-align:right;padding-right:14px;font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;
+    font-size:10px;color:#9AA1A9}
+  .chk{width:12px;height:12px;border-radius:3px;border:1px solid #33404A;background:#0F1317}
+  .chk.on{background:var(--accent);border-color:var(--accent)}
+  .pill{font-size:8.5px;letter-spacing:.5px;padding:1.5px 6px;border-radius:3px;
+    background:#20262E;color:var(--faint);white-space:nowrap}
+  .pill.ok{background:#1B4A44;color:#9BE9DC}
+  .pill.warn{background:#4A3A1B;color:#F0C486}
+  .pill.err{background:#4A2320;color:#E8A29C}
+  .pill.gui{background:#2C2748;color:#C0B4F0}
+
+  /* detail strip */
+  .detail{margin:0 14px;padding:10px 12px;background:var(--panel3);border:1px solid var(--line-soft);
+    border-top:none;border-radius:0 0 6px 6px;display:flex;gap:26px;font-size:10.5px;color:var(--faint)}
+  .detail b{color:#98A0A9;font-weight:500}
+  .footer{margin-top:14px;padding:11px 14px;border-top:1px solid var(--line);background:var(--panel2);
+    display:flex;align-items:center;gap:8px}
+  .status{font-size:10.5px;color:var(--faint)}
+
+  /* ── rack column ──────────────────────────────────────────── */
+  .side-by-side{display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap}
+  .rack{width:308px;background:var(--panel);border:1px solid var(--line-soft);border-radius:7px;
+    padding:12px;display:flex;flex-direction:column;gap:8px}
+  .rack .hd{display:flex;align-items:center;gap:8px;font-size:8.5px;font-weight:700;
+    letter-spacing:.8px;color:var(--faint);text-transform:uppercase;padding-bottom:2px}
+  .card{background:linear-gradient(180deg,#1B2027,#161A20);border:1px solid #262D36;border-radius:10px;
+    padding:9px 10px 10px 16px;position:relative}
+  .card .strip{position:absolute;left:5px;top:10px;bottom:10px;width:3px;border-radius:2px;
+    background:#2C6B62}
+  .card.vst .strip{background:var(--violet)}
+  .card .top{display:flex;align-items:center;gap:9px}
+  .num-badge{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:9px;
+    color:var(--faint);background:#0C0E11;border:1px solid var(--line-soft);border-radius:4px;
+    padding:1.5px 6px}
+  .card .nm{font-size:12.5px;font-weight:600}
+  .card .cat{font-size:7.5px;font-weight:700;color:var(--faint);margin-top:1.5px;letter-spacing:.4px}
+  .card .btns{margin-left:auto;display:flex;align-items:center;gap:4px}
+  .led{width:11px;height:11px;border-radius:50%;background:#1F5A52;border:1px solid #2C6B62;
+    box-shadow:0 0 5px rgba(63,214,194,.5)}
+  .mini{width:17px;height:17px;border-radius:4px;background:#171B21;border:1px solid #262D36;
+    display:flex;align-items:center;justify-content:center;font-size:8px;color:#8C939B}
+  .hr{height:1px;background:var(--line-soft);margin:8px 0 0}
+  .prm{display:grid;grid-template-columns:82px 1fr auto;align-items:center;gap:2px;margin-top:5px}
+  .prm .pl{font-size:8.5px;font-weight:700;color:var(--faint);letter-spacing:.3px}
+  .track{height:3px;background:#0C0E11;border-radius:2px;position:relative;margin-right:8px}
+  .track i{position:absolute;left:0;top:0;bottom:0;background:#2C6B62;border-radius:2px}
+  .track b{position:absolute;top:-3.5px;width:10px;height:10px;border-radius:50%;background:#C3CAD2;
+    border:1px solid #0C0E11}
+  .val{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:9.5px;color:#C6CBD1;
+    background:#0C0E11;border:1px solid var(--line-soft);border-radius:4px;padding:1px 7px;
+    min-width:58px;text-align:center}
+  .editbtn{margin-top:9px;height:25px;border-radius:6px;background:#221D3A;border:1px solid #45397A;
+    color:#C0B4F0;font-size:10.5px;display:flex;align-items:center;justify-content:center;gap:6px}
+  .noparams{margin-top:8px;font-size:10px;color:var(--faint);line-height:1.55;
+    background:#0C0E11;border:1px solid var(--line-soft);border-radius:6px;padding:7px 9px}
+  .addfx{border:1.2px dashed #2E5A54;border-radius:10px;color:var(--muted);font-size:11.5px;
+    text-align:center;padding:10px 0}
+
+  /* context menu */
+  .menu{width:216px;background:var(--panel3);border:1px solid var(--line-soft);border-radius:6px;
+    padding:4px;box-shadow:0 14px 40px rgba(0,0,0,.6);font-size:11.5px}
+  .menu .mi{height:24px;display:flex;align-items:center;padding:0 9px;border-radius:4px;color:#B9C0C8}
+  .menu .mi.on{background:#193B37;color:var(--accent)}
+  .menu .mi .ar{margin-left:auto;color:var(--faint);font-size:9px}
+  .menu .sep{height:1px;background:var(--line);margin:4px 6px}
+  .submenu{width:250px}
+  .menu .mi .vd{margin-left:auto;color:var(--faint);font-size:9.5px}
+  .menu .mi.dis{color:var(--faint)}
+
+  /* editor window */
+  .editor{width:452px;border:1px solid var(--line-soft);border-radius:7px;overflow:hidden;
+    background:var(--panel)}
+  .editor .plate{height:186px;background:
+    repeating-linear-gradient(45deg,#191D24 0 9px,#1C2129 9px 18px);
+    display:flex;align-items:center;justify-content:center;flex-direction:column;gap:7px;
+    border-bottom:1px solid var(--line)}
+  .editor .plate .g{font-size:10.5px;color:var(--faint);letter-spacing:.4px}
+  .editor .foot{padding:9px 12px;display:flex;align-items:center;gap:9px;background:var(--panel2)}
+</style>
+</head>
+<body>
+
+<h1>WaveLab — VST3 plugins</h1>
+<p class="sub">
+  The VST3 engine is built and tested: out-of-process scanning with a cache, module loading, parameter
+  discovery, interleaved processing, and a plugin editor window. None of it is reachable — there is no
+  menu entry and no way to put a plugin in the rack. This is the way in. Three pieces: a
+  <b style="color:#98A0A9;font-weight:500">plugin manager</b> for scanning and vetting, a
+  <b style="color:#98A0A9;font-weight:500">rack card</b> so a plugin sits alongside the twenty-one
+  built-ins, and the <b style="color:#98A0A9;font-weight:500">editor window</b> that already exists.
+</p>
+
+<h2>1 · Plugin manager — Effects ▸ VST3 Plugins…</h2>
+
+<div class="dlg">
+  <div class="bar"><div class="logo"></div><div class="t">VST3 Plugins</div><div class="x">✕</div></div>
+
+  <div class="folders">
+    <p class="lbl">Scan folders</p>
+    <div class="folderbox">
+      <div class="f">📁 <span class="mono">C:\Program Files\Common Files\VST3</span> <span class="n">19 found</span></div>
+      <div class="f">📁 <span class="mono">C:\Program Files\VSTPlugins\VST3</span> <span class="n">3 found</span></div>
+      <div class="f add">＋ Add folder…</div>
+    </div>
+
+    <div class="row">
+      <div class="btn pri">⟳ Rescan</div>
+      <div class="btn dim">Rescan changed only</div>
+      <div class="search">🔍 Filter by name or vendor…</div>
+      <div class="btn dim">Show failed</div>
+    </div>
+  </div>
+
+  <div class="tbl">
+    <div class="th">
+      <div></div><div>Plugin</div><div>Vendor</div><div>Category</div>
+      <div class="num">I/O</div><div class="num">Params</div><div>Status</div>
+    </div>
+
+    <div class="tr sel">
+      <div class="chk on"></div>
+      <div class="nm"><span>ValhallaSupermassive</span></div>
+      <div class="dim">Valhalla DSP</div><div class="dim">Fx|Reverb</div>
+      <div class="num">2 / 2</div><div class="num">14</div>
+      <div><span class="pill gui">EDITOR</span></div>
+    </div>
+
+    <div class="tr">
+      <div class="chk on"></div>
+      <div class="nm"><span>TDR Nova</span></div>
+      <div class="dim">Tokyo Dawn Labs</div><div class="dim">Fx|Dynamics</div>
+      <div class="num">2 / 2</div><div class="num">62</div>
+      <div><span class="pill gui">EDITOR</span></div>
+    </div>
+
+    <div class="tr">
+      <div class="chk on"></div>
+      <div class="nm"><span>MEqualizer</span></div>
+      <div class="dim">MeldaProduction</div><div class="dim">Fx|EQ</div>
+      <div class="num">2 / 2</div><div class="num">0</div>
+      <div><span class="pill ok">USABLE</span></div>
+    </div>
+
+    <div class="tr">
+      <div class="chk on"></div>
+      <div class="nm"><span>Ozone 11 Maximizer</span></div>
+      <div class="dim">iZotope</div><div class="dim">Fx|Mastering</div>
+      <div class="num">2 / 2</div><div class="num">0</div>
+      <div><span class="pill ok">USABLE</span></div>
+    </div>
+
+    <div class="tr bad">
+      <div class="chk"></div>
+      <div class="nm"><span>Neutron 4 Visual Mixer</span></div>
+      <div class="dim">iZotope</div><div class="dim">Fx|Analyzer</div>
+      <div class="num">—</div><div class="num">—</div>
+      <div><span class="pill warn">NO AUDIO</span></div>
+    </div>
+
+    <div class="tr bad">
+      <div class="chk"></div>
+      <div class="nm"><span>SomeSynth</span></div>
+      <div class="dim">—</div><div class="dim">Instrument</div>
+      <div class="num">0 / 2</div><div class="num">—</div>
+      <div><span class="pill warn">NOT AN FX</span></div>
+    </div>
+
+    <div class="tr bad">
+      <div class="chk"></div>
+      <div class="nm"><span>LegacyBundle</span></div>
+      <div class="dim">—</div><div class="dim">—</div>
+      <div class="num">—</div><div class="num">—</div>
+      <div><span class="pill err">CRASHED</span></div>
+    </div>
+  </div>
+
+  <div class="detail">
+    <div><b>Path</b> <span class="mono">C:\Program Files\Common Files\VST3\ValhallaSupermassive.vst3</span></div>
+    <div><b>Version</b> 3.0.1</div>
+    <div><b>SDK</b> VST 3.7.7</div>
+    <div><b>Latency</b> 0 smp</div>
+  </div>
+
+  <div class="footer">
+    <div class="status">22 scanned · 19 usable · 3 rejected · last scan 12 s ago</div>
+    <div class="spacer"></div>
+    <div class="btn dim">Forget selected</div>
+    <div class="btn">Open folder</div>
+    <div class="btn pri">Close</div>
+  </div>
+</div>
+
+<p class="note">
+  <b>Scanning is out of process</b> and already implemented — each plugin is loaded by a child WaveLab
+  with <span class="mono">--vst3-scan</span>, so a plugin that crashes on load takes the child down and
+  is recorded as <span class="pill err">CRASHED</span> rather than killing the app. Twenty seconds is the
+  timeout. Results are cached against the binary's timestamp, so <b>Rescan changed only</b> is near
+  instant and the full rescan is the slow path.<br><br>
+  <b>Rejections are shown, not hidden.</b> A plugin that fails is more interesting than one that works —
+  if something you paid for is missing you need to see why, not wonder whether the scan reached it. The
+  reasons are the ones the scanner actually distinguishes: not an audio effect, no audio outputs, refused
+  the stereo arrangement, failed to initialise, or crashed.<br><br>
+  <b>Params 0 is not a fault.</b> Every one of the 22 plugins on this machine reports zero parameters and
+  no editor, which is why the parameter and editor paths have never once been exercised against a real
+  plugin. The column exists so that is visible at a glance rather than being discovered in the rack.
+</p>
+
+<h2>2 · Getting one into the rack</h2>
+
+<div class="side-by-side">
+
+  <div class="rack">
+    <div class="hd">Master effects rack</div>
+
+    <div class="card">
+      <div class="strip"></div>
+      <div class="top">
+        <div class="num-badge">01</div>
+        <div><div class="nm">Parametric EQ</div><div class="cat">FILTER</div></div>
+        <div class="btns"><div class="led"></div><div class="mini">▲</div><div class="mini">▼</div>
+          <div class="mini">↺</div><div class="mini">✕</div></div>
+      </div>
+      <div class="hr"></div>
+      <div class="prm"><div class="pl">LOW</div>
+        <div class="track"><i style="width:58%"></i><b style="left:54%"></b></div>
+        <div class="val">+1.5 dB</div></div>
+      <div class="prm"><div class="pl">HIGH</div>
+        <div class="track"><i style="width:44%"></i><b style="left:40%"></b></div>
+        <div class="val">−0.5 dB</div></div>
+    </div>
+
+    <div class="card vst">
+      <div class="strip"></div>
+      <div class="top">
+        <div class="num-badge">02</div>
+        <div><div class="nm">ValhallaSupermassive</div><div class="cat">VST3 · VALHALLA DSP</div></div>
+        <div class="btns"><div class="led"></div><div class="mini">▲</div><div class="mini">▼</div>
+          <div class="mini">↺</div><div class="mini">✕</div></div>
+      </div>
+      <div class="hr"></div>
+      <div class="prm"><div class="pl">MIX</div>
+        <div class="track"><i style="width:50%"></i><b style="left:46%"></b></div>
+        <div class="val">50.0 %</div></div>
+      <div class="prm"><div class="pl">DELAY</div>
+        <div class="track"><i style="width:33%"></i><b style="left:29%"></b></div>
+        <div class="val">312 ms</div></div>
+      <div class="prm"><div class="pl">FEEDBACK</div>
+        <div class="track"><i style="width:71%"></i><b style="left:67%"></b></div>
+        <div class="val">0.71</div></div>
+      <div class="editbtn">▣ Open plugin editor</div>
+    </div>
+
+    <div class="card vst">
+      <div class="strip"></div>
+      <div class="top">
+        <div class="num-badge">03</div>
+        <div><div class="nm">MEqualizer</div><div class="cat">VST3 · MELDAPRODUCTION</div></div>
+        <div class="btns"><div class="led"></div><div class="mini">▲</div><div class="mini">▼</div>
+          <div class="mini">↺</div><div class="mini">✕</div></div>
+      </div>
+      <div class="hr"></div>
+      <div class="noparams">
+        This plugin publishes no parameters and no editor. It processes audio, but nothing about it can
+        be adjusted from here.
+      </div>
+    </div>
+
+    <div class="addfx">＋  Add Effect</div>
+  </div>
+
+  <div style="display:flex;gap:10px;align-items:flex-start;padding-top:26px">
+    <div class="menu">
+      <div class="mi">Parametric EQ</div>
+      <div class="mi">Compressor</div>
+      <div class="mi">Multiband Compressor</div>
+      <div class="mi dis">… 18 more built-ins</div>
+      <div class="sep"></div>
+      <div class="mi on">VST3 Plugin <span class="ar">▶</span></div>
+      <div class="mi">Manage VST3 Plugins…</div>
+    </div>
+
+    <div class="menu submenu">
+      <div class="mi">ValhallaSupermassive <span class="vd">Valhalla</span></div>
+      <div class="mi">TDR Nova <span class="vd">TDR</span></div>
+      <div class="mi">MEqualizer <span class="vd">Melda</span></div>
+      <div class="mi">Ozone 11 Maximizer <span class="vd">iZotope</span></div>
+      <div class="mi dis">… 15 more</div>
+      <div class="sep"></div>
+      <div class="mi dis">No plugins found — scan first</div>
+    </div>
+  </div>
+
+</div>
+
+<p class="note">
+  <b>A plugin is an effect, not a special case.</b> It gets a numbered card, a bypass LED, move
+  up/down, reset and remove, exactly like the built-ins, and it saves into chain presets with them. The
+  only visible differences are a violet category stripe instead of teal, the vendor on the second line,
+  and the editor button — enough to tell at a glance that this one is somebody else's code.<br><br>
+  <b>Parameters are sliders like any other.</b> VST3 exposes every parameter as a normalised 0…1 value
+  plus a display string the plugin formats itself, so the card shows the plugin's own text
+  (<span class="mono">312 ms</span>, <span class="mono">0.71</span>) beside a plain slider rather than
+  guessing at units. Parameters flagged hidden, read-only, or as the bypass are not listed — the bypass
+  is the LED.<br><br>
+  <b>The empty case is stated, not left blank.</b> A card with no sliders and no explanation reads as
+  broken. Since every plugin on this machine lands in exactly that state, it is the case most likely to
+  be seen first.
+</p>
+
+<h2>3 · The plugin's own editor</h2>
+
+<div class="side-by-side">
+  <div class="editor">
+    <div class="bar" style="height:32px;background:var(--chrome);display:flex;align-items:center;padding:0 12px;gap:9px;border-bottom:1px solid var(--line)">
+      <div class="logo"></div>
+      <div class="t" style="font-size:11.5px;color:#C3CAD2">ValhallaSupermassive — Valhalla DSP</div>
+      <div class="x" style="margin-left:auto;color:var(--faint);font-size:12px">✕</div>
+    </div>
+    <div class="plate">
+      <div class="g" style="font-size:12px;color:#8C939B">plugin's own interface, drawn by the plugin</div>
+      <div class="g">embedded HWND · 452 × 186 · resizable if the plugin allows it</div>
+    </div>
+    <div class="foot">
+      <div class="btn dim">Reset</div>
+      <div class="spacer"></div>
+      <div class="status mono">latency 0 smp · 44 100 Hz · 2 ch</div>
+    </div>
+  </div>
+
+  <div style="max-width:520px">
+    <p class="note" style="margin-top:0">
+      <b>This window is already written</b> — <span class="mono">Vst3EditorWindow</span> and
+      <span class="mono">Vst3EditorHost</span> exist and host the plugin's HWND, honour its requested
+      size, and forward resize negotiation. It has never been opened, because nothing can open it and no
+      installed plugin has an editor to put in it.<br><br>
+      <b>Non-modal, one per plugin instance.</b> Opening it must not stop playback — the point of a
+      plugin editor is to turn a knob while listening. Closing the rack card closes the editor with it.<br><br>
+      <b>When there is no editor</b> the button is absent rather than disabled-and-mysterious; the card
+      falls back to the sliders, and if there are no parameters either, to the message in section 2.
+    </p>
+  </div>
+</div>
+
+<h2>What this does not do</h2>
+<p class="note" style="margin-top:0">
+  <b>No crash isolation at run time.</b> Scanning is out of process; <i>processing</i> is not. A plugin
+  that faults while playing takes WaveLab with it. Real sandboxed hosting means a separate audio process
+  and shared-memory ring buffers — a project in its own right, not a detail of this one. The scan filter
+  is the mitigation: a plugin that cannot survive being loaded never reaches the rack.<br><br>
+  <b>No automation, no parameter recording.</b> Parameters are set from the rack and from the plugin's
+  own editor, and the two stay in sync; nothing is recorded against time.<br><br>
+  <b>No plugin delay compensation across the chain.</b> The rack is serial and offline renders already
+  account for reported latency, so a latent plugin is handled — but nothing parallel-compensates.<br><br>
+  <b>Nothing here has been heard.</b> That standing caveat applies to this as it does to phases 2–6:
+  every one of the 22 plugins on this machine reports no parameters and no editor, so the parameter path,
+  the editor path and this UI can only be verified against a plugin that publishes both. Installing one
+  conventional plugin would settle it.
+</p>
+
+</body>
+</html>

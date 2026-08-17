@@ -44,6 +44,7 @@ public sealed unsafe class Vst3Plugin : IDisposable
     private void* _controller;
     private bool _controllerIsComponent;
     private Vst3ComponentHandler? _handler;
+    private Vst3ParameterChanges? _changes;
 
     private float** _inputPointers;
     private float** _outputPointers;
@@ -118,6 +119,10 @@ public sealed unsafe class Vst3Plugin : IDisposable
             plugin.HandOverComponentState();
             plugin.ReadParameters();
             plugin.ReadBusCounts();
+
+            // Built here, once, from the parameter list that has just been read: the change list is
+            // fixed-size, and its size is the number of parameters there are to change.
+            plugin._changes = new Vst3ParameterChanges([.. plugin.Parameters.Select(p => p.Id)]);
             return plugin;
         }
         catch (Exception ex)
@@ -448,6 +453,35 @@ public sealed unsafe class Vst3Plugin : IDisposable
     }
 
     /// <summary>
+    /// Moves a parameter for real: on the controller, so the plugin's own editor and its readouts
+    /// agree, and in the change list the next <c>process</c> call carries, so the audio follows.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are needed and neither is sufficient. VST3 keeps the processor and the controller
+    /// apart, and setting only the controller is the failure that looks like success: the slider
+    /// moves, the plugin's display agrees, and nothing can be heard.
+    /// </remarks>
+    public bool ApplyParameter(uint id, double normalized)
+    {
+        if (_disposed) return false;
+
+        double clamped = Math.Clamp(normalized, 0, 1);
+        QueueParameter(id, clamped);
+        return SetParameter(id, clamped);
+    }
+
+    /// <summary>
+    /// Carries a value to the processor without touching the controller — what an edit made in the
+    /// plugin's own editor needs, since the controller already has it.
+    /// </summary>
+    public void QueueParameter(uint id, double normalized)
+    {
+        if (_disposed || _changes is not { } changes) return;
+        int index = changes.IndexOf(id);
+        if (index >= 0) changes.Set(index, normalized);
+    }
+
+    /// <summary>
     /// The plugin's own editor, or null when it has none.
     /// </summary>
     /// <remarks>
@@ -626,6 +660,11 @@ public sealed unsafe class Vst3Plugin : IDisposable
             NumOutputs = 1,
             Inputs = _inputBus,
             Outputs = _outputBus,
+
+            // Zero for a block in which nothing moved, which is nearly all of them. Prepare folds
+            // whatever the UI has set since the last block into a list the plugin reads in place —
+            // no allocation, no lock, and no work at all when there is nothing to carry.
+            InputParameterChanges = _changes?.Prepare() ?? 0,
         };
         _inputBus->SilenceFlags = 0;
         _outputBus->SilenceFlags = 0;
@@ -645,6 +684,79 @@ public sealed unsafe class Vst3Plugin : IDisposable
         return true;
     }
 
+    // ── state ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The plugin's settings as an opaque run of bytes, or empty when it will not give them up.
+    /// </summary>
+    /// <remarks>
+    /// There is no other way to ask. A VST3 plugin's state is not its parameter values — it is
+    /// whatever the plugin decides to write, which for anything with an impulse response, a wavetable
+    /// or a modulation matrix is a great deal more than a host can see. Saving only the parameters
+    /// would round-trip most plugins badly and the plugins on this machine, which publish none, not
+    /// at all.
+    /// </remarks>
+    public byte[] SaveState()
+    {
+        if (_disposed || _component == null) return [];
+        try
+        {
+            using var stream = new Vst3MemoryStream();
+            void** vtable = *(void***)_component;
+            var getState = (delegate* unmanaged[Stdcall]<void*, void*, int>)vtable[13];
+            return Vst3Abi.Ok(getState(_component, stream.Pointer)) ? stream.ToArray() : [];
+        }
+        catch { return []; }
+    }
+
+    /// <summary>Puts a saved state back, and tells the controller about it.</summary>
+    /// <remarks>
+    /// The controller is a separate step and not an optional one: <c>setState</c> restores the
+    /// processor, and a controller that is not told stays showing whatever it had, so the plugin
+    /// sounds restored and looks unrestored. Rewound in between, because the component read the
+    /// stream to its end.
+    /// </remarks>
+    public bool RestoreState(byte[] state)
+    {
+        if (_disposed || _component == null || state is not { Length: > 0 }) return false;
+        try
+        {
+            using var stream = new Vst3MemoryStream(state);
+            void** vtable = *(void***)_component;
+            var setState = (delegate* unmanaged[Stdcall]<void*, void*, int>)vtable[12];
+            if (!Vst3Abi.Ok(setState(_component, stream.Pointer))) return false;
+
+            if (_controller != null && !_controllerIsComponent)
+            {
+                stream.Rewind();
+                void** controllerVtable = *(void***)_controller;
+                var setComponentState = (delegate* unmanaged[Stdcall]<void*, void*, int>)controllerVtable[5];
+                setComponentState(_controller, stream.Pointer);
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Clears whatever the plugin is holding — delay lines, reverb tails, envelope followers.
+    /// </summary>
+    /// <remarks>
+    /// Toggling <c>setProcessing</c> is the only flush VST3 defines; there is no reset call. It
+    /// matters on bypass: a plugin taken out of the chain and put back keeps its tail otherwise, and
+    /// the tail arrives without the signal that produced it.
+    /// </remarks>
+    public void FlushProcessingState()
+    {
+        if (_disposed || _processor == null || !_processing) return;
+        try
+        {
+            SetProcessing(false);
+            SetProcessing(true);
+        }
+        catch { }
+    }
+
     private void Deactivate()
     {
         if (_processing) { try { SetProcessing(false); } catch { } _processing = false; }
@@ -657,6 +769,11 @@ public sealed unsafe class Vst3Plugin : IDisposable
         _disposed = true;
 
         try { Deactivate(); } catch { }
+
+        // Freed only after processing has stopped: the change list is memory a plugin dereferences
+        // inside process, and releasing it while a block is in flight is a read of freed memory.
+        _changes?.Dispose();
+        _changes = null;
 
         if (_controller != null)
         {

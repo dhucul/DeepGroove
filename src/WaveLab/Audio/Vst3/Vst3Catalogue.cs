@@ -129,6 +129,17 @@ public sealed class Vst3Catalogue
         List<string> paths = Discover(folders);
         int scanned = 0;
 
+        // The scanner is proved to work before anything is judged by it. A scanner that cannot run
+        // fails every plugin identically and indistinguishably from a plugin fault — and since a
+        // crashed result is deliberately never retried, that would permanently condemn every plugin
+        // on the machine over a problem that has nothing to do with any of them.
+        if (paths.Count > 0 && !await ScannerRespondsAsync(cancellationToken))
+        {
+            throw new InvalidOperationException(
+                $"The plugin scanner ({ScannerPath()}) did not answer, so nothing was scanned. "
+                + "No plugin has been judged by it.");
+        }
+
         for (int i = 0; i < paths.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -160,13 +171,50 @@ public sealed class Vst3Catalogue
         catch { return 0; }
     }
 
+    /// <summary>
+    /// The executable that can run a scan.
+    /// </summary>
+    /// <remarks>
+    /// Not simply <see cref="Environment.ProcessPath"/>, which is only this app when this app is what
+    /// is running. Under <c>dotnet WaveLab.dll</c> it is <c>dotnet.exe</c>, and in a test or tooling
+    /// host it is that host — none of which understand <c>--vst3-scan</c>, and all of which would
+    /// therefore report every plugin on the machine as having crashed.
+    /// </remarks>
+    private static string ScannerPath()
+    {
+        string? processPath = Environment.ProcessPath;
+        if (processPath != null && Path.GetFileNameWithoutExtension(processPath)
+                .Equals("WaveLab", StringComparison.OrdinalIgnoreCase))
+            return processPath;
+
+        string beside = Path.Combine(AppContext.BaseDirectory, "WaveLab.exe");
+        return File.Exists(beside) ? beside : processPath ?? "WaveLab.exe";
+    }
+
+    /// <summary>
+    /// Whether the scanner runs and answers. Asked once per refresh, on a path that cannot exist, so
+    /// the answer is about the scanner and not about any plugin.
+    /// </summary>
+    public static async Task<bool> ScannerRespondsAsync(CancellationToken cancellationToken = default)
+    {
+        string absent = Path.Combine(
+            Path.GetTempPath(), $"wavelab-scanner-check-{Guid.NewGuid():N}.vst3");
+
+        Vst3ScanResult probe = await ScanOneAsync(absent, 0, cancellationToken);
+
+        // A working scanner reports that it could not load a file that is not there. A host that
+        // does not understand the argument exits without producing anything, which is recorded as a
+        // crash — and a crash here is the scanner's, not a plugin's.
+        return probe.Outcome != Vst3ScanOutcome.Crashed;
+    }
+
     /// <summary>Runs the scanner for one plugin, in its own process.</summary>
     private static async Task<Vst3ScanResult> ScanOneAsync(string path, long stamp,
         CancellationToken cancellationToken)
     {
         var start = new ProcessStartInfo
         {
-            FileName = Environment.ProcessPath ?? "WaveLab.exe",
+            FileName = ScannerPath(),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,

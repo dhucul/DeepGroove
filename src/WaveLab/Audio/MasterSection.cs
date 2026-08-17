@@ -118,12 +118,17 @@ public sealed class MasterSection : ISampleProvider
     /// </summary>
     public void CaptureSnapshotA()
     {
+        List<IAudioEffect>? oldA, oldB;
         lock (_chainLock)
         {
+            oldA = _snapshotA;
+            oldB = _snapshotB;
             _snapshotA = _chain.Select(EffectFactory.Clone).ToList();
             _snapshotB = null;
             _isComparingB = false;
         }
+        Retire(oldA);
+        Retire(oldB);
     }
 
     /// <summary>
@@ -132,11 +137,14 @@ public sealed class MasterSection : ISampleProvider
     /// </summary>
     public void CaptureSnapshotB()
     {
+        List<IAudioEffect>? oldB;
         lock (_chainLock)
         {
+            oldB = _snapshotB;
             _snapshotB = _chain.Select(EffectFactory.Clone).ToList();
             _isComparingB = false;
         }
+        Retire(oldB);
     }
 
     /// <summary>
@@ -145,51 +153,70 @@ public sealed class MasterSection : ISampleProvider
     /// </summary>
     public bool ToggleCompare()
     {
+        List<IAudioEffect>? displaced = null;
+        List<IAudioEffect>? discarded = null;
+        bool showingB;
+
         lock (_chainLock)
         {
             if (_snapshotA == null) return false;
 
+            var current = _chain.Select(EffectFactory.Clone).ToList();
+            displaced = [.. _chain];
+
             if (_isComparingB)
             {
                 // Restore current chain from snapshot A
-                var current = _chain.Select(EffectFactory.Clone).ToList();
                 _chain.Clear();
                 _chain.AddRange(_snapshotA.Select(EffectFactory.Clone));
+                discarded = _snapshotA;
                 _snapshotA = current;
                 _isComparingB = false;
-                foreach (var fx in _chain) fx.Configure(_sampleRate, _channels);
-                return false;
+                showingB = false;
             }
             else
             {
                 // Save current as A, show B (or swap if B exists)
-                var current = _chain.Select(EffectFactory.Clone).ToList();
                 if (_snapshotB != null)
                 {
                     _chain.Clear();
                     _chain.AddRange(_snapshotB.Select(EffectFactory.Clone));
+                    discarded = _snapshotB;
                     _snapshotB = current;
                 }
                 else
                 {
+                    // Nothing came out of the chain here — it is still the one that was playing.
                     _snapshotB = current;
+                    displaced = null;
                 }
                 _isComparingB = true;
-                foreach (var fx in _chain) fx.Configure(_sampleRate, _channels);
-                return true;
+                showingB = true;
             }
+            foreach (var fx in _chain) fx.Configure(_sampleRate, _channels);
         }
+
+        // Every list that has just stopped being reachable, released outside the lock. For plugins
+        // these are reference drops: the clones that replaced them hold the same instance.
+        Retire(displaced);
+        Retire(discarded);
+        return showingB;
     }
 
     /// <summary>Clear all A/B snapshots.</summary>
     public void ClearSnapshots()
     {
+        List<IAudioEffect>? oldA, oldB;
         lock (_chainLock)
         {
+            oldA = _snapshotA;
+            oldB = _snapshotB;
             _snapshotA = null;
             _snapshotB = null;
             _isComparingB = false;
         }
+        Retire(oldA);
+        Retire(oldB);
     }
 
     public IAudioEffect AddEffect(string typeId)
@@ -207,8 +234,35 @@ public sealed class MasterSection : ISampleProvider
             if (!_chain.Remove(fx)) return false;
             fx.Enabled = false;
             fx.ResetState();
-            return true;
         }
+
+        // Released after the lock, never inside it. Once it is out of the chain the audio thread can
+        // never reach it again, and letting go of a VST3 plugin means terminating somebody else's
+        // code — which can take long enough to be heard if the audio callback is waiting on it.
+        Retire(fx);
+        return true;
+    }
+
+    /// <summary>
+    /// Lets go of an effect that has left the chain.
+    /// </summary>
+    /// <remarks>
+    /// Only plugins have anything to let go of; the built-ins are ordinary managed objects. For a
+    /// plugin this releases one reference, which is not the same as unloading it — an A/B snapshot
+    /// may still be holding the same instance.
+    /// </remarks>
+    private static void Retire(IAudioEffect? fx)
+    {
+        if (fx is IDisposable disposable)
+        {
+            try { disposable.Dispose(); } catch { }
+        }
+    }
+
+    private static void Retire(IEnumerable<IAudioEffect>? effects)
+    {
+        if (effects == null) return;
+        foreach (IAudioEffect fx in effects) Retire(fx);
     }
 
     public bool SetEffectEnabled(IAudioEffect fx, bool enabled)
@@ -240,11 +294,19 @@ public sealed class MasterSection : ISampleProvider
         // callback never stalls on a preset load
         var list = effects.ToList();
         foreach (var fx in list) fx.Configure(_sampleRate, _channels);
+
+        List<IAudioEffect> replaced;
         lock (_chainLock)
         {
+            replaced = [.. _chain];
             _chain.Clear();
             _chain.AddRange(list);
         }
+
+        // The outgoing chain is released outside the lock, for the same reason as RemoveEffect. An
+        // effect that is also in an A/B snapshot survives this: it is a reference being dropped, not
+        // an instance being destroyed.
+        Retire(replaced.Where(fx => !list.Contains(fx)));
     }
 
     private void ConfigureChain()

@@ -7,6 +7,7 @@ using Microsoft.Win32;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
+using WaveLab.Audio.Vst3;
 using WaveLab.Help;
 using WaveLab.Util;
 using WaveLab.ViewModels;
@@ -39,6 +40,12 @@ public partial class MainWindow : Window
         _vm.RequestStatisticsDialog += ShowStatisticsDialog;
         _vm.RequestCommandPalette += ShowCommandPalette;
         _vm.Master.RequestSavePreset += PromptSavePreset;
+
+        // Both fire while the effect is still whole. A plugin's editor is a native window holding
+        // the plugin's controller, so it has to be shut before the rack lets go of the plugin —
+        // afterwards there is nothing safe left to close it with.
+        _vm.Master.EffectRemoving += ClosePluginEditorFor;
+        _vm.Master.ChainReplacing += CloseAllPluginEditors;
         _vm.EditorViewChanged += ApplyEditorViewMode;
         ApplyEditorViewMode();
 
@@ -175,6 +182,10 @@ public partial class MainWindow : Window
         _closing = true;
         IsEnabled = false;
         SaveWindowPlacement();
+
+        // Plugin editors are native windows owned by this one. They go before the shutdown work
+        // starts, so a plugin is not drawing into a window whose owner is winding down.
+        CloseAllPluginEditors();
         try
         {
             await _startupTask;
@@ -401,9 +412,120 @@ public partial class MainWindow : Window
             item.Click += (_, _) => _vm.Master.AddEffectCommand.Execute(id);
             menu.Items.Add(item);
         }
+
+        menu.Items.Add(new Separator());
+        menu.Items.Add(BuildPluginMenu());
+
+        var manage = new MenuItem { Header = "Manage VST3 Plugins…" };
+        manage.Click += (_, _) => ShowVst3Manager();
+        menu.Items.Add(manage);
+
         menu.PlacementTarget = addFxBtn;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Top;
         menu.IsOpen = true;
+    }
+
+    /// <summary>
+    /// The installed plugins, as a submenu. Built each time the menu opens rather than cached,
+    /// because a scan can happen between two openings of it.
+    /// </summary>
+    private MenuItem BuildPluginMenu()
+    {
+        var pluginMenu = new MenuItem { Header = "VST3 Plugin" };
+        var usable = Vst3PluginHost.Instance.UsablePlugins;
+
+        if (usable.Count == 0)
+        {
+            // Two different empties, and the difference matters: nothing scanned yet is a thing to
+            // go and do, while nothing usable found is a thing to go and look at.
+            bool anythingScanned = Vst3PluginHost.Instance.Catalogue.Results.Count > 0;
+            pluginMenu.Items.Add(new MenuItem
+            {
+                Header = anythingScanned
+                    ? "No usable plugins — see Manage VST3 Plugins…"
+                    : "No plugins scanned yet — see Manage VST3 Plugins…",
+                IsEnabled = false,
+            });
+            return pluginMenu;
+        }
+
+        foreach (Vst3ScanResult plugin in usable)
+        {
+            string path = plugin.Path;
+            var item = new MenuItem
+            {
+                Header = plugin.Name,
+                InputGestureText = plugin.Vendor,
+                ToolTip = plugin.Parameters == 0
+                    ? "Publishes no parameters — driven from its own editor"
+                    : $"{plugin.Parameters} parameters",
+            };
+            item.Click += (_, _) => _vm.Master.AddEffectCommand.Execute(Vst3Effect.TypeIdPrefix + path);
+            pluginMenu.Items.Add(item);
+        }
+        return pluginMenu;
+    }
+
+    private void OnManageVst3(object sender, RoutedEventArgs e) => ShowVst3Manager();
+
+    private void ShowVst3Manager()
+    {
+        var dialog = new Vst3ManagerDialog { Owner = this };
+        dialog.ShowDialog();
+    }
+
+    /// <summary>
+    /// Opens a plugin's own editor. One window per plugin, non-modal, and it does not stop playback —
+    /// turning a knob while listening is the whole point of having one.
+    /// </summary>
+    private void OnOpenPluginEditor(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: EffectViewModel vm }) return;
+        if (vm.Plugin is not { } effect) return;
+
+        if (_pluginEditors.TryGetValue(effect, out Vst3EditorWindow? open))
+        {
+            open.Activate();
+            return;
+        }
+
+        try
+        {
+            var window = new Vst3EditorWindow(effect.Plugin) { Owner = this };
+            _pluginEditors[effect] = window;
+            window.Closed += (_, _) => _pluginEditors.Remove(effect);
+            window.Show();
+        }
+        catch (Exception ex)
+        {
+            _pluginEditors.Remove(effect);
+            MessageBox.Show(this, $"The plugin's editor would not open.\n\n{ex.Message}",
+                effect.DisplayName, MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>
+    /// Open plugin editors, so a second click raises the one that is up rather than making another,
+    /// and so they can all be closed with the window that owns them.
+    /// </summary>
+    private readonly Dictionary<Vst3Effect, Vst3EditorWindow> _pluginEditors = [];
+
+    private void ClosePluginEditorFor(EffectViewModel vm)
+    {
+        if (vm.Plugin is not { } effect) return;
+        if (!_pluginEditors.TryGetValue(effect, out Vst3EditorWindow? window)) return;
+
+        try { window.Close(); } catch { }
+        _pluginEditors.Remove(effect);
+    }
+
+    private void CloseAllPluginEditors()
+    {
+        foreach (Vst3EditorWindow window in _pluginEditors.Values.ToArray())
+        {
+            try { window.Close(); } catch { }
+        }
+        _pluginEditors.Clear();
     }
 
     // ── analysis pane ────────────────────────────────────────────

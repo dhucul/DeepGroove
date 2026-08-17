@@ -130,6 +130,22 @@ public sealed class AppSettings
     public string ExportFormat { get; set; } = "wav32";
     public int ExportBitrateKbps { get; set; } = 192;
 
+    /// <summary>
+    /// Plugin folders beyond the two Windows defaults. Kept because installers do not agree: the
+    /// common-files folder is the convention, and plenty of plugins are somewhere else entirely.
+    /// </summary>
+    public List<string> Vst3ExtraFolders { get; set; } = [];
+
+    /// <summary>
+    /// Plugins that scanned cleanly but are not to be offered in the Add Effect menu.
+    /// </summary>
+    /// <remarks>
+    /// A blocklist rather than an allowlist, so a newly installed plugin appears without being
+    /// enabled first — and so this file staying empty means "everything that works", which is what a
+    /// user who has never opened the manager should get.
+    /// </remarks>
+    public List<string> Vst3BlockedPlugins { get; set; } = [];
+
     // Window placement
     public double WindowWidth { get; set; }
     public double WindowHeight { get; set; }

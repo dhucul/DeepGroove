@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using WaveLab.Audio.Vst3;
 using WaveLab.Util;
 
 namespace WaveLab.Audio.Effects;
@@ -33,7 +34,22 @@ public static class EffectFactory
         ("limiter", "Precision Limiter"),
     ];
 
-    public static IAudioEffect Create(string typeId) => typeId switch
+    /// <summary>
+    /// Builds one effect. A type id beginning <c>vst3:</c> is a plugin path rather than a built-in,
+    /// and loads through the host so the scan's verdict on it still applies.
+    /// </summary>
+    public static IAudioEffect Create(string typeId)
+    {
+        if (Vst3Effect.PathFromTypeId(typeId) is { } pluginPath)
+        {
+            Vst3Effect? plugin = Vst3PluginHost.Instance.Open(pluginPath, out string error);
+            return plugin ?? throw new ArgumentException(
+                $"The plugin at '{pluginPath}' could not be loaded: {error}", nameof(typeId));
+        }
+        return CreateBuiltIn(typeId);
+    }
+
+    private static IAudioEffect CreateBuiltIn(string typeId) => typeId switch
     {
         "eq" => new EqEffect(),
         "compressor" => new CompressorEffect(),
@@ -66,6 +82,19 @@ public static class EffectFactory
         public string TypeId { get; set; } = "";
         public bool Enabled { get; set; } = true;
         public Dictionary<string, double> Params { get; set; } = [];
+
+        /// <summary>
+        /// A VST3 plugin's own settings, base64. Null for the built-ins, whose state is entirely in
+        /// <see cref="Params"/>.
+        /// </summary>
+        /// <remarks>
+        /// A plugin's parameters are not its state. Anything with an impulse response, a wavetable or
+        /// a modulation matrix keeps far more than a host can see, and the plugins installed on the
+        /// machine this was written on publish no parameters at all — for those this field is the
+        /// only thing a preset carries. Written last and read first, so an older preset without it
+        /// still loads.
+        /// </remarks>
+        public string? PluginState { get; set; }
     }
 
     public sealed class ChainPreset
@@ -82,8 +111,11 @@ public static class EffectFactory
             TypeId = e.TypeId,
             Enabled = e.Enabled,
             Params = e.Params.ToDictionary(p => p.Key, p => e.GetParam(p.Key)),
+            PluginState = e is Vst3Effect plugin ? NullIfEmpty(plugin.SaveStateBase64()) : null,
         }).ToList(),
     };
+
+    private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
 
     public static List<IAudioEffect> Instantiate(ChainPreset preset)
     {
@@ -94,8 +126,16 @@ public static class EffectFactory
         {
             if (state is null || !IsKnownTypeId(state.TypeId)) continue;
             IAudioEffect fx;
+
+            // A missing plugin is skipped, not fatal. A preset saved on a machine that has a plugin
+            // must still load the rest of the chain on one that does not.
             try { fx = Create(state.TypeId); } catch { continue; }
             fx.Enabled = state.Enabled;
+
+            // The plugin's own state first, then the individual parameters over the top: the state
+            // is the whole picture and the parameter list is the part a host can see, so the second
+            // is a correction to the first rather than a competitor with it.
+            if (fx is Vst3Effect plugin) plugin.ApplyStateNow(state.PluginState);
             if (state.Params is { } parameters)
                 foreach (var (key, value) in parameters)
                     if (!string.IsNullOrWhiteSpace(key) && double.IsFinite(value))
@@ -107,6 +147,11 @@ public static class EffectFactory
 
     public static IAudioEffect Clone(IAudioEffect source)
     {
+        // A plugin is copied by sharing the instance and carrying its settings alongside, not by
+        // loading a second one. Cloning it the ordinary way would load the binary again, allocate
+        // its buffers again and pay its CPU twice, for a snapshot that is never played.
+        if (source is Vst3Effect plugin) return plugin.CloneShared();
+
         var copy = Create(source.TypeId);
         copy.Enabled = source.Enabled;
         foreach (var p in source.Params) copy.SetParam(p.Key, source.GetParam(p.Key));
@@ -486,8 +531,15 @@ public static class EffectFactory
         }
     }
 
+    /// <summary>
+    /// Whether a stored type id names something this build can make. A plugin id is accepted on its
+    /// shape alone — whether the plugin is still installed is settled by trying to load it, and a
+    /// preset that names one this machine does not have simply loses that entry.
+    /// </summary>
     private static bool IsKnownTypeId(string? typeId) =>
-        !string.IsNullOrWhiteSpace(typeId) && Available.Any(item => item.TypeId == typeId);
+        !string.IsNullOrWhiteSpace(typeId)
+        && (Available.Any(item => item.TypeId == typeId)
+            || !string.IsNullOrWhiteSpace(Vst3Effect.PathFromTypeId(typeId)));
 
     private static bool IsValidPresetName(string? name) =>
         !string.IsNullOrWhiteSpace(name) && name.Trim().Length <= 128;

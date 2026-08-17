@@ -251,6 +251,7 @@
                 </MenuItem>
                 <MenuItem Header="_Options">
                     <MenuItem Header="Settings…" Command="{Binding SettingsCommand}"/>
+                    <MenuItem Header="VST3 Plugins…" Click="OnManageVst3"/>
                 </MenuItem>
                 <MenuItem Header="_Help">
                     <MenuItem Header="WaveLab Help..." InputGestureText="F1"
@@ -784,10 +785,15 @@
                                                             <Button Style="{StaticResource MiniButton}" VerticalAlignment="Center" Command="{Binding RemoveCommand}"
                                                                     ToolTip="Remove from rack and stop processing" Content="✕" FontSize="10" AutomationProperties.Name="Remove effect"/>
                                                         </StackPanel>
+                                                        <!-- Trimmed, because a plugin names itself and some of them are long.
+                                                             Without this the name runs under the power LED and is cut mid-glyph,
+                                                             which reads as a drawing fault rather than a name that did not fit. -->
                                                         <StackPanel Margin="9,0,0,0" VerticalAlignment="Center">
-                                                            <TextBlock Text="{Binding DisplayName}" FontSize="12.5" FontWeight="SemiBold"/>
+                                                            <TextBlock Text="{Binding DisplayName}" FontSize="12.5" FontWeight="SemiBold"
+                                                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding DisplayName}"/>
                                                             <TextBlock Text="{Binding CategoryLabel}" FontSize="7.5" FontWeight="Bold"
-                                                                       Foreground="{StaticResource Faint}" Margin="0,1.5,0,0"/>
+                                                                       Foreground="{StaticResource Faint}" Margin="0,1.5,0,0"
+                                                                       TextTrimming="CharacterEllipsis"/>
                                                         </StackPanel>
                                                     </DockPanel>
                                                     <Border Height="1" Background="{StaticResource LineSoft}" Margin="0,8,0,0"/>
@@ -823,6 +829,34 @@
                                                         <TextBlock Text="{Binding Readout}" FontFamily="{StaticResource MonoFont}" FontSize="10"
                                                                    Foreground="{StaticResource Amber}" HorizontalAlignment="Right" Margin="0,4,0,0"
                                                                    Visibility="{Binding HasReadout, Converter={StaticResource BoolToVis}}"/>
+
+                                                        <!-- A plugin card with no sliders needs to say why, or it reads as broken. -->
+                                                        <Border Background="{StaticResource WellDeep}" BorderBrush="{StaticResource LineSoft}"
+                                                                BorderThickness="1" CornerRadius="6" Padding="8,6" Margin="0,7,0,0"
+                                                                Visibility="{Binding HasPluginNote, Converter={StaticResource BoolToVis}}">
+                                                            <TextBlock Text="{Binding PluginNote}" FontSize="10" LineHeight="15"
+                                                                       Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
+                                                        </Border>
+
+                                                        <Button Margin="0,8,0,0" Height="26" Click="OnOpenPluginEditor"
+                                                                Visibility="{Binding HasPluginEditor, Converter={StaticResource BoolToVis}}"
+                                                                ToolTip="Open this plugin's own editor"
+                                                                AutomationProperties.Name="Open plugin editor">
+                                                            <Button.Template>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <Border x:Name="face" CornerRadius="6" Background="{StaticResource VioletWell}"
+                                                                            BorderBrush="{StaticResource VioletDim}" BorderThickness="1">
+                                                                        <TextBlock Text="▣  Open plugin editor" FontSize="10.5" Foreground="{StaticResource Violet}"
+                                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                    </Border>
+                                                                    <ControlTemplate.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter TargetName="face" Property="BorderBrush" Value="{StaticResource Violet}"/>
+                                                                        </Trigger>
+                                                                    </ControlTemplate.Triggers>
+                                                                </ControlTemplate>
+                                                            </Button.Template>
+                                                        </Button>
                                                     </StackPanel>
                                                 </StackPanel>
                                             </Grid>

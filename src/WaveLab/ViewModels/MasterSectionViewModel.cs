@@ -126,6 +126,7 @@ public sealed class MasterSectionViewModel : ObservableObject
             throw new ArgumentException("The preset contains no supported effects.", nameof(preset));
 
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        ChainReplacing?.Invoke();
         _master.ReplaceChain(effects);
         _master.RackEnabled = true;
         Raise(nameof(RackEnabled));
@@ -137,10 +138,35 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     // ── chain ops ────────────────────────────────────────────────
 
+    /// <summary>
+    /// Raised before one effect leaves the rack, and before it is disposed of.
+    /// </summary>
+    /// <remarks>
+    /// A VST3 plugin's editor is a native window holding the plugin's controller. It has to be shut
+    /// before the plugin is released, so this fires while the effect is still whole.
+    /// </remarks>
+    public event Action<EffectViewModel>? EffectRemoving;
+
+    /// <summary>Raised before the whole chain is swapped, for the same reason.</summary>
+    public event Action? ChainReplacing;
+
     private void AddEffect(string typeId)
     {
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
-        var effect = _master.AddEffect(typeId);
+
+        IAudioEffect effect;
+        try
+        {
+            effect = _master.AddEffect(typeId);
+        }
+        catch (Exception ex)
+        {
+            // A plugin that will not load is reported here rather than thrown out of a menu click.
+            // The rack is unchanged, which is what the message says.
+            RackStatusText = $"That effect could not be added: {ex.Message} · rack unchanged.";
+            return;
+        }
+
         MarkChainCustom();
         SyncFromMaster();
         RackStatusText = $"{effect.DisplayName} added · active in rack; source unchanged until render.";
@@ -166,6 +192,7 @@ public sealed class MasterSectionViewModel : ObservableObject
     {
         string name = vm.DisplayName;
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        EffectRemoving?.Invoke(vm);
         if (_master.RemoveEffect(vm.Effect))
         {
             MarkChainCustom();
@@ -189,6 +216,7 @@ public sealed class MasterSectionViewModel : ObservableObject
     private void ResetChain()
     {
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        ChainReplacing?.Invoke();
         _master.ReplaceChain(EffectFactory.Instantiate(EffectFactory.CreateFactoryPreset("Default")));
         _applyingPreset = true;
         SelectedPreset = null;
@@ -220,6 +248,9 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     public void SyncFromMaster()
     {
+        // Detached before they are dropped: a plugin card subscribes to its plugin, and the plugin
+        // outlives the card by several rebuilds of this list.
+        foreach (var old in Effects) old.Unhook();
         Effects.Clear();
         int n = 1;
         foreach (var fx in _master.ChainSnapshot)
@@ -240,6 +271,7 @@ public sealed class MasterSectionViewModel : ObservableObject
             throw new ArgumentException("The analyzed rack contains no supported effects.", nameof(preset));
 
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        ChainReplacing?.Invoke();
         _master.ReplaceChain(effects);
         _applyingPreset = true;
         SelectedPreset = null;

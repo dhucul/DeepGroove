@@ -36,6 +36,11 @@
     <!-- rack effect slots -->
     <SolidColorBrush x:Key="Periwinkle" Color="#8DA4F0"/>
     <SolidColorBrush x:Key="Coral" Color="#E8836B"/>
+    <!-- Plugins get a colour of their own, unshared with any built-in category, because the one
+         thing worth telling at a glance about a rack slot is whether it is somebody else's code. -->
+    <SolidColorBrush x:Key="Violet" Color="#9B8CE0"/>
+    <SolidColorBrush x:Key="VioletDim" Color="#45397A"/>
+    <SolidColorBrush x:Key="VioletWell" Color="#221D3A"/>
     <SolidColorBrush x:Key="CardEdge" Color="#272E36"/>
     <SolidColorBrush x:Key="WellDeep" Color="#12151A"/>
     <LinearGradientBrush x:Key="CardFaceplate" StartPoint="0,0" EndPoint="0,1">
@@ -193,7 +198,10 @@
                                 <GradientStop Color="#173A36" Offset="1"/>
                             </LinearGradientBrush>
                         </Border.Background>
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <!-- Padding is honoured so a button can be sized to its text rather than to a
+                             column. The style sets none, so every existing use is unchanged. -->
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -899,6 +907,9 @@
             </DataTrigger>
             <DataTrigger Binding="{Binding Category}" Value="color">
                 <Setter Property="Background" Value="{StaticResource Coral}"/>
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Category}" Value="vst3">
+                <Setter Property="Background" Value="{StaticResource Violet}"/>
             </DataTrigger>
         </Style.Triggers>
     </Style>
