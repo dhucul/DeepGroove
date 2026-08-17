@@ -605,6 +605,7 @@
                  montage tab would push a value the document setter cannot take, the binding would
                  fail silently, and the editor would keep showing the tab the user had just left. -->
             <ListBox Style="{StaticResource FileTabs}" Margin="10,0,10,-1" VerticalAlignment="Bottom"
+                     AutomationProperties.Name="Open files"
                      ItemsSource="{Binding Documents}" SelectedItem="{Binding ActiveTab}">
                 <ListBox.ItemTemplate>
                     <DataTemplate>

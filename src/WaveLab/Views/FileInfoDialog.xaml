@@ -42,16 +42,19 @@
 
                 <StackPanel>
                     <TextBlock Text="TITLE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                    <TextBox x:Name="titleBox" Margin="0,6,0,0" Padding="10,7"/>
+                    <TextBox x:Name="titleBox" Margin="0,6,0,0" Padding="10,7"
+                             AutomationProperties.Name="Title"/>
                 </StackPanel>
                 <StackPanel Grid.Column="2">
                     <TextBlock Text="ARTIST" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                    <TextBox x:Name="artistBox" Margin="0,6,0,0" Padding="10,7"/>
+                    <TextBox x:Name="artistBox" Margin="0,6,0,0" Padding="10,7"
+                             AutomationProperties.Name="Artist"/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="1" Margin="0,12,0,0">
                     <TextBlock Text="ALBUM" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                    <TextBox x:Name="albumBox" Margin="0,6,0,0" Padding="10,7"/>
+                    <TextBox x:Name="albumBox" Margin="0,6,0,0" Padding="10,7"
+                             AutomationProperties.Name="Album"/>
                 </StackPanel>
                 <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,12,0,0">
                     <TextBlock Text="TRACK" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
@@ -61,7 +64,8 @@
 
                 <StackPanel Grid.Row="2" Margin="0,12,0,0">
                     <TextBlock Text="GENRE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
-                    <TextBox x:Name="genreBox" Margin="0,6,0,0" Padding="10,7"/>
+                    <TextBox x:Name="genreBox" Margin="0,6,0,0" Padding="10,7"
+                             AutomationProperties.Name="Genre"/>
                 </StackPanel>
                 <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,12,0,0">
                     <TextBlock Text="YEAR" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
@@ -73,7 +77,8 @@
                     <TextBlock Text="COMMENT" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
                     <TextBox x:Name="commentBox" Margin="0,6,0,0" Padding="10,7" Height="72"
                              AcceptsReturn="True" TextWrapping="Wrap"
-                             VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top"/>
+                             VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top"
+                             AutomationProperties.Name="Comment"/>
                 </StackPanel>
             </Grid>
 

@@ -58,6 +58,7 @@
                         <TextBlock Grid.Column="3" Text="DURATION" FontSize="9" FontWeight="Bold" Foreground="{StaticResource Faint}" TextAlignment="Right"/>
                     </Grid>
                     <ListBox x:Name="trackList" Grid.Row="1" Background="Transparent" BorderThickness="0"
+                             AutomationProperties.Name="CD tracks"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">

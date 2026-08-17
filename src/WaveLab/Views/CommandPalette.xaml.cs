@@ -10,6 +10,14 @@ public partial class CommandPalette : Window
 {
     public sealed record Command(string Name, string? Gesture, Action Execute, Func<bool>? CanExecute = null);
 
+    /// <summary>
+    /// Upper bound on rendered rows. It exists so a pathological command list cannot cost a
+    /// screenful of layout, not to hide commands: the palette is built with 55 entries and the
+    /// results list scrolls, so at this size nothing is ever dropped. When it does bite, the
+    /// trailing row below says so — a silently truncated list reads as "that is all there is".
+    /// </summary>
+    private const int MaxResults = 200;
+
     private readonly List<Command> _all;
 
     public CommandPalette(List<Command> commands)
@@ -23,10 +31,13 @@ public partial class CommandPalette : Window
     {
         results.Items.Clear();
         var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        int matched = 0;
         foreach (var cmd in _all)
         {
             if (terms.Length > 0 && !terms.All(t => cmd.Name.Contains(t, StringComparison.OrdinalIgnoreCase)))
                 continue;
+            matched++;
+            if (results.Items.Count >= MaxResults) continue;
             var grid = new Grid();
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -49,8 +60,24 @@ public partial class CommandPalette : Window
                 Tag = cmd,
                 IsEnabled = cmd.CanExecute?.Invoke() ?? true,
             });
-            if (results.Items.Count >= 40) break;
         }
+
+        // Say what was dropped. The row is disabled and carries no Command, so neither
+        // RunSelected nor MoveSelection can land on it.
+        if (matched > results.Items.Count)
+        {
+            results.Items.Add(new ListBoxItem
+            {
+                IsEnabled = false,
+                Content = new TextBlock
+                {
+                    Text = $"…and {matched - results.Items.Count} more — keep typing to narrow the list",
+                    FontSize = 11,
+                    Foreground = (Brush)FindResource("Faint"),
+                },
+            });
+        }
+
         results.SelectedItem = results.Items.OfType<ListBoxItem>().FirstOrDefault(item => item.IsEnabled);
     }
 

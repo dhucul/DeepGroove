@@ -26,6 +26,7 @@
             </Border>
 
             <ListBox x:Name="list" Grid.Row="1" Margin="12,10" Background="Transparent" BorderThickness="0"
+                     AutomationProperties.Name="Markers and regions"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="OnJump">
                 <ListBox.ItemContainerStyle>
                     <Style TargetType="ListBoxItem">
