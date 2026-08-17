@@ -64,6 +64,92 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
         }
     }
 
+    /// <summary>
+    /// The pre-RIAA curves the sources give as a turnover and a rolloff rather than as time
+    /// constants, checked against those two published figures.
+    /// </summary>
+    /// <remarks>
+    /// A curve whose treble constant was derived cannot be checked against a quoted constant, so it
+    /// is checked against what it was derived from. The derivation is worth trusting because it
+    /// reproduces the curve that <em>does</em> publish one — see
+    /// <see cref="TheDerivationReproducesRiaasPublishedConstant"/>.
+    /// </remarks>
+    [Theory]
+    [InlineData(RecordingCurve.DeccaFfrr, 250.0, -5.0)]
+    [InlineData(RecordingCurve.Emi, 500.0, -12.0)]
+    [InlineData(RecordingCurve.RcaOrthophonic, 500.0, -10.5)]
+    public void ThePreRiaaCurvesMatchTheirPublishedFigures(
+        RecordingCurve curve, double turnoverHz, double rolloffAt10kDb)
+    {
+        RecordingCurveSpec spec = RecordingCurves.Spec(curve);
+        double at10k = RecordingCurves.ResponseDb(spec, 10_000);
+
+        output.WriteLine($"{spec.Name,-26} turnover {spec.TurnoverHz:0.0} Hz (published {turnoverHz:0}), "
+                         + $"10 kHz {at10k:0.00} dB (published {rolloffAt10kDb:0.0})");
+
+        Assert.Equal(turnoverHz, spec.TurnoverHz, 1.0);
+        Assert.Equal(rolloffAt10kDb, at10k, 0.05);
+    }
+
+    /// <summary>
+    /// Deriving a treble constant from a published rolloff must return the constant that curve
+    /// actually publishes. RIAA is the decisive case: from its −13.734 dB at 10 kHz the derivation
+    /// has to give back 75 µs, and it does — which is what makes the same arithmetic trustworthy on
+    /// the curves that quote no constant at all.
+    /// </summary>
+    [Fact]
+    public void TheDerivationReproducesRiaasPublishedConstant()
+    {
+        // The external check, and the only one that uses a figure from outside this file: RIAA
+        // publishes both a rolloff and a time constant, so the two have to agree.
+        double derived = TrebleUsFrom(Riaa.BassShelfUs, Riaa.TurnoverUs, -13.734);
+        output.WriteLine($"from RIAA's published -13.734 dB: {derived:0.000} µs, published 75 µs");
+        Assert.Equal(75.0, derived, 0.05);
+    }
+
+    /// <summary>
+    /// Every curve that has a treble pole must give its own constant back when the derivation is run
+    /// on its own rolloff.
+    /// </summary>
+    /// <remarks>
+    /// No published figures here on purpose, and so no tolerance chosen to make anything pass. This
+    /// asks only that the arithmetic which produced the three derived constants is the inverse of
+    /// the curve those constants go on to describe — which is the part that could silently rot.
+    /// </remarks>
+    [Fact]
+    public void EveryCurveGivesItsOwnTrebleConstantBack()
+    {
+        foreach (RecordingCurveSpec spec in RecordingCurves.All)
+        {
+            if (spec.TrebleUs <= 0) continue;
+
+            double rolloff = RecordingCurves.ResponseDb(spec, 10_000);
+            double derived = TrebleUsFrom(spec.BassShelfUs, spec.TurnoverUs, rolloff);
+
+            output.WriteLine($"{spec.Name,-26} {spec.TrebleUs,6:0.0} µs -> {rolloff,7:0.000} dB "
+                             + $"-> {derived,6:0.0} µs");
+            Assert.Equal(spec.TrebleUs, derived, 0.05);
+        }
+    }
+
+    /// <summary>
+    /// Bisects for the treble time constant that puts the whole curve at a given level at 10 kHz.
+    /// The same arithmetic the three derived constants came from, kept here so the relationship is
+    /// enforced rather than remembered.
+    /// </summary>
+    private static double TrebleUsFrom(double bassShelfUs, double turnoverUs, double targetDbAt10k)
+    {
+        double low = 1e-6, high = 400;
+        for (int i = 0; i < 200; i++)
+        {
+            double mid = (low + high) / 2;
+            var spec = new RecordingCurveSpec(RecordingCurve.Riaa, "probe", bassShelfUs, turnoverUs, mid);
+            if (RecordingCurves.ResponseDb(spec, 10_000) > targetDbAt10k) low = mid;
+            else high = mid;
+        }
+        return (low + high) / 2;
+    }
+
     /// <summary>The IEC amendment is a rumble filter and nothing else: it may only affect the bottom.</summary>
     [Fact]
     public void TheIecAmendmentOnlyChangesTheBottomEnd()

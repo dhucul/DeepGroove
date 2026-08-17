@@ -21,6 +21,22 @@ public enum RecordingCurve
     /// A 500 Hz turnover with no treble rolloff, for the many coarse-groove 78s cut that way.
     /// </summary>
     Coarse78,
+
+    /// <summary>
+    /// Decca FFRR: a 250 Hz turnover and only 5 dB down at 10 kHz — far more top left on the disc
+    /// than any of the others here, which is what "full frequency range recording" was claiming.
+    /// </summary>
+    DeccaFfrr,
+
+    /// <summary>EMI (1955): a 500 Hz turnover, 12 dB down at 10 kHz.</summary>
+    Emi,
+
+    /// <summary>
+    /// RCA Orthophonic (1952): a 500 Hz turnover, 10.5 dB down at 10 kHz. Not to be confused with
+    /// <em>New</em> Orthophonic of the following year, which is the curve the RIAA adopted — for
+    /// that one use <see cref="Riaa"/>, which is what it became.
+    /// </summary>
+    RcaOrthophonic,
 }
 
 /// <summary>Whether to undo a curve or impose one.</summary>
@@ -111,6 +127,15 @@ public static class RecordingCurves
         new(RecordingCurve.ColumbiaLp, "Columbia LP (1948)", 3180, 318, 100),
         new(RecordingCurve.Aes, "AES (1951)", 3180, 398, 63.6),
         new(RecordingCurve.Coarse78, "78 rpm, 500 Hz turnover", 3180, 318, 0),
+
+        // The three below are given in the sources as a turnover and a rolloff at 10 kHz rather than
+        // as time constants, so the treble constant is derived from the rolloff instead of quoted.
+        // The derivation is worth trusting because it reproduces the others: run it on RIAA's
+        // published −13.734 dB and it returns 75.0 µs, which is RIAA's constant to the decimal.
+        // `RecordingCurveTests` re-derives all three and checks them against the published figures.
+        new(RecordingCurve.DeccaFfrr, "Decca FFRR", 3180, 636.6, 22.8),
+        new(RecordingCurve.Emi, "EMI (1955)", 3180, 318, 58.4),
+        new(RecordingCurve.RcaOrthophonic, "RCA Orthophonic (1952)", 3180, 318, 47.3),
     ];
 
     public static IReadOnlyList<RecordingCurveSpec> All => Specs;
