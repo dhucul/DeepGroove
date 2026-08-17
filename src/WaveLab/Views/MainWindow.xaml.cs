@@ -488,6 +488,102 @@ public partial class MainWindow : Window
         return applied;
     }
 
+    // ── disc equalisation ────────────────────────────────────────
+
+    /// <summary>
+    /// Applies a disc equalisation curve, either way round. The whole file, not the selection: a
+    /// curve is a property of how the disc was cut, so applying it to part of one makes no sense.
+    /// </summary>
+    private void OnRecordingCurve(object sender, RoutedEventArgs e)
+    {
+        var d = Doc;
+        if (_longOperationRunning || d == null || d.Doc.Length == 0) return;
+
+        var names = RecordingCurves.All
+            .Select(spec => spec.TrebleHz > 0
+                ? $"{spec.Name} — {spec.TurnoverHz:0} Hz, {RecordingCurves.ResponseDb(spec, 10_000):0.0} dB at 10 kHz"
+                : $"{spec.Name} — {spec.TurnoverHz:0} Hz turnover, no rolloff")
+            .ToArray();
+
+        var dialog = new ParamDialog("Disc equalisation curve", "Apply",
+        [
+            new ParamDialog.ComboSpec("Curve", names),
+            new ParamDialog.ComboSpec("Direction",
+                ["Playback — undo the curve (de-emphasis)", "Record — impose the curve (pre-emphasis)"]),
+            new ParamDialog.ComboSpec("Phase",
+                ["Minimum — as an analog preamp", "Linear — no added dispersion"]),
+        ])
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        int[] choices = dialog.ComboIndices;
+        RecordingCurveSpec spec = RecordingCurves.All[Math.Clamp(choices[0], 0, RecordingCurves.All.Count - 1)];
+        var direction = choices[1] == 1 ? CurveDirection.Record : CurveDirection.Playback;
+        var phase = choices[2] == 1 ? CurvePhase.Linear : CurvePhase.Minimum;
+
+        string verb = direction == CurveDirection.Playback ? "De-emphasis" : "Pre-emphasis";
+        _ = RunWholeFileTool($"{verb} · {spec.Name}",
+            $"{phase} phase · {RecordingCurves.DefaultTaps} taps",
+            (channels, sampleRate, progress, token) =>
+            {
+                RecordingCurves.Apply(channels, spec, sampleRate, direction, phase,
+                    RecordingCurves.DefaultTaps, token, progress);
+                return channels;
+            }, d);
+    }
+
+    /// <summary>
+    /// A transform over the whole file rather than the selection, committed as one undoable edit.
+    /// </summary>
+    private async Task<bool> RunWholeFileTool(string undoName, string? detail,
+        Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
+        DocumentViewModel target)
+    {
+        if (_longOperationRunning || target.Doc.Length == 0) return false;
+
+        float[][] channels = target.Doc.Channels.ToArray();
+        int rate = target.Doc.SampleRate;
+        int length = target.Doc.Length;
+        _longOperationRunning = true;
+        Mouse.OverrideCursor = Cursors.Wait;
+        bool applied = false;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync(undoName, detail, async (progress, token) =>
+            {
+                float[][]? output = await Task.Run(() =>
+                {
+                    // Copied first: the transform works in place and the document must not change
+                    // under the UI until the splice commits.
+                    var working = new float[channels.Length][];
+                    for (int c = 0; c < channels.Length; c++) working[c] = (float[])channels[c].Clone();
+                    return transform(working, rate, progress, token);
+                }, token);
+
+                if (output == null || length != target.Doc.Length) return;
+                _vm.PrepareForDocumentEdit(target);
+                target.Doc.ReplaceRange(0, length, output, undoName);
+                applied = true;
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction($"{undoName} cancelled · document unchanged.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, undoName, MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            _longOperationRunning = false;
+        }
+        return applied;
+    }
+
     // ── spectral repair ──────────────────────────────────────────
 
     private void OnSpectralHeal(object sender, RoutedEventArgs e) =>
@@ -610,10 +706,8 @@ public partial class MainWindow : Window
                             channels[c], 0, selection.Mask, rate, options, token);
                         if (c == 0) { learned = pattern.LearnedBins; band = pattern.Band; }
 
-                        int index = c;
-                        var scaled = new Progress<double>(value =>
-                            progress.Report((index + value) / channels.Length));
-                        float[] cleaned = pattern.Remove(channels[c], start, count, options, token, scaled);
+                        float[] cleaned = pattern.Remove(channels[c], start, count, options, token,
+                            SubProgress.Slice(progress, c, channels.Length));
                         result[c] = cleaned.Length == count
                             ? cleaned
                             : channels[c].AsSpan(start, count).ToArray();
@@ -683,10 +777,8 @@ public partial class MainWindow : Window
                     var repaired = new SpectralRepairResult[channels.Length];
                     for (int c = 0; c < channels.Length; c++)
                     {
-                        int index = c;
-                        var scaled = new Progress<double>(value =>
-                            progress.Report((index + value) / channels.Length));
-                        repaired[c] = repair(channels[c], mask, options, scaled, token);
+                        repaired[c] = repair(channels[c], mask, options,
+                            SubProgress.Slice(progress, c, channels.Length), token);
                     }
                     return repaired;
                 }, token);

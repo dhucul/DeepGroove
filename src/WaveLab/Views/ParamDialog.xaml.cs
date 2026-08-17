@@ -15,27 +15,48 @@ public partial class ParamDialog : Window
     public sealed record SliderSpec(string Label, double Min, double Max, double Default, Func<double, string> Format,
         double Tick = 0);
 
-    private readonly List<(SliderSpec Spec, Slider Slider, TextBlock Value)> _sliders = [];
-    private ComboBox? _combo;
+    /// <summary>One labelled choice. A dialog may carry several.</summary>
+    public sealed record ComboSpec(string Label, string[] Items, int Default = 0);
 
-    public int ComboIndex => _combo?.SelectedIndex ?? -1;
+    private readonly List<(SliderSpec Spec, Slider Slider, TextBlock Value)> _sliders = [];
+    private readonly List<ComboBox> _combos = [];
+
+    /// <summary>The first choice's index, for the many callers that only have one.</summary>
+    public int ComboIndex => _combos.Count > 0 ? _combos[0].SelectedIndex : -1;
+
+    /// <summary>Every choice's index, in the order the specs were given.</summary>
+    public int[] ComboIndices => _combos.Select(c => c.SelectedIndex).ToArray();
+
     public double[] Values => _sliders.Select(s => s.Slider.Value).ToArray();
 
     public ParamDialog(string title, string okLabel, string? comboLabel, string[]? comboItems, int comboDefault,
         params SliderSpec[] sliders)
+        : this(title, okLabel,
+            comboLabel != null && comboItems is { Length: > 0 }
+                ? [new ComboSpec(comboLabel, comboItems, comboDefault)]
+                : [],
+            sliders)
     {
+    }
+
+    /// <summary>Any number of choices followed by any number of sliders.</summary>
+    public ParamDialog(string title, string okLabel, ComboSpec[] combos, params SliderSpec[] sliders)
+    {
+        ArgumentNullException.ThrowIfNull(combos);
         InitializeComponent();
         titleText.Text = title;
         okBtn.Content = okLabel;
 
-        if (comboLabel != null && comboItems is { Length: > 0 })
+        foreach (ComboSpec spec in combos)
         {
-            body.Children.Add(Label(comboLabel));
-            _combo = new ComboBox { Margin = new Thickness(0, 6, 0, 14) };
-            AutomationProperties.SetName(_combo, comboLabel);
-            foreach (var item in comboItems) _combo.Items.Add(item);
-            _combo.SelectedIndex = Math.Clamp(comboDefault, 0, comboItems.Length - 1);
-            body.Children.Add(_combo);
+            if (spec.Items.Length == 0) continue;
+            body.Children.Add(Label(spec.Label));
+            var combo = new ComboBox { Margin = new Thickness(0, 6, 0, 14) };
+            AutomationProperties.SetName(combo, spec.Label);
+            foreach (string item in spec.Items) combo.Items.Add(item);
+            combo.SelectedIndex = Math.Clamp(spec.Default, 0, spec.Items.Length - 1);
+            body.Children.Add(combo);
+            _combos.Add(combo);
         }
 
         foreach (var spec in sliders)
