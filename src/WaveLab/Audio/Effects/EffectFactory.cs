@@ -12,6 +12,11 @@ public static class EffectFactory
     [
         ("eq", "Parametric EQ"),
         ("compressor", "Compressor"),
+        ("multiband", "Multiband Compressor"),
+        ("dyneq", "Dynamic EQ"),
+        ("linphase-eq", "Linear Phase EQ"),
+        ("deesser", "De-Esser"),
+        ("transient", "Transient Shaper"),
         ("normalizer", "Level Normalizer"),
         ("trim", "Gain & Trim"),
         ("mono-stereo", "Mono-to-Stereo Enhancer"),
@@ -32,6 +37,11 @@ public static class EffectFactory
     {
         "eq" => new EqEffect(),
         "compressor" => new CompressorEffect(),
+        "multiband" => new MultibandCompressorEffect(),
+        "dyneq" => new DynamicEqEffect(),
+        "linphase-eq" => new LinearPhaseEqEffect(),
+        "deesser" => new DeEsserEffect(),
+        "transient" => new TransientShaperEffect(),
         "normalizer" => new LevelNormalizerEffect(),
         "trim" => new TrimEffect(),
         "mono-stereo" => new MonoToStereoEffect(),
@@ -482,3 +492,5 @@ public static class EffectFactory
     private static bool IsValidPresetName(string? name) =>
         !string.IsNullOrWhiteSpace(name) && name.Trim().Length <= 128;
 }
+
+

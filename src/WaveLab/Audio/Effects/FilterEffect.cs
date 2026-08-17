@@ -26,6 +26,12 @@ public sealed class FilterEffect : EffectBase
     private sealed record Stages(Biquad One, Biquad Two);
 
     private Biquad[] _filters1 = [];   // audio-thread state only
+    /// <summary>Q of a second-order Butterworth: the reference the user's Q is expressed against.</summary>
+    private const double ButterworthQ = 0.70710678118654752;
+
+    /// <summary>The two section Qs that make a fourth-order Butterworth.</summary>
+    private static readonly double[] FourthOrderQ = [0.54119610014619698, 1.30656296487637652];
+
     private Biquad[] _filters2 = [];   // second stage for 24dB
     private Stages _stages = new(Biquad.Identity(), Biquad.Identity());
 
@@ -57,16 +63,27 @@ public sealed class FilterEffect : EffectBase
         int mode = (int)GetParam("mode");
         bool is24Db = GetParam("slope") > 0.5;
 
-        // For 24dB, use two cascaded 12dB stages with adjusted Q
-        double q12 = is24Db ? q * 1.3 : q;
-
         // Publish a whole snapshot instead of writing coefficients into the live
         // filters: a half-applied update could pair a1 from one cutoff with a2 from
         // another, putting the poles outside the unit circle and latching NaN.
-        Biquad stage1 = BuildStage(mode, cutoff, q12);
-        Biquad stage2 = is24Db
-            ? BuildStage(mode, cutoff, mode >= 2 ? q12 * 0.8 : q12)
-            : Biquad.Identity();
+        Biquad stage1, stage2;
+        if (is24Db)
+        {
+            // A fourth-order Butterworth is two second-order sections at these two specific Q
+            // values — they are the pole pair's positions on the unit circle, not a tuning choice.
+            // What was here before scaled the user's Q by 1.3 for both stages and then by a further
+            // 0.8 for one of them, which is flat at no setting: with Q left at 0.707 the response
+            // peaked about 1.5 dB before the corner instead of being maximally flat, and the
+            // resonance control stopped meaning anything recognisable.
+            double scale = q / ButterworthQ;
+            stage1 = BuildStage(mode, cutoff, FourthOrderQ[0] * scale);
+            stage2 = BuildStage(mode, cutoff, FourthOrderQ[1] * scale);
+        }
+        else
+        {
+            stage1 = BuildStage(mode, cutoff, q);
+            stage2 = Biquad.Identity();
+        }
         Volatile.Write(ref _stages, new Stages(stage1, stage2));
     }
 
