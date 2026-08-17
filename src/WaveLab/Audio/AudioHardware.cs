@@ -349,7 +349,7 @@ public static class AudioHardware
         WaveFormat format = capture.WaveFormat;
         if (!IsSupportedCaptureFormat(format))
             throw new NotSupportedException(
-                $"The input supplies {DescribeFormat(format)}. WaveLab recording requires a 32-bit float WASAPI format.");
+                $"The input supplies {DescribeFormat(format)}. Deep Groove recording requires a 32-bit float WASAPI format.");
 
         var stopped = new TaskCompletionSource<StoppedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         var statisticsLock = new object();

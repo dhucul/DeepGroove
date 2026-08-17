@@ -139,21 +139,21 @@ public partial class MainWindow : Window
         {
             blocking.Cancel();
             MessageBox.Show(
-                $"{blocking.Title} is stopping. It will finish at its next safe point; close WaveLab again once it has.",
+                $"{blocking.Title} is stopping. It will finish at its next safe point; close Deep Groove again once it has.",
                 "Operation in progress", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (_longOperationRunning || !IsEnabled)
         {
             MessageBox.Show(
-                "An audio operation is still running. Wait for it to finish, then close WaveLab again.",
+                "An audio operation is still running. Wait for it to finish, then close Deep Groove again.",
                 "Operation in progress", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (_vm.IsTransportRecording)
         {
             if (MessageBox.Show(
-                    "Recording is still in progress. Stop and keep the capture now? WaveLab will stay open so you can review and save it.",
+                    "Recording is still in progress. Stop and keep the capture now? Deep Groove will stay open so you can review and save it.",
                     "Recording in progress", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
                 await _vm.FinishTransportRecordingAsync();
             return;
@@ -177,7 +177,7 @@ public partial class MainWindow : Window
             // No is an explicit request to discard; normal exit cleanup owns it.
         }
         if (_vm.Documents.Any(d => d.IsDirty) &&
-            MessageBox.Show("There are unsaved changes. Exit anyway?", "WaveLab",
+            MessageBox.Show("There are unsaved changes. Exit anyway?", "Deep Groove",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
 
         _closing = true;

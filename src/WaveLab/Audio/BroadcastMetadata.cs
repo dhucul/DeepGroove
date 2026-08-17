@@ -25,7 +25,7 @@ public readonly record struct BroadcastInfo(
 {
     /// <summary>A description of a transfer made now, which is the common case for this app.</summary>
     public static BroadcastInfo For(string description, DateTime when, ulong timeReference = 0) =>
-        new(description, "WaveLab", string.Empty,
+        new(description, "Deep Groove", string.Empty,
             when.ToString("yyyy-MM-dd"), when.ToString("HH:mm:ss"), timeReference);
 }
 

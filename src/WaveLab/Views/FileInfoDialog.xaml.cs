@@ -116,7 +116,7 @@ public partial class FileInfoDialog : Window
 
         BroadcastInfo info = existing ?? BroadcastInfo.For(string.Empty, DateTime.Now);
         bextDescription.Text = info.Description;
-        bextOriginator.Text = string.IsNullOrWhiteSpace(info.Originator) ? "WaveLab" : info.Originator;
+        bextOriginator.Text = string.IsNullOrWhiteSpace(info.Originator) ? "Deep Groove" : info.Originator;
         bextReference.Text = info.OriginatorReference;
         bextDate.Text = info.OriginationDate;
         bextTime.Text = info.OriginationTime;

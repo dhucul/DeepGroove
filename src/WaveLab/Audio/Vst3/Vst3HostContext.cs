@@ -89,7 +89,7 @@ internal static unsafe class Vst3HostContext
         if (name == null) return Vst3Abi.InvalidArgument;
 
         // String128: 128 UTF-16 units including the terminator.
-        const string host = "WaveLab";
+        const string host = "Deep Groove";
         for (int i = 0; i < host.Length; i++) name[i] = host[i];
         name[host.Length] = '\0';
         return Vst3Abi.ResultOk;

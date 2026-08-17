@@ -463,7 +463,7 @@ public static class AiffCodec
             throw new InvalidDataException("The AIFF sample rate is outside the supported range.");
         int rounded = checked((int)Math.Round(value));
         if (Math.Abs(value - rounded) > 0.01)
-            throw new InvalidDataException("WaveLab requires an integer AIFF sample rate.");
+            throw new InvalidDataException("Deep Groove requires an integer AIFF sample rate.");
         return rounded;
     }
 

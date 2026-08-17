@@ -51,7 +51,7 @@ public partial class MainWindow
         var picker = new OpenFileDialog
         {
             Title = "Open montage",
-            Filter = "WaveLab montage|*" + MontageStore.Extension + "|All files|*.*",
+            Filter = "Deep Groove montage|*" + MontageStore.Extension + "|All files|*.*",
         };
         if (picker.ShowDialog(this) != true) return;
 
@@ -82,7 +82,7 @@ public partial class MainWindow
             var picker = new SaveFileDialog
             {
                 Title = "Save montage",
-                Filter = "WaveLab montage|*" + MontageStore.Extension,
+                Filter = "Deep Groove montage|*" + MontageStore.Extension,
                 FileName = MontageViewModel.SuggestedFileName(vm.Montage),
             };
             if (picker.ShowDialog(this) != true) return;

@@ -255,7 +255,7 @@
                         <ComboBox x:Name="cmbAutosaveInterval" Margin="0,6,0,0" Width="180" HorizontalAlignment="Left"
                                   AutomationProperties.Name="Autosave interval"/>
                         <TextBlock Margin="0,10,0,0" Style="{StaticResource SettingsHint}"
-                                   Text="Copies of unsaved work are kept in your user profile and offered for recovery if WaveLab doesn't shut down cleanly. They are removed on normal exit."/>
+                                   Text="Copies of unsaved work are kept in your user profile and offered for recovery if Deep Groove doesn't shut down cleanly. They are removed on normal exit."/>
                     </StackPanel>
 
                     <!-- Export -->

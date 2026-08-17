@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -176,8 +176,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OpenRecentCommand = new RelayCommand<string>(path => { if (path != null) OpenFiles([path]); });
         CommandPaletteCommand = new RelayCommand(() => RequestCommandPalette?.Invoke());
         AboutCommand = new RelayCommand(() => MessageBox.Show(
-            "WaveLab 2.0\n\nAudio editor and mastering suite.\nWAV/AIFF · MP3/FLAC/AAC import & export\nEffects rack · restoration · EBU R128 metering\nWASAPI playback and recording",
-            "About WaveLab", MessageBoxButton.OK, MessageBoxImage.Information));
+            "Deep Groove 2.0\n\nAudio editor and mastering suite.\nWAV/AIFF · MP3/FLAC/AAC import & export\nEffects rack · restoration · EBU R128 metering\nWASAPI playback and recording",
+            "About Deep Groove", MessageBoxButton.OK, MessageBoxImage.Information));
     }
 
     public PlaybackEngine Engine { get; }
@@ -351,7 +351,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                                      !IsTransportRecording &&
                                      !IsFinalizingRecording &&
                                      !HasPendingTransportRecording;
-    public string WindowTitle => _active == null ? "WaveLab" : $"{_active.Doc.Title} — {_active.FormatText} · {TimeFormat.Compact(_active.Doc.Duration)}";
+    public string WindowTitle => _active == null ? "Deep Groove" : $"{_active.Doc.Title} — {_active.FormatText} · {TimeFormat.Compact(_active.Doc.Duration)}";
 
     public bool IsPlaying
     {
@@ -745,7 +745,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     private static void ReportSettingsSaveFailure() => MessageBox.Show(
-        "WaveLab could not save its settings:\n" + AppSettings.Instance.LastSaveError,
+        "Deep Groove could not save its settings:\n" + AppSettings.Instance.LastSaveError,
         "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
 
     private void Open()
@@ -1324,7 +1324,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 MessageBox.Show($"The input device stopped unexpectedly. Audio captured before the failure was kept.\n\n{_transportRecorder.LastStopError.Message}",
                     "Recording stopped", MessageBoxButton.OK, MessageBoxImage.Warning);
             else if (_transportRecorder.CapacityReached)
-                MessageBox.Show("The recording reached WaveLab's in-memory safety limit. Audio captured up to the limit was kept.",
+                MessageBox.Show("The recording reached Deep Groove's in-memory safety limit. Audio captured up to the limit was kept.",
                     "Recording stopped", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
@@ -1801,7 +1801,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "WaveLab", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(ex.Message, "Deep Groove", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
         {
@@ -1930,7 +1930,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             var names = string.Join("\n", recoverable.Select(r => "  • " + r.Title));
             if (MessageBox.Show(
-                    $"WaveLab didn't shut down cleanly last time. Recover unsaved work?\n\n{names}",
+                    $"Deep Groove didn't shut down cleanly last time. Recover unsaved work?\n\n{names}",
                     "Crash recovery", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
                 var recoveredKeys = new List<string>();

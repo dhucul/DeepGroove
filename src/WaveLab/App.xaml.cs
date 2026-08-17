@@ -75,7 +75,7 @@ public partial class App : Application
     {
         try
         {
-            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "WaveLab-crash.log");
+            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DeepGroove-crash.log");
             System.IO.File.AppendAllText(path,
                 $"{DateTime.Now:u} {e.ExceptionObject}{Environment.NewLine}");
         }
@@ -89,11 +89,11 @@ public partial class App : Application
         try
         {
             MessageBox.Show(
-                "WaveLab ran into an unexpected problem and stopped what it was doing.\n\n" +
+                "Deep Groove ran into an unexpected problem and stopped what it was doing.\n\n" +
                 "Your open files are still here — save anything you need, then restart " +
-                "WaveLab if it keeps misbehaving.\n\n" +
+                "Deep Groove if it keeps misbehaving.\n\n" +
                 "Details: " + error.Message,
-                "WaveLab", MessageBoxButton.OK, MessageBoxImage.Error);
+                "Deep Groove", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         catch { }
         finally { _reportingFailure = false; }

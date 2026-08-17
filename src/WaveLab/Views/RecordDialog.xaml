@@ -127,7 +127,7 @@
                         SmallChange="0.1" LargeChange="0.5"
                         IsSnapToTickEnabled="True" IsMoveToPointEnabled="True"
                         Value="{Binding InputFineTrimDb, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                        AutomationProperties.Name="WaveLab fine input trim in decibels"/>
+                        AutomationProperties.Name="Deep Groove fine input trim in decibels"/>
                 <TextBlock Text="{Binding InputTotalLevelText}" Margin="0,4,0,0" FontSize="10.5"
                            Foreground="{StaticResource Faint}"
                            ToolTip="Fine Trim is attenuation after the device input; it cannot repair converter or preamp clipping."/>
@@ -135,7 +135,7 @@
 
                 <CheckBox Content="Software Playthrough (Input Monitoring)" Margin="0,11,0,0"
                           IsChecked="{Binding SoftwarePlaythroughEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                          ToolTip="Listen to the fine-trimmed input through WaveLab's selected output device"/>
+                          ToolTip="Listen to the fine-trimmed input through Deep Groove's selected output device"/>
                 <TextBlock Text="{Binding SoftwarePlaythroughStatusText}" Margin="22,4,0,0" FontSize="10.5"
                            Foreground="{StaticResource Amber}" TextWrapping="Wrap"/>
 
@@ -283,7 +283,7 @@
                                             IsEnabled="{Binding CanApplyRecommendedInputSetting}"
                                             Click="OnApplyRecommendation"
                                             AutomationProperties.Name="Apply the recommended device level and fine trim"
-                                            ToolTip="Sets the Windows device level and WaveLab fine trim to the safe setting, then restarts the measurement"/>
+                                            ToolTip="Sets the Windows device level and Deep Groove fine trim to the safe setting, then restarts the measurement"/>
                                     <TextBlock Text="{Binding ApplyRecommendationStatusText}" Margin="0,5,0,0"
                                                FontFamily="{StaticResource MonoFont}" FontSize="9"
                                                Foreground="{StaticResource TealMuted}" TextWrapping="Wrap" TextAlignment="Right"/>
@@ -413,7 +413,7 @@
                         <CheckBox x:Name="wholeRecordCheck" Margin="0,11,0,0"
                                   Content="Scan the whole song / record side"
                                   IsChecked="{Binding SampleWholeRecord, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                  ToolTip="Play from lead-in through run-out; WaveLab holds the safest setting found anywhere on the side"
+                                  ToolTip="Play from lead-in through run-out; Deep Groove holds the safest setting found anywhere on the side"
                                   AutomationProperties.Name="Scan the whole song or record side for recording level"/>
 
                         <Grid Margin="0,12,0,0">
@@ -489,7 +489,7 @@
                             <TextBox x:Name="txtAutoStopMinutes" Width="56" Margin="9,0,0,0" Padding="8,5" FontSize="12.5"
                                      VerticalAlignment="Center" TextAlignment="Center"
                                      LostFocus="OnAutoStopMinutesChanged"
-                                     ToolTip="1 to 180 minutes. A take also ends at WaveLab's in-memory limit — about 35 minutes at 48 kHz stereo, and proportionally less at higher rates."
+                                     ToolTip="1 to 180 minutes. A take also ends at Deep Groove's in-memory limit — about 35 minutes at 48 kHz stereo, and proportionally less at higher rates."
                                      AutomationProperties.Name="Maximum take length in minutes"/>
                             <TextBlock Text="minutes" Margin="9,0,0,0" Foreground="{StaticResource TextDim}" FontSize="12.5"
                                        VerticalAlignment="Center"/>

@@ -277,7 +277,7 @@ public static class CdTransfer
             bool dither = !IsExact16BitPcm(continuous, cancellationToken);
             var cue = new StringBuilder();
             cue.AppendLine($"TITLE \"{CueEscape(discTitle)}\"");
-            cue.AppendLine("PERFORMER \"WaveLab Transfer\"");
+            cue.AppendLine("PERFORMER \"Deep Groove Transfer\"");
 
             for (int i = 0; i < prepared.Count; i++)
             {

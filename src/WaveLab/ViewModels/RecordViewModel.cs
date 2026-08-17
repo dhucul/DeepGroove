@@ -378,7 +378,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     public string InputFineTrimText => $"{_inputFineTrimDb:+0.0;-0.0;0.0} dB";
     public string InputTotalLevelText => _hasInputLevelControl
         ? $"Total input gain {_inputLevelDb + _inputFineTrimDb:+0.0;-0.0;0.0} dB"
-        : $"WaveLab trim {_inputFineTrimDb:+0.0;-0.0;0.0} dB";
+        : $"Deep Groove trim {_inputFineTrimDb:+0.0;-0.0;0.0} dB";
     public string InputLevelStatusText => !_hasInputLevelControl
         ? "This input does not expose a Windows level control"
             + (string.IsNullOrWhiteSpace(_inputLevelError) ? "." : $": {_inputLevelError}")
@@ -619,7 +619,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                     "Lower the hardware input gain and replay the passage. Digital gain after capture cannot repair clipped peaks."
                     + (snapshot.InvalidSamples > 0 ? " The input driver also supplied invalid samples." : "") + notes,
                 RecordingLevelStatus.UpstreamClipping =>
-                    "Flat-topped peaks suggest clipping before WaveLab. Lower the preamp/interface gain and check again." + notes,
+                    "Flat-topped peaks suggest clipping before Deep Groove. Lower the preamp/interface gain and check again." + notes,
                 _ => "Keep playing the loudest passage until the recommendation settles.",
             };
         }

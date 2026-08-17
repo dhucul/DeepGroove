@@ -97,7 +97,7 @@
                         <Path Data="M0.5,0.5 L9.5,0.5 9.5,9.5 0.5,9.5 Z" Stroke="{StaticResource Muted}" StrokeThickness="1"/>
                     </Button>
                     <Button Style="{StaticResource CaptionCloseButton}" Click="OnCloseWindow" Focusable="False"
-                            AutomationProperties.Name="Close WaveLab">
+                            AutomationProperties.Name="Close Deep Groove">
                         <Path Data="M0,0 L10,10 M10,0 L0,10" Stroke="{StaticResource Muted}" StrokeThickness="1"/>
                     </Button>
                 </StackPanel>
@@ -254,12 +254,12 @@
                     <MenuItem Header="VST3 Plugins…" Click="OnManageVst3"/>
                 </MenuItem>
                 <MenuItem Header="_Help">
-                    <MenuItem Header="WaveLab Help..." InputGestureText="F1"
+                    <MenuItem Header="Deep Groove Help..." InputGestureText="F1"
                               Command="{x:Static ApplicationCommands.Help}"/>
                     <MenuItem Header="Recording and Level Assistant" Tag="recording-levels" Click="OnHelpTopic"/>
                     <MenuItem Header="Keyboard and Mouse Shortcuts" Tag="shortcuts" Click="OnHelpTopic"/>
                     <Separator/>
-                    <MenuItem Header="About WaveLab" Command="{Binding AboutCommand}"/>
+                    <MenuItem Header="About Deep Groove" Command="{Binding AboutCommand}"/>
                 </MenuItem>
             </Menu>
         </Border>
