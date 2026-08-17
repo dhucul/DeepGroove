@@ -211,6 +211,7 @@
                     <MenuItem Header="Disc Equalisation Curve…" Click="OnRecordingCurve"/>
                     <MenuItem Header="Correct Stylus Azimuth…" Click="OnCorrectAzimuth"
                               IsEnabled="{Binding HasMultichannelDocument}"/>
+                    <MenuItem Header="Correct Wow &amp; Flutter…" Click="OnCorrectWowFlutter"/>
                 </MenuItem>
                 <MenuItem Header="_Tools">
                     <MenuItem Header="Time Stretch…" Click="OnTimeStretch" IsEnabled="{Binding HasAudioDocument}"/>

@@ -488,6 +488,78 @@ public partial class MainWindow : Window
         return applied;
     }
 
+    // ── wow and flutter ──────────────────────────────────────────
+
+    /// <summary>
+    /// Measures the transfer's speed variation, reports it, then straightens the time base.
+    /// </summary>
+    private async void OnCorrectWowFlutter(object sender, RoutedEventArgs e)
+    {
+        var d = Doc;
+        if (_longOperationRunning || d is not { Doc.Length: > 0 }) return;
+
+        float[][] channels = d.Doc.Channels.ToArray();
+        int rate = d.Doc.SampleRate;
+        var report = WowFlutterReport.None;
+
+        _longOperationRunning = true;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Measuring wow and flutter",
+                "Following the spectrum along a log-frequency axis", async (progress, token) =>
+                {
+                    report = await Task.Run(
+                        () => WowFlutter.Analyze(channels[0], rate, WowFlutterOptions.Default,
+                            token, progress), token);
+                });
+        }
+        catch (OperationCanceledException) { _vm.ReportAction("Measurement cancelled."); return; }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Measuring wow and flutter",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally { _longOperationRunning = false; }
+
+        if (!report.Found)
+        {
+            MessageBox.Show("There was not enough sustained material above 1 kHz to follow the " +
+                            "speed of the transfer.", "Correct wow and flutter",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        string verdict = report.RmsPercent switch
+        {
+            < 0.05 => "That is at the floor of what this can measure; there is probably nothing to correct.",
+            < 0.15 => "That is low — audible only on sustained piano or strings, if at all.",
+            < 0.4 => "That is enough to hear on sustained notes.",
+            _ => "That is severe.",
+        };
+        string reach = $"Only variation faster than {WowFlutterOptions.Default.BaselineSeconds:0} seconds " +
+                       "is corrected: a record running consistently fast is at the wrong pitch, which " +
+                       "is a different repair.";
+
+        if (MessageBox.Show(
+                $"Speed variation measures {report.RmsPercent:0.000}% rms, peaking at " +
+                $"{report.PeakPercent:0.000}%.\n\n{verdict}\n\n{reach}\n\nStraighten the time base?",
+                "Correct wow and flutter", MessageBoxButton.YesNo, MessageBoxImage.Question)
+            != MessageBoxResult.Yes)
+        {
+            _vm.ReportAction($"Wow and flutter measured at {report.RmsPercent:0.000}% rms · left uncorrected.");
+            return;
+        }
+
+        _ = RunWholeFileTool("Correct Wow & Flutter",
+            $"{report.RmsPercent:0.000}% rms · one time base for every channel",
+            (working, sampleRate, progress, token) =>
+            {
+                WowFlutter.Correct(working, sampleRate, WowFlutterOptions.Default, token, progress);
+                return working;
+            }, d);
+    }
+
     // ── drifting hum ─────────────────────────────────────────────
 
     /// <summary>
