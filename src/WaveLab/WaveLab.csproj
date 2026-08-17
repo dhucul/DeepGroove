@@ -11,7 +11,7 @@
     <AssemblyName>WaveLab</AssemblyName>
     <!-- Program.Main runs ahead of WPF so a plugin scan never starts an application. -->
     <StartupObject>WaveLab.Program</StartupObject>
-    <Version>2.0.16</Version>
+    <Version>2.0.17</Version>
     <Product>WaveLab</Product>
     <Description>Audio editor and mastering suite for Windows</Description>
     <ApplicationIcon>Assets\wavelab.ico</ApplicationIcon>
