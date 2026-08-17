@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WaveLab — audio montage</title>
+<style>
+  :root{--wave-bg:#0F1114;--panel:#14171B;--panel2:#15181D;--panel3:#1A1E24;--chrome:#111419;
+    --line:#1D2228;--line-soft:#252B33;--text:#E7EAEE;--muted:#6A717A;--faint:#4A5058;
+    --accent:#3FD6C2;--amber:#FFB454;--rose:#E0736B;--violet:#9B8CE0}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0B0D10;color:var(--text);
+    font-family:"Inter","Segoe UI",system-ui,sans-serif}
+  body{padding:28px 32px 56px}
+  h1{font-size:19px;font-weight:600;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 26px;max-width:1240px;line-height:1.65}
+  h2{font-size:11px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);
+    margin:34px 0 13px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .note{color:var(--faint);font-size:11.5px;line-height:1.7;max-width:1240px;margin:13px 0 0}
+  .note b{color:#98A0A9;font-weight:500}
+  .mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+
+  /* app shell */
+  .app{width:1240px;border:1px solid var(--line-soft);border-radius:5px;overflow:hidden;
+    background:var(--wave-bg)}
+  .titlebar{height:32px;background:var(--chrome);display:flex;align-items:center;padding:0 12px;
+    gap:9px;border-bottom:1px solid var(--line)}
+  .logo{width:13px;height:13px;border-radius:3px;background:linear-gradient(135deg,var(--accent),#2B8F82)}
+  .titlebar .t{font-size:11.5px;color:var(--muted)}
+  .menubar{height:26px;background:var(--chrome);display:flex;align-items:center;gap:16px;padding:0 12px;
+    border-bottom:1px solid var(--line);font-size:11.5px;color:#AEB5BD}
+
+  /* tab strip */
+  .tabs{height:30px;background:var(--chrome);display:flex;align-items:stretch;
+    border-bottom:1px solid var(--line);padding:0 8px;gap:2px}
+  .tab{display:flex;align-items:center;gap:8px;padding:0 13px;font-size:11.5px;color:var(--muted);
+    border-top:2px solid transparent}
+  .tab.on{background:var(--wave-bg);color:var(--text);border-top-color:var(--accent)}
+  .tab .kind{font-size:8.5px;letter-spacing:.6px;padding:1px 5px;border-radius:3px;
+    background:#20262E;color:var(--faint)}
+  .tab.on .kind{background:#1B4A44;color:#9BE9DC}
+
+  /* toolbar */
+  .toolstrip{height:40px;background:var(--panel);border-bottom:1px solid var(--line);
+    display:flex;align-items:center;padding:0 10px;gap:7px}
+  .tool{height:26px;padding:0 11px;border-radius:5px;background:#171B21;border:1px solid #262D36;
+    display:flex;align-items:center;font-size:11.5px;color:#C3CAD2;gap:6px}
+  .tool.on{background:#193B37;border-color:#2C6B62;color:var(--accent)}
+  .tool.dim{color:var(--faint)}
+  .divider{width:1px;height:22px;background:var(--line);margin:0 4px}
+  .readout{margin-left:auto;display:flex;gap:18px;font-size:10.5px;color:var(--faint)}
+  .readout b{color:#98A0A9;font-weight:500}
+
+  /* body */
+  .body{display:grid;grid-template-columns:1fr 250px}
+  .lane-area{display:grid;grid-template-rows:22px 1fr 96px;min-width:0}
+  .ruler{background:var(--panel);border-bottom:1px solid var(--line);position:relative}
+  .lane{position:relative;background:#0C0E11;border-bottom:1px solid var(--line);overflow:hidden;
+    padding-bottom:14px}
+  .strip{background:var(--panel);position:relative}
+
+  /* clips */
+  .clip{position:absolute;top:12px;bottom:26px;border-radius:6px;overflow:hidden;
+    border:1px solid #2C6B62;background:linear-gradient(180deg,#17342F,#122824)}
+  .clip.sel{border-color:var(--accent);box-shadow:0 0 0 1px rgba(63,214,194,.35)}
+  .clip.alt{border-color:#5A4E86;background:linear-gradient(180deg,#241F3A,#1A162B)}
+  .clip .hd{height:17px;background:rgba(0,0,0,.32);display:flex;align-items:center;
+    padding:0 7px;gap:6px;font-size:10px;color:#C7CED6}
+  .clip .hd .g{margin-left:auto;color:var(--faint);font-size:9.5px}
+  .clip .wave{position:absolute;left:0;right:0;top:17px;bottom:0}
+  .grip{position:absolute;top:0;bottom:0;width:5px;background:rgba(63,214,194,.5)}
+
+  /* crossfade zone */
+  .xf{position:absolute;top:6px;bottom:20px;border-left:1px dashed rgba(255,180,84,.55);
+    border-right:1px dashed rgba(255,180,84,.55);background:rgba(255,180,84,.07);
+    pointer-events:none;z-index:2}
+  /* The label sits under the clips, not over them: at the top it lands on the clip header strip,
+     and the one thing it must never do is hide the name of the clip it belongs to. */
+  .xf .lab{position:absolute;bottom:-8px;left:50%;transform:translateX(-50%);
+    font-size:9px;color:var(--amber);background:#15130F;padding:2px 7px;border-radius:3px;
+    border:1px solid #4A3B22;white-space:nowrap;z-index:3}
+
+  /* overview strip */
+  .ov{position:absolute;left:0;right:0;top:22px;height:44px}
+  .ovclip{position:absolute;top:0;bottom:0;border-radius:3px;background:#1B4A44;border:1px solid #2C6B62}
+  .ovclip.alt{background:#2A2447;border-color:#5A4E86}
+  .ovwin{position:absolute;top:-4px;bottom:-4px;border:1px solid var(--accent);border-radius:4px;
+    background:rgba(63,214,194,.08)}
+  .striplab{position:absolute;left:11px;top:5px;font-size:9px;letter-spacing:.7px;
+    color:var(--faint)}
+
+  /* inspector */
+  .rack{background:var(--panel);border-left:1px solid var(--line);padding:11px 12px}
+  .rack .hd{font-size:10px;letter-spacing:.9px;color:var(--muted);text-transform:uppercase;
+    margin:0 0 9px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .row{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;
+    color:#B9C0C8;padding:6px 0;border-bottom:1px solid #191E24}
+  .row .v{color:var(--accent);font-size:11px;font-family:"JetBrains Mono",ui-monospace,monospace}
+  .row .v.plain{color:#C3CAD2}
+  .fld{height:28px;border:1px solid #262D36;border-radius:6px;background:#101318;padding:0 9px;
+    display:flex;align-items:center;font-size:11.5px;color:#D3D9E0;margin-top:5px}
+  .lbl{font-size:9px;font-weight:700;letter-spacing:.6px;color:var(--faint);margin-top:11px}
+  .seg{display:flex;border:1px solid #262D36;border-radius:6px;overflow:hidden;margin-top:5px}
+  .seg div{flex:1;padding:5px 0;text-align:center;font-size:10px;color:var(--muted);
+    background:#171B21;border-right:1px solid #262D36}
+  .seg div:last-child{border-right:none}
+  .seg div.on{background:#193B37;color:var(--accent)}
+  .curve{height:56px;margin-top:8px;border:1px solid #262D36;border-radius:6px;background:#0E1115;
+    position:relative;overflow:hidden}
+  .pill{display:inline-block;padding:2px 7px;border-radius:9px;font-size:9.5px;
+    background:#1B4A44;color:#9BE9DC;border:1px solid #2C6B62}
+  .pill.amber{background:#1E1A14;color:var(--amber);border-color:#4A3B22}
+
+  .statusbar{height:24px;background:var(--chrome);border-top:1px solid var(--line);display:flex;
+    align-items:center;padding:0 12px;gap:16px;font-size:10.5px;color:var(--faint)}
+  .statusbar b{color:#98A0A9;font-weight:500}
+  .ok{color:#7BD88F}
+</style>
+</head>
+<body>
+
+<h1>WaveLab — audio montage</h1>
+<p class="sub">
+  A <b>single-lane clip timeline</b>: clips from any number of source files, with gain, fades and
+  crossfades, assembled into a side and rendered straight to a CD package or a DDP image set. This is
+  not the multitrack rewrite the roadmap declined — there is no mixer, no bus, no send and no
+  automation lane. The engine behind it is built and tested: what needs deciding here is the view.
+  <b>The one thing worth looking at closely is the crossfade readout</b>, because the join is the only
+  place a montage can go wrong and the app now measures rather than assumes it.
+</p>
+
+<h2>1 · The montage tab</h2>
+
+<div class="app">
+  <div class="titlebar">
+    <span class="logo"></span>
+    <span class="t">WaveLab — Blue Monk (side A).wlmontage.json</span>
+  </div>
+  <div class="menubar">
+    <span>File</span><span>Edit</span><span>View</span><span>Montage</span><span>Process</span>
+    <span>Analyze</span><span>Master</span><span>Help</span>
+  </div>
+
+  <div class="tabs">
+    <span class="tab"><span class="kind">WAV</span>Needle drop 1.wav</span>
+    <span class="tab"><span class="kind">WAV</span>Needle drop 2.wav</span>
+    <span class="tab on"><span class="kind">MONTAGE</span>Blue Monk (side A)</span>
+  </div>
+
+  <div class="toolstrip">
+    <span class="tool on">↔ Move</span>
+    <span class="tool">⇥ Trim</span>
+    <span class="tool">✂ Split</span>
+    <span class="divider"></span>
+    <span class="tool">Add Clip…</span>
+    <span class="tool">Snap: zero-crossing</span>
+    <span class="divider"></span>
+    <span class="tool">▶ Render…</span>
+    <span class="tool">Prepare CD / DDP…</span>
+    <span class="readout">
+      <span>4 clips · <b>3 crossfades</b> · 0 gaps</span>
+      <span>peak <b>−1.4 dBFS</b></span>
+      <span>length <b>18:42.113</b></span>
+    </span>
+  </div>
+
+  <div class="body">
+    <div class="lane-area">
+      <div class="ruler"><canvas id="ruler"></canvas></div>
+
+      <div class="lane">
+        <canvas id="lanegrid"></canvas>
+
+        <!-- clip 1 -->
+        <div class="clip" style="left:0;width:300px">
+          <div class="hd">Opening<span class="g">0.0 dB</span></div>
+          <div class="wave"><canvas class="cw" data-seed="1"></canvas></div>
+        </div>
+
+        <!-- crossfade 1→2 -->
+        <div class="xf" style="left:268px;width:32px">
+          <span class="lab">ρ 0.02 · equal power</span>
+        </div>
+
+        <!-- clip 2 (selected) -->
+        <div class="clip sel" style="left:268px;width:334px">
+          <div class="hd">Ruby, My Dear<span class="g">−1.5 dB</span></div>
+          <div class="wave"><canvas class="cw" data-seed="2"></canvas></div>
+          <div class="grip" style="left:0"></div>
+          <div class="grip" style="right:0"></div>
+        </div>
+
+        <!-- crossfade 2→3 -->
+        <div class="xf" style="left:566px;width:36px">
+          <span class="lab">ρ 0.88 · near equal gain</span>
+        </div>
+
+        <!-- clip 3 -->
+        <div class="clip alt" style="left:566px;width:246px">
+          <div class="hd">Ruby (retake tail)<span class="g">−1.5 dB</span></div>
+          <div class="wave"><canvas class="cw" data-seed="3"></canvas></div>
+        </div>
+
+        <!-- crossfade 3→4 -->
+        <div class="xf" style="left:792px;width:20px">
+          <span class="lab">ρ 0.31</span>
+        </div>
+
+        <!-- clip 4 -->
+        <div class="clip" style="left:792px;width:396px">
+          <div class="hd">Well, You Needn’t<span class="g">0.0 dB</span></div>
+          <div class="wave"><canvas class="cw" data-seed="4"></canvas></div>
+        </div>
+      </div>
+
+      <div class="strip">
+        <span class="striplab">WHOLE MONTAGE</span>
+        <!-- The same four clips at a third the scale: the whole side, with the lane's window on it. -->
+        <div class="ov">
+          <div class="ovclip" style="left:11px;width:100px"></div>
+          <div class="ovclip" style="left:100px;width:112px"></div>
+          <div class="ovclip alt" style="left:200px;width:82px"></div>
+          <div class="ovclip" style="left:275px;width:132px"></div>
+          <div class="ovclip" style="left:400px;width:158px"></div>
+          <div class="ovclip alt" style="left:548px;width:96px"></div>
+          <div class="ovclip" style="left:636px;width:212px"></div>
+          <div class="ovwin" style="left:11px;width:337px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rack">
+      <p class="hd">Clip · Ruby, My Dear</p>
+      <div class="row"><span>Source</span><span class="v plain">Needle drop 2</span></div>
+      <div class="row"><span>Source in</span><span class="v">1:02.418</span></div>
+      <div class="row"><span>Length</span><span class="v">5:41.220</span></div>
+      <div class="row"><span>At</span><span class="v">3:20.006</span></div>
+
+      <div class="lbl">GAIN</div>
+      <div class="fld"><span class="mono">−1.5 dB</span></div>
+
+      <div class="lbl">FADE IN · 340 ms</div>
+      <div class="seg">
+        <div>Lin</div><div class="on">Pow</div><div>S</div><div>dB</div>
+      </div>
+
+      <div class="lbl">FADE OUT · 420 ms</div>
+      <div class="seg">
+        <div>Lin</div><div class="on">Pow</div><div>S</div><div>dB</div>
+      </div>
+
+      <div class="lbl">CROSSFADE OUT → RUBY (RETAKE TAIL)</div>
+      <div class="curve"><canvas id="xfcurve"></canvas></div>
+      <div class="row" style="border-bottom:none;padding-top:8px">
+        <span>Correlation</span><span class="v">0.88</span>
+      </div>
+      <div style="margin-top:2px"><span class="pill">measured · level flat to 0.02 dB</span></div>
+      <p style="font-size:10px;color:var(--faint);line-height:1.6;margin:9px 0 0">
+        Two takes of the same passage, so the amplitudes add. Equal power here would bump the join
+        by 2.6 dB.
+      </p>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span>44 100 Hz · 2 ch · 32-bit float</span>
+    <span>Sources: <b>3 files</b></span>
+    <span class="ok">✓ all sources present</span>
+    <span style="margin-left:auto">Renders to <b>18:42.113</b> · fits a CD</span>
+  </div>
+</div>
+
+<p class="note">
+  <b>The lane.</b> One row of clips on the waveform's own time axis, so the ruler, overview bar and
+  playhead work exactly as they do in the editor. A clip draws its own waveform, carries its name and
+  gain in a header strip, and gets edge grips when selected. <b>Overlaps are drawn as an amber zone
+  rather than as a shape on each clip</b>, because an overlap belongs to the pair, not to either clip
+  — and the label on it is the measured correlation and the law that follows from it, which is the
+  one number that says whether the join is right.
+</p>
+<p class="note">
+  <b>The inspector</b> replaces the effect rack for a montage tab, and edits the selected clip: source,
+  the three positions, gain, and the two free-edge fade shapes. The crossfade panel below is
+  <b>read-only except for its length</b> — the shape comes from the incoming clip and the law is
+  solved from the measurement, so there is nothing there to choose wrongly.
+</p>
+
+<h2>2 · The crossfade panel, at three correlations</h2>
+
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;width:1240px">
+  <div class="rack" style="border-left:none;border:1px solid var(--line-soft);border-radius:9px">
+    <p class="hd">ρ 0.02 — unrelated</p>
+    <div class="curve" style="height:96px"><canvas class="xf3" data-rho="0.02"></canvas></div>
+    <div class="row" style="border-bottom:none"><span>Law</span><span class="v plain">equal power</span></div>
+    <div><span class="pill">level flat to 0.01 dB</span></div>
+    <p style="font-size:10px;color:var(--faint);line-height:1.6;margin:9px 0 0">
+      Different music either side. Equal gain would dip the join 3.0 dB.
+    </p>
+  </div>
+
+  <div class="rack" style="border-left:none;border:1px solid var(--line-soft);border-radius:9px">
+    <p class="hd">ρ 0.88 — two takes</p>
+    <div class="curve" style="height:96px"><canvas class="xf3" data-rho="0.88"></canvas></div>
+    <div class="row" style="border-bottom:none"><span>Law</span><span class="v plain">near equal gain</span></div>
+    <div><span class="pill">level flat to 0.02 dB</span></div>
+    <p style="font-size:10px;color:var(--faint);line-height:1.6;margin:9px 0 0">
+      Mostly the same performance. Equal power would bump the join 2.6 dB.
+    </p>
+  </div>
+
+  <div class="rack" style="border-left:none;border:1px solid var(--line-soft);border-radius:9px">
+    <p class="hd">ρ −0.4 — out of phase</p>
+    <div class="curve" style="height:96px"><canvas class="xf3" data-rho="-0.4"></canvas></div>
+    <div class="row" style="border-bottom:none"><span>Law</span><span class="v plain">equal power</span></div>
+    <div><span class="pill amber">polarity — check the join</span></div>
+    <p style="font-size:10px;color:var(--faint);line-height:1.6;margin:9px 0 0">
+      The two sides partly cancel. No pair of fades fixes that, so the law falls back and the
+      montage says so instead.
+    </p>
+  </div>
+</div>
+
+<p class="note">
+  <b>Why the panel is worth its space.</b> Every other montage picks one crossfade law and lives with
+  the other case being 3 dB wrong. This one solves <span class="mono">b = −ρa + √(1 − a²(1 − ρ²))</span>
+  from the correlation measured over the exact span being summed, which is equal power at ρ=0, equal
+  gain at ρ=1 and exact in between. Measured on the built engine: <b>−9.03 dB before a join, −9.02
+  through it, −9.03 after</b>, both for unrelated material and for two takes of the same recording.
+  The panel shows the number that produced the curve, so a join that is about to be wrong is visible
+  before it is heard.
+</p>
+
+<h2>3 · What the montage renders to</h2>
+
+<div class="app" style="width:640px">
+  <div class="titlebar"><span class="logo"></span><span class="t">Render Montage</span></div>
+  <div style="padding:16px 18px">
+    <div class="lbl" style="margin-top:0">DESTINATION</div>
+    <div class="seg" style="max-width:none">
+      <div class="on">New tab</div><div>WAV / AIFF…</div><div>CD package</div><div>DDP image set</div>
+    </div>
+    <div class="row" style="margin-top:14px"><span>Length</span><span class="v">18:42.113</span></div>
+    <div class="row"><span>Peak</span><span class="v">−1.4 dBFS</span></div>
+    <div class="row"><span>Crossfades</span><span class="v">3 · mean ρ 0.40</span></div>
+    <div class="row" style="border-bottom:none"><span>Master rack</span><span class="v plain">rendered in</span></div>
+    <p style="font-size:10.5px;color:var(--faint);line-height:1.65;margin:12px 0 0">
+      Clips are placed at their timeline positions and each source is read once, so a clip used twice
+      is not resampled twice. The peak is reported rather than limited: overlapping clips can sum
+      past full scale, and that is a decision for you, not for the renderer.
+    </p>
+  </div>
+</div>
+
+<p class="note">
+  <b>CD and DDP fall out for free.</b> Phase 3 already turns a document plus an ordered set of ranges
+  into a sector-aligned package or a DDP image set, and a montage <em>is</em> an ordered set of ranges
+  — so each clip becomes a CD track and the montage renders straight to a plant deliverable. That is
+  the reason the roadmap gated this phase until delivery had shipped.
+</p>
+
+<script>
+const dpr = Math.max(1, window.devicePixelRatio || 1);
+function fit(c){const r=c.getBoundingClientRect();c.width=Math.max(1,r.width*dpr);
+  c.height=Math.max(1,r.height*dpr);const x=c.getContext('2d');x.scale(dpr,dpr);return [x,r.width,r.height];}
+function rnd(s){let t=s+0x6D2B79F5;return function(){t=Math.imul(t^t>>>15,t|1);
+  t^=t+Math.imul(t^t>>>7,t|61);return ((t^t>>>14)>>>0)/4294967296;}}
+
+// time ruler
+{const [x,w,h]=fit(document.getElementById('ruler'));
+ x.fillStyle='#14171B';x.fillRect(0,0,w,h);
+ x.strokeStyle='#252B33';x.beginPath();x.moveTo(0,h-.5);x.lineTo(w,h-.5);x.stroke();
+ x.font='9px "JetBrains Mono",monospace';x.fillStyle='#4A5058';
+ for(let i=0;i<=12;i++){const px=i*w/12;
+   x.strokeStyle='#2A313A';x.beginPath();x.moveTo(px+.5,h-6);x.lineTo(px+.5,h);x.stroke();
+   if(i<12)x.fillText((i*90/60|0)+':'+String(i*90%60).padStart(2,'0'),px+4,10);}}
+
+// lane grid
+{const [x,w,h]=fit(document.getElementById('lanegrid'));
+ x.fillStyle='#0C0E11';x.fillRect(0,0,w,h);
+ x.strokeStyle='#171B20';for(let i=0;i<=12;i++){const px=Math.round(i*w/12)+.5;
+   x.beginPath();x.moveTo(px,0);x.lineTo(px,h);x.stroke();}}
+
+// clip waveforms
+document.querySelectorAll('.cw').forEach(c=>{
+  const [x,w,h]=fit(c);const r=rnd(+c.dataset.seed*977);
+  const mid=h/2;x.fillStyle='rgba(63,214,194,.55)';
+  if(c.dataset.seed==='3')x.fillStyle='rgba(155,140,224,.55)';
+  let e=.5;
+  for(let px=0;px<w;px++){
+    e=e*.90+r()*.10;
+    const a=(.22+e*.78)*(mid-2);
+    x.fillRect(px,mid-a,1,a*2);}
+});
+
+// crossfade curve helper
+function drawXf(c,rho){
+  const [x,w,h]=fit(c);
+  x.fillStyle='#0E1115';x.fillRect(0,0,w,h);
+  x.strokeStyle='#1D2228';
+  for(let i=1;i<4;i++){const py=Math.round(i*h/4)+.5;
+    x.beginPath();x.moveTo(0,py);x.lineTo(w,py);x.stroke();}
+
+  const inG=t=>Math.sin(t*Math.PI/2);
+  const partner=(a,p)=>{const q=Math.max(0,Math.min(1,p));
+    return Math.max(0,-q*a+Math.sqrt(Math.max(0,1-a*a*(1-q*q))));};
+
+  // outgoing
+  x.strokeStyle='#FFB454';x.lineWidth=1.6;x.beginPath();
+  for(let px=0;px<=w;px++){const t=px/w;const g=partner(inG(t),rho);
+    const py=h-2-g*(h-6);px?x.lineTo(px,py):x.moveTo(px,py);}
+  x.stroke();
+  // incoming
+  x.strokeStyle='#3FD6C2';x.beginPath();
+  for(let px=0;px<=w;px++){const t=px/w;const g=inG(t);
+    const py=h-2-g*(h-6);px?x.lineTo(px,py):x.moveTo(px,py);}
+  x.stroke();
+  // summed level
+  const p=Math.max(0,rho);
+  x.strokeStyle='rgba(231,234,238,.45)';x.lineWidth=1;x.setLineDash([3,3]);x.beginPath();
+  for(let px=0;px<=w;px++){const t=px/w;const a=inG(t),b=partner(a,rho);
+    const lvl=Math.sqrt(Math.max(0,a*a+b*b+2*a*b*p));
+    const py=h-2-lvl*(h-6);px?x.lineTo(px,py):x.moveTo(px,py);}
+  x.stroke();x.setLineDash([]);
+}
+{const c=document.getElementById('xfcurve');if(c)drawXf(c,0.88);}
+document.querySelectorAll('.xf3').forEach(c=>drawXf(c,+c.dataset.rho));
+</script>
+
+</body>
+</html>
