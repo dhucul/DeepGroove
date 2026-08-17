@@ -86,6 +86,17 @@ public sealed class AudioDocument
     /// Used for imported containers whose non-audio chunks WaveLab cannot preserve.
     /// </summary>
     public bool RequiresSaveAs { get; set; }
+
+    /// <summary>
+    /// The ancillary chunks of the RIFF file this document came from, carried through to the save.
+    /// </summary>
+    /// <remarks>
+    /// A WAV holds far more than audio — broadcast metadata, iXML from a field recorder, loop
+    /// points, a producer's notes — and every one of those chunks used to be discarded on load and
+    /// absent on save. Keeping them is what lets a file be written back over itself without quietly
+    /// losing what somebody else put in it.
+    /// </remarks>
+    public RiffMetadata Riff { get; set; } = new();
     public string? FilePath { get; set; }
     public string Title { get; set; } = "Untitled";
 

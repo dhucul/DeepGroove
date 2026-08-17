@@ -424,7 +424,27 @@ public partial class CdTransferDialog : Window
             return;
         }
 
-        var picker = new OpenFolderDialog { Title = "Choose a new or empty folder for the CD package" };
+        // Two deliverables from one plan: a burner takes WAV + CUE, a pressing plant takes DDP.
+        var choice = new ParamDialog("Export CD Package", "Continue", "Deliverable",
+            ["WAV + CUE package — disc burners", "DDP 2.00 image set — replication plant"], 0)
+        { Owner = this };
+        if (choice.ShowDialog() != true) return;
+        bool ddp = choice.ComboIndex == 1;
+
+        string upc = "";
+        if (ddp)
+        {
+            // The one catalogue field that changes a plant order, and the only one this dialog can
+            // ask for until the PQ sheet editor exists. Blank is a legitimate answer.
+            upc = TextPromptDialog.Show(this, "UPC/EAN for the disc (leave blank if none)") ?? "";
+        }
+
+        var picker = new OpenFolderDialog
+        {
+            Title = ddp
+                ? "Choose a new or empty folder for the DDP image set"
+                : "Choose a new or empty folder for the CD package",
+        };
         if (picker.ShowDialog(this) != true) return;
 
         _main.StopPreview();
@@ -467,12 +487,27 @@ public partial class CdTransferDialog : Window
                         ? $"{p.CurrentTrack} - {p.Fraction:P0}"
                         : $"Preparing {p.CurrentTrack} - {Math.Min(p.CompletedTracks + 1, p.TotalTracks)} of {p.TotalTracks}";
             });
-            var result = await CdTransfer.ExportPackageAsync(exportSource, plan, picker.FolderName,
-                discTitle.Text, progress, token);
-            progressBar.Value = 1;
-            InfoDialog.Show(this, "CD Package Ready",
-                $"Created {result.WaveFiles.Count} sector-aligned CD WAV file(s) and a CUE sheet. Open the CUE file in your preferred disc-burning application.",
-                result.CueFile);
+            if (ddp)
+            {
+                var disc = new DdpDiscInfo(discTitle.Text, Upc: upc);
+                DdpResult image = await CdTransfer.ExportDdpAsync(exportSource, plan, picker.FolderName,
+                    disc, progress, token);
+                progressBar.Value = 1;
+                InfoDialog.Show(this, "DDP Image Set Ready",
+                    $"Wrote a {image.Tracks}-track DDP 2.00 image set: {image.ImageBytes / (1024.0 * 1024):0.0} MB of " +
+                    "audio plus its PQ descriptor, CD-TEXT and checksum. Send the whole folder to the plant.\n\n" +
+                    $"IMAGE.DAT MD5  {image.ImageMd5}",
+                    image.Folder);
+            }
+            else
+            {
+                var result = await CdTransfer.ExportPackageAsync(exportSource, plan, picker.FolderName,
+                    discTitle.Text, progress, token);
+                progressBar.Value = 1;
+                InfoDialog.Show(this, "CD Package Ready",
+                    $"Created {result.WaveFiles.Count} sector-aligned CD WAV file(s) and a CUE sheet. Open the CUE file in your preferred disc-burning application.",
+                    result.CueFile);
+            }
         }
         catch (OperationCanceledException) { statusText.Text = "CD package export cancelled; staged files were removed."; }
         catch (Exception ex)

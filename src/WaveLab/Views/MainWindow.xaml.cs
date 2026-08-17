@@ -488,6 +488,60 @@ public partial class MainWindow : Window
         return applied;
     }
 
+    // ── loudness compliance ──────────────────────────────────────
+
+    /// <summary>
+    /// Measures the document against a delivery target and shows the report, with the option to
+    /// save it beside the master as a delivery note.
+    /// </summary>
+    private async void OnLoudnessCompliance(object sender, RoutedEventArgs e)
+    {
+        var d = Doc;
+        if (_longOperationRunning || d is not { Doc.Length: > 0 }) return;
+
+        var dialog = new ParamDialog("Loudness compliance", "Measure",
+            "Target", [.. LoudnessTarget.All.Select(t => $"{t.Name} — {t.IntegratedLufs:0.0} LUFS, " +
+                                                        $"≤ {t.TruePeakDbtp:0.0} dBTP")], 0)
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        LoudnessTarget target = LoudnessTarget.All[
+            Math.Clamp(dialog.ComboIndex, 0, LoudnessTarget.All.Count - 1)];
+        float[][] channels = d.Doc.Channels.ToArray();
+        int rate = d.Doc.SampleRate;
+        var report = default(LoudnessReport);
+
+        _longOperationRunning = true;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Measuring loudness", target.Name,
+                async (progress, token) =>
+                {
+                    report = await Task.Run(
+                        () => LoudnessCompliance.Measure(channels, rate, target, token, progress), token);
+                });
+        }
+        catch (OperationCanceledException) { _vm.ReportAction("Measurement cancelled."); return; }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Loudness compliance", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally { _longOperationRunning = false; }
+
+        string text = LoudnessCompliance.Format(report);
+        _vm.ReportAction($"{target.Name}: {(report.Passed ? "compliant" : "not compliant")} · " +
+                         $"{report.IntegratedLufs:0.0} LUFS, {report.TruePeakDbtp:0.0} dBTP.");
+
+        var info = new InfoDialog($"Loudness compliance — {(report.Passed ? "PASS" : "FAIL")}", text)
+        {
+            Owner = this,
+        };
+        info.ShowDialog();
+    }
+
     // ── wow and flutter ──────────────────────────────────────────
 
     /// <summary>

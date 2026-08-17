@@ -226,6 +226,7 @@
                 </MenuItem>
                 <MenuItem Header="_Analyze" IsEnabled="{Binding HasAudioDocument}">
                     <MenuItem Header="Audio Statistics…" Command="{Binding StatisticsCommand}"/>
+                    <MenuItem Header="Loudness Compliance Report…" Click="OnLoudnessCompliance"/>
                     <MenuItem Header="Refresh Spectrogram" Click="OnRefreshSpectrogram"/>
                 </MenuItem>
                 <MenuItem Header="_Master" IsEnabled="{Binding HasAudioDocument}">

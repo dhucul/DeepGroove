@@ -18,7 +18,7 @@
                 <StackPanel Orientation="Horizontal">
                     <Ellipse Width="9" Height="9" Fill="{StaticResource Amber}" VerticalAlignment="Center"/>
                     <TextBlock Text="Prepare Audio CD" Margin="10,0,0,0" FontSize="14" FontWeight="SemiBold"/>
-                    <TextBlock Text="regions → ordered tracks → 44.1 kHz / 16-bit WAV + CUE"
+                    <TextBlock Text="regions → ordered tracks → 44.1 kHz / 16-bit WAV + CUE, or a DDP image set"
                                Margin="14,2,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"/>
                 </StackPanel>
             </Border>

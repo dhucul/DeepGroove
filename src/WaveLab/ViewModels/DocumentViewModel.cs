@@ -33,6 +33,11 @@ public sealed class DocumentViewModel : ObservableObject
         if (prebuiltPeaks == null) ScheduleRebuild();
         doc.Changed += OnDocChanged;
         var (markers, regions) = MarkerStore.Load(doc.FilePath);
+
+        // Failing that, the marks the file itself carries. The sidecar wins where both exist,
+        // because it also holds regions and CD track order, which cue points cannot express.
+        if (markers.Count == 0 && regions.Count == 0) markers = MarkerStore.FromRiff(doc.Riff);
+
         foreach (var m in markers)
         {
             if (m is null) continue;

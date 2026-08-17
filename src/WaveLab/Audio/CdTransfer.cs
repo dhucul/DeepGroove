@@ -6,7 +6,15 @@ using WaveLab.Audio.Dsp;
 namespace WaveLab.Audio;
 
 /// <summary>A source range and its position in an audio-CD transfer package.</summary>
-public sealed record CdTrackPlan(int SourceStart, int SourceEnd, string Title)
+/// <remarks>
+/// Everything past <paramref name="Title"/> exists for the DDP deliverable, which states catalogue
+/// information a cue sheet has no place for. A burner-bound package ignores it, and nothing in the
+/// app fills it yet — the PQ sheet editor that does is still a design away — so it defaults to
+/// absent rather than to something invented.
+/// </remarks>
+public sealed record CdTrackPlan(
+    int SourceStart, int SourceEnd, string Title,
+    string Performer = "", string Songwriter = "", string Isrc = "", bool PreEmphasis = false)
 {
     public int Length => Math.Max(0, SourceEnd - SourceStart);
     public double DurationSeconds(int sampleRate) => sampleRate > 0 ? (double)Length / sampleRate : 0;
@@ -246,16 +254,7 @@ public static class CdTransfer
         var published = new List<string>();
         try
         {
-            float[][] continuous = ToStereo(source.Channels, cancellationToken);
-            if (source.SampleRate != CdSampleRate)
-            {
-                progress?.Report(new CdPackageProgress(0, prepared.Count, "Converting continuous master", 0));
-                var srcProgress = progress == null ? null : new CallbackProgress<double>(fraction =>
-                    progress.Report(new CdPackageProgress(0, prepared.Count,
-                        "Converting continuous master", fraction * 0.2)));
-                continuous = Resampler.Resample(continuous, source.SampleRate, CdSampleRate,
-                    cancellationToken, srcProgress);
-            }
+            float[][] continuous = PrepareContinuous(source, prepared.Count, progress, cancellationToken);
 
             // Metadata alone cannot prove that a nominally 16-bit document is
             // still on the signed-16 PCM grid (a generated tab or Save As can
@@ -310,6 +309,136 @@ public static class CdTransfer
 
             progress?.Report(new CdPackageProgress(prepared.Count, prepared.Count, "Complete", 1));
             return new CdPackageResult(outputFolder, finalCuePath, finalWavePaths);
+        }
+        catch
+        {
+            foreach (string path in published)
+            {
+                try { File.Delete(path); }
+                catch { /* Preserve the original export failure. */ }
+            }
+            throw;
+        }
+        finally
+        {
+            try { if (Directory.Exists(stageFolder)) Directory.Delete(stageFolder, recursive: true); }
+            catch { /* A stale uniquely-named staging folder is safer than deleting user files. */ }
+        }
+    }
+
+    /// <summary>
+    /// The one continuous CD-rate stereo programme both deliverables are cut from. Resampling once
+    /// and cutting afterwards is what keeps a gapless transition gapless: converting each track on
+    /// its own would give every boundary its own filter transient.
+    /// </summary>
+    private static float[][] PrepareContinuous(SourceSnapshot source, int trackCount,
+        IProgress<CdPackageProgress>? progress, CancellationToken cancellationToken)
+    {
+        float[][] continuous = ToStereo(source.Channels, cancellationToken);
+        if (source.SampleRate == CdSampleRate) return continuous;
+
+        progress?.Report(new CdPackageProgress(0, trackCount, "Converting continuous master", 0));
+        var srcProgress = progress == null ? null : new CallbackProgress<double>(fraction =>
+            progress.Report(new CdPackageProgress(0, trackCount,
+                "Converting continuous master", fraction * 0.2)));
+        return Resampler.Resample(continuous, source.SampleRate, CdSampleRate,
+            cancellationToken, srcProgress);
+    }
+
+    // ── DDP ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Writes the same programme as a DDP 2.00 image set: what a pressing plant takes, where the
+    /// WAV+CUE package is what a duplicator takes.
+    /// </summary>
+    /// <remarks>
+    /// Snapshot rules are the WAV path's, for the same reason: the channel arrays are captured on
+    /// the caller's thread before any background work starts, because an edit replaces those arrays
+    /// rather than mutating them and a package must not span two versions of the document.
+    /// </remarks>
+    public static Task<DdpResult> ExportDdpAsync(
+        AudioDocument document,
+        IReadOnlyList<CdTrackPlan> orderedTracks,
+        string outputFolder,
+        DdpDiscInfo disc,
+        IProgress<CdPackageProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(orderedTracks);
+        if (string.IsNullOrWhiteSpace(outputFolder))
+            throw new ArgumentException("Choose an output folder.", nameof(outputFolder));
+
+        var channels = document.Channels.ToArray();
+        int length = document.Length;
+        if (channels.Any(c => c.Length != length))
+            throw new InvalidOperationException("The document channels do not have matching lengths.");
+        var snapshot = new SourceSnapshot(channels, document.SampleRate, document.SourceBitDepth,
+            document.EditVersion, length);
+        var plans = orderedTracks.ToArray();
+        string folder = Path.GetFullPath(outputFolder.Trim());
+
+        return Task.Run(() => ExportDdp(snapshot, plans, folder, disc, progress, cancellationToken),
+            cancellationToken);
+    }
+
+    private static DdpResult ExportDdp(
+        SourceSnapshot source,
+        IReadOnlyList<CdTrackPlan> orderedTracks,
+        string outputFolder,
+        DdpDiscInfo disc,
+        IProgress<CdPackageProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var issues = Validate(orderedTracks, source.SampleRate, source.Length);
+        var errors = issues.Where(i => i.Severity == CdPlanIssueSeverity.Error).Select(i => i.Message).ToList();
+        if (errors.Count > 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
+
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(outputFolder);
+        if (Directory.EnumerateFileSystemEntries(outputFolder).Any())
+            throw new IOException("The DDP folder must be empty. Choose a new or empty folder so existing files cannot be overwritten.");
+
+        var prepared = PrepareTrackBoundaries(orderedTracks, source.SampleRate, source.Length);
+        string stageFolder = Path.Combine(outputFolder, ".wavelab-ddp-" + Guid.NewGuid().ToString("N"));
+        var published = new List<string>();
+        try
+        {
+            float[][] continuous = PrepareContinuous(source, prepared.Count, progress, cancellationToken);
+
+            var audio = new List<float[][]>(prepared.Count);
+            var info = new List<DdpTrackInfo>(prepared.Count);
+            for (int i = 0; i < prepared.Count; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                progress?.Report(new CdPackageProgress(i, prepared.Count, prepared[i].Title,
+                    0.2 + 0.5 * i / Math.Max(1, prepared.Count)));
+
+                audio.Add(CopyRange(continuous, prepared[i].Start, prepared[i].Length, cancellationToken));
+                CdTrackPlan plan = prepared[i].Plan;
+                info.Add(new DdpTrackInfo(prepared[i].Title, plan.Performer, plan.Songwriter,
+                    plan.Isrc, plan.PreEmphasis));
+            }
+
+            Directory.CreateDirectory(stageFolder);
+            var imageProgress = progress == null ? null : new CallbackProgress<double>(fraction =>
+                progress.Report(new CdPackageProgress(prepared.Count, prepared.Count, "Writing the image",
+                    0.7 + 0.3 * fraction)));
+            DdpResult staged = DdpImage.Write(stageFolder, audio, info, disc, CdSampleRate,
+                cancellationToken, imageProgress);
+
+            // Nothing takes its final name until every file is complete, so an interrupted export
+            // cannot leave a folder that looks like a deliverable.
+            foreach (string file in staged.Files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string destination = Path.Combine(outputFolder, Path.GetFileName(file));
+                File.Move(file, destination, overwrite: false);
+                published.Add(destination);
+            }
+
+            progress?.Report(new CdPackageProgress(prepared.Count, prepared.Count, "Complete", 1));
+            return staged with { Folder = outputFolder, Files = published };
         }
         catch
         {

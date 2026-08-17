@@ -48,6 +48,32 @@ public static class MarkerStore
         catch { return ([], []); }
     }
 
+    /// <summary>
+    /// Markers embedded in the file itself, for when there is no sidecar.
+    /// </summary>
+    /// <remarks>
+    /// The sidecar wins where both exist: it carries regions and CD track order, which cue points
+    /// cannot express, so preferring the file's own marks would silently lose the richer set. Cue
+    /// points are what a file arrives with from somebody else's program, and this is what makes
+    /// those visible here at all.
+    /// </remarks>
+    public static List<Marker> FromRiff(RiffMetadata? riff)
+    {
+        var markers = new List<Marker>();
+        if (riff?.Find("cue ") is not { } cue) return markers;
+
+        foreach (BroadcastMetadata.CuePoint point in
+                 BroadcastMetadata.ReadCuePoints(cue.Data, riff.Find("LIST")?.Data))
+        {
+            markers.Add(new Marker
+            {
+                Name = string.IsNullOrWhiteSpace(point.Label) ? $"Cue {point.Id}" : point.Label,
+                Position = Math.Max(0, point.Position),
+            });
+        }
+        return markers;
+    }
+
     public static void Save(string? audioPath, IEnumerable<Marker> markers, IEnumerable<NamedRegion> regions)
     {
         if (audioPath == null) return;

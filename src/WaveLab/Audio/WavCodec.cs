@@ -34,6 +34,7 @@ public static class WavCodec
         ushort declaredBlockAlign = 0;
         long dataStart = -1;
         int dataSize = 0;
+        var metadata = new RiffMetadata();
 
         while (fs.Position + 8 <= fs.Length)
         {
@@ -94,6 +95,19 @@ public static class WavCodec
                 dataStart = chunkStart;
                 dataSize = (int)chunkSize;
             }
+            else
+            {
+                // Everything else is carried through verbatim. Reading only fmt and data and
+                // discarding the rest is what silently lost broadcast metadata, loop points and
+                // field-recorder notes on every save, and is the reason a file opened here could
+                // not be written back over itself.
+                string id = RiffMetadata.IdFrom(chunkId);
+                if (chunkSize <= RiffMetadata.MaximumChunkBytes)
+                {
+                    fs.Position = chunkStart;
+                    metadata.Add(id, br.ReadBytes((int)chunkSize));
+                }
+            }
 
             fs.Position = nextChunk;
         }
@@ -131,6 +145,7 @@ public static class WavCodec
         {
             FilePath = path,
             Title = Path.GetFileName(path),
+            Riff = metadata,
         };
     }
 
@@ -259,9 +274,12 @@ public static class WavCodec
     /// Which dither, when <paramref name="dither"/> is set. Flat triangular is the safe default;
     /// the shaped curves trade more noise above 10 kHz for less across the rest of the band.
     /// </param>
+    /// <param name="markers">
+    /// Markers to embed as cue points, so they travel inside the file rather than only in a sidecar.
+    /// </param>
     public static void Save(AudioDocument doc, string path, int bitDepth, bool dither = true,
         CancellationToken cancellationToken = default, IProgress<double>? progress = null,
-        DitherKind ditherKind = DitherKind.FlatTpdf)
+        DitherKind ditherKind = DitherKind.FlatTpdf, IReadOnlyList<Marker>? markers = null)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -294,7 +312,33 @@ public static class WavCodec
 
         int dataSize = (int)dataSizeLong;
         bool fact = formatTag == FormatIeeeFloat;
-        int riffSize = 4 + (8 + 16) + (fact ? 8 + 4 : 0) + (8 + dataSize) + (dataSize & 1);
+
+        // Whatever else the source file carried, written back after the audio. Ancillary chunks sit
+        // after data by convention, and a reader that does not recognise one skips it by its length.
+        RiffMetadata metadata = doc.Riff ?? new RiffMetadata();
+        if (markers is { Count: > 0 })
+        {
+            // Written into the file rather than only into the sidecar. A .wlmeta.json is invisible
+            // to every other program and is lost the moment the WAV is copied on its own, so a set
+            // of track marks placed here reached a CD authoring tool only by accident.
+            var points = new List<BroadcastMetadata.CuePoint>(markers.Count);
+            for (int i = 0; i < markers.Count; i++)
+            {
+                Marker marker = markers[i];
+                points.Add(new BroadcastMetadata.CuePoint(i + 1,
+                    Math.Clamp(marker.Position, 0, frames), marker.Name));
+            }
+            metadata = metadata.Clone();
+            metadata.Set("cue ", BroadcastMetadata.WriteCueChunk(points));
+            metadata.Set("LIST", BroadcastMetadata.WriteLabelList(points));
+        }
+
+        long extraLength = metadata.ByteLength;
+        if (extraLength > int.MaxValue / 4)
+            throw new InvalidOperationException("The metadata carried with this file is too large to write.");
+        var extra = (int)extraLength;
+
+        int riffSize = 4 + (8 + 16) + (fact ? 8 + 4 : 0) + (8 + dataSize) + (dataSize & 1) + extra;
 
         string finalPath = Path.GetFullPath(path);
         string directory = Path.GetDirectoryName(finalPath)
@@ -387,6 +431,7 @@ public static class WavCodec
 
                 cancellationToken.ThrowIfCancellationRequested();
                 if ((dataSize & 1) == 1) writer.Write((byte)0);
+                metadata.WriteTo(writer);
                 writer.Flush();
                 stream.Flush(flushToDisk: true);
             }
@@ -403,3 +448,5 @@ public static class WavCodec
         progress?.Report(1);
     }
 }
+
+
