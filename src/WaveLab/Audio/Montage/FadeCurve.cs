@@ -169,6 +169,21 @@ public static class Crossfade
     public static double MeasureCorrelation(
         IReadOnlyList<float[]> first, int firstStart,
         IReadOnlyList<float[]> second, int secondStart,
+        int count) =>
+        Math.Max(0, MeasureSignedCorrelation(first, firstStart, second, secondStart, count));
+
+    /// <summary>
+    /// The same measurement without the floor, from −1 to 1.
+    /// </summary>
+    /// <remarks>
+    /// The law cannot use a negative value, but telling a user about the join requires it: a
+    /// clamped zero means <em>either</em> "these two are unrelated", which is the ordinary case and
+    /// perfectly fine, <em>or</em> "these two cancel", which needs fixing. Those are opposite
+    /// situations and reporting them as the same number said the first was the second.
+    /// </remarks>
+    public static double MeasureSignedCorrelation(
+        IReadOnlyList<float[]> first, int firstStart,
+        IReadOnlyList<float[]> second, int secondStart,
         int count)
     {
         ArgumentNullException.ThrowIfNull(first);
@@ -202,6 +217,6 @@ public static class Crossfade
         double denominator = Math.Sqrt(firstEnergy * secondEnergy);
         if (denominator <= 1e-20) return 0;
 
-        return Math.Clamp(product / denominator, 0, 1);
+        return Math.Clamp(product / denominator, -1, 1);
     }
 }

@@ -1,0 +1,95 @@
+<Window x:Class="WaveLab.Views.MontageRenderDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Render Montage" Width="600" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" Foreground="{StaticResource Text}"
+        FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
+    <Border Background="{StaticResource Panel2}" BorderBrush="#313841" BorderThickness="1" CornerRadius="14">
+        <Border.Effect><DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/></Border.Effect>
+        <StackPanel>
+            <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,0,0,1" Padding="20,16"
+                    MouseLeftButtonDown="OnDragMove" Background="Transparent">
+                <StackPanel Orientation="Horizontal">
+                    <Ellipse Width="9" Height="9" Fill="{StaticResource Accent}" VerticalAlignment="Center"/>
+                    <TextBlock Text="Render Montage" Margin="10,0,0,0" FontSize="14" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="subtitleText" Margin="14,2,0,0" FontSize="10.5"
+                               Foreground="{StaticResource Faint}"/>
+                </StackPanel>
+            </Border>
+
+            <StackPanel Margin="20,16,20,0">
+                <TextBlock Text="DESTINATION" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Faint}"/>
+                <UniformGrid Rows="1" Margin="0,6,0,0">
+                    <ToggleButton x:Name="newTabBtn" Style="{StaticResource SegmentButton}" Height="30"
+                                  Content="New tab" IsChecked="True" Click="OnDestinationChanged"
+                                  ToolTip="Render into a new audio document, to edit or export from there."/>
+                    <ToggleButton x:Name="fileBtn" Style="{StaticResource SegmentButton}" Height="30"
+                                  Margin="6,0,0,0" Content="WAV / AIFF…" Click="OnDestinationChanged"
+                                  ToolTip="Render straight to a file."/>
+                    <ToggleButton x:Name="cdBtn" Style="{StaticResource SegmentButton}" Height="30"
+                                  Margin="6,0,0,0" Content="CD package" Click="OnDestinationChanged"
+                                  ToolTip="One CD track per clip, sector-aligned, with a cue sheet."/>
+                    <ToggleButton x:Name="ddpBtn" Style="{StaticResource SegmentButton}" Height="30"
+                                  Margin="6,0,0,0" Content="DDP image set" Click="OnDestinationChanged"
+                                  ToolTip="A pressing-plant deliverable, one track per clip."/>
+                </UniformGrid>
+            </StackPanel>
+
+            <Border Margin="20,16,20,0" Background="{StaticResource Panel}"
+                    BorderBrush="{StaticResource LineSoft}" BorderThickness="1" CornerRadius="9"
+                    Padding="14,10">
+                <StackPanel>
+                    <Grid Margin="0,0,0,7">
+                        <TextBlock Text="Length" Foreground="{StaticResource Muted}"/>
+                        <TextBlock x:Name="lengthText" HorizontalAlignment="Right"
+                                   FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                    </Grid>
+                    <Grid Margin="0,0,0,7">
+                        <TextBlock Text="Clips" Foreground="{StaticResource Muted}"/>
+                        <TextBlock x:Name="clipsText" HorizontalAlignment="Right"
+                                   FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                    </Grid>
+                    <Grid Margin="0,0,0,7">
+                        <TextBlock Text="Crossfades" Foreground="{StaticResource Muted}"/>
+                        <TextBlock x:Name="crossfadeText" HorizontalAlignment="Right"
+                                   FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                    </Grid>
+                    <Grid>
+                        <TextBlock Text="Sources" Foreground="{StaticResource Muted}"/>
+                        <TextBlock x:Name="sourcesText" HorizontalAlignment="Right"
+                                   FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <CheckBox x:Name="renderRackCheck" Margin="20,13,20,0" Foreground="{StaticResource Muted}"
+                      Content="Render the current master rack into the result"
+                      ToolTip="When off, the montage is rendered dry."/>
+
+            <TextBlock x:Name="noteText" Margin="20,12,20,0" FontSize="10.5" TextWrapping="Wrap"
+                       Foreground="{StaticResource Faint}"
+                       Text="Clips are placed at their timeline positions and each source is read once, so a clip used twice is not resampled twice. The peak is reported rather than limited: overlapping clips can sum past full scale, and that is a decision for you, not for the renderer."/>
+
+            <Border Margin="0,16,0,0" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0"
+                    Padding="20,14">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="190"/></Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
+                        <ProgressBar x:Name="progressBar" Height="6" Minimum="0" Maximum="1"
+                                     Foreground="{StaticResource Accent}" Background="{StaticResource Panel3}"/>
+                        <TextBlock x:Name="statusText" Margin="0,7,0,0" FontSize="10.5"
+                                   Foreground="{StaticResource Faint}" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                    <Grid Grid.Column="2">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Button x:Name="closeBtn" Content="Close" Height="38" Style="{StaticResource AccentButton}"
+                                Foreground="{StaticResource Muted}" Click="OnClose"/>
+                        <Button x:Name="renderBtn" Grid.Column="2" Content="Render" Height="38"
+                                Style="{StaticResource AccentButton}" Click="OnRenderClick"/>
+                    </Grid>
+                </Grid>
+            </Border>
+        </StackPanel>
+    </Border>
+</Window>

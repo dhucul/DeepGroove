@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -9,6 +9,7 @@ using System.Windows.Threading;
 using Microsoft.Win32;
 using WaveLab.Audio;
 using WaveLab.Audio.Effects;
+using WaveLab.Audio.Montage;
 using WaveLab.Util;
 
 namespace WaveLab.ViewModels;
@@ -19,6 +20,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private static int _clipboardRate;
 
     private DocumentViewModel? _active;
+    private TabViewModel? _activeTab;
     private DocumentViewModel? _playbackDocument;
     private AudioDocument? _previewDocument;
     private bool? _previewRackRestoreState;
@@ -90,8 +92,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OpenCommand = new RelayCommand(Open);
         SaveCommand = new RelayCommand(Save, () => _active != null);
         SaveAsCommand = new RelayCommand(SaveAs, () => _active != null);
-        CloseTabCommand = new RelayCommand<DocumentViewModel>(CloseTab,
-            document => document != null ? Documents.Contains(document) : _active != null);
+        CloseTabCommand = new RelayCommand<TabViewModel>(CloseTab,
+            tab => tab != null ? Documents.Contains(tab) : _activeTab != null);
         ExitCommand = new RelayCommand(() => Application.Current.MainWindow?.Close());
 
         UndoCommand = new RelayCommand(Undo, () => _active?.Doc.CanUndo == true);
@@ -175,12 +177,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public PlaybackEngine Engine { get; }
     public MasterSectionViewModel Master { get; }
-    public ObservableCollection<DocumentViewModel> Documents { get; } = [];
+    /// <summary>
+    /// Everything open in a tab: audio documents and montages.
+    /// </summary>
+    /// <remarks>
+    /// Widened from <c>DocumentViewModel</c> when the montage arrived. <see cref="ActiveDocument"/>
+    /// stays typed to a document and is null whenever the active tab is not one, which is what keeps
+    /// the forty-odd audio commands from having to ask what sort of tab they are looking at — they
+    /// simply become unavailable. Anything that genuinely means "every open file" says
+    /// <c>OfType&lt;DocumentViewModel&gt;()</c>.
+    /// </remarks>
+    public ObservableCollection<TabViewModel> Documents { get; } = [];
+
+    /// <summary>Every open audio document, which is not the same as every open tab.</summary>
+    public IEnumerable<DocumentViewModel> AudioDocuments => Documents.OfType<DocumentViewModel>();
 
     public RelayCommand OpenCommand { get; }
     public RelayCommand SaveCommand { get; }
     public RelayCommand SaveAsCommand { get; }
-    public RelayCommand<DocumentViewModel> CloseTabCommand { get; }
+    /// <summary>
+    /// Takes any tab, not just a document: the close button passes the tab itself, and
+    /// <c>RelayCommand&lt;T&gt;</c> hard-casts its parameter — so a montage tab would throw on every
+    /// requery, not merely when clicked.
+    /// </summary>
+    public RelayCommand<TabViewModel> CloseTabCommand { get; }
     public RelayCommand ExitCommand { get; }
     public RelayCommand UndoCommand { get; }
     public RelayCommand RedoCommand { get; }
@@ -235,13 +255,64 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public event Action? RequestStatisticsDialog;
     public event Action? RequestCommandPalette;
 
+    /// <summary>
+    /// The selected tab, whatever kind it is. This is what the tab strip binds to.
+    /// </summary>
+    /// <remarks>
+    /// Bound rather than <see cref="ActiveDocument"/> because <c>SelectedItem</c> is typed
+    /// <c>object</c>: clicking a montage tab would push a value the document setter cannot take, the
+    /// binding would fail silently, and the waveform and transport would carry on operating on the
+    /// file behind the tab the user had just left.
+    /// </remarks>
+    public TabViewModel? ActiveTab
+    {
+        get => _activeTab;
+        set
+        {
+            if (ReferenceEquals(_activeTab, value)) return;
+            _activeTab = value;
+            Raise();
+            Raise(nameof(ActiveMontage));
+            Raise(nameof(HasMontage));
+
+            // Always assigned, even when both old and new tabs are montages and this is null both
+            // times: the setter below early-returns on an unchanged value, so the notifications it
+            // owns would be skipped and the editor would keep showing the previous tab's state.
+            ApplyActiveDocument(value as DocumentViewModel);
+        }
+    }
+
+    public MontageViewModel? ActiveMontage => _activeTab as MontageViewModel;
+    public bool HasMontage => _activeTab is MontageViewModel;
+
     public DocumentViewModel? ActiveDocument
     {
         get => _active;
         set
         {
+            // Selecting a document directly selects its tab, so the two cannot disagree.
+            if (value != null && !ReferenceEquals(_activeTab, value))
+            {
+                ActiveTab = value;
+                return;
+            }
+            ApplyActiveDocument(value);
+        }
+    }
+
+    /// <summary>
+    /// Points the editor at a document, or at nothing when the active tab is not one.
+    /// </summary>
+    /// <remarks>
+    /// The early return is deliberate and correct: moving between two montage tabs leaves this null
+    /// both times, and nothing it announces — whether a document exists, its title, its channel
+    /// count — has changed. What <em>has</em> changed is announced by <see cref="ActiveTab"/>.
+    /// </remarks>
+    private void ApplyActiveDocument(DocumentViewModel? value)
+    {
+        {
             var previous = _active;
-            if (!Set(ref _active, value)) return;
+            if (!Set(ref _active, value, nameof(ActiveDocument))) return;
             if (previous != null)
             {
                 previous.PropertyChanged -= OnActiveDocumentPropertyChanged;
@@ -645,7 +716,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         var vm = new DocumentViewModel(doc, prebuiltPeaks);
         Documents.Add(vm);
-        ActiveDocument = vm;
+        ActiveTab = vm;
+    }
+
+    /// <summary>Opens a montage in its own tab and makes it the active one.</summary>
+    public MontageViewModel AddMontage(MontageDocument montage)
+    {
+        ArgumentNullException.ThrowIfNull(montage);
+        var vm = new MontageViewModel(montage);
+        Documents.Add(vm);
+        ActiveTab = vm;
+        return vm;
     }
 
     public void AddGeneratedDocument(AudioDocument doc, string? completedAction = null)
@@ -866,12 +947,29 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally { _saveOperations.Remove(operation); }
     }
 
-    private async void CloseTab(DocumentViewModel? vm)
+    private async void CloseTab(TabViewModel? tab)
     {
-        var operation = CloseTabAsync(vm);
+        // A montage has no samples, no autosave and no marker sidecar, so the document close path
+        // has nothing to do for it: it is asked about unsaved work and then simply removed.
+        if (tab is MontageViewModel montage) { CloseMontageTab(montage); return; }
+
+        var operation = CloseTabAsync(tab as DocumentViewModel ?? _active);
         _tabCloseOperations.Add(operation);
         try { await operation; }
         finally { _tabCloseOperations.Remove(operation); }
+    }
+
+    private void CloseMontageTab(MontageViewModel montage)
+    {
+        if (montage.IsDirty && MessageBox.Show(
+                $"“{montage.Title}” has unsaved changes. Close it anyway?", "Close montage",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+
+        int index = Documents.IndexOf(montage);
+        Documents.Remove(montage);
+        if (ReferenceEquals(_activeTab, montage))
+            ActiveTab = Documents.Count > 0 ? Documents[Math.Clamp(index, 0, Documents.Count - 1)] : null;
     }
 
     private async Task CloseTabAsync(DocumentViewModel? vm)
@@ -910,8 +1008,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _saveFailures.Remove(vm.Doc.SessionId);
         int idx = Documents.IndexOf(vm);
         Documents.Remove(vm);
-        if (_active == vm)
-            ActiveDocument = Documents.Count > 0 ? Documents[Math.Clamp(idx, 0, Documents.Count - 1)] : null;
+
+        // The neighbour in *tab* order, whatever kind it is — closing a file should land on the tab
+        // next to it, not skip past a montage to find another file.
+        if (ReferenceEquals(_activeTab, vm))
+            ActiveTab = Documents.Count > 0 ? Documents[Math.Clamp(idx, 0, Documents.Count - 1)] : null;
         }
         finally { _tabsClosing.Remove(vm.Doc.SessionId); }
     }
@@ -1744,7 +1845,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         // skip documents whose content hasn't changed since the last autosave
-        var dirty = Documents.Where(d => d.IsDirty && d.Doc.Length > 0
+        var dirty = AudioDocuments.Where(d => d.IsDirty && d.Doc.Length > 0
             && _autosavedVersions.GetValueOrDefault(d.Doc.SessionId, -1) != d.Doc.EditVersion).ToList();
         if (dirty.Count == 0) { Raise(nameof(StatusAutosave)); return; }
 
@@ -1763,7 +1864,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     _lastAutosave = DateTime.Now;
                     foreach (var (id, version) in versions)
                     {
-                        var document = Documents.FirstOrDefault(d => d.Doc.SessionId == id);
+                        var document = AudioDocuments.FirstOrDefault(d => d.Doc.SessionId == id);
                         if (document != null && document.Doc.EditVersion == version)
                             _autosavedVersions[id] = version;
                     }
@@ -1839,7 +1940,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             await OpenFilesAsync(args);
         }
-        else if (AppSettings.Instance.ReopenLastSession && Documents.Count == 0)
+        else if (AppSettings.Instance.ReopenLastSession && !AudioDocuments.Any())
         {
             var files = AppSettings.Instance.LastSessionFiles.Where(File.Exists).ToList();
             if (files.Count > 0) await OpenFilesAsync(files);
@@ -1864,13 +1965,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (_openOperations.Count > 0) await Task.WhenAll(_openOperations.ToArray());
             if (_saveOperations.Count > 0) await Task.WhenAll(_saveOperations.ToArray());
             if (_tabCloseOperations.Count > 0) await Task.WhenAll(_tabCloseOperations.ToArray());
-            var markerTasks = Documents.Select(d => d.FlushMarkersAsync()).ToArray();
+            var markerTasks = AudioDocuments.Select(d => d.FlushMarkersAsync()).ToArray();
             if (markerTasks.Length > 0) await Task.WhenAll(markerTasks);
             if (_saveFailures.Count > 0)
                 throw new IOException("One or more file saves failed: " + string.Join("; ", _saveFailures.Values));
 
             AppSettings.Instance.LastSessionFiles =
-                Documents.Where(d => d.Doc.FilePath != null).Select(d => d.Doc.FilePath!).ToList();
+                AudioDocuments.Where(d => d.Doc.FilePath != null).Select(d => d.Doc.FilePath!).ToList();
             if (!AppSettings.Instance.Save())
                 throw new IOException("Settings could not be saved: " + AppSettings.Instance.LastSaveError);
             if (!AutosaveService.ClearAll())

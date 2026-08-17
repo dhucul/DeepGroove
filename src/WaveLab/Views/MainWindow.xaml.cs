@@ -42,6 +42,15 @@ public partial class MainWindow : Window
         _vm.EditorViewChanged += ApplyEditorViewMode;
         ApplyEditorViewMode();
 
+        // The montage panel covers the editor rather than replacing it, so switching tabs is a
+        // visibility change here rather than a re-layout there.
+        _vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(MainViewModel.ActiveTab) or nameof(MainViewModel.ActiveMontage))
+                ApplyMontageVisibility();
+        };
+        ApplyMontageVisibility();
+
         RestoreWindowPlacement();
 
         // The progress host stores what workers report and recomputes the visible text here, at a

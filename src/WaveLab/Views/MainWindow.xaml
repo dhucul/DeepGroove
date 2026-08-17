@@ -1,4 +1,4 @@
-<Window x:Class="WaveLab.Views.MainWindow"
+﻿<Window x:Class="WaveLab.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:c="clr-namespace:WaveLab.Views.Controls"
@@ -117,6 +117,10 @@
                     <Separator/>
                     <MenuItem Header="File Information…" InputGestureText="Ctrl+I" Click="OnFileInformation"
                               IsEnabled="{Binding HasAudioDocument}"/>
+                    <Separator/>
+                    <MenuItem Header="New Montage" Click="OnNewMontage"/>
+                    <MenuItem Header="Open Montage…" Click="OnOpenMontage"/>
+                    <MenuItem Header="Save Montage" Click="OnSaveMontage" IsEnabled="{Binding HasMontage}"/>
                     <Separator/>
                     <MenuItem Header="Recent Files" ItemsSource="{Binding RecentFiles}">
                         <MenuItem.ItemContainerStyle>
@@ -554,14 +558,21 @@
 
         <!-- ═══ file tabs ═══ -->
         <Border Grid.Row="3" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+            <!-- Bound to ActiveTab, not ActiveDocument: SelectedItem is typed object, so selecting a
+                 montage tab would push a value the document setter cannot take, the binding would
+                 fail silently, and the editor would keep showing the tab the user had just left. -->
             <ListBox Style="{StaticResource FileTabs}" Margin="10,0,10,-1" VerticalAlignment="Bottom"
-                     ItemsSource="{Binding Documents}" SelectedItem="{Binding ActiveDocument}">
+                     ItemsSource="{Binding Documents}" SelectedItem="{Binding ActiveTab}">
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <StackPanel Orientation="Horizontal">
                             <Ellipse Width="6" Height="6" Fill="{StaticResource Amber}" Margin="0,0,8,0"
                                      Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}"/>
-                            <TextBlock Text="{Binding Doc.Title}" FontSize="12" Foreground="{StaticResource Text}"/>
+                            <Border Margin="0,0,7,0" Padding="5,1" CornerRadius="3" Background="#20262E"
+                                    VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Kind}" FontSize="8.5" Foreground="{StaticResource Faint}"/>
+                            </Border>
+                            <TextBlock Text="{Binding Title}" FontSize="12" Foreground="{StaticResource Text}"/>
                             <Button Margin="8,0,0,0" Padding="2" Background="Transparent" BorderThickness="0"
                                     Foreground="{StaticResource Faint}" Cursor="Hand"
                                     Command="{Binding DataContext.CloseTabCommand, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -917,6 +928,174 @@
                     </Grid>
                 </Grid>
             </Border>
+        </Grid>
+
+        <!-- ═══ montage ═══
+             A sibling of the editor grid rather than a mode inside it. A montage has no waveform, no
+             amplitude ruler, no effect rack and no selection in samples, so weaving it through the
+             editor's rows would mean hiding most of them; this simply covers the area instead, and
+             the editor keeps its own layout untouched. -->
+        <Grid x:Name="montagePanel" Grid.Row="4" Visibility="Collapsed"
+              Background="{StaticResource Bg}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40"/>
+                <RowDefinition Height="22"/>
+                <RowDefinition Height="*"/>
+                <!-- 26 left the overview a 6 px sliver once its own margins were taken. -->
+                <RowDefinition Height="44"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="272"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- tools -->
+            <Border Grid.Row="0" Grid.ColumnSpan="2" Background="{StaticResource Panel}"
+                    BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="10,0">
+                <Grid>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <ToggleButton x:Name="montageMoveBtn" Style="{StaticResource SegmentButton}"
+                                      Content="Move" IsChecked="True" Click="OnMontageTool"
+                                      ToolTip="Drag a clip along the lane."/>
+                        <ToggleButton x:Name="montageTrimBtn" Style="{StaticResource SegmentButton}"
+                                      Margin="6,0,0,0" Content="Trim" Click="OnMontageTool"
+                                      ToolTip="Drag a clip's edge to trim it."/>
+                        <ToggleButton x:Name="montageSplitBtn" Style="{StaticResource SegmentButton}"
+                                      Margin="6,0,0,0" Content="Split" Click="OnMontageTool"
+                                      ToolTip="Click a clip to cut it in two."/>
+                        <Border Width="1" Height="22" Margin="9,0" Background="{StaticResource Line}"/>
+                        <Button Content="Add Clip…" Height="26" MinWidth="76" Style="{StaticResource ToolButton}"
+                                Click="OnMontageAddClip" ToolTip="Place an audio file at the end of the lane."/>
+                        <ToggleButton x:Name="montageSnapBtn" Style="{StaticResource SegmentButton}"
+                                      Margin="6,0,0,0" Content="Snap: zero-crossing" IsChecked="True"
+                                      Click="OnMontageSnap"
+                                      ToolTip="Land a trimmed edge on the nearest rising zero crossing, so it does not click."/>
+                        <Border Width="1" Height="22" Margin="9,0" Background="{StaticResource Line}"/>
+                        <Button Content="Render…" Height="26" MinWidth="70" Style="{StaticResource ToolButton}"
+                                Click="OnMontageRender" ToolTip="Render to a tab, a file, a CD package or a DDP image set."/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <TextBlock x:Name="montageReadout" FontSize="10.5" Foreground="{StaticResource Faint}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ruler + lane -->
+            <Border Grid.Row="1" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}"
+                    BorderThickness="0,0,0,1">
+                <c:MontageRuler x:Name="montageRuler" Montage="{Binding ActiveMontage}"/>
+            </Border>
+            <c:MontageLaneView x:Name="montageLane" Grid.Row="2" Montage="{Binding ActiveMontage}"
+                                      SelectionChanged="OnMontageSelectionChanged"/>
+
+            <!-- inspector -->
+            <Border Grid.Row="1" Grid.RowSpan="3" Grid.Column="1" Background="{StaticResource Panel}"
+                    BorderBrush="{StaticResource Line}" BorderThickness="1,0,0,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="montageInspector" Margin="12,11">
+                        <TextBlock x:Name="montageClipTitle" FontSize="10" FontWeight="Bold"
+                                   Foreground="{StaticResource Muted}" Text="NO CLIP SELECTED"/>
+                        <Border Margin="0,7,0,0" Height="1" Background="{StaticResource Line}"/>
+
+                        <StackPanel x:Name="montageClipPanel" Visibility="Collapsed">
+                            <TextBlock Text="NAME" FontSize="9" FontWeight="Bold" Margin="0,11,0,0"
+                                       Foreground="{StaticResource Faint}"/>
+                            <TextBox x:Name="montageClipName" Margin="0,5,0,0" Padding="9,5"
+                                     LostFocus="OnMontageClipNameChanged"/>
+
+                            <Grid Margin="0,9,0,0">
+                                <TextBlock Text="Source" Foreground="{StaticResource Muted}" FontSize="11.5"/>
+                                <TextBlock x:Name="montageClipSource" HorizontalAlignment="Right" FontSize="11"
+                                           Foreground="#C3CAD2" TextTrimming="CharacterEllipsis" MaxWidth="150"/>
+                            </Grid>
+                            <Grid Margin="0,6,0,0">
+                                <TextBlock Text="Source in" Foreground="{StaticResource Muted}" FontSize="11.5"/>
+                                <TextBlock x:Name="montageClipIn" HorizontalAlignment="Right" FontSize="11"
+                                           FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                            </Grid>
+                            <Grid Margin="0,6,0,0">
+                                <TextBlock Text="Length" Foreground="{StaticResource Muted}" FontSize="11.5"/>
+                                <TextBlock x:Name="montageClipLength" HorizontalAlignment="Right" FontSize="11"
+                                           FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                            </Grid>
+                            <Grid Margin="0,6,0,0">
+                                <TextBlock Text="At" Foreground="{StaticResource Muted}" FontSize="11.5"/>
+                                <TextBlock x:Name="montageClipAt" HorizontalAlignment="Right" FontSize="11"
+                                           FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                            </Grid>
+
+                            <TextBlock Text="GAIN" FontSize="9" FontWeight="Bold" Margin="0,13,0,0"
+                                       Foreground="{StaticResource Faint}"/>
+                            <Grid Margin="0,5,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="54"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="montageClipGain" Minimum="-24" Maximum="12" Value="0"
+                                        VerticalAlignment="Center" ValueChanged="OnMontageGainChanged"/>
+                                <TextBlock x:Name="montageClipGainText" Grid.Column="1" TextAlignment="Right"
+                                           FontFamily="{StaticResource MonoFont}" FontSize="11"
+                                           Foreground="{StaticResource Accent}" VerticalAlignment="Center"/>
+                            </Grid>
+
+                            <TextBlock x:Name="montageFadeInLabel" Text="FADE IN" FontSize="9" FontWeight="Bold"
+                                       Margin="0,13,0,0" Foreground="{StaticResource Faint}"/>
+                            <UniformGrid Rows="1" Margin="0,5,0,0">
+                                <ToggleButton x:Name="fadeInLin" Style="{StaticResource SegmentButton}" Content="Lin" Click="OnFadeInShape"/>
+                                <ToggleButton x:Name="fadeInPow" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="Pow" Click="OnFadeInShape"/>
+                                <ToggleButton x:Name="fadeInS" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="S" Click="OnFadeInShape"/>
+                                <ToggleButton x:Name="fadeInDb" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="dB" Click="OnFadeInShape"/>
+                            </UniformGrid>
+
+                            <TextBlock x:Name="montageFadeOutLabel" Text="FADE OUT" FontSize="9" FontWeight="Bold"
+                                       Margin="0,11,0,0" Foreground="{StaticResource Faint}"/>
+                            <UniformGrid Rows="1" Margin="0,5,0,0">
+                                <ToggleButton x:Name="fadeOutLin" Style="{StaticResource SegmentButton}" Content="Lin" Click="OnFadeOutShape"/>
+                                <ToggleButton x:Name="fadeOutPow" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="Pow" Click="OnFadeOutShape"/>
+                                <ToggleButton x:Name="fadeOutS" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="S" Click="OnFadeOutShape"/>
+                                <ToggleButton x:Name="fadeOutDb" Style="{StaticResource SegmentButton}" Margin="4,0,0,0" Content="dB" Click="OnFadeOutShape"/>
+                            </UniformGrid>
+
+                            <StackPanel x:Name="montageCrossfadePanel" Visibility="Collapsed">
+                                <TextBlock x:Name="montageCrossfadeLabel" FontSize="9" FontWeight="Bold"
+                                           Margin="0,15,0,0" Foreground="{StaticResource Faint}"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <Border Margin="0,6,0,0" Height="64" CornerRadius="6"
+                                        Background="#0E1115" BorderBrush="#262D36" BorderThickness="1">
+                                    <c:CrossfadeCurveView x:Name="montageCrossfadeCurve"/>
+                                </Border>
+                                <Grid Margin="0,8,0,0">
+                                    <TextBlock Text="Correlation" Foreground="{StaticResource Muted}" FontSize="11.5"/>
+                                    <TextBlock x:Name="montageCorrelation" HorizontalAlignment="Right" FontSize="11"
+                                               FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                                </Grid>
+                                <Grid Margin="0,6,0,0">
+                                    <TextBlock Text="Length" Foreground="{StaticResource Muted}" FontSize="11.5"/>
+                                    <TextBlock x:Name="montageCrossfadeLength" HorizontalAlignment="Right" FontSize="11"
+                                               FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}"/>
+                                </Grid>
+                                <Border x:Name="montageLawPill" Margin="0,9,0,0" Padding="7,3" CornerRadius="9"
+                                        HorizontalAlignment="Left" Background="#1B4A44" BorderBrush="#2C6B62"
+                                        BorderThickness="1">
+                                    <TextBlock x:Name="montageLawText" FontSize="9.5" Foreground="#9BE9DC"/>
+                                </Border>
+                                <TextBlock x:Name="montageCrossfadeNote" Margin="0,9,0,0" FontSize="10"
+                                           TextWrapping="Wrap" Foreground="{StaticResource Faint}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <!-- overview -->
+            <Border Grid.Row="3" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}"
+                    BorderThickness="0,1,0,0">
+                <c:MontageOverview x:Name="montageOverview" Montage="{Binding ActiveMontage}"/>
+            </Border>
+
+            <TextBlock x:Name="montageStatus" Grid.Row="3" Grid.Column="1" Margin="12,0"
+                       VerticalAlignment="Center" FontSize="10.5" TextTrimming="CharacterEllipsis"
+                       Foreground="{StaticResource Faint}"/>
         </Grid>
 
         <!-- ═══ status bar ═══ -->

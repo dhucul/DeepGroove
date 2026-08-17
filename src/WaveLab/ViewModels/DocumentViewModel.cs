@@ -5,7 +5,7 @@ using WaveLab.Util;
 namespace WaveLab.ViewModels;
 
 /// <summary>Per-tab state: the document plus view window, selection, cursor, playhead, markers and regions.</summary>
-public sealed class DocumentViewModel : ObservableObject
+public sealed class DocumentViewModel : TabViewModel
 {
     private double _viewStart;
     private double _spp = 512;
@@ -90,8 +90,13 @@ public sealed class DocumentViewModel : ObservableObject
         }
     }
 
-    public string Title => Doc.Title + (Doc.Dirty ? " •" : "");
-    public bool IsDirty => Doc.Dirty;
+    /// <summary>
+    /// The tab's label. Deliberately without a dirty mark of its own: the tab strip draws an amber
+    /// dot from <see cref="IsDirty"/>, and appending a bullet here as well said it twice.
+    /// </summary>
+    public override string Title => Doc.Title;
+    public override bool IsDirty => Doc.Dirty;
+    public override string Kind => "WAV";
 
     public double ViewStart
     {
