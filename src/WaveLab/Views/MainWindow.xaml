@@ -204,6 +204,7 @@
                     <MenuItem Header="Reduce Noise…" Click="OnReduceNoise"/>
                     <Separator/>
                     <MenuItem Header="Remove Clicks &amp; Pops…" Click="OnRemoveClicks"/>
+                    <MenuItem Header="Remove Surface Crackle…" Click="OnRemoveCrackle"/>
                     <MenuItem Header="Remove Hum…" Click="OnRemoveHum"/>
                     <Separator/>
                     <MenuItem Header="Disc Equalisation Curve…" Click="OnRecordingCurve"/>

@@ -488,6 +488,58 @@ public partial class MainWindow : Window
         return applied;
     }
 
+    // ── surface crackle ──────────────────────────────────────────
+
+    private void OnRemoveCrackle(object sender, RoutedEventArgs e)
+    {
+        var d = Doc;
+        if (_longOperationRunning || d is not { Doc.Length: > 0 }) return;
+
+        var dialog = new ParamDialog("Remove surface crackle", "Remove", null, null, 0,
+            // Expressed in robust deviations of the prediction residual, which is what the detector
+            // actually thresholds. Lower finds more and risks the music; higher only takes the
+            // obvious.
+            new ParamDialog.SliderSpec("Sensitivity", 2.0, 8.0, 3.5,
+                value => $"{value:0.0}σ", 0.1),
+            new ParamDialog.SliderSpec("Longest defect", 4, 32, 12,
+                value => $"{Math.Round(value):0} samples", 1))
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        var options = DecrackleOptions.Default with
+        {
+            Threshold = dialog.Values[0],
+            MaximumRunLength = (int)Math.Round(dialog.Values[1]),
+        };
+
+        var report = DecrackleReport.None;
+        _ = RunRangeTool("Remove Crackle", $"{options.Threshold:0.0}σ residual threshold",
+            (data, sampleRate, progress, token) =>
+            {
+                int events = 0, fallbacks = 0;
+                long replaced = 0;
+                for (int c = 0; c < data.Length; c++)
+                {
+                    DecrackleReport channel = Decrackle.Process(data[c], options, token,
+                        SubProgress.Slice(progress, c, data.Length));
+                    events += channel.Events;
+                    fallbacks += channel.Fallbacks;
+                    replaced += channel.SamplesReplaced;
+                }
+                report = new DecrackleReport(events, replaced, fallbacks);
+                return data;
+            }, d).ContinueWith(task =>
+            {
+                if (task.Result)
+                {
+                    _vm.ReportAction($"Crackle removed · {report.Events} defects, " +
+                                     $"{report.SamplesReplaced} samples replaced.");
+                }
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
+
     // ── disc equalisation ────────────────────────────────────────
 
     /// <summary>
