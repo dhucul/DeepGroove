@@ -204,7 +204,12 @@ public partial class MainWindow : Window
         {
             Width = s.WindowWidth;
             Height = s.WindowHeight;
-            if (s.WindowLeft is { } left && s.WindowTop is { } top)
+            // A remembered position is honoured only if it still lands on a screen. Restoring one
+            // that does not opens the window where nobody can see it, which reads as the app
+            // failing to start; falling through leaves the XAML's CenterScreen.
+            if (s.WindowLeft is { } left && s.WindowTop is { } top
+                && WindowPlacement.IsReachable(
+                    new Rect(left, top, Width, Height), WindowPlacement.VirtualScreen))
             {
                 WindowStartupLocation = WindowStartupLocation.Manual;
                 Left = left;
@@ -222,8 +227,16 @@ public partial class MainWindow : Window
         {
             s.WindowWidth = Width;
             s.WindowHeight = Height;
-            s.WindowLeft = Left;
-            s.WindowTop = Top;
+            // Checked on the way out as well as on the way in, because this is where an
+            // unreachable position gets in. An offscreen render probe parks the window far outside
+            // the desktop and then closes it, and that value then outlives the probe, the app and
+            // a reinstall. Refusing to store one keeps the last good position instead.
+            if (WindowPlacement.IsReachable(
+                    new Rect(Left, Top, Width, Height), WindowPlacement.VirtualScreen))
+            {
+                s.WindowLeft = Left;
+                s.WindowTop = Top;
+            }
         }
     }
 
