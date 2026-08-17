@@ -114,6 +114,25 @@ public sealed class ConvolutionReverbEffect : EffectBase, IEffectState
     /// <summary>How long the loaded response is, in seconds. Zero when none is loaded.</summary>
     public double ResponseSeconds => _responseSeconds;
 
+    /// <summary>Channels in the loaded response: one is a mono room, two is a stereo one.</summary>
+    public int ResponseChannels => _response.Length;
+
+    /// <summary>
+    /// The rate the file was recorded at, which is not necessarily the rate it now runs at.
+    /// </summary>
+    /// <remarks>
+    /// Worth showing rather than the session's rate, which the user already knows. A response
+    /// recorded at 96 kHz and running at 44.1 is a fact about the file, and about how much of it
+    /// survived being brought down.
+    /// </remarks>
+    public int ResponseSourceRate { get; private set; }
+
+    /// <summary>
+    /// True when a response was chosen but is not there — a preset carrying a path this machine has
+    /// not got, or a drive that was not plugged in.
+    /// </summary>
+    public bool ResponseMissing => _responsePath != null && _response.Length == 0;
+
     public bool HasResponse => Volatile.Read(ref _convolvers).Length > 0;
 
     /// <summary>
@@ -156,6 +175,7 @@ public sealed class ConvolutionReverbEffect : EffectBase, IEffectState
 
             _responsePath = path;
             _responseName = Path.GetFileNameWithoutExtension(path);
+            ResponseSourceRate = document.SampleRate;
             SetResponse(loaded, document.SampleRate);
             return true;
         }
@@ -172,6 +192,7 @@ public sealed class ConvolutionReverbEffect : EffectBase, IEffectState
         _responsePath = null;
         _responseName = "";
         _responseSeconds = 0;
+        ResponseSourceRate = 0;
         _response = [];
         Volatile.Write(ref _convolvers, []);
     }
@@ -182,7 +203,10 @@ public sealed class ConvolutionReverbEffect : EffectBase, IEffectState
     internal void SetResponse(float[][] channels, int sampleRate)
     {
         ArgumentNullException.ThrowIfNull(channels);
-        if (channels.Length == 0 || sampleRate <= 0) { ClearResponse(); return; }
+
+        // Dropping the audio without dropping the path, so that a response which turns out to be
+        // unusable still leaves the card able to name the file it came from.
+        if (channels.Length == 0 || sampleRate <= 0) { DropAudio(); return; }
 
         float[][] working = channels;
 
@@ -205,7 +229,7 @@ public sealed class ConvolutionReverbEffect : EffectBase, IEffectState
             foreach (float sample in channel)
                 energy += (double)sample * sample;
 
-        if (!(energy > 0)) { ClearResponse(); return; }
+        if (!(energy > 0)) { DropAudio(); return; }
 
         var scale = (float)(1.0 / Math.Sqrt(energy / working.Length));
         var normalised = new float[working.Length][];
@@ -218,6 +242,14 @@ public sealed class ConvolutionReverbEffect : EffectBase, IEffectState
         _response = normalised;
         _responseSeconds = normalised[0].Length / (double)SampleRate;
         BuildConvolvers();
+    }
+
+    /// <summary>Forgets the loaded audio but keeps the choice of file.</summary>
+    private void DropAudio()
+    {
+        _responseSeconds = 0;
+        _response = [];
+        Volatile.Write(ref _convolvers, []);
     }
 
     private void BuildConvolvers()

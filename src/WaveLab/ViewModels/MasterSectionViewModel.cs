@@ -75,6 +75,12 @@ public sealed class MasterSectionViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Says something in the rack's status line on behalf of a card that did something the rack
+    /// cannot describe for itself — loading an impulse response, and nothing else so far.
+    /// </summary>
+    public void ReportStatus(string message) => RackStatusText = message;
+
     /// <summary>The window prompts for a preset name and calls SavePresetAs.</summary>
     public event Action? RequestSavePreset;
     public event Action<string>? StatusChanged;

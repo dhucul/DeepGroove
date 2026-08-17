@@ -137,6 +137,12 @@ public sealed class AppSettings
     public List<string> Vst3ExtraFolders { get; set; } = [];
 
     /// <summary>
+    /// Where the last impulse response was chosen from. Kept apart from <see cref="LastOpenFolder"/>
+    /// because a library of rooms is not where anybody keeps their music.
+    /// </summary>
+    public string? LastImpulseFolder { get; set; }
+
+    /// <summary>
     /// Plugins that scanned cleanly but are not to be offered in the Add Effect menu.
     /// </summary>
     /// <remarks>

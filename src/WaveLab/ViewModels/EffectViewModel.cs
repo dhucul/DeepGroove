@@ -116,6 +116,71 @@ public sealed class EffectViewModel : ObservableObject
 
     public bool HasPluginNote => PluginNote != null;
 
+    // ── the convolution reverb's response ────────────────────────
+
+    private ConvolutionReverbEffect? Reverb => Effect as ConvolutionReverbEffect;
+
+    /// <summary>Whether this card carries the impulse-response row.</summary>
+    public bool IsConvolution => Reverb != null;
+
+    /// <summary>
+    /// The response's name, or what stands in for it. Never "Load…" — the row has to say which room
+    /// you are in, which a control naming only the action it offers cannot.
+    /// </summary>
+    public string ResponseTitle => Reverb switch
+    {
+        null => "",
+        { ResponseName: { Length: > 0 } name } => name,
+        _ => "No impulse response",
+    };
+
+    /// <summary>
+    /// What the response is, or why there is not one. Written short on purpose: the row is about
+    /// 130 px across once the icon and the button have taken theirs, and a line that trims lands
+    /// mid-unit — "48 k…" says less than nothing.
+    /// </summary>
+    public string ResponseDetail => Reverb switch
+    {
+        null => "",
+        { ResponseMissing: true } => "the file is not there",
+        { HasResponse: false } => "passes audio through",
+        { } reverb =>
+            $"{(reverb.ResponseChannels > 1 ? "stereo" : "mono")} · {reverb.ResponseSeconds:0.00} s"
+            + (reverb.ResponseSourceRate > 0 ? $" · {reverb.ResponseSourceRate / 1000.0:0.#}k" : ""),
+    };
+
+    /// <summary>The full path, for the tool tip — the row itself only has space for a name.</summary>
+    public string? ResponseTooltip => Reverb?.ResponsePath;
+
+    /// <summary>True when a response was chosen and is not there, which the row says in amber.</summary>
+    public bool ResponseMissing => Reverb?.ResponseMissing == true;
+
+    public bool ResponseLoaded => Reverb?.HasResponse == true;
+
+    /// <summary>Three words for three states, because they are three different requests.</summary>
+    public string ResponseAction => Reverb switch
+    {
+        { ResponseMissing: true } => "Find…",
+        { HasResponse: true } => "Change…",
+        _ => "Load…",
+    };
+
+    /// <summary>
+    /// Re-reads everything the row shows, after the effect has been given a new response.
+    /// </summary>
+    public void RefreshResponse()
+    {
+        Raise(nameof(ResponseTitle));
+        Raise(nameof(ResponseDetail));
+        Raise(nameof(ResponseTooltip));
+        Raise(nameof(ResponseMissing));
+        Raise(nameof(ResponseLoaded));
+        Raise(nameof(ResponseAction));
+        Raise(nameof(Readout));
+        Raise(nameof(HasReadout));
+        _changed(this);
+    }
+
     private void OnPluginEdited()
     {
         // The plugin's own editor moved something. The sliders here are reading the plugin, so they
@@ -137,7 +202,7 @@ public sealed class EffectViewModel : ObservableObject
     {
         "compressor" or "gate" or "limiter" or "normalizer" => "dynamics",
         "eq" or "filter" => "eq",
-        "reverb" or "delay" or "chorus" => "time",
+        "reverb" or "convolution" or "delay" or "chorus" => "time",
         "denoise" or "dehum" => "restoration",
         "saturation" => "color",
         _ => "utility",

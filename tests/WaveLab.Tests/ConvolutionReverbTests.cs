@@ -320,6 +320,54 @@ public sealed class ConvolutionReverbTests(ITestOutputHelper output)
         Assert.Equal(0.4, reverb.GetParam("mix"), 6);
     }
 
+    /// <summary>
+    /// A preset naming a file this machine has not got is the state the card's design is about, so
+    /// it has to be distinguishable from never having chosen one. Both have no audio; only one of
+    /// them has a name to show and an offer to make.
+    /// </summary>
+    [Fact]
+    public void AMissingResponseIsNotTheSameAsNoResponse()
+    {
+        var never = new ConvolutionReverbEffect();
+        never.Configure(Rate, 2);
+        Assert.False(never.HasResponse);
+        Assert.False(never.ResponseMissing);
+        Assert.Null(never.ResponsePath);
+        Assert.Equal("", never.ResponseName);
+
+        var missing = new ConvolutionReverbEffect();
+        missing.Configure(Rate, 2);
+        ((IEffectState)missing).RestoreStateText(@"Z:\rooms\Concertgebouw.wav");
+
+        Assert.False(missing.HasResponse);
+        Assert.True(missing.ResponseMissing);
+        Assert.Equal("Concertgebouw", missing.ResponseName);
+
+        // And it still passes audio through rather than silencing what it cannot reverberate.
+        float[] input = Noise(512, 12);
+        var buffer = (float[])input.Clone();
+        missing.Process(buffer, 0, buffer.Length);
+        Assert.Equal(input, buffer);
+    }
+
+    /// <summary>
+    /// A response that loads but holds nothing usable drops the audio and keeps the choice, so the
+    /// card can still name the file that disappointed it.
+    /// </summary>
+    [Fact]
+    public void AnUnusableResponseKeepsTheNameItFailedOn()
+    {
+        var effect = new ConvolutionReverbEffect();
+        effect.Configure(Rate, 1);
+        ((IEffectState)effect).RestoreStateText(@"Z:\rooms\Silence.wav");
+
+        effect.SetResponse([new float[1_000]], Rate);   // digital silence: no energy to normalise
+
+        Assert.False(effect.HasResponse);
+        Assert.True(effect.ResponseMissing);
+        Assert.Equal("Silence", effect.ResponseName);
+    }
+
     [Fact]
     public void ABuiltInWithNoStateSavesNone()
     {

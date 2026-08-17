@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -464,6 +465,53 @@ public partial class MainWindow : Window
             pluginMenu.Items.Add(item);
         }
         return pluginMenu;
+    }
+
+    /// <summary>
+    /// Chooses the impulse response a convolution reverb runs. Any file the app can open will do —
+    /// a response is only an audio file that happens to be a room.
+    /// </summary>
+    private void OnLoadImpulseResponse(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: EffectViewModel vm }) return;
+        if (vm.Effect is not ConvolutionReverbEffect reverb) return;
+
+        var settings = AppSettings.Instance;
+        var dialog = new OpenFileDialog
+        {
+            Title = "Choose an impulse response",
+            Filter = "Audio files|*.wav;*.wave;*.bwf;*.rf64;*.w64;*.aiff;*.aif;*.aifc;*.flac;*.mp3"
+                     + "|All files|*.*",
+            CheckFileExists = true,
+            // Started where the last one came from rather than where the last audio file did:
+            // impulse responses live in a library, and the library is not the music folder.
+            InitialDirectory = Directory.Exists(settings.LastImpulseFolder ?? "")
+                ? settings.LastImpulseFolder
+                : Path.GetDirectoryName(reverb.ResponsePath ?? "") is { Length: > 0 } beside
+                  && Directory.Exists(beside)
+                    ? beside
+                    : "",
+        };
+        if (dialog.ShowDialog(this) != true) return;
+
+        if (reverb.LoadResponse(dialog.FileName, out string error))
+        {
+            settings.LastImpulseFolder = Path.GetDirectoryName(dialog.FileName);
+            settings.Save();
+
+            vm.RefreshResponse();
+            _vm.Master.ReportStatus(
+                $"{vm.ResponseTitle} loaded · {vm.ResponseDetail} · source unchanged until render.");
+        }
+        else
+        {
+            // The effect keeps whatever it had. Saying so matters: a file picker that closes and
+            // changes nothing otherwise looks like it worked.
+            vm.RefreshResponse();
+            MessageBox.Show(this,
+                $"That file could not be used as an impulse response.\n\n{error}",
+                "Impulse response", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void OnManageVst3(object sender, RoutedEventArgs e) => ShowVst3Manager();
