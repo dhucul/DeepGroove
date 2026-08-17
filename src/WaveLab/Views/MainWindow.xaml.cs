@@ -535,6 +535,88 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Measures the timing difference between the channels and offers to correct it.
+    /// </summary>
+    /// <remarks>
+    /// Measure first, then ask. The correction is meaningless without the number, and the number is
+    /// often the answer on its own — a transfer that measures a fifth of a sample does not need
+    /// correcting, and saying so is more useful than applying something inaudible.
+    /// </remarks>
+    private async void OnCorrectAzimuth(object sender, RoutedEventArgs e)
+    {
+        var d = Doc;
+        if (_longOperationRunning || d is not { Doc.Length: > 0 } || d.Doc.Channels.Count < 2) return;
+
+        float[][] channels = d.Doc.Channels.ToArray();
+        int rate = d.Doc.SampleRate;
+        AzimuthEstimate estimate = AzimuthEstimate.None;
+
+        _longOperationRunning = true;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Measuring azimuth",
+                "GCC-PHAT across the side", async (progress, token) =>
+            {
+                estimate = await Task.Run(
+                    () => Azimuth.Estimate(channels[0], channels[1], rate,
+                        AzimuthOptions.Default, token, progress), token);
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction("Azimuth measurement cancelled.");
+            return;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Measuring azimuth", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally
+        {
+            _longOperationRunning = false;
+        }
+
+        if (estimate.Windows == 0)
+        {
+            MessageBox.Show("There was not enough correlated material to measure the channels against each other.",
+                "Correct stylus azimuth", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        string lead =
+            $"The right channel is {Math.Abs(estimate.Microseconds(rate)):0.0} µs " +
+            $"{(estimate.DelaySamples >= 0 ? "behind" : "ahead of")} the left " +
+            $"({Math.Abs(estimate.DelaySamples):0.000} samples), measured over {estimate.Windows} windows.";
+        string trust = estimate.Confidence switch
+        {
+            > 0.8 => "The windows agreed closely, so this is a solid reading.",
+            > 0.4 => "The windows agreed only roughly — treat this as approximate.",
+            _ => "The windows disagreed badly. The channels may not be correlated enough to measure; " +
+                 "correcting on this reading is not advisable.",
+        };
+        string worth = Math.Abs(estimate.Microseconds(rate)) < 5
+            ? "\n\nThat is small enough to be inaudible; there is probably nothing to correct."
+            : "";
+
+        if (MessageBox.Show($"{lead}\n\n{trust}{worth}\n\nCorrect it?", "Correct stylus azimuth",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+        {
+            _vm.ReportAction($"Azimuth measured at {estimate.Microseconds(rate):0.0} µs · left uncorrected.");
+            return;
+        }
+
+        double delay = estimate.DelaySamples;
+        _ = RunWholeFileTool("Correct Azimuth",
+            $"{delay:0.000} samples · split between the channels",
+            (working, _, _, _) =>
+            {
+                Azimuth.Align(working, delay);
+                return working;
+            }, d);
+    }
+
+    /// <summary>
     /// A transform over the whole file rather than the selection, committed as one undoable edit.
     /// </summary>
     private async Task<bool> RunWholeFileTool(string undoName, string? detail,
