@@ -141,6 +141,53 @@ public sealed class RiffMetadata
 
     public bool Remove(string id) => _chunks.RemoveAll(c => string.Equals(c.Id, id, StringComparison.Ordinal)) > 0;
 
+    // ── LIST chunks ──────────────────────────────────────────────
+
+    /// <summary>
+    /// A <c>LIST</c> chunk of a particular type — <c>INFO</c> for tags, <c>adtl</c> for cue-point
+    /// labels.
+    /// </summary>
+    /// <remarks>
+    /// RIFF allows several <c>LIST</c> chunks in one file, told apart only by the four-character type
+    /// in their first four bytes. Keying on the chunk id alone can hold one of them, so writing a
+    /// file's markers would silently delete its tags and writing its tags would delete its marker
+    /// labels. Everything that touches a <c>LIST</c> goes through these three.
+    /// </remarks>
+    public RiffChunk? FindList(string type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        foreach (RiffChunk chunk in _chunks)
+            if (IsList(chunk, type)) return chunk;
+        return null;
+    }
+
+    /// <summary>Replaces the <c>LIST</c> of this type, or adds one. <paramref name="data"/> begins with the type.</summary>
+    public void SetList(string type, byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        ArgumentNullException.ThrowIfNull(data);
+        if (type.Length != 4) throw new ArgumentException("A list type is four characters.", nameof(type));
+
+        for (int i = 0; i < _chunks.Count; i++)
+        {
+            if (!IsList(_chunks[i], type)) continue;
+            _chunks[i] = new RiffChunk("LIST", data);
+            return;
+        }
+        _chunks.Add(new RiffChunk("LIST", data));
+    }
+
+    public bool RemoveList(string type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        return _chunks.RemoveAll(c => IsList(c, type)) > 0;
+    }
+
+    private static bool IsList(RiffChunk chunk, string type) =>
+        string.Equals(chunk.Id, "LIST", StringComparison.Ordinal) &&
+        chunk.Data.Length >= 4 &&
+        Encoding.ASCII.GetString(chunk.Data, 0, 4).Equals(type, StringComparison.Ordinal);
+
     /// <summary>Writes every carried chunk, each padded to an even length as the container requires.</summary>
     public void WriteTo(BinaryWriter writer)
     {

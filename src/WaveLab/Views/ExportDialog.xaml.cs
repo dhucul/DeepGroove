@@ -135,9 +135,12 @@ public partial class ExportDialog : Window
             var doc = _doc.Doc;
             string outputPath = dlg.FileName;
 
-            // Enough for the file to identify itself. Full tag entry waits on a tag editor;
-            // an MP3 with no title at all is the worse of the two states.
-            var tags = new Id3Tags(Title: Path.GetFileNameWithoutExtension(outputPath));
+            // Whatever File Information holds, falling back to the output name for the title so an
+            // untagged document still produces an MP3 that identifies itself.
+            FileTags fileTags = FileTags.ReadFrom(doc.Riff);
+            if (string.IsNullOrWhiteSpace(fileTags.Title))
+                fileTags.Title = Path.GetFileNameWithoutExtension(outputPath);
+            Id3Tags tags = fileTags.ToId3();
             await Task.Run(() => AudioExporter.Export(
                 doc, outputPath, f.Format, bitrate, start, count, targetRate, cts.Token, tags),
                 cts.Token);

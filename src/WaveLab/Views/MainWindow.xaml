@@ -16,6 +16,9 @@
 
     <Window.CommandBindings>
         <CommandBinding Command="{x:Static ApplicationCommands.Help}" Executed="OnHelpCommand"/>
+        <!-- The menu item is a Click handler, so the accelerator goes through a routed command
+             rather than a second copy of the same call. -->
+        <CommandBinding Command="{x:Static ApplicationCommands.Properties}" Executed="OnFileInformationCommand"/>
     </Window.CommandBindings>
 
     <WindowChrome.WindowChrome>
@@ -48,6 +51,7 @@
         <KeyBinding Key="Right" Modifiers="Alt" Command="{Binding NextMarkerCommand}"/>
         <KeyBinding Key="P" Modifiers="Control+Shift" Command="{Binding CommandPaletteCommand}"/>
         <KeyBinding Key="F1" Command="{x:Static ApplicationCommands.Help}"/>
+        <KeyBinding Key="I" Modifiers="Control" Command="{x:Static ApplicationCommands.Properties}"/>
     </Window.InputBindings>
 
     <Grid>
@@ -110,6 +114,9 @@
                     <MenuItem Header="Save" InputGestureText="Ctrl+S" Command="{Binding SaveCommand}"/>
                     <MenuItem Header="Save As…" InputGestureText="Ctrl+Shift+S" Command="{Binding SaveAsCommand}"/>
                     <MenuItem Header="Export…" InputGestureText="Ctrl+E" Command="{Binding ExportCommand}"/>
+                    <Separator/>
+                    <MenuItem Header="File Information…" InputGestureText="Ctrl+I" Click="OnFileInformation"
+                              IsEnabled="{Binding HasAudioDocument}"/>
                     <Separator/>
                     <MenuItem Header="Recent Files" ItemsSource="{Binding RecentFiles}">
                         <MenuItem.ItemContainerStyle>

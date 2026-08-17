@@ -730,6 +730,13 @@
                         <Trigger Property="IsKeyboardFocused" Value="True">
                             <Setter TargetName="bd" Property="BorderBrush" Value="#2E5A54"/>
                         </Trigger>
+                        <!-- Without this a disabled field is indistinguishable from a live one: the
+                             text stays full brightness and the box keeps its border, so the only way
+                             to discover it cannot be typed into is to try. Found by rendering the CD
+                             transfer dialog, where the catalogue fields are off for a WAV package. -->
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="bd" Property="Opacity" Value="0.45"/>
+                        </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>

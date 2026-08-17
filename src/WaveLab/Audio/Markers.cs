@@ -66,7 +66,7 @@ public static class MarkerStore
         // Same information either way, so both arrive as the same type and the caller sees neither.
         IEnumerable<BroadcastMetadata.CuePoint> points =
             riff.Find("cue ") is { } cue
-                ? BroadcastMetadata.ReadCuePoints(cue.Data, riff.Find("LIST")?.Data)
+                ? BroadcastMetadata.ReadCuePoints(cue.Data, riff.FindList("adtl")?.Data)
                 : riff.Find("MARK") is { } mark
                     ? AiffMetadata.ReadMarkChunk(mark.Data)
                     : [];

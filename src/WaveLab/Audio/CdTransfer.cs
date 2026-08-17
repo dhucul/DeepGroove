@@ -36,6 +36,19 @@ public sealed record CdPackageProgress(
 
 public sealed record CdPackageResult(string Folder, string CueFile, IReadOnlyList<string> WaveFiles);
 
+/// <summary>Where one track sits on the disc, in CD frames from the start of the programme.</summary>
+public sealed record CdPqEntry(int Track, int StartFrame, int LengthFrames)
+{
+    public string StartTimecode => DdpImage.Timecode(StartFrame);
+    public string LengthTimecode => DdpImage.Timecode(LengthFrames);
+}
+
+/// <summary>The whole disc's PQ timing, as the plant would read it.</summary>
+public sealed record CdPqLayout(IReadOnlyList<CdPqEntry> Tracks, int LeadOutFrame)
+{
+    public string LeadOutTimecode => DdpImage.Timecode(LeadOutFrame);
+}
+
 /// <summary>
 /// Non-destructive helpers for turning a long capture into ordered CD-compatible
 /// tracks. The source document is never mutated. A stable continuous snapshot is
@@ -325,6 +338,36 @@ public static class CdTransfer
             catch { /* A stale uniquely-named staging folder is safer than deleting user files. */ }
         }
     }
+
+    /// <summary>
+    /// Where each track lands on the disc once the plan is sector-aligned: the timing a PQ sheet
+    /// states, and the only honest thing to show a user arranging a DDP.
+    /// </summary>
+    /// <remarks>
+    /// Offsets run from the two-second lead-in, because that is where the plant's timeline begins.
+    /// A sheet that starts at 00:00:00 puts every track two seconds early. The lengths are already
+    /// whole CD frames — that is what the sector alignment is for — so the padding the image writer
+    /// applies is a no-op here and the two agree by construction.
+    /// </remarks>
+    public static CdPqLayout PqSheet(
+        IReadOnlyList<CdTrackPlan> tracks, int sampleRate, int documentLength)
+    {
+        ArgumentNullException.ThrowIfNull(tracks);
+        if (sampleRate <= 0) return new CdPqLayout([], LeadInFrames);
+
+        var entries = new List<CdPqEntry>(tracks.Count);
+        int frame = LeadInFrames;
+        foreach (PreparedTrack track in PrepareTrackBoundaries(tracks, sampleRate, documentLength))
+        {
+            int length = track.Length / CdAudioFormat.FramesPerSector;
+            entries.Add(new CdPqEntry(entries.Count + 1, frame, length));
+            frame += length;
+        }
+        return new CdPqLayout(entries, frame);
+    }
+
+    /// <summary>Frames of lead-in before the first track — the same two seconds the image writes.</summary>
+    public const int LeadInFrames = DdpImage.LeadInFrames;
 
     /// <summary>
     /// The one continuous CD-rate stereo programme both deliverables are cut from. Resampling once

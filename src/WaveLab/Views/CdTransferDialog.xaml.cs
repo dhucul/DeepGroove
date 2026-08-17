@@ -5,6 +5,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using Microsoft.Win32;
 using WaveLab.Audio;
 using WaveLab.Util;
@@ -14,15 +15,40 @@ namespace WaveLab.Views;
 
 public partial class CdTransferDialog : Window
 {
+    /// <summary>
+    /// One row of the PQ sheet. Everything past the title is catalogue information that only a DDP
+    /// deliverable carries; a cue sheet has nowhere to put any of it.
+    /// </summary>
     private sealed class TrackRow : ObservableObject
     {
+        private static readonly SolidColorBrush IsrcOk =
+            Freeze(new SolidColorBrush(Color.FromRgb(0x26, 0x2D, 0x36)));
+        private static readonly SolidColorBrush IsrcBad =
+            Freeze(new SolidColorBrush(Color.FromRgb(0x7A, 0x3A, 0x36)));
+
+        private static SolidColorBrush Freeze(SolidColorBrush brush)
+        {
+            brush.Freeze();
+            return brush;
+        }
+
         private string _title;
+        private string _performer;
+        private string _songwriter;
+        private string _isrc;
+        private bool _preEmphasis;
         private int _order;
+        private string _cdLengthText = "—";
+        private bool _ddpFields;
 
         public TrackRow(CdTrackPlan plan, int order, int sampleRate, NamedRegion? sourceRegion = null)
         {
             Plan = plan;
             _title = plan.Title;
+            _performer = plan.Performer;
+            _songwriter = plan.Songwriter;
+            _isrc = plan.Isrc;
+            _preEmphasis = plan.PreEmphasis;
             _order = order;
             SampleRate = sampleRate;
             SourceRegion = sourceRegion;
@@ -32,14 +58,56 @@ public partial class CdTransferDialog : Window
         public NamedRegion? SourceRegion { get; private set; }
         public int SampleRate { get; }
         public string Title { get => _title; set => Set(ref _title, value); }
+        public string Performer { get => _performer; set => Set(ref _performer, value); }
+        public string Songwriter { get => _songwriter; set => Set(ref _songwriter, value); }
+
+        public string Isrc
+        {
+            get => _isrc;
+            set
+            {
+                if (!Set(ref _isrc, value)) return;
+                Raise(nameof(IsrcBrush));
+            }
+        }
+
+        /// <summary>Blank and valid are the two states that are not an error; anything else is marked.</summary>
+        public bool IsrcAcceptable => Audio.Isrc.IsAcceptable(Isrc);
+        public Brush IsrcBrush => IsrcAcceptable ? IsrcOk : IsrcBad;
+
+        public bool PreEmphasis
+        {
+            get => _preEmphasis;
+            set { if (Set(ref _preEmphasis, value)) Raise(nameof(EmphasisText)); }
+        }
+
+        public string EmphasisText => PreEmphasis ? "ON" : "—";
+
         public int Order { get => _order; set { if (Set(ref _order, value)) Raise(nameof(OrderText)); } }
         public string OrderText => $"{Order:00}";
         public string StartText => TimeFormat.Position(Plan.SourceStart, SampleRate);
         public string EndText => TimeFormat.Position(Plan.SourceEnd, SampleRate);
         public string DurationText => TimeFormat.Compact(Plan.DurationSeconds(SampleRate));
+
+        /// <summary>
+        /// What this track occupies on the disc, in CD frames. It is not the source duration: the
+        /// plan is aligned to 588-sample sectors first, and that alignment moves both boundaries.
+        /// </summary>
+        public string CdLengthText { get => _cdLengthText; set => Set(ref _cdLengthText, value); }
+
+        /// <summary>
+        /// Whether the catalogue fields are live. They are disabled rather than hidden for a WAV+CUE
+        /// package, so the reason they do not apply is visible instead of the columns vanishing.
+        /// </summary>
+        public bool DdpFields { get => _ddpFields; set => Set(ref _ddpFields, value); }
+
         public CdTrackPlan ToPlan() => Plan with
         {
             Title = string.IsNullOrWhiteSpace(Title) ? $"Track {Order:00}" : Title.Trim(),
+            Performer = Performer?.Trim() ?? string.Empty,
+            Songwriter = Songwriter?.Trim() ?? string.Empty,
+            Isrc = Audio.Isrc.Normalise(Isrc),
+            PreEmphasis = PreEmphasis,
         };
 
         public void SetRange(int start, int end)
@@ -78,6 +146,7 @@ public partial class CdTransferDialog : Window
         if (regionTracks.Count > 0)
             ReplaceTracks(regionTracks.Select(item => item.Plan).ToList(),
                 regionTracks.Select(item => item.Source).ToList());
+        ApplyDeliverable();
         Loaded += async (_, _) =>
         {
             _dialogReady = true;
@@ -105,16 +174,141 @@ public partial class CdTransferDialog : Window
         {
             NamedRegion? sourceRegion = sourceRegions?[i];
             if (sourceRegion != null) _knownPlanRegions.Add(sourceRegion);
-            var row = new TrackRow(plans[i], order++, _document.Doc.SampleRate, sourceRegion);
-            row.PropertyChanged += OnTrackRowChanged;
-            _tracks.Add(row);
+            _tracks.Add(NewRow(plans[i], order++, sourceRegion));
         }
         UpdatePlan();
     }
 
+    /// <summary>
+    /// The one place a row is built, so a row added by Split or Use Selection cannot come out with
+    /// its catalogue fields in a different state from the rest of the list.
+    /// </summary>
+    private TrackRow NewRow(CdTrackPlan plan, int order, NamedRegion? sourceRegion = null)
+    {
+        var row = new TrackRow(plan, order, _document.Doc.SampleRate, sourceRegion)
+        {
+            DdpFields = ddpBtn.IsChecked == true,
+        };
+        row.PropertyChanged += OnTrackRowChanged;
+        return row;
+    }
+
     private void OnTrackRowChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(TrackRow.Title)) UpdatePlan();
+        if (e.PropertyName is nameof(TrackRow.Title) or nameof(TrackRow.Isrc)) UpdatePlan();
+    }
+
+    // ── deliverable ──────────────────────────────────────────────
+
+    /// <summary>Whether the DDP image set is the chosen deliverable rather than the WAV+CUE package.</summary>
+    private bool Ddp => ddpBtn.IsChecked == true;
+
+    /// <summary>
+    /// The two buttons are one choice, so checking either unchecks the other. A pair of
+    /// <c>ToggleButton</c>s rather than a combo because the choice changes what half the dialog
+    /// means, and a two-item combo hides that behind a click.
+    /// </summary>
+    private void OnDeliverableChanged(object sender, RoutedEventArgs e)
+    {
+        bool ddp = ReferenceEquals(sender, ddpBtn);
+        ddpBtn.IsChecked = ddp;
+        wavCueBtn.IsChecked = !ddp;
+        ApplyDeliverable();
+    }
+
+    private void ApplyDeliverable()
+    {
+        bool ddp = Ddp;
+        foreach (TrackRow row in _tracks) row.DdpFields = ddp;
+
+        discPerformer.IsEnabled = discUpc.IsEnabled = !_busy && ddp;
+        importIsrcBtn.IsEnabled = autoNumberBtn.IsEnabled = !_busy && ddp;
+        exportBtn.Content = ddp ? "Export DDP Image Set…" : "Export CD Package…";
+        deliverableHint.Text = ddp
+            ? "PQ sheet, CD-TEXT, catalogue numbers and a checksum, for a pressing plant."
+            : "Sector-aligned 16-bit WAVs and a cue sheet, for a disc burner. Catalogue fields do not apply.";
+        UpdatePlan();
+    }
+
+    // ── catalogue numbers ────────────────────────────────────────
+
+    /// <summary>
+    /// Rewrites a committed ISRC in the form the PQ sheet will carry. A user typing
+    /// <c>GB-AAA-24-00001</c> is typing the same code, and leaving the punctuation on screen while
+    /// writing the bare twelve characters into the file shows something the deliverable does not say.
+    /// </summary>
+    private void OnIsrcCommitted(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox editor || editor.DataContext is not TrackRow row) return;
+        string normalised = Isrc.Normalise(row.Isrc);
+        if (normalised.Length == Isrc.Length && !string.Equals(row.Isrc, normalised, StringComparison.Ordinal))
+            row.Isrc = normalised;
+    }
+
+    private void OnImportIsrcs(object sender, RoutedEventArgs e)
+    {
+        if (_busy || _tracks.Count == 0) return;
+        var picker = new OpenFileDialog
+        {
+            Title = "Choose a text file of ISRCs, one per line, in track order",
+            Filter = "Text files|*.txt;*.csv|All files|*.*",
+        };
+        if (picker.ShowDialog(this) != true) return;
+
+        List<string> codes;
+        try { codes = Isrc.Parse(File.ReadAllText(picker.FileName)); }
+        catch (Exception ex)
+        {
+            statusText.Text = $"Could not read that file: {ex.Message}";
+            return;
+        }
+
+        int applied = 0, rejected = 0;
+        for (int i = 0; i < _tracks.Count && i < codes.Count; i++)
+        {
+            // A line that was not an ISRC arrives empty rather than missing, so the numbers after
+            // it still land on the tracks they were meant for. Leave that track alone and say so.
+            if (codes[i].Length == 0) { rejected++; continue; }
+            _tracks[i].Isrc = codes[i];
+            applied++;
+        }
+
+        statusText.Text = codes.Count == 0
+            ? "That file held no ISRCs."
+            : $"Applied {applied} ISRC(s) from {codes.Count} line(s)" +
+              (rejected > 0 ? $"; {rejected} line(s) were not valid ISRCs and were skipped." : ".") +
+              (codes.Count < _tracks.Count ? $" The last {_tracks.Count - codes.Count} track(s) were left as they were." : "");
+        UpdatePlan();
+    }
+
+    /// <summary>
+    /// Fills every ISRC from the first one by advancing the designation code — the last five digits,
+    /// which are the only part that changes between tracks on one release.
+    /// </summary>
+    private void OnAutoNumberIsrcs(object sender, RoutedEventArgs e)
+    {
+        if (_busy || _tracks.Count == 0) return;
+        string seed = Isrc.Normalise(_tracks[0].Isrc);
+        if (seed.Length != Isrc.Length)
+        {
+            statusText.Text = "Enter a valid ISRC on track 01 first; the rest are counted up from it.";
+            return;
+        }
+
+        for (int i = 1; i < _tracks.Count; i++)
+        {
+            string next = Isrc.Advance(seed, i);
+            if (next.Length == 0)
+            {
+                statusText.Text = $"Numbering stopped at track {i:00}: the designation code would pass 99999.";
+                UpdatePlan();
+                return;
+            }
+            _tracks[i].Isrc = next;
+        }
+
+        statusText.Text = $"Numbered {_tracks.Count} track(s) from {seed}.";
+        UpdatePlan();
     }
 
     private async void OnAutoSplit(object sender, RoutedEventArgs e) => await SuggestTracksAsync();
@@ -150,9 +344,8 @@ public partial class CdTransferDialog : Window
     private void OnAddSelection(object sender, RoutedEventArgs e)
     {
         if (_busy || !_document.HasSelection) return;
-        var row = new TrackRow(new CdTrackPlan(_document.SelStart, _document.SelEnd,
-            $"Track {_tracks.Count + 1:00}"), _tracks.Count + 1, _document.Doc.SampleRate);
-        row.PropertyChanged += OnTrackRowChanged;
+        TrackRow row = NewRow(new CdTrackPlan(_document.SelStart, _document.SelEnd,
+            $"Track {_tracks.Count + 1:00}"), _tracks.Count + 1);
         _tracks.Add(row);
         trackList.SelectedItem = row;
         UpdatePlan();
@@ -249,9 +442,15 @@ public partial class CdTransferDialog : Window
 
         int index = _tracks.IndexOf(row);
         row.SetRange(plan.SourceStart, split);
-        var right = new TrackRow(
-            new CdTrackPlan(split, plan.SourceEnd, $"{plan.Title} B"), index + 2, row.SampleRate);
-        right.PropertyChanged += OnTrackRowChanged;
+
+        // The right-hand half inherits performer, songwriter and pre-emphasis — the same record made
+        // them — but not the ISRC, which identifies one recording. Two tracks cannot both carry it.
+        TrackRow right = NewRow(plan with
+        {
+            SourceStart = split,
+            Title = $"{plan.Title} B",
+            Isrc = string.Empty,
+        }, index + 2);
         _tracks.Insert(index + 1, right);
         RefreshOrder();
         trackList.SelectedItem = right;
@@ -424,21 +623,7 @@ public partial class CdTransferDialog : Window
             return;
         }
 
-        // Two deliverables from one plan: a burner takes WAV + CUE, a pressing plant takes DDP.
-        var choice = new ParamDialog("Export CD Package", "Continue", "Deliverable",
-            ["WAV + CUE package — disc burners", "DDP 2.00 image set — replication plant"], 0)
-        { Owner = this };
-        if (choice.ShowDialog() != true) return;
-        bool ddp = choice.ComboIndex == 1;
-
-        string upc = "";
-        if (ddp)
-        {
-            // The one catalogue field that changes a plant order, and the only one this dialog can
-            // ask for until the PQ sheet editor exists. Blank is a legitimate answer.
-            upc = TextPromptDialog.Show(this, "UPC/EAN for the disc (leave blank if none)") ?? "";
-        }
-
+        bool ddp = Ddp;
         var picker = new OpenFolderDialog
         {
             Title = ddp
@@ -489,7 +674,7 @@ public partial class CdTransferDialog : Window
             });
             if (ddp)
             {
-                var disc = new DdpDiscInfo(discTitle.Text, Upc: upc);
+                var disc = new DdpDiscInfo(discTitle.Text, discPerformer.Text, discUpc.Text);
                 DdpResult image = await CdTransfer.ExportDdpAsync(exportSource, plan, picker.FolderName,
                     disc, progress, token);
                 progressBar.Value = 1;
@@ -528,16 +713,52 @@ public partial class CdTransferDialog : Window
 
     private void UpdatePlan()
     {
-        var issues = CdTransfer.Validate(CurrentPlan(), _document.Doc.SampleRate, _document.Doc.Length);
+        List<CdTrackPlan> plan = CurrentPlan();
+        var issues = CdTransfer.Validate(plan, _document.Doc.SampleRate, _document.Doc.Length);
+
+        // Where each track actually lands once the plan is sector-aligned. This is what a plant
+        // reads, and it is not the source duration — the alignment moves both boundaries.
+        CdPqLayout layout = CdTransfer.PqSheet(plan, _document.Doc.SampleRate, _document.Doc.Length);
+        for (int i = 0; i < _tracks.Count; i++)
+            _tracks[i].CdLengthText = i < layout.Tracks.Count ? layout.Tracks[i].LengthTimecode : "—";
+
         var issue = issues.FirstOrDefault(i => i.Severity == CdPlanIssueSeverity.Error)
                     ?? issues.FirstOrDefault(i => i.Severity == CdPlanIssueSeverity.Warning)
                     ?? issues.FirstOrDefault();
-        validationText.Text = issue?.Message ?? "";
-        validationText.Foreground = issue?.Severity switch
+        string message = issue?.Message ?? "";
+        var severity = issue?.Severity ?? CdPlanIssueSeverity.Information;
+
+        if (Ddp)
         {
-            CdPlanIssueSeverity.Error => (System.Windows.Media.Brush)FindResource("Red"),
-            CdPlanIssueSeverity.Warning => (System.Windows.Media.Brush)FindResource("Amber"),
-            _ => (System.Windows.Media.Brush)FindResource("Muted"),
+            int bad = _tracks.Count(t => !t.IsrcAcceptable);
+            int set = _tracks.Count(t => Isrc.Normalise(t.Isrc).Length == Isrc.Length);
+            string upc = new DdpDiscInfo(discTitle.Text, Upc: discUpc.Text).NormalisedUpc;
+            bool upcTyped = !string.IsNullOrWhiteSpace(discUpc.Text);
+
+            // A catalogue number that is nearly right is worse than one that is absent: it will be
+            // omitted from the sheet rather than written short, and the user should hear that now.
+            if (bad > 0 && severity != CdPlanIssueSeverity.Error)
+            {
+                message = $"{bad} ISRC(s) are not twelve characters; they will be omitted rather than written short.";
+                severity = CdPlanIssueSeverity.Warning;
+            }
+            else if (upcTyped && upc.Length == 0 && severity != CdPlanIssueSeverity.Error)
+            {
+                message = "The UPC/EAN is not twelve or thirteen digits; it will be omitted.";
+                severity = CdPlanIssueSeverity.Warning;
+            }
+            else if (severity == CdPlanIssueSeverity.Information)
+            {
+                message = $"{message} Lead-out at {layout.LeadOutTimecode}; {set} of {_tracks.Count} ISRC(s) set.";
+            }
+        }
+
+        validationText.Text = message;
+        validationText.Foreground = severity switch
+        {
+            CdPlanIssueSeverity.Error => (Brush)FindResource("Red"),
+            CdPlanIssueSeverity.Warning => (Brush)FindResource("Amber"),
+            _ => (Brush)FindResource("Muted"),
         };
         exportBtn.IsEnabled = !_busy && !issues.Any(i => i.Severity == CdPlanIssueSeverity.Error);
     }
@@ -547,6 +768,9 @@ public partial class CdTransferDialog : Window
         _busy = busy;
         trackList.IsEnabled = !busy;
         discTitle.IsEnabled = !busy;
+        discPerformer.IsEnabled = discUpc.IsEnabled = !busy && Ddp;
+        importIsrcBtn.IsEnabled = autoNumberBtn.IsEnabled = !busy && Ddp;
+        wavCueBtn.IsEnabled = ddpBtn.IsEnabled = !busy;
         thresholdSlider.IsEnabled = !busy;
         analyzeBtn.IsEnabled = !busy;
         addSelectionBtn.IsEnabled = !busy;

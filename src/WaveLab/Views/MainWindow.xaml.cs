@@ -298,6 +298,25 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    /// <summary>
+    /// The tags, the broadcast extension, and what the file will actually contain. Editing marks the
+    /// document dirty; the chunks are written by the next Save through the ordinary codec path.
+    /// </summary>
+    private void OnFileInformation(object sender, RoutedEventArgs e)
+    {
+        var d = Doc;
+        if (_longOperationRunning || d == null) return;
+
+        if (new FileInfoDialog(d) { Owner = this }.ShowDialog() == true)
+            _vm.ReportAction($"File information updated for {d.Doc.Title}. Save to write it.");
+    }
+
+    private void OnFileInformationCommand(object sender, ExecutedRoutedEventArgs e)
+    {
+        OnFileInformation(sender, e);
+        e.Handled = true;
+    }
+
     private void OnHelpTopic(object sender, RoutedEventArgs e)
     {
         string? topicId = (sender as FrameworkElement)?.Tag as string;

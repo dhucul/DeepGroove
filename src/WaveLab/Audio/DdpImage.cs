@@ -14,15 +14,72 @@ public readonly record struct DdpTrackInfo(
     string Title, string Performer = "", string Songwriter = "", string Isrc = "", bool PreEmphasis = false)
 {
     /// <summary>An ISRC with its punctuation removed and its case normalised, or empty if unusable.</summary>
-    public string NormalisedIsrc
+    public string NormalisedIsrc => Audio.Isrc.Normalise(Isrc);
+}
+
+/// <summary>Reading and generating the catalogue numbers a PQ sheet carries.</summary>
+/// <remarks>
+/// An ISRC is twelve characters: two for the country, three for the registrant, two for the year of
+/// reference, five for the designation code. Only the last five change from track to track, which is
+/// what makes filling a disc from one number a sensible thing to offer — and what makes the wrap at
+/// 99999 worth refusing rather than rolling over into somebody else's year.
+/// </remarks>
+public static class Isrc
+{
+    /// <summary>Length of an ISRC once its punctuation is removed.</summary>
+    public const int Length = 12;
+
+    /// <summary>The designation-code part: the last five digits, which are the ones that count up.</summary>
+    public const int DesignationDigits = 5;
+
+    /// <summary>Punctuation removed, case normalised. Empty when the result is not twelve characters.</summary>
+    public static string Normalise(string? value)
     {
-        get
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var cleaned = new StringBuilder(Length);
+        foreach (char c in value)
+            if (char.IsLetterOrDigit(c)) cleaned.Append(char.ToUpperInvariant(c));
+        return cleaned.Length == Length ? cleaned.ToString() : string.Empty;
+    }
+
+    /// <summary>Whether this is either blank or a usable ISRC — the two states that are not an error.</summary>
+    public static bool IsAcceptable(string? value) =>
+        string.IsNullOrWhiteSpace(value) || Normalise(value).Length == Length;
+
+    /// <summary>
+    /// The same ISRC with its designation code advanced by <paramref name="steps"/>, or empty if
+    /// that would run past 99999.
+    /// </summary>
+    public static string Advance(string? seed, int steps)
+    {
+        string normalised = Normalise(seed);
+        if (normalised.Length != Length || steps < 0) return string.Empty;
+
+        string prefix = normalised[..(Length - DesignationDigits)];
+        string tail = normalised[(Length - DesignationDigits)..];
+        if (!int.TryParse(tail, out int designation)) return string.Empty;
+
+        long next = designation + (long)steps;
+        return next > 99_999 ? string.Empty : prefix + next.ToString("D5");
+    }
+
+    /// <summary>
+    /// The ISRCs in a plain text file, one per line, blanks and <c>#</c> comments skipped. A line
+    /// that is not an ISRC is kept as an empty entry rather than dropped, so the numbers after it
+    /// still land on the tracks they were meant for.
+    /// </summary>
+    public static List<string> Parse(string text)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(text)) return result;
+
+        foreach (string raw in text.Split('\n'))
         {
-            if (string.IsNullOrWhiteSpace(Isrc)) return string.Empty;
-            var cleaned = new StringBuilder(12);
-            foreach (char c in Isrc) if (char.IsLetterOrDigit(c)) cleaned.Append(char.ToUpperInvariant(c));
-            return cleaned.Length == 12 ? cleaned.ToString() : string.Empty;
+            string line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            result.Add(Normalise(line));
         }
+        return result;
     }
 }
 
@@ -282,7 +339,7 @@ public static class DdpImage
     // ── helpers ──────────────────────────────────────────────────
 
     /// <summary>Minutes, seconds and CD frames, which is how a PQ sheet states every position.</summary>
-    internal static string Timecode(int frames)
+    public static string Timecode(int frames)
     {
         if (frames < 0) frames = 0;
         int minutes = frames / (60 * FramesPerSecond);

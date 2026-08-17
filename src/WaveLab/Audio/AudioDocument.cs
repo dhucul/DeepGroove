@@ -116,6 +116,21 @@ public sealed class AudioDocument
     /// <summary>Raised after any content change (start, removedCount, insertedCount).</summary>
     public event Action<int, int, int>? Changed;
 
+    /// <summary>
+    /// Records that something other than the audio changed — a tag, a broadcast timestamp — so an
+    /// ordinary Save writes it out.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does <em>not</em> raise <see cref="Changed"/>. Nothing about the samples moved,
+    /// so the peak pyramid has nothing to rebuild and the marker anchors have nothing to follow;
+    /// firing it would schedule a full re-scan of the file for a change to a text field.
+    /// </remarks>
+    public void MarkMetadataChanged()
+    {
+        Dirty = true;
+        EditVersion++;
+    }
+
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
 

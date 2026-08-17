@@ -446,7 +446,10 @@ public static class WavCodec
             }
             metadata = metadata.Clone();
             metadata.Set("cue ", BroadcastMetadata.WriteCueChunk(points));
-            metadata.Set("LIST", BroadcastMetadata.WriteLabelList(points));
+
+            // By list type, not by chunk id: a file's INFO tags live in a LIST too, and replacing
+            // whichever LIST came first would delete the title to write the marker labels.
+            metadata.SetList("adtl", BroadcastMetadata.WriteLabelList(points));
         }
 
         long extra = metadata.ByteLength;
