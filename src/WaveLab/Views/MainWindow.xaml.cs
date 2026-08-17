@@ -488,6 +488,80 @@ public partial class MainWindow : Window
         return applied;
     }
 
+    // ── drifting hum ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Measures the hum's fundamental, reports it, then follows and subtracts it.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <c>Remove Hum…</c>, which is the real-time notch bank. This one follows a
+    /// fundamental that moves and subtracts an estimate of each partial rather than notching, so it
+    /// leaves the music at those frequencies alone — but it is an offline pass over the whole file,
+    /// not something that can run on the audio thread.
+    /// </remarks>
+    private async void OnTrackHum(object sender, RoutedEventArgs e)
+    {
+        var d = Doc;
+        if (_longOperationRunning || d is not { Doc.Length: > 0 }) return;
+
+        float[][] channels = d.Doc.Channels.ToArray();
+        int rate = d.Doc.SampleRate;
+        var report = HumReport.None;
+
+        _longOperationRunning = true;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Measuring hum", "Looking for a mains fundamental",
+                async (progress, token) =>
+                {
+                    report = await Task.Run(
+                        () => HumTracker.Measure(channels[0], rate, HumTrackOptions.Default, token), token);
+                });
+        }
+        catch (OperationCanceledException) { _vm.ReportAction("Hum measurement cancelled."); return; }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Measuring hum", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally { _longOperationRunning = false; }
+
+        if (!report.Found)
+        {
+            MessageBox.Show("No mains hum was found: there is no steady comb of partials between " +
+                            "45 and 65 Hz to follow.", "Track and remove drifting hum",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        string drift = report.DriftHz < 0.02
+            ? "It is steady, so a fixed notch would have suited it too."
+            : $"It wanders by {report.DriftHz:0.00} Hz, which a fixed notch cannot follow.";
+        if (MessageBox.Show(
+                $"A hum was found at {report.MeanHz:0.00} Hz, {Math.Abs(report.LevelDb):0} dB below the " +
+                $"programme.\n\n{drift}\n\nFollow it and subtract it?",
+                "Track and remove drifting hum", MessageBoxButton.YesNo, MessageBoxImage.Question)
+            != MessageBoxResult.Yes)
+        {
+            _vm.ReportAction($"Hum measured at {report.MeanHz:0.00} Hz · left in place.");
+            return;
+        }
+
+        _ = RunWholeFileTool("Remove Drifting Hum",
+            $"{report.MeanHz:0.00} Hz · following {report.DriftHz:0.00} Hz of drift",
+            (working, sampleRate, progress, token) =>
+            {
+                for (int c = 0; c < working.Length; c++)
+                {
+                    // Measured per channel: a hum is picked up differently by each, and one
+                    // channel's trajectory is not the other's.
+                    HumTracker.Remove(working[c], sampleRate, HumTrackOptions.Default, token,
+                        SubProgress.Slice(progress, c, working.Length));
+                }
+                return working;
+            }, d);
+    }
+
     // ── surface crackle ──────────────────────────────────────────
 
     private void OnRemoveCrackle(object sender, RoutedEventArgs e)

@@ -206,6 +206,7 @@
                     <MenuItem Header="Remove Clicks &amp; Pops…" Click="OnRemoveClicks"/>
                     <MenuItem Header="Remove Surface Crackle…" Click="OnRemoveCrackle"/>
                     <MenuItem Header="Remove Hum…" Click="OnRemoveHum"/>
+                    <MenuItem Header="Track &amp; Remove Drifting Hum…" Click="OnTrackHum"/>
                     <Separator/>
                     <MenuItem Header="Disc Equalisation Curve…" Click="OnRecordingCurve"/>
                     <MenuItem Header="Correct Stylus Azimuth…" Click="OnCorrectAzimuth"
