@@ -43,6 +43,7 @@ public sealed unsafe class Vst3Plugin : IDisposable
     private void* _processor;
     private void* _controller;
     private bool _controllerIsComponent;
+    private Vst3ComponentHandler? _handler;
 
     private float** _inputPointers;
     private float** _outputPointers;
@@ -113,6 +114,7 @@ public sealed unsafe class Vst3Plugin : IDisposable
             }
 
             plugin.AttachController();
+            plugin.GiveComponentHandler();
             plugin.HandOverComponentState();
             plugin.ReadParameters();
             plugin.ReadBusCounts();
@@ -247,6 +249,7 @@ public sealed unsafe class Vst3Plugin : IDisposable
             ControllerStatus = $"getControllerClassId returned 0x{asked:X8}";
             return;
         }
+        ControllerClassIdText = Vst3Abi.ClassIdText(classId);
         if (classId.All(b => b == 0))
         {
             ControllerStatus = "the component names no controller class";
@@ -293,11 +296,53 @@ public sealed unsafe class Vst3Plugin : IDisposable
     /// <summary>How the controller was found, or why it was not. For diagnosis, and for the scan log.</summary>
     public string ControllerStatus { get; private set; } = "not attached";
 
+    /// <summary>The controller class the component named, for checking against the factory's list.</summary>
+    public string ControllerClassIdText { get; private set; } = "";
+
     /// <summary>
     /// What the controller said its parameter count was, which is not the same as how many were
     /// readable — a count with nothing behind it is a different fault from a count of nothing.
     /// </summary>
     public int DeclaredParameterCount { get; private set; }
+
+    /// <summary>
+    /// Gives the controller somewhere to report edits, which is a host obligation and not a courtesy.
+    /// </summary>
+    /// <remarks>
+    /// When a user moves a control in a plugin's own editor, <c>performEdit</c> on this handler is
+    /// the only way the host hears about it. Some plugins also refuse to create an editor until they
+    /// have one, on the reasonable grounds that an editor with nowhere to report is a UI that
+    /// silently does nothing.
+    /// </remarks>
+    private void GiveComponentHandler()
+    {
+        if (_controller == null) return;
+
+        _handler = new Vst3ComponentHandler();
+        _handler.ParameterEdited += edit => ParameterEdited?.Invoke(edit);
+        _handler.RestartRequested += flags =>
+        {
+            // A plugin that changes its own latency has to be believed: the host is compensating for
+            // a delay it no longer has until it reads the new one.
+            if ((flags & Vst3ComponentHandler.RestartLatencyChanged) != 0 && _processor != null)
+                LatencySamples = (int)Math.Min(GetLatencySamples(), int.MaxValue);
+            RestartRequested?.Invoke(flags);
+        };
+
+        void** vtable = *(void***)_controller;
+        var setComponentHandler = (delegate* unmanaged[Stdcall]<void*, void*, int>)vtable[16];
+        int result = setComponentHandler(_controller, _handler.Pointer);
+        HandlerAccepted = Vst3Abi.Ok(result);
+    }
+
+    /// <summary>Whether the controller took the host's edit handler.</summary>
+    public bool HandlerAccepted { get; private set; }
+
+    /// <summary>Raised when the user moves something in the plugin's own editor.</summary>
+    public event Action<Vst3ParameterEdit>? ParameterEdited;
+
+    /// <summary>Raised when the plugin says its latency, parameters or layout have changed.</summary>
+    public event Action<int>? RestartRequested;
 
     /// <summary>
     /// Hands the controller the component's current state, which is the step a host owes a plugin
@@ -400,6 +445,27 @@ public sealed unsafe class Vst3Plugin : IDisposable
         void** vtable = *(void***)_controller;
         var getParamNormalized = (delegate* unmanaged[Stdcall]<void*, uint, double>)vtable[14];
         return getParamNormalized(_controller, id);
+    }
+
+    /// <summary>
+    /// The plugin's own editor, or null when it has none.
+    /// </summary>
+    /// <remarks>
+    /// Must be created and disposed on the thread that will own the window. For the plugins tested
+    /// here this is not a nicety: they publish no parameters, so the editor is the only way to
+    /// operate them at all.
+    /// </remarks>
+    public Vst3PlugView? CreateEditor() =>
+        _disposed || _controller == null ? null : Vst3PlugView.Create(_controller);
+
+    /// <summary>Whether the plugin offers an editor, without keeping one open.</summary>
+    public bool HasEditor
+    {
+        get
+        {
+            using Vst3PlugView? view = CreateEditor();
+            return view != null;
+        }
     }
 
     private void ReadBusCounts()
@@ -615,6 +681,11 @@ public sealed unsafe class Vst3Plugin : IDisposable
             try { Vst3Module.Release(_processor); } catch { }
             _processor = null;
         }
+
+        // After the controller has been released, never before: a plugin still holding the handler
+        // would be calling into freed memory.
+        _handler?.Dispose();
+        _handler = null;
 
         if (_component != null)
         {

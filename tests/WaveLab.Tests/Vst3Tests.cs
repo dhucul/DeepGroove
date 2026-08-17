@@ -151,6 +151,110 @@ public sealed class Vst3Tests(ITestOutputHelper output) : IDisposable
         return buffer.AsSpan(0, got).ToArray();
     }
 
+    // ── the objects the host exposes to a plugin ─────────────────
+
+    [Fact]
+    public void AViewRectIsTheSizeTheCppSideExpects()
+    {
+        Assert.Equal(16, Marshal.SizeOf<ViewRect>());
+
+        var rect = new ViewRect { Left = 10, Top = 20, Right = 810, Bottom = 620 };
+        Assert.Equal(800, rect.Width);
+        Assert.Equal(600, rect.Height);
+    }
+
+    /// <summary>
+    /// The host's edit handler is a managed object with a native vtable, called <em>by</em> the
+    /// plugin. If the machinery is wrong the plugin calls into nothing, so this drives it the way a
+    /// plugin would — through the vtable, by slot.
+    /// </summary>
+    [Fact]
+    public unsafe void ThePluginCanReportAnEditThroughTheHostHandler()
+    {
+        using var handler = new Vst3ComponentHandler();
+        Vst3ParameterEdit? seen = null;
+        handler.ParameterEdited += edit => seen = edit;
+
+        void** self = (void**)handler.Pointer;
+        void** vtable = *(void***)self;
+
+        var beginEdit = (delegate* unmanaged[Stdcall]<void*, uint, int>)vtable[3];
+        var performEdit = (delegate* unmanaged[Stdcall]<void*, uint, double, int>)vtable[4];
+        var endEdit = (delegate* unmanaged[Stdcall]<void*, uint, int>)vtable[5];
+
+        Assert.True(Vst3Abi.Ok(beginEdit(self, 7)));
+        Assert.True(Vst3Abi.Ok(performEdit(self, 7, 0.25)));
+        Assert.True(Vst3Abi.Ok(endEdit(self, 7)));
+
+        Assert.NotNull(seen);
+        Assert.Equal(7u, seen!.Value.Id);
+        Assert.Equal(0.25, seen.Value.Normalized, 6);
+    }
+
+    [Fact]
+    public unsafe void AnEditOutsideTheNormalisedRangeIsBroughtIntoIt()
+    {
+        using var handler = new Vst3ComponentHandler();
+        var seen = new List<double>();
+        handler.ParameterEdited += edit => seen.Add(edit.Normalized);
+
+        void** self = (void**)handler.Pointer;
+        var performEdit = (delegate* unmanaged[Stdcall]<void*, uint, double, int>)(*(void***)self)[4];
+
+        performEdit(self, 1, 5.0);
+        performEdit(self, 1, -3.0);
+
+        Assert.Equal([1.0, 0.0], seen);
+    }
+
+    [Fact]
+    public unsafe void ThePluginCanAskToBeRestarted()
+    {
+        using var handler = new Vst3ComponentHandler();
+        int flags = 0;
+        handler.RestartRequested += f => flags = f;
+
+        void** self = (void**)handler.Pointer;
+        var restart = (delegate* unmanaged[Stdcall]<void*, int, int>)(*(void***)self)[6];
+
+        Assert.True(Vst3Abi.Ok(restart(self, Vst3ComponentHandler.RestartLatencyChanged)));
+        Assert.Equal(Vst3ComponentHandler.RestartLatencyChanged, flags);
+    }
+
+    /// <summary>
+    /// A handler that throws must not let the exception cross back into the plugin: it would unwind
+    /// through a C++ frame that has no idea what a managed exception is.
+    /// </summary>
+    [Fact]
+    public unsafe void AFailingHandlerAnswersThePluginRatherThanThrowingIntoIt()
+    {
+        using var handler = new Vst3ComponentHandler();
+        handler.ParameterEdited += _ => throw new InvalidOperationException("boom");
+
+        void** self = (void**)handler.Pointer;
+        var performEdit = (delegate* unmanaged[Stdcall]<void*, uint, double, int>)(*(void***)self)[4];
+
+        int result = performEdit(self, 1, 0.5);
+        Assert.Equal(Vst3Abi.ResultFalse, result);
+    }
+
+    [Fact]
+    public unsafe void TheHostObjectsAnswerOnlyTheInterfacesTheyImplement()
+    {
+        using var handler = new Vst3ComponentHandler();
+        void** self = (void**)handler.Pointer;
+        var queryInterface = (delegate* unmanaged[Stdcall]<void*, Guid*, void**, int>)(*(void***)self)[0];
+
+        void* result;
+        Guid mine = Vst3ComponentHandler.IComponentHandlerIid;
+        Assert.True(Vst3Abi.Ok(queryInterface(self, &mine, &result)));
+        Assert.True(result == self);
+
+        Guid other = Vst3Abi.IAudioProcessor;
+        Assert.Equal(Vst3Abi.NoInterface, queryInterface(self, &other, &result));
+        Assert.True(result == null);
+    }
+
     // ── the catalogue ────────────────────────────────────────────
 
     [Fact]
