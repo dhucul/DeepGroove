@@ -13,11 +13,24 @@ namespace WaveLab.Audio.Dsp;
 /// the clipped input rather than against the reconstruction it would replace.
 /// </para>
 /// <para>
-/// The crossover is not one number, because it moves with how sparse the material is: tonal
-/// programme flips at about 42% of samples clipped, a dense harmonic stack over a noise bed at about
-/// 22%. That makes sense — A-SPADE infers the missing samples from a model with few significant
-/// frequency components, so material that genuinely has few survives more damage before the model
-/// runs out of evidence.
+/// The crossover is not one number, because it moves with how sparse the material is — and
+/// <b>it moves in the direction opposite to the one first shipped here.</b> Sparse material hands
+/// over to the arch at about 28% of samples clipped and dense material not until about 85%. The
+/// first calibration had that backwards, reasoning that a sparse model survives more damage on
+/// material that is itself sparse. What the measurement says is about the *other* method: the arch
+/// is drawn between two shoulders, which is an excellent model of a simple waveform and a poor one
+/// of a dense stack, so on tonal material the arch takes over early and on dense material it never
+/// really competes. The question the number answers is not "when does A-SPADE fail" but "when does
+/// the arch start winning".
+/// </para>
+/// <para>
+/// Re-derived from 120 measured points — ten materials spanning sparsity 5.6 to 164, twelve
+/// severities each — after the arch was fixed twice (it used to return under the rail, and to
+/// extrapolate from shoulders too rough to support it). <b>Both fixes moved the crossover, which is
+/// why this is the third calibration.</b> Fitted by grid search on total shortfall and checked by
+/// leave-one-material-out cross-validation: 82.0 dB held out, against 97.0 for a bare damage floor,
+/// 110.5 for always choosing A-SPADE and 130.9 for the rule this replaces — which was worse than
+/// having no rule at all. The fitted parameters were identical in seven of the ten folds.
 /// </para>
 /// <para>
 /// <b>Two obvious measures of "sparse" were tried first and both failed.</b> Spectral flatness reads
@@ -30,19 +43,12 @@ namespace WaveLab.Audio.Dsp;
 /// which is presumably why it is the one that predicts A-SPADE's behaviour.
 /// </para>
 /// <para>
-/// <b>The rule picks the better method outright in 23 of the 32 measured cells, and the total
-/// shortfall against a perfect oracle is 15.9 dB.</b> Tonal is called correctly at every severity.
-/// Four of the nine misses are near-ties of 0.4 to 0.7 dB. The two that matter are sustained
-/// material at 42% and 60% clipped (−5.8 and −3.4), which is the hard case: its envelope barely
-/// decays, so past about 40% clipping no clean frame survives to read the material from and the
-/// reading falls back to the damage.
-/// </para>
-/// <para>
-/// These numbers are worse-looking and better than the ones they replace. Before the peak
-/// reconstruction was fixed to stop returning under the rail the rule was optimal in 26 cells, but
-/// the shortfall was 27.4 dB — the incumbent has since improved by up to 5.1 dB, which turns former
-/// blowouts into near-ties and moves the shallow end into its column. Count the decibels, not the
-/// cells.
+/// <b>It picks the better method in 90 of the 120 cells, for a shortfall of 58.8 dB and a worst
+/// single miss of 5.1.</b> Tonal, percussive, sustained and the sparsest stack are each wrong in
+/// exactly one cell, by 1.2 dB or less. Essentially all of the residual is the mid band of the
+/// dense harmonic stacks — 20% to 50% clipped, where the two methods genuinely trade places in a
+/// way neither sparsity nor damage predicts, and where a material-aware oracle would still be 40 dB
+/// ahead of anything measured here.
 /// </para>
 /// </remarks>
 public static class DeclipMethodChooser
@@ -53,17 +59,17 @@ public static class DeclipMethodChooser
     /// <summary>Share of a frame's energy the bin count is asked to cover.</summary>
     private const double EnergyShare = 0.98;
 
-    /// <summary>At or below this many bins the material is sparse enough for the wide tolerance.</summary>
-    public const double SparseBins = 20;
+    /// <summary>At or below this many bins the material is as sparse as the curve distinguishes.</summary>
+    public const double SparseBins = 8;
 
-    /// <summary>At or above this many bins only light clipping is worth handing to A-SPADE.</summary>
-    public const double DenseBins = 40;
+    /// <summary>At or above this many bins it is as dense as the curve distinguishes.</summary>
+    public const double DenseBins = 25;
 
     /// <summary>Clipped fraction A-SPADE stays ahead to on sparse material.</summary>
-    public const double SparseTolerance = 0.45;
+    public const double SparseTolerance = 0.28;
 
     /// <summary>Clipped fraction A-SPADE stays ahead to on dense material.</summary>
-    public const double DenseTolerance = 0.22;
+    public const double DenseTolerance = 0.85;
 
     /// <summary>
     /// The clipped fraction below which A-SPADE is the better method for material of this sparsity.
@@ -86,16 +92,8 @@ public static class DeclipMethodChooser
     /// material at 0.4% clipped, 8.8 on sustained at 0.0% and 2.4 on percussive — because short runs
     /// leave excellent shoulders to draw between, while a frame-level sparse model has almost no
     /// damage to justify the assumptions it makes about the rest of the frame.
-    /// <para>
-    /// <b>1%, not 3%, and the difference is a worst case rather than a total.</b> Every large win for
-    /// the arch is below 1% — 8.8 dB, 6.3, 2.4, 1.5 — while 1% to 3% is a scatter of small
-    /// disagreements no threshold separates: dense at 2.2% and sustained at 2.5% want the arch by
-    /// 0.4 and 0.5, and percussive at 2.6% wants A-SPADE by 3.2. Set at 3% the rule gains those two
-    /// tenths and swallows that 3.2; set at 1% it gives up 0.9 in total and its worst single miss is
-    /// 1.6. Material decides this band, and neither sparsity nor damage predicts which way.
-    /// </para>
     /// </remarks>
-    public const double MinimumClippedFraction = 0.01;
+    public const double MinimumClippedFraction = 0.015;
 
     /// <summary>Whether A-SPADE should be preferred for this channel.</summary>
     public static bool PrefersSparse(double clippedFraction, double effectiveSparsity) =>
