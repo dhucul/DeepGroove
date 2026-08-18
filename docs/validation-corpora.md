@@ -19,23 +19,36 @@ peak: a shellac transfer's loudest sample is a surface click, measured here at 1
 music, so clipping relative to it barely touches the programme. `RecordingLevelAnalyzer` guards
 the same trap for the same reason.
 
-## Corpus 1 — a private collection (19 recordings, 76 cells)
+**Verify the harness against `Restoration.RepairClipping` before believing its numbers.** A probe
+that reproduces the repair inline - to sweep a parameter without re-running the solver each time -
+is only worth as much as its agreement with the shipped path. The A-SPADE ceiling sweep was checked
+this way at both severities and every setting and agreed to 1e-4 dB, which is the only reason its
+negative result is quotable.
 
-Soul and R&B, 44.1 and 48 kHz, 110-322 s. Not redistributable; named for the record only. One
-track carries genuine clipping and is detected as such; the other eighteen report none.
+## Corpus 1 — a private collection of record transfers (9 recordings, 36 cells)
 
-**Treat this as two corpora, not one.** The extension is not a format detail here: the nine AIFFs
-are transfers from records, and the ten WAVs came off the internet and are badly recorded. They
-measure differently and the difference is not small.
+Soul and R&B transferred from records, AIFF, 44.1 kHz, 110-322 s. Not redistributable; named for
+the record only. One track carries genuine clipping and is detected as such; the other eight
+report none.
 
-| | files | cells | mean gain | cells below do-nothing | arch wins | mean damage |
-|---|---|---|---|---|---|---|
-| AIFF — from records  |  9 | 36 | +7.16 dB | 1 (worst -1.15) | 14% |  3.98% |
-| WAV — from the internet | 10 | 40 | +4.87 dB | 4 (worst -3.87) | 22% | 14.67% |
+Measured against the shipped chain: **36 of 36 cells beat leaving the damage alone, mean
++6.40 dB, worst +0.22**. The chooser sends every cell to A-SPADE; the arch would have won 9 of
+36 outright, which costs the chooser 14.0 dB of regret against per-cell oracle choice, where
+always choosing the arch would cost 62.7.
 
-The record transfers behave like corpus 3, where A-SPADE wins outright. Four of the five known
-bad cells are internet material, which arrives already degraded and is not what the workbench is
-for. Any single average over all nineteen under-reports the population the tool actually targets.
+### The WAV files are gone and are excluded from every figure
+
+This corpus used to hold ten WAV files as well, and they were a different population entirely:
+**recorded and streamed off the internet, badly**, rather than transferred from records. They
+arrive already degraded, they are not what this workbench is for, and they have been **deleted**.
+Every number above is AIFF-only and they must not be folded back into any average.
+
+An earlier split table recorded here (record transfers at +7.16 dB, one cell below do-nothing at
+-1.15, arch winning 14% of cells) **does not reproduce** and has been removed. A fresh run
+disagrees on `raw` - the SNR of the damaged file before any repair runs, which no change to the
+repair code can move - while corpus 2 reproduces to the decimal, so the difference is in the data
+rather than the method. Prefer a fresh measurement over any corpus-1 figure quoted from before
+this note.
 
 ## Corpus 2 — `C:\Windows\Media` (38 files, 152 cells)
 
@@ -43,11 +56,13 @@ Ships with Windows, so it is available on any machine this is developed on. A di
 production origin entirely, including 22.05 kHz material and peaks from -10 to -26 dBFS.
 Files over 200 kB.
 
-## Corpus 3 — Great 78 Project, Internet Archive (21 recordings, 83 cells)
+## Corpus 3 — Great 78 Project, Internet Archive (21 recordings, 84 cells)
 
 Public-domain shellac transfers, all pre-1923 and so in the US public domain under the Music
 Modernization Act. This is the closest thing measured here to what the restoration workbench is
-actually for: real transfer chains, surface noise, and 788-6457 detected clicks per side.
+actually for: real transfer chains, surface noise, and 788-6457 detected clicks per side. The
+chain beats leaving the damage alone in **84 of 84 cells, mean +4.42 dB, worst +1.88**, and the
+chooser is right on every one of them.
 Fetched as the VBR MP3 derivative (the 24-bit FLAC is ~64 MB a side).
 
 ```

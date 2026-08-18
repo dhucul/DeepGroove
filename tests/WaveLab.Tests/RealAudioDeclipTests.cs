@@ -78,9 +78,11 @@ public sealed class RealAudioDeclipTests(ITestOutputHelper output)
 
     /// <summary>
     /// The headline claim, and the one that has to hold on real audio however the chooser is
-    /// calibrated: repairing must beat leaving the damage alone. Measured across the corpus this
-    /// was written from, the chain gains a mean 5.96 dB and the worst cell in nineteen recordings
-    /// loses 3.87.
+    /// calibrated: repairing must beat leaving the damage alone. Measured across the three external
+    /// corpora named in <c>docs/validation-corpora.md</c> - 272 cells over 68 recordings - the chain
+    /// gains a mean 9.60 dB and <b>no cell loses to leaving the damage alone</b>, the thinnest margin
+    /// being +0.22 dB. The corpora are external, so this test carries the claim on the one recording
+    /// that ships with the repository.
     /// </summary>
     [Theory]
     [InlineData(0.60)]
@@ -143,7 +145,7 @@ public sealed class RealAudioDeclipTests(ITestOutputHelper output)
 /// The rule that a second corpus overturned, kept as a test so it cannot be re-derived by accident.
 /// </summary>
 /// <remarks>
-/// A short-plateau exception was fitted on nineteen real recordings, transferred to synthetic
+/// A short-plateau exception was fitted on one real corpus, transferred to synthetic
 /// material it was never fitted to, and cross-validated cleanly — then cost 668.7 dB on 152 cells
 /// of a second real corpus. Refitting across all three datasets selects no exception in 87 of 88
 /// folds. These assertions pin its absence, and the reasoning belongs with them: both real corpora

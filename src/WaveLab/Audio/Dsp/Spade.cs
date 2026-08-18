@@ -44,7 +44,8 @@ public readonly record struct SpadeOptions(
     /// </para>
     /// <para>
     /// <b>And it still makes the shipped chain worse on real programme, which is why the chain does
-    /// not use it.</b> Measured end to end over nineteen recordings, the default gives 76 of 76
+    /// not use it.</b> Measured end to end over the old nineteen-recording corpus - which included the since-deleted
+    /// internet WAVs, so it is comparable to nothing measured after them - the default gave 76 of 76
     /// cells better than leaving the damage alone, mean +6.20 dB, worst +0.85. This gives 5.74.
     /// Re-fitting the chooser against the improved solver — which is required, since its thresholds
     /// were calibrated against the old one, and which recovers 226.5 to 158.9 dB held out on the
