@@ -614,27 +614,26 @@ public static partial class Restoration
             // The damage is counted from the events rather than from the raw sample values, so the
             // decision rests on the same evidence the repair does.
             long clipped = 0;
-            foreach (var e in group) clipped += Math.Max(0, e.EndSample - e.StartSample);
+            int runs = 0;
+            foreach (var e in group)
+            {
+                clipped += Math.Max(0, e.EndSample - e.StartSample);
+                runs++;
+            }
             double fraction = (double)clipped / samples.Length;
+            double meanRun = runs == 0 ? 0 : (double)clipped / runs;
 
-            if (method == DeclipMethod.PeakReconstruction)
+            if (method != DeclipMethod.Automatic)
             {
-                choices.Add(new DeclipChannelChoice(channel, method, fraction, double.NaN));
-                continue;
-            }
-            if (method == DeclipMethod.Sparse)
-            {
-                choices.Add(new DeclipChannelChoice(channel, method, fraction, double.NaN));
+                choices.Add(new DeclipChannelChoice(channel, method, fraction, meanRun));
                 continue;
             }
 
-            double clipLevel = MedianClipLevel(group);
-            double sparsity = DeclipMethodChooser.EffectiveSparsity(samples, clipLevel, cancellationToken);
             choices.Add(new DeclipChannelChoice(channel,
-                DeclipMethodChooser.PrefersSparse(fraction, sparsity)
+                DeclipMethodChooser.PrefersSparse(fraction, meanRun)
                     ? DeclipMethod.Sparse
                     : DeclipMethod.PeakReconstruction,
-                fraction, sparsity));
+                fraction, meanRun));
         }
         return choices;
     }

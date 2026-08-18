@@ -149,7 +149,7 @@ public sealed record ClippingAnalysisResult(
 public enum DeclipMethod
 {
     /// <summary>
-    /// Choose per channel from how much of it is clipped and how sparse the material is. Neither
+    /// Choose per channel from how much of it is clipped and how long the plateaus are. Neither
     /// method dominates; see <see cref="DeclipMethodChooser"/> for what was measured.
     /// </summary>
     Automatic,
@@ -179,7 +179,7 @@ public readonly record struct DeclipChannelChoice(
     int Channel,
     DeclipMethod Method,
     double ClippedFraction,
-    double EffectiveSparsity);
+    double MeanRunSamples);
 
 /// <summary>Controls clipped-waveform reconstruction.</summary>
 public sealed class DeclippingOptions

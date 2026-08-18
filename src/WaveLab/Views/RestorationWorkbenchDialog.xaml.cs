@@ -874,7 +874,7 @@ public partial class RestorationWorkbenchDialog : Window
 
         static string Name(DeclipChannelChoice c) => c.Method == DeclipMethod.Sparse ? "sparse" : "peaks";
         static string Detail(DeclipChannelChoice c) =>
-            $"{c.ClippedFraction * 100:0.#}% clipped, {c.EffectiveSparsity:0} bins";
+            $"{c.ClippedFraction * 100:0.#}% clipped, runs of {c.MeanRunSamples:0}";
 
         // Two channels' worth of numbers does not fit the card, and a line that trims to an ellipsis
         // tells the user less than a short one does. When the channels agree — the ordinary case —
