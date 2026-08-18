@@ -138,3 +138,51 @@ public sealed class RealAudioDeclipTests(ITestOutputHelper output)
         Assert.Empty(analysis.Events);
     }
 }
+
+/// <summary>
+/// The one corner of the decision space where the fitted curve is wrong, and the only place the
+/// chain was measured scoring worse than leaving the damage alone.
+/// </summary>
+/// <remarks>
+/// Real music with plateaus under eight samples and 0.03% to 3% of samples clipped goes to the arch
+/// despite the curve. Thirteen of nineteen measured cells in that corner preferred the arch, by up
+/// to 4.5 dB, and five of them were cells where A-SPADE scored below doing nothing — the only such
+/// cells in nineteen recordings. Unlike every earlier exception tried on this chooser, it
+/// generalises: fitted on the real corpus alone it also improves the synthetic set it was never
+/// fitted to, and it picks the same parameters in 18 of 19 leave-one-recording-out folds.
+/// </remarks>
+public sealed class ShortPlateauExceptionTests(ITestOutputHelper output)
+{
+    [Fact]
+    public void ShortPlateausWithModestDamageGoToTheArch()
+    {
+        // Measured cells from the corpus: runs of 4-7 at 0.03%-2.5% clipped, where the arch beat
+        // A-SPADE by 1.8 to 4.5 dB and A-SPADE scored below leaving the damage alone.
+        Assert.False(DeclipMethodChooser.PrefersSparse(0.0188, meanRunSamples: 5.1));
+        Assert.False(DeclipMethodChooser.PrefersSparse(0.0245, meanRunSamples: 5.6));
+        Assert.False(DeclipMethodChooser.PrefersSparse(0.00034, meanRunSamples: 6.5));
+        Assert.False(DeclipMethodChooser.PrefersSparse(0.00945, meanRunSamples: 5.8));
+    }
+
+    [Fact]
+    public void TheExceptionIsBoundedOnAllThreeSides()
+    {
+        // Below the floor the events are isolated enough that A-SPADE has whole frames of context.
+        Assert.True(DeclipMethodChooser.PrefersSparse(0.0002, meanRunSamples: 5));
+        // Above the ceiling there is too much damage for the shoulders to stay clean.
+        Assert.True(DeclipMethodChooser.PrefersSparse(0.054, meanRunSamples: 6.1));
+        // And it is only for short plateaus; longer ones follow the curve.
+        Assert.True(DeclipMethodChooser.PrefersSparse(0.0188, meanRunSamples: 20));
+        output.WriteLine("exception bounded at run < " +
+            $"{DeclipMethodChooser.ShortPlateauRun}, {DeclipMethodChooser.ShortPlateauFloor:P2}" +
+            $" to {DeclipMethodChooser.ShortPlateauCeiling:P0} damage");
+    }
+
+    /// <summary>The exception must not disturb the long-plateau regime real programme mostly sits in.</summary>
+    [Fact]
+    public void LongPlateauProgrammeIsUnaffected()
+    {
+        Assert.True(DeclipMethodChooser.PrefersSparse(0.009, meanRunSamples: 65));
+        Assert.False(DeclipMethodChooser.PrefersSparse(0.30, meanRunSamples: 145));
+    }
+}

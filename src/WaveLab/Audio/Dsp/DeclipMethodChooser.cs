@@ -95,7 +95,50 @@ public static class DeclipMethodChooser
         return Math.Clamp(ToleranceConstant + TolerancePerLogRun * l + TolerancePerLogRunSquared * l * l, 0, 1);
     }
 
+    /// <summary>Longest mean plateau the short-plateau exception applies to.</summary>
+    public const double ShortPlateauRun = 8.0;
+
+    /// <summary>Damage below which the exception does not apply.</summary>
+    public const double ShortPlateauFloor = 0.0003;
+
+    /// <summary>Damage above which the exception no longer applies.</summary>
+    public const double ShortPlateauCeiling = 0.03;
+
+    /// <summary>
+    /// Whether short plateaus with modest damage should go to the arch despite the curve.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The curve is fitted across the whole space and is wrong in one corner of it: real music with
+    /// plateaus under eight samples and between 0.03% and 3% of samples clipped. There the arch beat
+    /// A-SPADE in thirteen of nineteen measured cells and by up to 4.5 dB, and five of those were
+    /// cells where the chain scored worse than leaving the damage alone — the only such cells in
+    /// nineteen recordings.
+    /// </para>
+    /// <para>
+    /// It reads sensibly in both directions. Short plateaus are bracketed closely by their
+    /// shoulders, which is exactly what the arch is, and at this damage the shoulders are still
+    /// clean. Below the floor the events are so isolated that A-SPADE has whole frames of context
+    /// per defect and wins anyway; above the ceiling there is too much damage for the shoulders to
+    /// stay clean and it wins again.
+    /// </para>
+    /// <para>
+    /// <b>Unlike the exceptions that were tried and rejected, this one generalises, which is the
+    /// only reason it is here.</b> Fitted on the real corpus alone it also improves the synthetic
+    /// set it was never fitted to, 226.1 to 194.1 dB; it halves corpus regret under
+    /// leave-one-recording-out, 34.4 to 15.9; and it picks identical parameters in 18 of 19 folds
+    /// and again when fitted over all three datasets. The earlier candidates all did the opposite —
+    /// better fitted, worse held out.
+    /// </para>
+    /// </remarks>
+    public static bool PrefersArchDespiteCurve(double clippedFraction, double meanRunSamples) =>
+        meanRunSamples < ShortPlateauRun &&
+        clippedFraction >= ShortPlateauFloor &&
+        clippedFraction < ShortPlateauCeiling;
+
     /// <summary>Whether A-SPADE should be preferred for this channel.</summary>
     public static bool PrefersSparse(double clippedFraction, double meanRunSamples) =>
-        clippedFraction > 0 && clippedFraction < ToleratedClippedFraction(meanRunSamples);
+        clippedFraction > 0 &&
+        clippedFraction < ToleratedClippedFraction(meanRunSamples) &&
+        !PrefersArchDespiteCurve(clippedFraction, meanRunSamples);
 }
