@@ -32,7 +32,9 @@ the record only. One track carries genuine clipping and is detected as such; the
 report none.
 
 Measured against the shipped chain: **36 of 36 cells beat leaving the damage alone, mean
-+6.40 dB, worst +0.22**. The chooser sends every cell to A-SPADE; the arch would have won 9 of
++6.84 dB, worst +2.31**. Every one of the nine at 0.70 of peak is a cell where the shoulders now
+cap the sparse reconstruction, worth 1.4 to 2.8 dB each; before that rule the mean was +6.40 and
+the thinnest cell only +0.22. The chooser sends every cell to A-SPADE; the arch would have won 9 of
 36 outright, which costs the chooser 14.0 dB of regret against per-cell oracle choice, where
 always choosing the arch would cost 62.7.
 
@@ -53,7 +55,8 @@ this note.
 ## Corpus 2 — `C:\Windows\Media` (38 files, 152 cells)
 
 Ships with Windows, so it is available on any machine this is developed on. A different
-production origin entirely, including 22.05 kHz material and peaks from -10 to -26 dBFS.
+production origin entirely, including 22.05 kHz material and peaks from -10 to -26 dBFS. The
+chain beats leaving the damage alone in **152 of 152 cells, mean +13.42 dB, worst +1.58**.
 Files over 200 kB.
 
 ## Corpus 3 — Great 78 Project, Internet Archive (21 recordings, 84 cells)

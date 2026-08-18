@@ -670,15 +670,93 @@ public static partial class Restoration
         // synthetic material and a measured loss on real programme. See SpadeOptions.For.
         Spade.Declip(working, clipLevel, SpadeOptions.Default, cancellationToken);
 
-        double ceiling = clipLevel * maximumGain;
+        var ceiling = SparseCeilings(samples.Length, ordered, channel, clipLevel, maximumGain);
         for (int i = 0; i < samples.Length; i++)
         {
-            double value = Math.Clamp(working[i], -ceiling, ceiling);
+            double limit = ceiling[i];
+            double value = Math.Clamp(working[i], -limit, limit);
             if (!double.IsFinite(value)) continue;
             samples[i] += (float)((value - samples[i]) * strength);
         }
         return count;
     }
+
+    /// <summary>
+    /// The magnitude A-SPADE may reach at each sample: the flat channel-wide reconstruction
+    /// ceiling, tightened inside each plateau to what the shoulders support on the channels where
+    /// <see cref="ShouldersBoundTheReconstruction"/> says the shoulders are worth listening to.
+    /// </summary>
+    private static float[] SparseCeilings(int length, ClippedPeakEvent[] ordered, int channel,
+        double clipLevel, double maximumGain)
+    {
+        var ceiling = new float[length];
+        Array.Fill(ceiling, (float)(clipLevel * maximumGain));
+        if (!ShouldersBoundTheReconstruction(ordered.Where(e => e.Channel == channel))) return ceiling;
+
+        foreach (var clippedPeak in ordered)
+        {
+            if (clippedPeak.Channel != channel) continue;
+            double rail = clippedPeak.AbsoluteClipLevel;
+            if (!(rail > 0)) continue;
+            float allowed = (float)Math.Min(rail * maximumGain,
+                Math.Max(rail, Math.Abs(clippedPeak.EstimatedTruePeak)));
+            int from = Math.Max(0, clippedPeak.StartSample);
+            int to = Math.Min(length, clippedPeak.EndSample);
+            for (int i = from; i < to; i++)
+                if (allowed < ceiling[i]) ceiling[i] = allowed;
+        }
+        return ceiling;
+    }
+
+    /// <summary>
+    /// Whether the shoulder extrapolation should be allowed to cap the sparse reconstruction on
+    /// this channel, from the overshoot the shoulders themselves claim.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A-SPADE is told only that the clipped samples reached the rail, so nothing in the solver
+    /// stops it inventing a peak far above one, and on lightly clipped material it does. Capping it
+    /// at <see cref="ClippedPeakEvent.EstimatedTruePeak"/> everywhere fixes that and is a clear net
+    /// loss — measured over 272 cells it costs 0.71 dB a cell, up to 13.8 on one.
+    /// </para>
+    /// <para>
+    /// <b>The variable that separates the two cases is the size of the shoulder's own claim, not
+    /// the length of the plateau.</b> Headroom scaled by plateau length was fitted and rejected:
+    /// swept over thirteen settings it never beat leaving the reconstruction unbounded, because
+    /// depth does not predict which way the cap lands. The mean claimed overshoot does. Where the
+    /// shoulders say the peak barely cleared the rail, they are saying the material was not driven
+    /// hard, and a solver reaching far past that is inventing; where they claim a large overshoot,
+    /// the material really is clipped hard and the reconstruction should be let run.
+    /// </para>
+    /// <para>
+    /// Measured on three corpora, capping below a mean claim of 15% gains <b>+46.5 dB over 272
+    /// cells</b> — records +15.9, Windows Media +30.6, 78rpm untouched — and survives the check
+    /// that killed every earlier rule of this kind: held out a whole corpus at a time it gains
+    /// <b>+44.6 dB with no fold negative</b>, and held out a recording at a time, +46.9. It fires
+    /// on 17 of 272 cells, 16 of which improve and one of which loses 2.11 dB, and it never takes a
+    /// cell below leaving the damage alone. <b>The threshold is close to a cliff</b>: 0.20 gives
+    /// +16.1 and 0.25 gives −16.2, so it is set at the low end of the 0.15–0.17 the folds chose.
+    /// </para>
+    /// </remarks>
+    internal static bool ShouldersBoundTheReconstruction(IEnumerable<ClippedPeakEvent> channelEvents)
+    {
+        double claimed = 0;
+        int counted = 0;
+        foreach (var clippedPeak in channelEvents)
+        {
+            double rail = clippedPeak.AbsoluteClipLevel;
+            if (!(rail > 0)) continue;
+            claimed += Math.Abs(clippedPeak.EstimatedTruePeak) / rail - 1;
+            counted++;
+        }
+        return counted > 0 && claimed / counted < MaximumBoundedOvershoot;
+    }
+
+    /// <summary>
+    /// Mean claimed overshoot, as a fraction of the rail, below which the sparse reconstruction is
+    /// held to what the shoulders support. See <see cref="ShouldersBoundTheReconstruction"/>.
+    /// </summary>
+    public const double MaximumBoundedOvershoot = 0.15;
 
     private static bool TryCreateClickEvent(float[] samples, float[] curvature,
         int channel, int start, int end, int peak, float peakCurvature,
