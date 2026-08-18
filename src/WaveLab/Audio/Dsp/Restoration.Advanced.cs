@@ -666,6 +666,8 @@ public static partial class Restoration
         if (count == 0 || !(clipLevel > 0)) return 0;
 
         var working = (float[])samples.Clone();
+        // SpadeOptions.Default, not SpadeOptions.For: the adaptive budget is a large win on dense
+        // synthetic material and a measured loss on real programme. See SpadeOptions.For.
         Spade.Declip(working, clipLevel, SpadeOptions.Default, cancellationToken);
 
         double ceiling = clipLevel * maximumGain;

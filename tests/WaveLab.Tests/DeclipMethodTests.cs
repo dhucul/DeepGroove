@@ -476,3 +476,96 @@ public sealed class DeclipMethodTests(ITestOutputHelper output)
                 new DeclippingOptions { Method = DeclipMethod.Sparse }, cancellation.Token));
     }
 }
+
+/// <summary>
+/// The adaptive sparsity budget: correct, measured, and not the default.
+/// </summary>
+/// <remarks>
+/// A step of four starves dense material — the standing residual of the chooser is the solver being
+/// given a dozen coefficients to describe forty — and matching the budget to the material is worth
+/// up to 15.6 dB there. It is not wired into the chain because end to end it costs real programme,
+/// which is recorded on <see cref="SpadeOptions.For"/>. These tests keep it honest so it is ready
+/// if the dense band is attacked again.
+/// </remarks>
+public sealed class SpadeBudgetTests(ITestOutputHelper output)
+{
+    private static float[] Stack(int harmonics, double noise)
+    {
+        var r = new Random(7);
+        var s = new float[40_000];
+        double m = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            double t = i / 44_100.0;
+            double v = 0;
+            for (int h = 1; h <= harmonics; h++) v += Math.Sin(2 * Math.PI * 110 * h * t + h * 0.7) / h;
+            v += (r.NextDouble() - 0.5) * noise;
+            s[i] = (float)v;
+            m = Math.Max(m, Math.Abs(v));
+        }
+        for (int i = 0; i < s.Length; i++) s[i] = (float)(s[i] / m * 0.95);
+        return s;
+    }
+
+    [Fact]
+    public void DenseMaterialAsksForABiggerBudgetThanSparseMaterial()
+    {
+        float[] dense = Stack(40, 0.35);
+        float[] simple = Stack(2, 0.004);
+        int denseStep = SpadeOptions.For(dense).SparsityStep;
+        int simpleStep = SpadeOptions.For(simple).SparsityStep;
+        output.WriteLine($"dense {SpadeOptions.EffectiveSparsity(dense):0} bins -> step {denseStep}; " +
+            $"simple {SpadeOptions.EffectiveSparsity(simple):0} bins -> step {simpleStep}");
+        Assert.True(denseStep > simpleStep,
+            "A stack of forty partials needs more coefficients than a pair of them.");
+        Assert.InRange(denseStep, SpadeOptions.MinimumStep, SpadeOptions.MaximumStep);
+        Assert.InRange(simpleStep, SpadeOptions.MinimumStep, SpadeOptions.MaximumStep);
+    }
+
+    /// <summary>
+    /// The bigger budget is worth a great deal on the material it was found for. This is the finding
+    /// the dense-band residual turned out to be.
+    /// </summary>
+    [Fact]
+    public void TheBudgetIsWorthMoreThanTenDecibelsOnDenseMaterial()
+    {
+        float[] clean = Stack(32, 0.20);
+        const double level = 0.50;
+        var clipped = (float[])clean.Clone();
+        var mask = new bool[clean.Length];
+        for (int i = 0; i < clipped.Length; i++)
+        {
+            if (clipped[i] > level) { clipped[i] = (float)level; mask[i] = true; }
+            else if (clipped[i] < -level) { clipped[i] = (float)-level; mask[i] = true; }
+        }
+
+        double Score(SpadeOptions o)
+        {
+            var b = (float[])clipped.Clone();
+            Spade.Declip(b, level, o);
+            double sig = 0, err = 0;
+            for (int i = 0; i < clean.Length; i++)
+            {
+                if (!mask[i]) continue;
+                double d = clean[i] - b[i];
+                sig += (double)clean[i] * clean[i];
+                err += d * d;
+            }
+            return 10 * Math.Log10(sig / Math.Max(err, 1e-30));
+        }
+
+        double dflt = Score(SpadeOptions.Default);
+        double adaptive = Score(SpadeOptions.For(clipped, level));
+        output.WriteLine($"default {dflt:0.0} dB, adaptive {adaptive:0.0} dB");
+        Assert.True(adaptive > dflt + 4,
+            $"The adaptive budget gained only {adaptive - dflt:0.0} dB where 10+ was measured.");
+    }
+
+    /// <summary>Silence and near-silence carry nothing to size a budget from.</summary>
+    [Fact]
+    public void MaterialWithNothingToMeasureFallsBackToTheFloor()
+    {
+        Assert.Equal(SpadeOptions.Default.SparsityStep, SpadeOptions.For(new float[64]).SparsityStep);
+        Assert.Equal(0, SpadeOptions.EffectiveSparsity(new float[64]));
+    }
+}

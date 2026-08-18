@@ -20,6 +20,150 @@ public readonly record struct SpadeOptions(
     public static SpadeOptions Default { get; } = new(
         FrameSize: 1024, Hop: 256, SparsityStep: 4, RelaxEvery: 1,
         MaxIterations: 120, Tolerance: 1e-3);
+
+    /// <summary>
+    /// Options for this material, with the sparsity budget matched to how many components it
+    /// actually has. <b>Built, measured, and deliberately not the default</b> — see the remarks.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The budget is the single biggest lever on this solver and the default starves dense
+    /// material.</b> A step of four grows the model too slowly for a stack of two dozen partials
+    /// over a noise bed: measured on such material at 20–50% clipped, the default scores 5.9 to
+    /// 10.3 dB where a step of sixteen scores 15.0 to 18.2, and one cell moves 6.6 to 22.2. That
+    /// band is the standing residual of <see cref="DeclipMethodChooser"/>, and it is not a limit of
+    /// the method — it is the method being given a dozen coefficients to describe forty.
+    /// </para>
+    /// <para>
+    /// The budget here is set from <see cref="EffectiveSparsity"/>, roughly an eighth of the bins
+    /// holding 98% of a frame's energy, floored so simple material keeps the small step it wants. A
+    /// flat larger step is not the answer: sixteen costs sparse synthetic material 4.7 dB a cell and
+    /// 24.7 in the worst case. Over 105 cells this beats the flat default on synthetic (818.6
+    /// against 743.5) and on real audio (1077.3 against 1072.1), and beats the best flat step held
+    /// out across thirty-one groups.
+    /// </para>
+    /// <para>
+    /// <b>And it still makes the shipped chain worse on real programme, which is why the chain does
+    /// not use it.</b> Measured end to end over nineteen recordings, the default gives 76 of 76
+    /// cells better than leaving the damage alone, mean +6.20 dB, worst +0.85. This gives 5.74.
+    /// Re-fitting the chooser against the improved solver — which is required, since its thresholds
+    /// were calibrated against the old one, and which recovers 226.5 to 158.9 dB held out on the
+    /// method choice — still lands at 5.80 with one cell at −1.70, the only cell in the corpus where
+    /// the chain would lose to doing nothing. The gain is concentrated where A-SPADE was losing to
+    /// the arch anyway, so the better solver mostly improves cells the chooser does not send it,
+    /// while the cells it does send it come out slightly worse.
+    /// </para>
+    /// <para>
+    /// So this is kept the way <c>SparseInpaint</c> and <c>RobustPca</c> are kept: correct, tested,
+    /// documented, and not wired in. It is the right starting point if the dense band is attacked
+    /// again — the cause is known and the lever is large — but it needs a chooser fitted to the new
+    /// solver on more real material than one corpus, not another synthetic recalibration. Take the
+    /// warning on <c>JanssenOptions.For</c> as applying here too: refitting this on tones alone will
+    /// produce a different and worse answer.
+    /// </para>
+    /// <param name="samples">The clipped audio the solver will be given.</param>
+    /// <param name="clipLevel">Magnitude at or beyond which a sample is damaged, so the measurement
+    /// can be taken from frames that survived. Pass zero to measure everything.</param>
+    public static SpadeOptions For(float[] samples, double clipLevel = 0)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        double bins = EffectiveSparsity(samples, clipLevel);
+        int step = (int)Math.Round(BudgetIntercept + BudgetPerBin * bins);
+        return Default with { SparsityStep = Math.Clamp(step, MinimumStep, MaximumStep) };
+    }
+
+    /// <summary>Floor of the sparsity budget, which is what simple material wants.</summary>
+    public const int MinimumStep = 4;
+
+    /// <summary>Ceiling of the sparsity budget.</summary>
+    public const int MaximumStep = 16;
+
+    /// <summary>Budget at zero measured components.</summary>
+    public const double BudgetIntercept = 3.5;
+
+    /// <summary>Extra budget per significant bin the material carries.</summary>
+    public const double BudgetPerBin = 0.125;
+
+    /// <summary>Transform length the sparsity measure is taken at, matching <see cref="Default"/>.</summary>
+    private const int MeasureFrame = 1024;
+
+    /// <summary>Share of a frame that may be clipped before it is too damaged to measure.</summary>
+    private const double MaximumFrameDamage = 0.05;
+
+    /// <summary>Fewest surviving frames worth trusting before measuring everything instead.</summary>
+    private const int MinimumCleanFrames = 8;
+
+    /// <summary>
+    /// How many frequency bins hold 98% of a frame's energy, averaged over frames. Low is sparse.
+    /// </summary>
+    /// <remarks>
+    /// Measured on frames that survived the clipping where there are enough of them, because a flat
+    /// top is a corner and a corner is broadband: damage inflates this number, and the more damage
+    /// the more inflation. <b>The fallback matters as much as the measurement</b> — returning a
+    /// constant when too few clean frames remain makes the reading saturate on exactly the heavily
+    /// damaged material the budget is for, and an earlier version of this fitted worse than a flat
+    /// step because of it.
+    /// </remarks>
+    public static double EffectiveSparsity(float[] samples, double clipLevel = 0)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        if (samples.Length < MeasureFrame) return 0;
+        if (clipLevel > 0)
+        {
+            double clean = Measure(samples, clipLevel, MinimumCleanFrames);
+            if (clean > 0) return clean;
+        }
+        return Measure(samples, 0, 1);
+    }
+
+    private static double Measure(float[] samples, double clipLevel, int minimumFrames)
+    {
+        int bins = MeasureFrame / 2 + 1;
+        var frame = new float[MeasureFrame];
+        var re = new float[bins];
+        var im = new float[bins];
+        var power = new double[bins];
+        float[] window = WindowFunctions.Hann(MeasureFrame, periodic: true);
+
+        // Hunting for clean frames needs a finer comb than measuring everything, or a busy side
+        // offers too few of them to average.
+        int stride = clipLevel > 0 ? MeasureFrame / 4 : MeasureFrame;
+        double total = 0;
+        int counted = 0;
+        for (int start = 0; start + MeasureFrame <= samples.Length; start += stride)
+        {
+            if (clipLevel > 0)
+            {
+                int damaged = 0;
+                for (int i = 0; i < MeasureFrame; i++)
+                    if (Math.Abs(samples[start + i]) >= clipLevel - 1e-5) damaged++;
+                if (damaged > MeasureFrame * MaximumFrameDamage) continue;
+            }
+
+            for (int i = 0; i < MeasureFrame; i++) frame[i] = samples[start + i] * window[i];
+            Fft.RealForward(frame, re, im);
+            double sum = 0;
+            for (int b = 0; b < bins; b++)
+            {
+                power[b] = re[b] * (double)re[b] + im[b] * (double)im[b];
+                sum += power[b];
+            }
+            if (sum <= 1e-18) continue;
+
+            Array.Sort(power);
+            double running = 0;
+            int used = 0;
+            for (int b = bins - 1; b >= 0; b--)
+            {
+                running += power[b];
+                used++;
+                if (running >= 0.98 * sum) break;
+            }
+            total += used;
+            counted++;
+        }
+        return counted >= minimumFrames ? total / counted : 0;
+    }
 }
 
 /// <summary>Result of a declipping pass.</summary>
