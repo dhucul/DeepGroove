@@ -21,9 +21,21 @@ the same trap for the same reason.
 
 ## Corpus 1 — a private collection (19 recordings, 76 cells)
 
-Soul and R&B, WAV and AIFF, 44.1 and 48 kHz, 110-322 s. Not redistributable; named for the
-record only. One track carries genuine clipping and is detected as such; the other eighteen
-report none.
+Soul and R&B, 44.1 and 48 kHz, 110-322 s. Not redistributable; named for the record only. One
+track carries genuine clipping and is detected as such; the other eighteen report none.
+
+**Treat this as two corpora, not one.** The extension is not a format detail here: the nine AIFFs
+are transfers from records, and the ten WAVs came off the internet and are badly recorded. They
+measure differently and the difference is not small.
+
+| | files | cells | mean gain | cells below do-nothing | arch wins | mean damage |
+|---|---|---|---|---|---|---|
+| AIFF — from records  |  9 | 36 | +7.16 dB | 1 (worst -1.15) | 14% |  3.98% |
+| WAV — from the internet | 10 | 40 | +4.87 dB | 4 (worst -3.87) | 22% | 14.67% |
+
+The record transfers behave like corpus 3, where A-SPADE wins outright. Four of the five known
+bad cells are internet material, which arrives already degraded and is not what the workbench is
+for. Any single average over all nineteen under-reports the population the tool actually targets.
 
 ## Corpus 2 — `C:\Windows\Media` (38 files, 152 cells)
 
