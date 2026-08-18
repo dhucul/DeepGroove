@@ -6,85 +6,96 @@ namespace WaveLab.Audio.Dsp;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Neither method dominates, and which one wins was measured rather than reasoned about: the two
-/// run against each other on the samples clipping destroyed, over 310 cells — thirty-one synthetic
-/// materials at ten severities each. What comes out is one line. A-SPADE gets the channel when
-/// enough of it is clipped to be worth 700× the cost, and when the plateaus are short enough that
-/// there is still reliable audio between them; the arch gets it otherwise.
+/// Neither method dominates. The two were run against each other on the samples clipping destroyed
+/// over 362 cells — thirty-one synthetic materials and six sections of real programme
+/// (<c>demo_track.wav</c>), at ten severities each — and the boundary is one curve in the clipped
+/// fraction and the mean plateau length.
 /// </para>
 /// <para>
-/// <b>Damage and plateau length are one boundary, not two thresholds.</b> Treating them separately
-/// scores 318.3 dB of shortfall against 244.8 for the joint line, cross-validated by leaving each
-/// material out in turn. The tolerated damage falls as the plateaus lengthen — roughly 78% of
-/// samples clipped is still A-SPADE's when the average run is ten samples, 37% when it is forty,
-/// and nothing past about a hundred and fifty. That is the shape of the trade: a long plateau is a
-/// wide smooth span for an arch to draw and a frame with little left in it for a sparse model to
-/// fit.
+/// <b>It is a hump, and both ends belong to the arch for different reasons.</b> Tolerated damage is
+/// near zero at plateaus of one or two samples, peaks around 85% at runs of ten to twenty, and
+/// returns to zero past about a hundred. A two-sample plateau is bracketed exactly by the samples
+/// either side of it, so a 1024-sample frame solve has nothing to add; a hundred-and-fifty-sample
+/// plateau is a wide smooth span an arch draws well and a frame with almost nothing reliable left
+/// in it for a sparse model to fit.
 /// </para>
 /// <para>
-/// <b>This replaced spectral sparsity, which was the wrong quantity and was used the wrong way.</b>
-/// The rule it supersedes measured worse than a bare damage floor once enough materials were on the
-/// table, and it cost a bank of FFTs per channel to compute a number beaten by counting samples.
+/// <b>Validating against real programme is what forced this shape, and it condemned every rule
+/// fitted to synthetic material alone.</b> The previous rule — a straight line, fitted to 310
+/// synthetic cells and cross-validated over them — scores 99.1 dB of shortfall on real audio, worse
+/// than always choosing A-SPADE (23.0) and close to never choosing it (96.2). It was wrong in 34 of
+/// 52 real cells. The reason is a regime the synthetic set never contained: <b>at light damage,
+/// synthetic materials have a median plateau of 3.1 samples and real programme has 57.3.</b> Real
+/// music is low-frequency dominated, so even 0.2% clipping makes long plateaus, and the synthetic
+/// fit had calibrated that corner of the space on data that does not occur in practice. This curve
+/// scores 7.0 dB on the real sections and 226.1 on the synthetic ones, against the old rule's 99.1
+/// and 235.2 — better on both, dramatically so on the one that matters.
 /// </para>
 /// <para>
-/// <b>A third variable was looked for and there is not one, which is the finding.</b> Stationarity,
-/// periodicity, high-frequency share, event density, shoulder trust and run-length-over-period were
-/// each measured. The residual they would have to explain is sharply characterised — stationary
-/// (frame-RMS spread 0.04), strongly periodic (autocorrelation 0.95), long plateaus at 20–50%
-/// clipped — and an exception targeting exactly that signature improves the fit from 129.8 to 119.3
-/// dB while making cross-validation <em>worse</em>, 143.8 to 145.8. The best two-feature rule does
-/// the same thing more dramatically: 143.4 fitted against 185.6 held out. They memorise materials
-/// rather than learning the distinction, and the remaining shortfall is still concentrated in the
-/// dense stacks' mid band.
+/// <b>There is no damage floor, and that too is measured.</b> A floor looks obviously right, since
+/// A-SPADE costs roughly 700×, and two calibrations shipped one. It is wrong: barely-clipped real
+/// programme has long plateaus, which is where A-SPADE wins, so a guard at 0.02% of samples costs
+/// 19.8 dB across the real sections. The cost argument does not hold either — A-SPADE skips
+/// undamaged frames, so trivial damage is trivially cheap. Measured on the real track, a 24-second
+/// stereo file takes 1.2 s at 0.4% clipped against 2 ms for the arch, rising to 16 s at 36%.
 /// </para>
 /// <para>
-/// <b>Four calibrations of this threshold have now been wrong, each because it was fitted to too
-/// few materials.</b> Ten materials with leave-one-out cross-validation still produced a rule that
-/// measures worse than doing nothing clever, and one fit missed simple tonal programme entirely
-/// because no such signal was in the set. Fit on many materials, hold out <em>materials</em> rather
-/// than severities, and distrust any improvement that shows only in sample. And note the standing
-/// limitation: every material here is synthetic, so what is validated is generalisation across
-/// kinds of synthetic signal, not across real programme.
+/// <b>A third decision variable was looked for and there is not one.</b> Stationarity, periodicity,
+/// high-frequency share, event density, shoulder trust and run-length-over-period were each
+/// measured on the synthetic set. An exception aimed at the residual's exact signature improves the
+/// fit from 129.8 to 119.3 dB and makes cross-validation <em>worse</em>, 143.8 to 145.8; the best
+/// two-feature rule manages 143.4 fitted against 185.6 held out. They memorise materials. Spectral
+/// sparsity, which two calibrations used as the second variable, measured worse than a bare damage
+/// floor and cost a bank of FFTs to compute a number beaten by counting samples.
+/// </para>
+/// <para>
+/// <b>Five calibrations of this threshold have been wrong, and the lesson is the same every time:
+/// the material set was too narrow.</b> Reasoning from A-SPADE's assumptions got the direction
+/// backwards. Thirty-two cells was too few. Ten materials <em>with</em> leave-one-out
+/// cross-validation still produced a rule worse than doing nothing clever. Twenty-four materials
+/// missed simple tonal programme because none was in the set. And thirty-one synthetic materials,
+/// cross-validated, was still beaten on real audio by a one-parameter rule. Hold out
+/// <em>materials</em>, never severities; include real programme; and treat a synthetic-only result
+/// as untested until something recorded has been through it.
 /// </para>
 /// </remarks>
 public static class DeclipMethodChooser
 {
-    /// <summary>
-    /// Damage below which the peak reconstruction is preferred whatever the material.
-    /// </summary>
-    /// <remarks>
-    /// A-SPADE has to earn its 700×, and below a few percent it does not: short runs leave excellent
-    /// shoulders to draw between, while a frame-level sparse model has almost no damage to justify
-    /// the assumptions it makes about the rest of the frame.
-    /// </remarks>
-    public const double MinimumClippedFraction = 0.025;
+    /// <summary>Constant term of the boundary.</summary>
+    public const double ToleranceConstant = -0.50;
 
-    /// <summary>Intercept of the boundary, at a mean run of one sample.</summary>
-    public const double ToleranceIntercept = 1.475;
+    /// <summary>Linear term in the natural log of mean run length.</summary>
+    public const double TolerancePerLogRun = 1.10;
 
-    /// <summary>How fast the tolerated damage falls per natural log of mean run length.</summary>
-    public const double TolerancePerLogRun = -0.300;
+    /// <summary>Quadratic term, which is what turns the boundary over at long runs.</summary>
+    public const double TolerancePerLogRunSquared = -0.22;
 
     /// <summary>
-    /// Shortest mean run the boundary is evaluated at. Below this the arithmetic would keep
-    /// climbing past certainty for no reason — the fraction is already capped at 1.
+    /// Shortest mean run the boundary is evaluated at. A run cannot be shorter than one sample and
+    /// the curve is not fitted below this.
     /// </summary>
     private const double ShortestRun = 1.5;
 
     /// <summary>
     /// The clipped fraction below which A-SPADE is the better method, for plateaus of this mean
-    /// length. Falls as the plateaus lengthen.
+    /// length.
     /// </summary>
+    /// <remarks>
+    /// The curve is a hump: near zero at a run of one or two samples, peaking around 85% at runs of
+    /// ten to twenty, and back to zero past about a hundred. Both ends belong to the arch and for
+    /// different reasons. A two-sample plateau is bracketed exactly by the samples either side of
+    /// it, so there is nothing for a frame solve to add; a plateau of a hundred and fifty samples is
+    /// a wide smooth span an arch draws well, and a frame with almost nothing reliable left in it
+    /// for a sparse model to fit.
+    /// </remarks>
     public static double ToleratedClippedFraction(double meanRunSamples)
     {
         if (!double.IsFinite(meanRunSamples)) return 0;
-        double bound = ToleranceIntercept +
-            TolerancePerLogRun * Math.Log(Math.Max(ShortestRun, meanRunSamples));
-        return Math.Clamp(bound, 0, 1);
+        double l = Math.Log(Math.Max(ShortestRun, meanRunSamples));
+        return Math.Clamp(ToleranceConstant + TolerancePerLogRun * l + TolerancePerLogRunSquared * l * l, 0, 1);
     }
 
     /// <summary>Whether A-SPADE should be preferred for this channel.</summary>
     public static bool PrefersSparse(double clippedFraction, double meanRunSamples) =>
-        clippedFraction >= MinimumClippedFraction &&
-        clippedFraction < ToleratedClippedFraction(meanRunSamples);
+        clippedFraction > 0 && clippedFraction < ToleratedClippedFraction(meanRunSamples);
 }

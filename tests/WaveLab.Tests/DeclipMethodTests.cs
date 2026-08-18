@@ -183,28 +183,30 @@ public sealed class DeclipMethodTests(ITestOutputHelper output)
     /// forever. Both thresholds must bite.
     /// </summary>
     [Fact]
-    public void ToleratedDamageFallsAsPlateausLengthen()
+    public void BothEndsOfThePlateauRangeBelongToTheArch()
     {
-        double shortRuns = DeclipMethodChooser.ToleratedClippedFraction(10);
-        double longRuns = DeclipMethodChooser.ToleratedClippedFraction(40);
-        output.WriteLine($"tolerated damage: runs of 10 -> {shortRuns:0.00}, runs of 40 -> {longRuns:0.00}");
-        Assert.True(shortRuns > longRuns + 0.2,
-            "A long plateau is a wide span for an arch and a frame with little left to fit.");
+        double tiny = DeclipMethodChooser.ToleratedClippedFraction(2);
+        double mid = DeclipMethodChooser.ToleratedClippedFraction(15);
+        double huge = DeclipMethodChooser.ToleratedClippedFraction(150);
+        output.WriteLine($"tolerated damage: runs of 2 -> {tiny:0.00}, 15 -> {mid:0.00}, 150 -> {huge:0.00}");
 
-        // Damage and length are one boundary: the same 40% is A-SPADE's with short plateaus and
-        // the arch's with long ones. Two independent thresholds cannot say that, which is why
-        // they measured 318.3 dB against this line's 244.8 held out.
-        Assert.True(DeclipMethodChooser.PrefersSparse(0.40, meanRunSamples: 10));
-        Assert.False(DeclipMethodChooser.PrefersSparse(0.40, meanRunSamples: 60));
+        // A hump, not a slope, and both ends are the arch for different reasons: a two-sample
+        // plateau is bracketed exactly by its neighbours, and a hundred-and-fifty-sample one is a
+        // wide smooth span with almost nothing reliable left in the frame to fit.
+        Assert.True(mid > tiny + 0.3, "Short plateaus need no frame solve.");
+        Assert.True(mid > huge + 0.3, "Long plateaus leave a sparse model nothing to work with.");
 
-        Assert.False(DeclipMethodChooser.PrefersSparse(0.005, meanRunSamples: 10),
-            "A-SPADE has to earn its cost before it is chosen.");
+        // Real programme sits at the long end even when barely clipped: 0.2% damage with runs of
+        // 29 samples is a measured point from demo_track.wav, and A-SPADE wins it by 3.4 dB.
+        Assert.True(DeclipMethodChooser.PrefersSparse(0.002, meanRunSamples: 29));
+        // Heavy damage at the long end is the arch's, which is the same track at 12% clipped.
+        Assert.False(DeclipMethodChooser.PrefersSparse(0.12, meanRunSamples: 150));
     }
 
     /// <summary>Undamaged audio has no repair to choose a method for.</summary>
     [Fact]
     public void UndamagedAudioChoosesNothing() =>
-        Assert.False(DeclipMethodChooser.PrefersSparse(0, meanRunSamples: 40));
+        Assert.False(DeclipMethodChooser.PrefersSparse(0, meanRunSamples: 15));
 
     // ── the wiring ───────────────────────────────────────────────
 
@@ -378,67 +380,20 @@ public sealed class DeclipMethodTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Once the arch stopped dipping under the rail it became the better method at the shallow end,
-    /// so A-SPADE now has to clear a damage floor before it is worth 700× the cost. The floor is 1%
-    /// rather than 3% on a worst case: 3% gains two tenths of a decibel and swallows a 3.2 dB loss
-    /// on percussive material at 2.6% clipped.
+    /// <b>There is no damage floor, and that was measured rather than assumed.</b> A floor looks
+    /// obviously right — A-SPADE costs roughly 700×, so why spend it on a handful of samples — and
+    /// two calibrations shipped one. On real programme it is simply wrong: barely-clipped material
+    /// has long plateaus, which is exactly where A-SPADE wins, and a guard at 0.02% of samples
+    /// costs 19.8 dB across the measured sections. The cost argument does not hold either, because
+    /// A-SPADE skips undamaged frames, so trivial damage is trivially cheap.
     /// </summary>
     [Fact]
-    public void SparseHasToEarnItsCostBeforeItIsChosen()
+    public void ThereIsNoDamageFloor()
     {
-        Assert.False(DeclipMethodChooser.PrefersSparse(0.004, meanRunSamples: 10),
-            "Dense material at 0.4% clipped measured 6.3 dB better under the arch.");
-        Assert.False(DeclipMethodChooser.PrefersSparse(0.005, meanRunSamples: 13),
-            "Sustained material at 0.5% clipped measured 1.5 dB better under the arch.");
-        Assert.True(DeclipMethodChooser.PrefersSparse(0.030, meanRunSamples: 9),
-            "Percussive material at 3% clipped with real plateaus measured better under A-SPADE.");
-    }
-
-    /// <summary>
-    /// <b>Dense material at mid clipping: the reconstruction has to beat leaving the rail alone.</b>
-    /// It used to lose there. The height of the arch comes from the boundary slope carried across
-    /// the gap, and on dense material that slope is mostly high harmonics and noise rather than the
-    /// underlying arc, so the estimate read a rough shoulder as a steep climb and built a peak
-    /// nothing supported — measured by position inside the plateau it beat the rail over the outer
-    /// fifths and lost by a factor of two across the middle.
-    /// </summary>
-    [Theory]
-    [InlineData(0.55)]
-    [InlineData(0.50)]
-    [InlineData(0.45)]
-    public void DenseMaterialAtMidClippingBeatsLeavingTheRail(double level)
-    {
-        float[] clean = Dense();
-        var (clipped, mask) = Clip(clean, level);
-        var analysis = Analyse(clipped, level);
-
-        double raw = ClippedSnrDb(clean, clipped, mask);
-        double repaired = Repair(clean, clipped, mask, analysis, DeclipMethod.PeakReconstruction);
-        output.WriteLine($"dense @ {level:0.00}: raw {raw:0.0}  repaired {repaired:0.0}");
-
-        Assert.True(repaired > raw - 0.75,
-            $"Reconstructing dense material at {level:0.00} scored {repaired:0.0} dB against {raw:0.0} for leaving it alone.");
-    }
-
-    /// <summary>
-    /// The doubt belongs to long plateaus. A two-sample gap is barely an extrapolation and its
-    /// shoulders bracket it closely, so shrinking those cost 1 to 2 dB on percussive material at
-    /// every severity — where a rough shoulder is a genuine attack rather than noise.
-    /// </summary>
-    [Theory]
-    [InlineData(0.90)]
-    [InlineData(0.70)]
-    public void ShortPlateausAreNotShrunk(double level)
-    {
-        float[] clean = Percussive();
-        var (clipped, mask) = Clip(clean, level);
-        var analysis = Analyse(clipped, level);
-
-        double raw = ClippedSnrDb(clean, clipped, mask);
-        double repaired = Repair(clean, clipped, mask, analysis, DeclipMethod.PeakReconstruction);
-        output.WriteLine($"percussive @ {level:0.00}: raw {raw:0.0}  repaired {repaired:0.0}");
-        Assert.True(repaired > raw,
-            $"Short percussive plateaus scored {repaired:0.0} dB against {raw:0.0} for leaving them alone.");
+        Assert.True(DeclipMethodChooser.PrefersSparse(0.0004, meanRunSamples: 29),
+            "Barely-clipped real programme still goes to A-SPADE; a floor here costs 19.8 dB.");
+        Assert.False(DeclipMethodChooser.PrefersSparse(0, meanRunSamples: 29),
+            "Undamaged audio has no repair to choose a method for.");
     }
 
     [Fact]
