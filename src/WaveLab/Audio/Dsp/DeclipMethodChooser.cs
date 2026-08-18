@@ -95,50 +95,34 @@ public static class DeclipMethodChooser
         return Math.Clamp(ToleranceConstant + TolerancePerLogRun * l + TolerancePerLogRunSquared * l * l, 0, 1);
     }
 
-    /// <summary>Longest mean plateau the short-plateau exception applies to.</summary>
-    public const double ShortPlateauRun = 8.0;
-
-    /// <summary>Damage below which the exception does not apply.</summary>
-    public const double ShortPlateauFloor = 0.0003;
-
-    /// <summary>Damage above which the exception no longer applies.</summary>
-    public const double ShortPlateauCeiling = 0.03;
-
     /// <summary>
-    /// Whether short plateaus with modest damage should go to the arch despite the curve.
+    /// <b>There is no short-plateau exception, and the way that was learned is the point.</b>
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The curve is fitted across the whole space and is wrong in one corner of it: real music with
-    /// plateaus under eight samples and between 0.03% and 3% of samples clipped. There the arch beat
-    /// A-SPADE in thirteen of nineteen measured cells and by up to 4.5 dB, and five of those were
-    /// cells where the chain scored worse than leaving the damage alone — the only such cells in
-    /// nineteen recordings.
+    /// One was shipped: real music with plateaus under eight samples and 0.03%–3% clipped went to
+    /// the arch despite the curve. It halved regret on the corpus it was fitted to (34.4 to 15.8 dB)
+    /// and fixed the only five cells there where the chain scored worse than leaving the damage
+    /// alone. It was checked the three ways the earlier rejected exceptions had failed — it improved
+    /// the synthetic set it was never fitted to, halved held-out regret under
+    /// leave-one-recording-out, and picked identical parameters in 18 of 19 folds.
     /// </para>
     /// <para>
-    /// It reads sensibly in both directions. Short plateaus are bracketed closely by their
-    /// shoulders, which is exactly what the arch is, and at this damage the shoulders are still
-    /// clean. Below the floor the events are so isolated that A-SPADE has whole frames of context
-    /// per defect and wins anyway; above the ceiling there is too much damage for the shoulders to
-    /// stay clean and it wins again.
+    /// <b>A second real corpus destroyed it.</b> On 152 cells of entirely different real audio it
+    /// costs <b>668.7 dB</b> — the chooser goes from 292.5 to 961.2, worse than always choosing
+    /// A-SPADE and nearly as bad as never choosing it. Refitting the exception on all three datasets
+    /// together selects no exception at all, in 87 of 88 leave-one-group-out folds.
     /// </para>
     /// <para>
-    /// <b>Unlike the exceptions that were tried and rejected, this one generalises, which is the
-    /// only reason it is here.</b> Fitted on the real corpus alone it also improves the synthetic
-    /// set it was never fitted to, 226.1 to 194.1 dB; it halves corpus regret under
-    /// leave-one-recording-out, 34.4 to 15.9; and it picks identical parameters in 18 of 19 folds
-    /// and again when fitted over all three datasets. The earlier candidates all did the opposite —
-    /// better fitted, worse held out.
+    /// The lesson is not "exceptions are bad" but that <b>transfer to synthetic material is not
+    /// evidence of transfer to real material</b>. Both real corpora contain short plateaus at modest
+    /// damage; in one the arch wins them and in the other A-SPADE does, and nothing measured tells
+    /// them apart. The five cells that motivated the exception are a real, characterised, unfixed
+    /// defect — see the notes in CLAUDE.md — and they stay unfixed rather than be bought at this
+    /// price.
     /// </para>
     /// </remarks>
-    public static bool PrefersArchDespiteCurve(double clippedFraction, double meanRunSamples) =>
-        meanRunSamples < ShortPlateauRun &&
-        clippedFraction >= ShortPlateauFloor &&
-        clippedFraction < ShortPlateauCeiling;
-
     /// <summary>Whether A-SPADE should be preferred for this channel.</summary>
     public static bool PrefersSparse(double clippedFraction, double meanRunSamples) =>
-        clippedFraction > 0 &&
-        clippedFraction < ToleratedClippedFraction(meanRunSamples) &&
-        !PrefersArchDespiteCurve(clippedFraction, meanRunSamples);
+        clippedFraction > 0 && clippedFraction < ToleratedClippedFraction(meanRunSamples);
 }
