@@ -1,0 +1,217 @@
+<div id="wavelab-declip-readout">
+  <style>
+    #wavelab-declip-readout {
+      font-family: "Segoe UI", Inter, sans-serif;
+      color: #E7EAEE;
+      background: #0D0F12;
+      width: 100%;
+      padding: 14px;
+      box-sizing: border-box;
+    }
+    #wavelab-declip-readout * { box-sizing: border-box; }
+    #wavelab-declip-readout .wl-sheet { width: min(1180px, 100%); margin: 0 auto; }
+    #wavelab-declip-readout h1 {
+      font-size: 15px; font-weight: 600; margin: 0 0 4px; letter-spacing: .01em;
+    }
+    #wavelab-declip-readout .wl-sub { color: #5D646D; font-size: 11px; margin: 0 0 16px; }
+    #wavelab-declip-readout .wl-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;
+    }
+    #wavelab-declip-readout .wl-opt { display: grid; gap: 6px; }
+    #wavelab-declip-readout .wl-tag {
+      font-size: 10px; letter-spacing: .10em; text-transform: uppercase; color: #5D646D;
+    }
+    #wavelab-declip-readout .wl-tag b { color: #3FD6C2; font-weight: 600; }
+    #wavelab-declip-readout .wl-why { font-size: 11px; color: #9AA1A9; line-height: 1.5; }
+
+    /* the card, matching Themes/Theme.xaml Card */
+    #wavelab-declip-readout .wl-card {
+      background: #14171B; border: 1px solid #272E36; border-radius: 10px; padding: 14px;
+      /* 365px is the readout width at the dialog's 860px MinWidth */
+      width: 394px;
+    }
+    #wavelab-declip-readout .wl-card-title {
+      font-size: 14px; font-weight: 600; margin-bottom: 5px;
+    }
+    #wavelab-declip-readout .wl-card-desc { font-size: 10.5px; color: #5D646D; margin-bottom: 10px; }
+    #wavelab-declip-readout .wl-label {
+      font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: #5D646D;
+    }
+    #wavelab-declip-readout .wl-seg { display: flex; gap: 4px; margin: 5px 0 7px; }
+    #wavelab-declip-readout .wl-seg span {
+      font-size: 11px; padding: 4px 11px; border-radius: 6px;
+      border: 1px solid #272E36; color: #9AA1A9;
+    }
+    #wavelab-declip-readout .wl-seg .on {
+      background: #173A36; border-color: #2E5A54; color: #3FD6C2;
+    }
+    /* the readout line itself: 10.5px Muted, single line, ellipsis */
+    #wavelab-declip-readout .wl-readout {
+      font-size: 10.5px; color: #9AA1A9; margin: 7px 0 12px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      width: 365px;
+    }
+    #wavelab-declip-readout .wl-readout.two { white-space: normal; line-height: 1.55; }
+    #wavelab-declip-readout .wl-readout .dim { color: #5D646D; }
+    #wavelab-declip-readout .wl-slider { display: flex; align-items: center; gap: 10px; }
+    #wavelab-declip-readout .wl-slider .t { font-size: 11px; color: #9AA1A9; flex: 1; }
+    #wavelab-declip-readout .wl-slider .v { font-size: 11px; color: #3FD6C2; }
+    #wavelab-declip-readout .wl-track {
+      height: 3px; border-radius: 2px; background: #262C33; margin-top: 7px; position: relative;
+    }
+    #wavelab-declip-readout .wl-track i {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 65%; border-radius: 2px;
+      background: linear-gradient(90deg, #2BA393, #3FD6C2);
+    }
+    #wavelab-declip-readout .wl-track b {
+      position: absolute; left: 65%; top: -5px; width: 13px; height: 13px; border-radius: 50%;
+      background: #E7EAEE; transform: translateX(-50%);
+    }
+    #wavelab-declip-readout .wl-px { font-size: 10px; color: #5D646D; font-variant-numeric: tabular-nums; }
+    #wavelab-declip-readout .wl-px b { color: #3FD07A; font-weight: 600; }
+    #wavelab-declip-readout .wl-px i { color: #FFB454; font-style: normal; font-weight: 600; }
+    #wavelab-declip-readout .wl-foot {
+      margin-top: 18px; font-size: 11px; color: #9AA1A9; line-height: 1.6;
+      border-top: 1px solid #1D2228; padding-top: 12px;
+    }
+    #wavelab-declip-readout .wl-foot b { color: #E7EAEE; font-weight: 600; }
+    #wavelab-declip-readout code {
+      font-family: Consolas, monospace; font-size: 10.5px; color: #b8c0c8;
+    }
+  </style>
+
+  <div class="wl-sheet">
+    <h1>Declip readout &mdash; what the line says when the channels disagree</h1>
+    <p class="wl-sub">
+      Card drawn at the dialog's 860&nbsp;px minimum width, where the readout has 365&nbsp;px.
+      Widths beside each option are measured from the real control, not estimated.
+    </p>
+
+    <div class="wl-grid">
+
+      <!-- reference: channels agree -->
+      <div class="wl-opt">
+        <div class="wl-tag">reference &mdash; channels agree, unchanged</div>
+        <div class="wl-card">
+          <div class="wl-card-title">Declip Distorted Peaks</div>
+          <div class="wl-card-desc">Rebuilds peaks that clipping flattened, from the audio that survived.</div>
+          <div class="wl-label">Method</div>
+          <div class="wl-seg"><span class="on">Automatic</span><span>Sparse</span><span>Peaks</span></div>
+          <div class="wl-readout">Chose sparse &middot; 4.2% clipped, runs of 17.</div>
+          <div class="wl-slider"><span class="t">Reconstruction strength</span><span class="v">65%</span></div>
+          <div class="wl-track"><i></i><b></b></div>
+        </div>
+        <div class="wl-px">199 px of 365 &mdash; <b>fits</b></div>
+        <div class="wl-why">A sentence, with the two numbers the decision was made from.</div>
+      </div>
+
+      <!-- A: today -->
+      <div class="wl-opt">
+        <div class="wl-tag">A &mdash; today, when they disagree</div>
+        <div class="wl-card">
+          <div class="wl-card-title">Declip Distorted Peaks</div>
+          <div class="wl-card-desc">Rebuilds peaks that clipping flattened, from the audio that survived.</div>
+          <div class="wl-label">Method</div>
+          <div class="wl-seg"><span class="on">Automatic</span><span>Sparse</span><span>Peaks</span></div>
+          <div class="wl-readout">Ch 1 sparse &middot; Ch 2 peaks</div>
+          <div class="wl-slider"><span class="t">Reconstruction strength</span><span class="v">65%</span></div>
+          <div class="wl-track"><i></i><b></b></div>
+        </div>
+        <div class="wl-px">123 px of 365 &mdash; <b>fits</b>, with 242 px spare</div>
+        <div class="wl-why">
+          Stops being a sentence, and drops the evidence entirely &mdash; exactly when the user most
+          wants it, because a split is the surprising case. The numbers were left out on the grounds
+          that they would not fit. <b>They fit.</b>
+        </div>
+      </div>
+
+      <!-- B -->
+      <div class="wl-opt">
+        <div class="wl-tag"><b>B</b> &mdash; per channel, with each channel's own numbers</div>
+        <div class="wl-card">
+          <div class="wl-card-title">Declip Distorted Peaks</div>
+          <div class="wl-card-desc">Rebuilds peaks that clipping flattened, from the audio that survived.</div>
+          <div class="wl-label">Method</div>
+          <div class="wl-seg"><span class="on">Automatic</span><span>Sparse</span><span>Peaks</span></div>
+          <div class="wl-readout">Ch 1 sparse (4.2% clipped, runs of 17) &middot; Ch 2 peaks (31%, runs of 90)</div>
+          <div class="wl-slider"><span class="t">Reconstruction strength</span><span class="v">65%</span></div>
+          <div class="wl-track"><i></i><b></b></div>
+        </div>
+        <div class="wl-px">342 px of 365 &mdash; <b>fits</b>, 23 px spare</div>
+        <div class="wl-why">
+          Shows why they differ, which is the whole point: they disagree <i>because</i> the numbers
+          differ. Tight at minimum width, and a third channel would trim.
+        </div>
+      </div>
+
+      <!-- C -->
+      <div class="wl-opt">
+        <div class="wl-tag"><b>C</b> &mdash; a sentence, numbers in the tool tip</div>
+        <div class="wl-card">
+          <div class="wl-card-title">Declip Distorted Peaks</div>
+          <div class="wl-card-desc">Rebuilds peaks that clipping flattened, from the audio that survived.</div>
+          <div class="wl-label">Method</div>
+          <div class="wl-seg"><span class="on">Automatic</span><span>Sparse</span><span>Peaks</span></div>
+          <div class="wl-readout">Chose sparse on 1, peaks on 2 &mdash; the channels measure differently.</div>
+          <div class="wl-slider"><span class="t">Reconstruction strength</span><span class="v">65%</span></div>
+          <div class="wl-track"><i></i><b></b></div>
+        </div>
+        <div class="wl-px">333 px of 365 &mdash; <b>fits</b></div>
+        <div class="wl-why">
+          Keeps the shape of the agreeing line and says <i>why</i> without the figures. Scales to any
+          channel count. Costs a hover to see the evidence.
+        </div>
+      </div>
+
+      <!-- D -->
+      <div class="wl-opt">
+        <div class="wl-tag"><b>D</b> &mdash; sentence carrying both sets of numbers</div>
+        <div class="wl-card">
+          <div class="wl-card-title">Declip Distorted Peaks</div>
+          <div class="wl-card-desc">Rebuilds peaks that clipping flattened, from the audio that survived.</div>
+          <div class="wl-label">Method</div>
+          <div class="wl-seg"><span class="on">Automatic</span><span>Sparse</span><span>Peaks</span></div>
+          <div class="wl-readout">Chose sparse on 1 (4.2%, runs of 17), peaks on 2 (31%, runs of 90).</div>
+          <div class="wl-slider"><span class="t">Reconstruction strength</span><span class="v">65%</span></div>
+          <div class="wl-track"><i></i><b></b></div>
+        </div>
+        <div class="wl-px">335 px of 365 &mdash; <b>fits</b>, 30 px spare</div>
+        <div class="wl-why">
+          Same sentence shape as the agreeing case, and keeps the evidence on the card. Also tight;
+          also needs a fallback past two channels.
+        </div>
+      </div>
+
+      <!-- E -->
+      <div class="wl-opt">
+        <div class="wl-tag"><b>E</b> &mdash; two lines: the choice, then the evidence</div>
+        <div class="wl-card">
+          <div class="wl-card-title">Declip Distorted Peaks</div>
+          <div class="wl-card-desc">Rebuilds peaks that clipping flattened, from the audio that survived.</div>
+          <div class="wl-label">Method</div>
+          <div class="wl-seg"><span class="on">Automatic</span><span>Sparse</span><span>Peaks</span></div>
+          <div class="wl-readout two">Chose sparse on 1, peaks on 2.<br>
+            <span class="dim">Ch 1: 4.2% clipped, runs of 17 &middot; Ch 2: 31% clipped, runs of 90</span></div>
+          <div class="wl-slider"><span class="t">Reconstruction strength</span><span class="v">65%</span></div>
+          <div class="wl-track"><i></i><b></b></div>
+        </div>
+        <div class="wl-px">155 px + 303 px &mdash; <b>fits</b>, <i>but the card grows by one line</i></div>
+        <div class="wl-why">
+          Roomiest, and the only one that still fits a 5.1 file. Costs ~15 px of card height, which
+          pushes the strength slider down and makes this card taller than the two beside it.
+        </div>
+      </div>
+
+    </div>
+
+    <div class="wl-foot">
+      <b>Many channels.</b> A 5.1 file splitting three ways needs a fallback whatever we pick: per-channel
+      numbers reach 390&nbsp;px and trim at the minimum width. Measured fallback that fits everywhere is
+      <code>Chose sparse on 1, 3, 5 and peaks on 2, 4, 6.</code> at 222&nbsp;px, with the figures in the
+      tool tip.
+      <br><br>
+      <b>What does not change.</b> The tool tip already lists every channel with its own numbers, and
+      keeps doing so in all of these. The agreeing line &mdash; the ordinary case &mdash; is untouched.
+    </div>
+  </div>
+</div>

@@ -872,20 +872,70 @@ public partial class RestorationWorkbenchDialog : Window
             return;
         }
 
-        static string Name(DeclipChannelChoice c) => c.Method == DeclipMethod.Sparse ? "sparse" : "peaks";
-        static string Detail(DeclipChannelChoice c) =>
-            $"{c.ClippedFraction * 100:0.#}% clipped, runs of {c.MeanRunSamples:0}";
-
-        // Two channels' worth of numbers does not fit the card, and a line that trims to an ellipsis
-        // tells the user less than a short one does. When the channels agree — the ordinary case —
-        // the numbers are on the line; when they disagree, the line says which and the tool tip
-        // carries the evidence.
-        bool agree = choices.All(c => c.Method == choices[0].Method);
-        declipMethodText.Text = agree
-            ? $"Chose {Name(choices[0])} · {Detail(choices[0])}."
-            : string.Join(" · ", choices.Select(c => $"Ch {c.Channel + 1} {Name(c)}"));
+        declipMethodText.Text = DescribeChoices(choices);
         declipMethodText.ToolTip = string.Join(Environment.NewLine,
-            choices.Select(c => $"Channel {c.Channel + 1}: {Name(c)} — {Detail(c)}"));
+            choices.Select(c => $"Channel {c.Channel + 1}: {MethodName(c)} — {FullDetail(c)}"));
+    }
+
+    private static string MethodName(DeclipChannelChoice choice) =>
+        choice.Method == DeclipMethod.Sparse ? "sparse" : "peaks";
+
+    /// <summary>The two numbers in full, for the tool tip, which has room for them.</summary>
+    private static string FullDetail(DeclipChannelChoice choice) =>
+        $"{Percent(choice)} clipped, runs of {Runs(choice)}";
+
+    /// <summary>The same two numbers clipped to a bounded width, for the line.</summary>
+    private static string ShortDetail(DeclipChannelChoice choice) =>
+        $"{Percent(choice)}, runs {Runs(choice)}";
+
+    private static string Percent(DeclipChannelChoice choice) =>
+        $"{Math.Min(100, choice.ClippedFraction * 100):0.#}%";
+
+    // Bounded so the sentence below cannot be pushed past the card by one badly damaged channel. A
+    // mean run of a thousand samples is already a fifty-millisecond flat top; the exact figure past
+    // that tells nobody anything the tool tip does not.
+    private static string Runs(DeclipChannelChoice choice) =>
+        choice.MeanRunSamples >= 999.5 ? "999+" : $"{choice.MeanRunSamples:0}";
+
+    /// <summary>
+    /// The readout line: what will run, and the numbers it was decided from.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A split is the surprising case and the one worth explaining — one channel about to take
+    /// several minutes while the other takes a second — so it keeps the evidence rather than
+    /// dropping it. <b>The line this replaced dropped it on the grounds that two channels' numbers
+    /// would not fit, and they do</b>: rendered at the dialog's 860 px minimum the readout has
+    /// 365 px, and the two-channel sentence wants 329, or 346 with both channels pinned at the
+    /// bounded worst case.
+    /// </para>
+    /// <para>
+    /// Past two channels it does not fit — three wants 507 px — so the channels are grouped by
+    /// method and the figures fall back to the tool tip, and past eight they are counted rather
+    /// than listed, because sixteen numbers want 371. Every width here is measured off the real
+    /// control rather than estimated.
+    /// </para>
+    /// </remarks>
+    internal static string DescribeChoices(IReadOnlyList<DeclipChannelChoice> choices)
+    {
+        ArgumentNullException.ThrowIfNull(choices);
+        if (choices.Count == 0) return "No clipping detected.";
+
+        if (choices.All(c => c.Method == choices[0].Method))
+            return $"Chose {MethodName(choices[0])} · {FullDetail(choices[0])}.";
+
+        if (choices.Count == 2)
+            return $"Chose {MethodName(choices[0])} on {choices[0].Channel + 1} ({ShortDetail(choices[0])}), " +
+                   $"{MethodName(choices[1])} on {choices[1].Channel + 1} ({ShortDetail(choices[1])}).";
+
+        var sparse = choices.Where(c => c.Method == DeclipMethod.Sparse).ToList();
+        var peaks = choices.Where(c => c.Method != DeclipMethod.Sparse).ToList();
+        static string List(IEnumerable<DeclipChannelChoice> group) =>
+            string.Join(", ", group.Select(c => (c.Channel + 1).ToString()));
+
+        return choices.Count <= 8
+            ? $"Chose sparse on {List(sparse)} and peaks on {List(peaks)}."
+            : $"Chose sparse on {sparse.Count} channels and peaks on {peaks.Count}.";
     }
 
     private RestorationSettings CaptureSettings() => new(
