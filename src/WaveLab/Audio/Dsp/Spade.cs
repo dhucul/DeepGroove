@@ -55,10 +55,23 @@ public readonly record struct SpadeOptions(
     /// while the cells it does send it come out slightly worse.
     /// </para>
     /// <para>
-    /// So this is kept the way <c>SparseInpaint</c> and <c>RobustPca</c> are kept: correct, tested,
-    /// documented, and not wired in. It is the right starting point if the dense band is attacked
-    /// again — the cause is known and the lever is large — but it needs a chooser fitted to the new
-    /// solver on more real material than one corpus, not another synthetic recalibration. Take the
+    /// <b>Measured again on three real corpora, it is far worse than the first measurement
+    /// suggested, and it is not a calibration problem.</b> Over 272 cells the shipped chain scores
+    /// +9.77 dB and this scores +7.19 — a loss of <b>701.7 dB in total, 226 cells worse against 26
+    /// better</b>, including <b>every one of the 84 shellac cells</b>. The mechanism is visible in the
+    /// budget it picks: <see cref="EffectiveSparsity"/> reads a median of 57 significant bins on real
+    /// programme and up to 306, nothing like the two dozen partials this was fitted to, so the step
+    /// saturates at <see cref="MaximumStep"/> on 96 of 272 cells and the model grows fast enough to
+    /// start fitting the clipping artefacts. Broken down by the step chosen, <b>every step above the
+    /// default of four loses</b> — 5 costs 1.9 dB a cell, 8 costs 5.0, 15 costs 7.8 — so there is no
+    /// ceiling that rescues it.
+    /// </para>
+    /// <para>
+    /// Refitting the chooser cannot help either, which was the escape hatch the earlier note left
+    /// open: the chooser now sends <b>every real cell to A-SPADE already</b>, so there is nothing to
+    /// reroute. So this is kept the way <c>SparseInpaint</c> and <c>RobustPca</c> are kept: correct,
+    /// tested, documented, and not wired in — but unlike those, <b>with a measured reason not to
+    /// wire it in</b>. The dense-synthetic gain does not transfer to real programme at all. Take the
     /// warning on <c>JanssenOptions.For</c> as applying here too: refitting this on tones alone will
     /// produce a different and worse answer.
     /// </para>
