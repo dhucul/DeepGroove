@@ -134,3 +134,39 @@ https://archive.org/download/<identifier>/<file>.mp3
 14. `2br02b_0801_librivox` - 2 B R 0 2 B, Vonnegut
 15. `2corinthians_analyticallyexpounded_2402_librivox` - 2 Corinthians, Dickson
 16. `2corinthianswnt_1502_librivox` - 2 Corinthians (WNT)
+
+## Corpus 5 — Musopen classical (32 works, 128 cells)
+
+Public Domain Mark 1.0, from `MusopenCollectionAsFlac` on the Internet Archive: recordings Musopen
+commissioned and released outright, so the licence is unambiguous. Solo piano, string quartets and
+orchestral, one movement per work.
+
+**Chosen to be discriminating rather than merely new.** Corpus 4 showed the sparse reconstruction
+cap losing on spoken word, and the question was whether that was about speech or about sparsity.
+Classical is sparse, tonal and wide in dynamic range but is not speech, so it separates the two.
+It answered clearly: **the cap loses 33.4 dB here**, six times what it lost on speech, and the cap
+was withdrawn as a result.
+
+The chain itself does well — **128 of 128 cells, mean +10.98 dB, worst +5.47** — and this is the
+only corpus where the already-clipped screen has fired: **two Schubert piano sonatas arrived with
+19 and 14 clipping events before any damage** and are excluded, since a repair cannot be scored
+against a reference that is itself clipped.
+
+```
+https://archive.org/download/MusopenCollectionAsFlac/<work>/<track>.mp3
+```
+
+Works used:
+
+  `Bach_GoldbergVariations`, `Beethoven_CoriolanOverture`, `Beethoven_EgmontOvertureOp.84`
+  `Beethoven_StringQuartetNo.6inBFlatMajorOp.18`, `Beethoven_SymphonyNo.3Eroica`, `Borodin_InTheSteppesOfCentralAsia`
+  `Borodin_StringQuartetNo.1inAMajor`, `Borodin_StringQuartetNo.2inDMajor`, `Brahms_SymphonyNo.1inCMinor`
+  `Brahms_SymphonyNo.2inDMajor`, `Brahms_SymphonyNo.3inFMajor`, `Brahms_SymphonyNo.4inEMinor`
+  `Dvorak_StringQuartetNo.10inEFlatOp.51`, `Dvorak_StringQuartetNo.12inFMajorOp.96`, `Greig_PeerGynt`
+  `Haydn_StringQuartetInDMajorOp.64`, `Mendelssohn_Hebrides`, `Mendelssohn_ItalianSymphony`
+  `Mendelssohn_ScottishSymphony`, `Mendelssohn_StringQuartetNo.6inFMinorOp.80`, `Mozart_MagicFluteOverture`
+  `Mozart_MarriageOfFigaro`, `Mozart_StringQuartetNo.15inDMinorK421`, `Mozart_StringQuartetNo.19inCMajorK465`
+  `Mozart_SymphonyNo.40inGMinor`, `Schubert_SonataInAMajorD.664`, `Schubert_SonataInAMinorD.784`
+  `Schubert_SonataInAMinorD.845`, `Schubert_SonataInAMinorD.959`, `Schubert_SonataInCMinorD.958`
+  `Schubert_SonataInDMajorD.850`, `Schubert_SonataInEFlatMajorD.568`, `Suk_Meditation`
+  `Tchaikovsky_SymphonyPathetique`

@@ -670,11 +670,10 @@ public static partial class Restoration
         // synthetic material and a measured loss on real programme. See SpadeOptions.For.
         Spade.Declip(working, clipLevel, SpadeOptions.Default, cancellationToken);
 
-        var ceiling = SparseCeilings(samples.Length, ordered, channel, clipLevel, maximumGain);
+        double ceiling = clipLevel * maximumGain;
         for (int i = 0; i < samples.Length; i++)
         {
-            double limit = ceiling[i];
-            double value = Math.Clamp(working[i], -limit, limit);
+            double value = Math.Clamp(working[i], -ceiling, ceiling);
             if (!double.IsFinite(value)) continue;
             samples[i] += (float)((value - samples[i]) * strength);
         }
@@ -682,62 +681,32 @@ public static partial class Restoration
     }
 
     /// <summary>
-    /// The magnitude A-SPADE may reach at each sample: the flat channel-wide reconstruction
-    /// ceiling, tightened inside each plateau to what the shoulders support on the channels where
-    /// <see cref="ShouldersBoundTheReconstruction"/> says the shoulders are worth listening to.
-    /// </summary>
-    private static float[] SparseCeilings(int length, ClippedPeakEvent[] ordered, int channel,
-        double clipLevel, double maximumGain)
-    {
-        var ceiling = new float[length];
-        Array.Fill(ceiling, (float)(clipLevel * maximumGain));
-        if (!ShouldersBoundTheReconstruction(ordered.Where(e => e.Channel == channel))) return ceiling;
-
-        foreach (var clippedPeak in ordered)
-        {
-            if (clippedPeak.Channel != channel) continue;
-            double rail = clippedPeak.AbsoluteClipLevel;
-            if (!(rail > 0)) continue;
-            float allowed = (float)Math.Min(rail * maximumGain,
-                Math.Max(rail, Math.Abs(clippedPeak.EstimatedTruePeak)));
-            int from = Math.Max(0, clippedPeak.StartSample);
-            int to = Math.Min(length, clippedPeak.EndSample);
-            for (int i = from; i < to; i++)
-                if (allowed < ceiling[i]) ceiling[i] = allowed;
-        }
-        return ceiling;
-    }
-
-    /// <summary>
-    /// Whether the shoulder extrapolation should be allowed to cap the sparse reconstruction on
-    /// this channel, from the overshoot the shoulders themselves claim.
+    /// Whether the shoulder extrapolation should cap the sparse reconstruction on this channel,
+    /// from the overshoot the shoulders themselves claim. <b>Shipped, then withdrawn by a fifth
+    /// corpus. Nothing calls this; read the remarks before reinstating it.</b>
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A-SPADE is told only that the clipped samples reached the rail, so nothing in the solver
-    /// stops it inventing a peak far above one, and on lightly clipped material it does. Capping it
-    /// at <see cref="ClippedPeakEvent.EstimatedTruePeak"/> everywhere fixes that and is a clear net
-    /// loss — measured over 272 cells it costs 0.71 dB a cell, up to 13.8 on one.
+    /// A-SPADE is told only that the clipped samples reached the rail, so nothing stops it
+    /// inventing a peak far above one, and on lightly clipped material it does. Capping it below
+    /// a mean claimed overshoot of 15% gained <b>+46.5 dB over the first 272 cells</b> and
+    /// survived leave-one-corpus-out on three corpora with no fold negative, so it shipped.
     /// </para>
     /// <para>
-    /// <b>The variable that separates the two cases is the size of the shoulder's own claim, not
-    /// the length of the plateau.</b> Headroom scaled by plateau length was fitted and rejected:
-    /// swept over thirteen settings it never beat leaving the reconstruction unbounded, because
-    /// depth does not predict which way the cap lands. The mean claimed overshoot does. Where the
-    /// shoulders say the peak barely cleared the rail, they are saying the material was not driven
-    /// hard, and a solver reaching far past that is inventing; where they claim a large overshoot,
-    /// the material really is clipped hard and the reconstruction should be let run.
+    /// <b>It does not survive five corpora.</b> Spoken word cost it 5.2 dB and classical another
+    /// 33.4: over 464 cells it is worth <b>+7.9 dB, which is 0.017 dB a cell</b>, and held out a
+    /// corpus at a time it scores <b>−38.6</b>, two of the five folds selecting no cap at all.
     /// </para>
     /// <para>
-    /// Measured on four corpora, capping below a mean claim of 15% gains <b>+41.3 dB over 336
-    /// cells</b> — records +15.9, Windows Media +30.6, 78rpm untouched, <b>spoken word −5.2</b> — and
-    /// survives the check that killed every earlier rule of this kind: held out a whole corpus at a
-    /// time it gains <b>+41.3 dB and every fold selects it</b>. <b>One fold of four is negative:</b>
-    /// on the first three corpora this was +44.6 with none negative, and adding spoken word turned
-    /// that into a 5.2 dB loss on the held-out fold. The rule still wins clearly and no cell in any
-    /// corpus falls below leaving the damage alone, but <i>no fold negative</i> was a fact about
-    /// three populations rather than about the rule. <b>The threshold is close to a cliff</b>: 0.20 gives
-    /// +16.1 and 0.25 gives −16.2, so it is set at the low end of the 0.15–0.17 the folds chose.
+    /// <b>The mechanism is the part worth keeping.</b> The shoulders claim little overshoot
+    /// precisely when the material is <i>sparse</i>, because a sparse tonal signal approaches the
+    /// rail smoothly — so the gate fires hardest on the material whose reconstruction least needs
+    /// capping. The variable is not "the shoulders are trustworthy"; it is closer to "this
+    /// material is sparse", and the correlation was read backwards. The underlying problem is
+    /// real — A-SPADE does overshoot on light damage — so anything that attacks it again must
+    /// <b>separate dense material from sparse</b>, which this does not, and must clear five
+    /// corpora rather than three. Four other refinements to this cap were measured and declined
+    /// before it, three of which also passed leave-one-recording-out first.
     /// </para>
     /// </remarks>
     internal static bool ShouldersBoundTheReconstruction(IEnumerable<ClippedPeakEvent> channelEvents)
@@ -754,10 +723,7 @@ public static partial class Restoration
         return counted > 0 && claimed / counted < MaximumBoundedOvershoot;
     }
 
-    /// <summary>
-    /// Mean claimed overshoot, as a fraction of the rail, below which the sparse reconstruction is
-    /// held to what the shoulders support. See <see cref="ShouldersBoundTheReconstruction"/>.
-    /// </summary>
+    /// <summary>The threshold the withdrawn cap used. See <see cref="ShouldersBoundTheReconstruction"/>.</summary>
     public const double MaximumBoundedOvershoot = 0.15;
 
     private static bool TryCreateClickEvent(float[] samples, float[] curvature,

@@ -5,20 +5,21 @@ using Xunit.Abstractions;
 namespace WaveLab.Tests;
 
 /// <summary>
-/// The rule that decides whether the shoulder extrapolation is allowed to cap A-SPADE.
+/// The rule that decided whether the shoulder extrapolation could cap A-SPADE. <b>Withdrawn.</b>
 /// </summary>
 /// <remarks>
 /// <para>
-/// A-SPADE knows only that the clipped samples reached the rail, so it may reconstruct a peak far
-/// above one. Capping it everywhere costs 0.71 dB a cell over the first three corpora; capping it nowhere
-/// leaves the lightest-damage cells barely worth repairing. What separates the two is <b>the size
-/// of the overshoot the shoulders themselves claim</b> — not the length of the plateau, which was
-/// swept over thirteen settings and never beat leaving the reconstruction alone.
+/// It shipped on three corpora, where capping below a mean claimed overshoot of 15% gained
+/// +46.5 dB over 272 cells with no held-out fold negative. A fourth corpus of spoken word cost it
+/// 5.2 dB and a fifth of classical another 33.4, leaving <b>+7.9 dB over 464 cells and −38.6 held
+/// out</b>, so <see cref="Restoration.RepairChannelSparse"/> no longer calls it.
 /// </para>
 /// <para>
-/// The numbers in these tests are measured, not invented: the claims come from real cells in the
-/// four corpora named in <c>docs/validation-corpora.md</c>. They are here so the threshold cannot
-/// be moved without someone seeing which real material changes sides.
+/// These tests are kept because <b>the function still describes something true about the</b>
+/// <b>material</b>, and whatever attacks A-SPADE's overshoot next will have to reckon with it: the
+/// shoulders claim little overshoot precisely when the signal is sparse, so this fires hardest on
+/// the material that least needs capping. The claims below are measured from named real cells, so
+/// they document which material sits on which side of the threshold.
 /// </para>
 /// </remarks>
 public sealed class SparseReconstructionBoundTests(ITestOutputHelper output)

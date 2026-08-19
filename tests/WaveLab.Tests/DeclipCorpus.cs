@@ -55,7 +55,7 @@ public sealed record CorpusCell(CorpusRecording Recording, double Relative, int 
 /// <b>It is opt-in and does nothing unless <c>WAVELAB_CORPUS=1</c>.</b> The corpora are external and
 /// mostly not redistributable, so the ordinary suite must not depend on them, and a harness that
 /// runs by accident is how a 10-second suite became a 5m43s one. Paths come from
-/// <c>WAVELAB_CORPUS1</c> to <c>WAVELAB_CORPUS4</c> when set.
+/// <c>WAVELAB_CORPUS1</c> to <c>WAVELAB_CORPUS5</c> when set.
 /// </para>
 /// <para>
 /// <b>Recordings that are already clipped are excluded and reported.</b> A repair can only be
@@ -136,6 +136,11 @@ public static class DeclipCorpus
         if (Directory.Exists(four))
             foreach (var file in Directory.GetFiles(four, "*.mp3").OrderBy(f => f, StringComparer.Ordinal))
                 found.Add(new CorpusRecording("4", file, false));
+
+        string five = Root("WAVELAB_CORPUS5", "");
+        if (Directory.Exists(five))
+            foreach (var file in Directory.GetFiles(five, "*.mp3").OrderBy(f => f, StringComparer.Ordinal))
+                found.Add(new CorpusRecording("5", file, false));
 
         return found;
     }

@@ -64,9 +64,9 @@ listed as a nice-to-have. Both are done.
 
 ## 3. Actually open
 
-- **The sparse reconstruction cap loses 5.18 dB on spoken word** while gaining 15.9 on record
-  transfers and 30.6 on Windows Media. `ShouldersBoundTheReconstruction` decides from the overshoot
-  the shoulders claim, which cannot see that a signal is sparse with long silences. Whether that
-  deserves a second variable is open — but four refinements to this cap have been measured and
-  declined, three of which looked good until a held-out corpus, so the bar is a fifth corpus rather
-  than another fit against the four in hand.
+- **A-SPADE overshoots on lightly clipped material and nothing currently stops it.** A cap keyed on
+  the overshoot the shoulders claim shipped and was withdrawn: it gains on dense material and loses
+  on sparse, because the shoulders claim little overshoot exactly when the signal is sparse. Over
+  five corpora it is worth 0.017 dB a cell and −38.6 dB held out. The problem is real; the fix has
+  to **separate dense material from sparse**, and has to clear five corpora. Five attempts so far,
+  five declined.
