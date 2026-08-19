@@ -134,7 +134,8 @@ public static partial class Restoration
                     if (end - start <= maximumPopSamples &&
                         TryCreateClickEvent(samples, curvature, channelIndex, start, end, peak,
                             peakCurvature, threshold, robustScale, localRms, sampleRate,
-                            maximumClickSamples, options.PreserveTransients, out var clickEvent) &&
+                            maximumClickSamples, options.PreserveTransients,
+                            options.LocalHighFrequencyContrast, out var clickEvent) &&
                         clickEvent.Confidence >= minimumConfidence)
                     {
                         AddOrMergeClickEvent(events, clickEvent, maximumClickSamples);
@@ -729,7 +730,8 @@ public static partial class Restoration
     private static bool TryCreateClickEvent(float[] samples, float[] curvature,
         int channel, int start, int end, int peak, float peakCurvature,
         float threshold, double robustScale, double localRms, int sampleRate,
-        int maximumClickSamples, bool preserveTransients, out ClickEvent result)
+        int maximumClickSamples, bool preserveTransients, bool localContrast,
+        out ClickEvent result)
     {
         result = default;
         if (start < 2 || end >= samples.Length - 1 || end <= start) return false;
@@ -774,9 +776,43 @@ public static partial class Restoration
             ? hfEnergy / Math.Max(1e-12, fullEnergy)
             : 0;
 
-        // Clicks have very high HF ratio (fast change dominates).
-        // Musical transients have lower HF ratio (sustained energy).
-        double hfScore = Math.Clamp((hfRatio - 0.15) / 0.85, 0.0, 1.0);
+        double hfScore;
+        if (localContrast)
+        {
+            // The same measure taken inside the candidate and in the audio either side of it, and
+            // scored on the difference. Asking only "is there fast movement here" is a question
+            // about the material: a chime, a cymbal or a sibilant answers yes wherever you ask.
+            // Asking whether this event moves faster than its own surroundings is a question about
+            // the event.
+            double insideHf = 0, insideFull = 0;
+            for (int i = start; i < end; i++)
+            {
+                double sample = samples[i];
+                insideFull += sample * sample;
+                double difference = samples[i] - samples[i - 1];
+                insideHf += difference * difference;
+            }
+            double outsideHf = 0, outsideFull = 0;
+            for (int i = energyStart + 1; i < energyEnd; i++)
+            {
+                if (i >= start && i < end) continue;
+                double sample = samples[i];
+                outsideFull += sample * sample;
+                double difference = samples[i] - samples[i - 1];
+                outsideHf += difference * difference;
+            }
+
+            double insideRatio = insideHf / Math.Max(1e-12, insideFull);
+            double outsideRatio = outsideHf / Math.Max(1e-12, outsideFull);
+            double contrast = insideRatio / Math.Max(1e-6, outsideRatio);
+            hfScore = Math.Clamp((contrast - 1.5) / 4.0, 0.0, 1.0);
+        }
+        else
+        {
+            // Clicks have very high HF ratio (fast change dominates).
+            // Musical transients have lower HF ratio (sustained energy).
+            hfScore = Math.Clamp((hfRatio - 0.15) / 0.85, 0.0, 1.0);
+        }
 
         // ── 3. Return-to-baseline check ───────────────────────────
         // After a click, the waveform returns to near the pre-click level.
@@ -861,7 +897,11 @@ public static partial class Restoration
 
         // Hard gates: must have reasonable HF content AND return to baseline
         if (hfScore < 0.15) return false;
-        if (recoveryScore < 0.2 && spanLength > 3) return false;
+        // The return-to-baseline test is the strongest thing separating a defect from an instrument,
+        // and it was skipped for spans of three samples or fewer - which is exactly the shape a
+        // sharp musical attack makes. Short candidates are now held to it too, a little more
+        // loosely because there is less of them to measure.
+        if (recoveryScore < (spanLength > 3 ? 0.2 : 0.12)) return false;
 
         double severityRatio = clickAmplitude / Math.Max(1e-6, localRms);
         float severity = (float)Math.Clamp(1.0 - Math.Exp(-severityRatio * 0.5), 0.0, 1.0);
@@ -1465,7 +1505,14 @@ public static partial class Restoration
                 double median = (blockLength & 1) != 0
                     ? absBlock[blockLength / 2]
                     : 0.5 * (absBlock[blockLength / 2 - 1] + absBlock[blockLength / 2]);
-                referenceEnvelope = median * 1.13;
+                // Floored against the block's own RMS. The median of |sample| is a fine envelope for
+                // continuous music, where it sits near 0.6 of the RMS - but on material with
+                // silence between the notes it collapses towards zero, and then every note onset
+                // reads as an enormous outlier. That is measurable: undamaged Windows alarms
+                // reported up to 45.9 events a second and clean speech 3.7, against 0.05 for
+                // continuous classical and 0.22 for record transfers. The floor cannot bind on
+                // continuous material, where median x 1.13 already exceeds it.
+                referenceEnvelope = Math.Max(median * 1.13, localRms * 0.5);
             }
         }
 

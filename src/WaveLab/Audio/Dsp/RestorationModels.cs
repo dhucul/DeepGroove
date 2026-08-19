@@ -45,6 +45,19 @@ public sealed class ClickAnalysisOptions
     /// the candidate impulse. This should normally remain enabled.
     /// </summary>
     public bool PreserveTransients { get; init; } = true;
+
+    /// <summary>
+    /// Judge an event's high-frequency content against its own surroundings rather than on its own.
+    /// </summary>
+    /// <remarks>
+    /// The absolute form asks "is there a lot of fast movement here", which is a property of the
+    /// <i>material</i>: a chime, a cymbal or a sibilant answers yes everywhere, click or no click.
+    /// Measured on undamaged recordings that scored 0.05 events a second on classical but 3.7 on
+    /// speech and 45.9 on one Windows alarm, all of them false. The contrast form asks whether this
+    /// event is faster-moving than the audio either side of it, which is what actually distinguishes
+    /// a surface defect from an instrument. Set false for the old behaviour.
+    /// </remarks>
+    public bool LocalHighFrequencyContrast { get; init; } = true;
 }
 
 /// <summary>Metadata returned by automatic click/pop analysis.</summary>

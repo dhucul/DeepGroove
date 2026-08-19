@@ -84,14 +84,21 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
 
         var excluded = new System.Collections.Concurrent.ConcurrentBag<string>();
         var watch = Stopwatch.StartNew();
+        var contrast = new ClickAnalysisOptions();
+        var absolute = new ClickAnalysisOptions { LocalHighFrequencyContrast = false };
         var results = ClickCorpus.Measure(cell =>
         {
-            var analysis = Restoration.AnalyzeClicks([cell.Damaged], cell.SampleRate,
-                new ClickAnalysisOptions());
-            var repaired = Restoration.RepairClicks([cell.Damaged], analysis.Events);
+            (int Found, double Gain) Run(ClickAnalysisOptions o)
+            {
+                var analysis = Restoration.AnalyzeClicks([cell.Damaged], cell.SampleRate, o);
+                var repaired = Restoration.RepairClicks([cell.Damaged], analysis.Events);
+                return (analysis.Events.Count, cell.Score(repaired[0]) - cell.Raw);
+            }
+            var now = Run(contrast);
+            var was = Run(absolute);
             return (cell.Recording.Corpus, cell.Recording.ShortName, cell.Severity,
-                Planted: cell.ClickCount, Found: analysis.Events.Count,
-                Gain: cell.Score(repaired[0]) - cell.Raw);
+                Planted: cell.ClickCount, Found: now.Found, Gain: now.Gain,
+                OldFound: was.Found, OldGain: was.Gain);
         }, onExcluded: (r, why) => excluded.Add($"{r.Corpus}/{r.ShortName}: {why}"));
         watch.Stop();
 
@@ -111,9 +118,12 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
         foreach (var severity in results.Select(r => r.Severity).Distinct().OrderByDescending(s => s))
         {
             var at = results.Where(r => r.Severity == severity).ToList();
-            output.WriteLine($"  {severity,4:0} dB above local: mean {at.Average(r => r.Gain):+0.00;-0.00} dB  " +
-                $"worst {at.Min(r => r.Gain):+0.00;-0.00}  found/planted " +
-                $"{at.Average(r => Math.Min(1.0, r.Found / (double)Math.Max(1, r.Planted))):P0}");
+            output.WriteLine($"  {severity,4:0} dB above local: gain {at.Average(r => r.Gain):+0.00;-0.00} dB " +
+                $"(was {at.Average(r => r.OldGain):+0.00;-0.00})  recall " +
+                $"{at.Average(r => Math.Min(1.0, r.Found / (double)Math.Max(1, r.Planted))):P0} " +
+                $"(was {at.Average(r => Math.Min(1.0, r.OldFound / (double)Math.Max(1, r.Planted))):P0})  " +
+                $"found/planted {at.Average(r => r.Found / (double)Math.Max(1, r.Planted)):0.00}x " +
+                $"(was {at.Average(r => r.OldFound / (double)Math.Max(1, r.Planted)):0.00}x)");
         }
         var all = results.Select(r => r.Gain).ToList();
         if (all.Count == 0) { output.WriteLine("no cells measured"); return; }
@@ -144,20 +154,24 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
     {
         if (!DeclipCorpus.Enabled) { output.WriteLine("skipped: set WAVELAB_CORPUS=1"); return; }
 
-        var rates = DeclipCorpus.ForEachRecording<(string Corpus, string Name, double PerSecond)>(
+        var rates = DeclipCorpus.ForEachRecording<(string Corpus, string Name, double PerSecond, double OldPerSecond)>(
             (recording, document) =>
             {
                 var source = document.Channels[0];
-                var found = Restoration.AnalyzeClicks([source], document.SampleRate, new ClickAnalysisOptions());
-                double perSecond = found.Events.Count / (source.Length / (double)document.SampleRate);
-                return ([(recording.Corpus, recording.ShortName, perSecond)], null);
+                double seconds = source.Length / (double)document.SampleRate;
+                double perSecond = Restoration.AnalyzeClicks([source], document.SampleRate,
+                    new ClickAnalysisOptions()).Events.Count / seconds;
+                double oldPerSecond = Restoration.AnalyzeClicks([source], document.SampleRate,
+                    new ClickAnalysisOptions { LocalHighFrequencyContrast = false }).Events.Count / seconds;
+                return ([(recording.Corpus, recording.ShortName, perSecond, oldPerSecond)], null);
             });
 
         foreach (var group in rates.GroupBy(r => r.Corpus).OrderBy(g => g.Key))
             output.WriteLine($"  {group.Key,-10} {group.Count(),3} recordings  " +
-                $"median {group.Select(r => r.PerSecond).Order().ElementAt(group.Count() / 2):0.00}/s  " +
-                $"max {group.Max(r => r.PerSecond):0.0}/s");
-        foreach (var r in rates.Where(r => r.Corpus != "3").OrderByDescending(r => r.PerSecond).Take(6))
-            output.WriteLine($"  loudest false positive: {r.Corpus}/{r.Name} {r.PerSecond:0.00}/s");
+                $"median {group.Select(r => r.PerSecond).Order().ElementAt(group.Count() / 2):0.00}/s " +
+                $"(was {group.Select(r => r.OldPerSecond).Order().ElementAt(group.Count() / 2):0.00})  " +
+                $"max {group.Max(r => r.PerSecond):0.0}/s (was {group.Max(r => r.OldPerSecond):0.0})");
+        foreach (var r in rates.Where(r => r.Corpus != "3").OrderByDescending(r => r.OldPerSecond).Take(6))
+            output.WriteLine($"  worst offender: {r.Corpus}/{r.Name} {r.PerSecond:0.00}/s (was {r.OldPerSecond:0.00})");
     }
 }
