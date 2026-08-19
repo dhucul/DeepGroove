@@ -76,3 +76,11 @@ listed as a nice-to-have. Both are done.
   audio it reports 0.05 events a second on classical but 3.7 on speech and up to 45.9 on a Windows
   alarm. Neither end has been tuned; `ClickAnalysisOptions.Sensitivity` is the obvious lever and
   nothing has yet been fitted against the corpora.
+
+- **Spectral heal can make a burst at the local level worse** — 17 of 58 cells, down to −4.9 dB —
+  where above the local level it is reliable. Nothing is fitted for that regime.
+- **Wow and flutter correction does not restore timing on real material.** By its own estimator it
+  halves the deviation; scored against the original waveform it is 0.2 to 1.4 dB worse at every
+  severity. The estimator under-reads by about half and has a floor near 0.2–0.3% on recordings
+  with no speed variation, which is around the spec of a decent turntable. This is the weakest
+  tool in the suite and the one to look at first.
