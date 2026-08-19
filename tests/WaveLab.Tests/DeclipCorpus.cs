@@ -208,8 +208,47 @@ public static class DeclipCorpus
         Action<CorpusRecording, string>? onExcluded = null)
     {
         ArgumentNullException.ThrowIfNull(measure);
+        return ForEachRecording<T>((recording, document) =>
+        {
+            // A repair can only be scored against a clean reference, so a recording that is already
+            // clipped is not usable: its "clean" channel is itself damaged, and every gain measured
+            // against it is measured against the wrong thing.
+            //
+            // It screens the channel actually measured rather than the file. Corpus 1 has a track
+            // clipped on channel 1 and clean on channel 0; the reference here is channel 0, so that
+            // cell is sound and excluding the file would throw away good measurement.
+            var asFound = Restoration.AnalyzeClipping([document.Channels[0]], document.SampleRate,
+                new ClippingAnalysisOptions());
+            if (asFound.Events.Count > 0)
+                return ((List<T>?)null, $"already clipped: {asFound.Events.Count} events before any damage");
+
+            var results = new List<T>();
+            foreach (double relative in Levels)
+            {
+                var (clean, clipped, damaged) = Damage(document.Channels[0], relative, recording.ClickResistant);
+                var analysis = Restoration.AnalyzeClipping([clipped], document.SampleRate,
+                    new ClippingAnalysisOptions());
+                if (analysis.Events.Count == 0) continue;
+                var cell = new CorpusCell(recording, relative, document.SampleRate,
+                    clean, clipped, damaged, analysis.Events.ToArray());
+                results.Add(measure(cell));
+            }
+            return (results, (string?)null);
+        }, maximumParallelism, onExcluded);
+    }
+
+    /// <summary>
+    /// Walks the corpora in parallel, one worker per recording so a file is decoded once, and
+    /// returns the results in a deterministic order however the work was scheduled. The callback
+    /// returns either the cells it measured or a reason the recording was excluded.
+    /// </summary>
+    public static List<T> ForEachRecording<T>(
+        Func<CorpusRecording, AudioDocument, (List<T>? Results, string? Excluded)> body,
+        int? maximumParallelism = null, Action<CorpusRecording, string>? onExcluded = null)
+    {
+        ArgumentNullException.ThrowIfNull(body);
         var recordings = Recordings();
-        var byRecording = new ConcurrentDictionary<string, List<(double Relative, T Value)>>();
+        var byRecording = new ConcurrentDictionary<string, List<T>>();
 
         var options = new ParallelOptions
         {
@@ -235,41 +274,21 @@ public static class DeclipCorpus
                 return;
             }
 
-            // A repair can only be scored against a clean reference, so a recording that is already
-            // clipped is not usable: its "clean" channel is itself damaged, and every gain measured
-            // against it is measured against the wrong thing. This is reported rather than silently
-            // dropped, because a corpus that quietly shrinks is a corpus nobody can reproduce.
-            //
-            // It screens the channel actually measured rather than the file. Corpus 1 has a track
-            // clipped on channel 1 and clean on channel 0; the reference here is channel 0, so that
-            // cell is sound and excluding the file would throw away good measurement.
-            var asFound = Restoration.AnalyzeClipping([document.Channels[0]], document.SampleRate,
-                new ClippingAnalysisOptions());
-            if (asFound.Events.Count > 0)
+            var (results, excluded) = body(recording, document);
+            if (excluded != null)
             {
-                onExcluded?.Invoke(recording, $"already clipped: {asFound.Events.Count} events before any damage");
+                // Reported rather than silently dropped: a corpus that quietly shrinks is a corpus
+                // nobody can reproduce.
+                onExcluded?.Invoke(recording, excluded);
                 return;
             }
-
-            var results = new List<(double, T)>();
-            foreach (double relative in Levels)
-            {
-                var (clean, clipped, damaged) = Damage(document.Channels[0], relative, recording.ClickResistant);
-                var analysis = Restoration.AnalyzeClipping([clipped], document.SampleRate,
-                    new ClippingAnalysisOptions());
-                if (analysis.Events.Count == 0) continue;
-                var cell = new CorpusCell(recording, relative, document.SampleRate,
-                    clean, clipped, damaged, analysis.Events.ToArray());
-                results.Add((relative, measure(cell)));
-            }
-            byRecording[recording.Path] = results;
+            if (results != null) byRecording[recording.Path] = results;
         });
 
         var ordered = new List<T>();
         foreach (var recording in recordings)
             if (byRecording.TryGetValue(recording.Path, out var results))
-                foreach (var (_, value) in results)
-                    ordered.Add(value);
+                ordered.AddRange(results);
         return ordered;
     }
 

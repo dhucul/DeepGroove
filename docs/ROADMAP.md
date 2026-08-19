@@ -70,3 +70,9 @@ listed as a nice-to-have. Both are done.
   five corpora it is worth 0.017 dB a cell and −38.6 dB held out. The problem is real; the fix has
   to **separate dense material from sparse**, and has to clear five corpora. Five attempts so far,
   five declined.
+
+- **The click detector misses quiet clicks and over-reports on transient-rich material.** Measured
+  over 232 cells: 100% recall at 18 dB above the local level and 15% at 6 dB, and on undamaged
+  audio it reports 0.05 events a second on classical but 3.7 on speech and up to 45.9 on a Windows
+  alarm. Neither end has been tuned; `ClickAnalysisOptions.Sensitivity` is the obvious lever and
+  nothing has yet been fitted against the corpora.
