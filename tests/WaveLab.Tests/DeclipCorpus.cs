@@ -234,6 +234,10 @@ public static class DeclipCorpus
             // clipped is not usable: its "clean" channel is itself damaged, and every gain measured
             // against it is measured against the wrong thing. This is reported rather than silently
             // dropped, because a corpus that quietly shrinks is a corpus nobody can reproduce.
+            //
+            // It screens the channel actually measured rather than the file. Corpus 1 has a track
+            // clipped on channel 1 and clean on channel 0; the reference here is channel 0, so that
+            // cell is sound and excluding the file would throw away good measurement.
             var asFound = Restoration.AnalyzeClipping([document.Channels[0]], document.SampleRate,
                 new ClippingAnalysisOptions());
             if (asFound.Events.Count > 0)
