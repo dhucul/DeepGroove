@@ -168,6 +168,13 @@ public static partial class Restoration
                 }
             }
             nextCandidateSample = 2;
+
+            if (options.PredictiveDetection)
+            {
+                AddPredictiveCandidates(samples, curvature, channelIndex, sampleRate, options,
+                    sensitivityT, maximumClickSamples, maximumPopSamples, minimumConfidence,
+                    events, cancellationToken);
+            }
         }
 
         events.Sort(static (a, b) =>
@@ -726,6 +733,104 @@ public static partial class Restoration
 
     /// <summary>The threshold the withdrawn cap used. See <see cref="ShouldersBoundTheReconstruction"/>.</summary>
     public const double MaximumBoundedOvershoot = 0.15;
+
+    /// <summary>
+    /// Nominates candidates from the prediction residual of a high-order model, for the acceptance
+    /// tests to judge like any other. See <see cref="ClickAnalysisOptions.PredictiveDetection"/>.
+    /// </summary>
+    /// <remarks>
+    /// The block, the order and the robust scale follow <see cref="Decrackle"/>, which solves the
+    /// same problem for a denser and quieter defect, and shares its predictor fit rather than
+    /// carrying a second one. What differs is what happens next: crackle is repaired wherever the
+    /// residual is an outlier, while a candidate here still has to look like a click.
+    /// </remarks>
+    private static void AddPredictiveCandidates(float[] samples, float[] curvature, int channel,
+        int sampleRate, ClickAnalysisOptions options, double sensitivityT,
+        int maximumClickSamples, int maximumPopSamples, double minimumConfidence,
+        List<ClickEvent> events, CancellationToken cancellationToken)
+    {
+        int order = Math.Clamp(options.PredictorOrder, 4, 64);
+        int block = Math.Max(order * 8, 4096);
+        if (samples.Length < block + 4) return;
+
+        // Strict at the bottom of the slider, permissive at the top, like every other gate here.
+        double residualSigma = Math.Max(2.0, options.PredictiveSigma) - 4.0 * sensitivityT;
+        var residual = new double[block];
+        var magnitude = new double[block];
+        var coefficients = new double[order + 1];
+        var autocorrelation = new double[order + 1];
+        var found = new List<ClickEvent>();
+
+        for (int start = 0; start + block <= samples.Length; start += block)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!Decrackle.FitPredictor(samples, start, block, order, autocorrelation, coefficients))
+                continue;
+
+            double squareSum = 0;
+            for (int i = 0; i < block; i++)
+            {
+                double predicted = 0;
+                for (int k = 1; k <= order; k++)
+                {
+                    int index = start + i - k;
+                    if (index >= 0) predicted += coefficients[k] * samples[index];
+                }
+                residual[i] = samples[start + i] - predicted;
+                magnitude[i] = Math.Abs(residual[i]);
+                squareSum += samples[start + i] * (double)samples[start + i];
+            }
+
+            double scale = Decrackle.RobustScale(magnitude);
+            if (scale <= 1e-9) continue;
+            double limit = scale * residualSigma;
+            double localRms = Math.Sqrt(squareSum / block);
+
+            for (int i = 1; i < block - 1; i++)
+            {
+                if (magnitude[i] <= limit) continue;
+
+                int spanStart = start + i;
+                int spanEnd = spanStart + 1;
+                while (i + 1 < block - 1 && magnitude[i + 1] > scale * 1.5 &&
+                       spanEnd - spanStart < maximumPopSamples)
+                {
+                    i++;
+                    spanEnd++;
+                }
+
+                int peak = spanStart;
+                for (int j = spanStart; j < spanEnd; j++)
+                    if (curvature[j] > curvature[peak]) peak = j;
+
+                if (TryCreateClickEvent(samples, curvature, channel, spanStart, spanEnd, peak,
+                        curvature[peak], (float)limit, scale, localRms, sampleRate,
+                        maximumClickSamples, options.PreserveTransients,
+                        options.LocalHighFrequencyContrast, out var candidate) &&
+                    candidate.Confidence >= minimumConfidence)
+                {
+                    found.Add(candidate);
+                }
+            }
+        }
+
+        // Merged rather than appended: the curvature pass has already found the loud ones, and the
+        // same defect must not be reported twice.
+        foreach (var candidate in found)
+        {
+            bool overlaps = false;
+            foreach (var existing in events)
+            {
+                if (existing.Channel != channel) continue;
+                if (candidate.StartSample < existing.EndSample && existing.StartSample < candidate.EndSample)
+                {
+                    overlaps = true;
+                    break;
+                }
+            }
+            if (!overlaps) events.Add(candidate);
+        }
+    }
 
     private static bool TryCreateClickEvent(float[] samples, float[] curvature,
         int channel, int start, int end, int peak, float peakCurvature,

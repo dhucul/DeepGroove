@@ -71,11 +71,16 @@ listed as a nice-to-have. Both are done.
   to **separate dense material from sparse**, and has to clear five corpora. Five attempts so far,
   five declined.
 
-- **The click detector still misses quiet clicks, though less badly.** Recall on planted clicks is
-  now 81% at 12 dB above the local level and 39% at 6 dB, up from 70% and 15%, after two mechanism
-  fixes. Below about 6 dB it still finds under half of them. False positives on digital-born
-  material fell everywhere — the worst case from 45.9 events a second to 9.7 — but 9.7 on an
-  undamaged alarm is still 9.7.
+- **The click detector still misses about half the quietest clicks.** Recall is now 86% at 12 dB
+  above the local level and 51% at 6 dB, up from 68% and 15%, after three mechanism fixes and a
+  prediction-residual nomination pass. What limits it now is the acceptance tests rather than
+  detection: raising the nomination threshold from 8 to 14 sigma costs one point of recall and no
+  gain at all. False detections on digital-born material fell from 45.9 events a second at worst to
+  9.9, but 9.9 on an undamaged alarm is still 9.9.
+- **Whether record transfers reading 1.21 events a second is right cannot be settled here.** Corpus
+  1 is analogue and genuinely carries surface clicks, so the rise from 0.22 tracks the recall gain
+  rather than contradicting it. Settling it needs a transfer with its real clicks marked by hand,
+  which no corpus here has.
 
 - **Spectral heal can make a burst at the local level worse** — 17 of 58 cells, down to −4.9 dB —
   where above the local level it is reliable. Nothing is fitted for that regime.

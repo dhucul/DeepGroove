@@ -85,7 +85,15 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
         var excluded = new System.Collections.Concurrent.ConcurrentBag<string>();
         var watch = Stopwatch.StartNew();
         var contrast = new ClickAnalysisOptions();
-        var absolute = new ClickAnalysisOptions { LocalHighFrequencyContrast = false };
+        var absolute = new ClickAnalysisOptions
+        {
+            LocalHighFrequencyContrast = false,
+            PredictiveDetection = false,
+        };
+        (string Name, ClickAnalysisOptions Options)[] probes =
+        [
+            ("curvature only", new ClickAnalysisOptions { PredictiveDetection = false }),
+        ];
         var results = ClickCorpus.Measure(cell =>
         {
             (int Found, double Gain) Run(ClickAnalysisOptions o)
@@ -98,7 +106,8 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
             var was = Run(absolute);
             return (cell.Recording.Corpus, cell.Recording.ShortName, cell.Severity,
                 Planted: cell.ClickCount, Found: now.Found, Gain: now.Gain,
-                OldFound: was.Found, OldGain: was.Gain);
+                OldFound: was.Found, OldGain: was.Gain,
+                Probes: probes.Select(pr => (pr.Name, Run(pr.Options))).ToArray());
         }, onExcluded: (r, why) => excluded.Add($"{r.Corpus}/{r.ShortName}: {why}"));
         watch.Stop();
 
@@ -124,6 +133,14 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
                 $"(was {at.Average(r => Math.Min(1.0, r.OldFound / (double)Math.Max(1, r.Planted))):P0})  " +
                 $"found/planted {at.Average(r => r.Found / (double)Math.Max(1, r.Planted)):0.00}x " +
                 $"(was {at.Average(r => r.OldFound / (double)Math.Max(1, r.Planted)):0.00}x)");
+            for (int q = 0; q < probes.Length; q++)
+            {
+                int index = q;
+                output.WriteLine($"        {probes[q].Name,-7} recall " +
+                    $"{at.Average(r => Math.Min(1.0, r.Probes[index].Item2.Found / (double)Math.Max(1, r.Planted))):P0}  " +
+                    $"gain {at.Average(r => r.Probes[index].Item2.Gain):+0.00;-0.00} dB  " +
+                    $"found/planted {at.Average(r => r.Probes[index].Item2.Found / (double)Math.Max(1, r.Planted)):0.00}x");
+            }
         }
         var all = results.Select(r => r.Gain).ToList();
         if (all.Count == 0) { output.WriteLine("no cells measured"); return; }
@@ -162,7 +179,11 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
                 double perSecond = Restoration.AnalyzeClicks([source], document.SampleRate,
                     new ClickAnalysisOptions()).Events.Count / seconds;
                 double oldPerSecond = Restoration.AnalyzeClicks([source], document.SampleRate,
-                    new ClickAnalysisOptions { LocalHighFrequencyContrast = false }).Events.Count / seconds;
+                    new ClickAnalysisOptions
+                    {
+                        LocalHighFrequencyContrast = false,
+                        PredictiveDetection = false,
+                    }).Events.Count / seconds;
                 return ([(recording.Corpus, recording.ShortName, perSecond, oldPerSecond)], null);
             });
 

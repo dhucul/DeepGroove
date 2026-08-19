@@ -58,6 +58,37 @@ public sealed class ClickAnalysisOptions
     /// a surface defect from an instrument. Set false for the old behaviour.
     /// </remarks>
     public bool LocalHighFrequencyContrast { get; init; } = true;
+
+    /// <summary>
+    /// Also nominate candidates from the prediction residual of a high-order model, not only from
+    /// the waveform's curvature.
+    /// </summary>
+    /// <remarks>
+    /// Curvature is the error of a one-sample linear predictor, and music has plenty of it, so a
+    /// quiet click does not stand out: measured, recall was 39% for clicks 6 dB above the local
+    /// level, and the limit was the curvature gate rather than any of the confidence tests —
+    /// dropping the confidence floor from 0.60 to 0.30 changed the recall by nothing at all, at any
+    /// severity. A high-order residual is the standard answer and the one <see cref="Decrackle"/>
+    /// already uses: the music is largely predicted away and what is left is mostly defect.
+    /// Candidates from here face the same acceptance tests as any other.
+    /// </remarks>
+    public bool PredictiveDetection { get; init; } = true;
+
+    /// <summary>Order of that predictor. Higher follows the music more closely and costs more.</summary>
+    public int PredictorOrder { get; init; } = 24;
+
+    /// <summary>
+    /// How many robust deviations of the residual a sample must exceed to be nominated, at the
+    /// strict end of the sensitivity slider. Four fewer at the permissive end.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is a false-alarm control, not a recall control</b>, which is the opposite of what a
+    /// threshold usually is and worth knowing before turning it. Swept from 8 to 14, recall at 6 dB
+    /// above the local level moved from 52% to 51% and the repair gain not at all — but false
+    /// detections on clean digital material fell by two thirds, 0.22 events a second to 0.06 on
+    /// classical. What limits recall is further down, in the acceptance tests, not here.
+    /// </remarks>
+    public double PredictiveSigma { get; init; } = 12.0;
 }
 
 /// <summary>Metadata returned by automatic click/pop analysis.</summary>

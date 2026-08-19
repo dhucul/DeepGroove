@@ -195,7 +195,7 @@ public static class Decrackle
     /// <summary>
     /// Fits an autoregressive model to a block by Levinson-Durbin on its autocorrelation.
     /// </summary>
-    private static bool FitPredictor(float[] samples, int start, int length, int order,
+    internal static bool FitPredictor(float[] samples, int start, int length, int order,
         double[] autocorrelation, double[] coefficients)
     {
         for (int lag = 0; lag <= order; lag++)
