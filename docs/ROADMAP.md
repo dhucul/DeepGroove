@@ -79,8 +79,9 @@ listed as a nice-to-have. Both are done.
 
 - **Spectral heal can make a burst at the local level worse** — 17 of 58 cells, down to −4.9 dB —
   where above the local level it is reliable. Nothing is fitted for that regime.
-- **Wow and flutter correction does not restore timing on real material.** By its own estimator it
-  halves the deviation; scored against the original waveform it is 0.2 to 1.4 dB worse at every
-  severity. The estimator under-reads by about half and has a floor near 0.2–0.3% on recordings
-  with no speed variation, which is around the spec of a decent turntable. This is the weakest
-  tool in the suite and the one to look at first.
+- **Wow and flutter now removes drift instead of adding it, but still under-reports.** The
+  estimator measured velocity and integrated it, which injected 220 to 290 samples of drift
+  whatever was planted; it now measures position and leaves 227 down to 75. What it *reports* is
+  still about 2.5x low, and the reference width that would fix the number makes the correction
+  worse, so the two cannot currently be had together. Below about 1% wow the correction still does
+  not improve on leaving the recording alone.

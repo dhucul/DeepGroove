@@ -68,49 +68,58 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Speed variation, scored two ways because one of them is partly circular — and the two
-    /// disagree, which is the finding.
+    /// Speed variation. The correction is judged by how much of the planted timing error it
+    /// actually removes, which is not what the obvious metrics measure.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The obvious metric — measure the wow, correct it, measure again — grades the correction with
-    /// the same estimator that drove it, so a shared blind spot looks like success. By it the
-    /// correction works: the reading roughly halves at every severity.
+    /// <b>Two obvious metrics are both useless here and the reasons differ.</b> Measuring the wow,
+    /// correcting, and measuring again grades the correction with the estimator that drove it, so a
+    /// shared blind spot reads as success. Signal to noise against the original is nearly
+    /// all-or-nothing: at 0.3% the drift reaches about 22 samples, and halving it leaves the
+    /// waveforms still uncorrelated sample for sample, so a half-corrected recording scores about
+    /// the same as an untouched one. A perfect correction scores +34 dB and every real one scores
+    /// about zero, which says only that none of them is perfect.
     /// </para>
     /// <para>
-    /// <b>The independent metric disagrees.</b> The warp planted here is zero-mean, and at 0.3%
-    /// with a 0.7 Hz wow the accumulated drift is about 22 samples, so a correct inversion would
-    /// visibly realign the waveform and can be scored against the original as ordinary signal to
-    /// noise. Measured, <b>it does not: correction leaves the waveform 0.2 to 1.4 dB further from
-    /// the original at every severity</b>. So what the estimator sees improving is not the timing
-    /// being restored.
-    /// </para>
-    /// <para>
-    /// <b>The estimator also under-reads badly.</b> Planting 2.4% peak reads 0.67% RMS where about
-    /// 1.34% is expected, and there is a floor near 0.2–0.3% on digital recordings that have no
-    /// speed variation at all — which is roughly the spec of a decent turntable, so on a good
-    /// transfer this is largely measuring itself. Only the monotonic response is asserted; the
-    /// scale and the floor are reported, because nothing here has been fitted.
+    /// <b>Residual timing error is linear in what was recovered</b>, so it is the metric the claim
+    /// rests on. Measured against the planted warp it showed that the frame-to-frame estimator was
+    /// not merely weak but harmful: it left around 220 samples of drift whatever was planted,
+    /// including 223 where only 31 existed to begin with. That is the random walk its own smoothing
+    /// was added to contain, and containing it by median-filtering a derivative cost the amplitude
+    /// as well.
     /// </para>
     /// </remarks>
     [Fact]
-    public void CorrectingPlantedWowReducesWhatTheEstimatorSees()
+    public void CorrectingPlantedWowRemovesTimingErrorRatherThanAddingIt()
     {
         if (Skip(output)) return;
         var excluded = new ConcurrentBag<string>();
         var watch = Stopwatch.StartNew();
+        var shipped = WowFlutterOptions.Default;
+        var velocity = shipped with { ReferenceSeconds = 0 };
+
         var rows = RestorationCorpus.MeasureWow(cell =>
         {
-            var before = WowFlutter.Analyze(cell.Damaged, cell.SampleRate);
-            var channels = new[] { (float[])cell.Damaged.Clone() };
-            WowFlutter.Correct(channels, cell.SampleRate);
-            var after = WowFlutter.Analyze(channels[0], cell.SampleRate);
+            static float[] CorrectedWith(WowCell c, WowFlutterOptions o)
+            {
+                var channels = new[] { (float[])c.Damaged.Clone() };
+                WowFlutter.Correct(channels, c.SampleRate, o);
+                return channels[0];
+            }
 
-            double raw = DeclipCorpus.SnrDb(cell.Clean, cell.Damaged, Everything(cell.Clean.Length));
-            double fixedUp = DeclipCorpus.SnrDb(cell.Clean, channels[0], Everything(cell.Clean.Length));
+            var corrected = CorrectedWith(cell, shipped);
+            var all = Everything(cell.Clean.Length);
+            double raw = DeclipCorpus.SnrDb(cell.Clean, cell.Damaged, all);
+
             return (cell.Recording.Corpus, cell.Recording.ShortName, cell.PlantedPercent,
-                MeasuredBefore: before.RmsPercent, MeasuredAfter: after.RmsPercent,
-                Confidence: before.Confidence, WaveformGain: fixedUp - raw);
+                Measured: WowFlutter.Analyze(cell.Damaged, cell.SampleRate, shipped).RmsPercent,
+                ShiftRaw: RestorationCorpus.ResidualShiftSamples(cell.Clean, cell.Damaged, cell.SampleRate),
+                ShiftFixed: RestorationCorpus.ResidualShiftSamples(cell.Clean, corrected, cell.SampleRate),
+                ShiftVelocity: RestorationCorpus.ResidualShiftSamples(cell.Clean,
+                    CorrectedWith(cell, velocity), cell.SampleRate),
+                Ceiling: DeclipCorpus.SnrDb(cell.Clean,
+                    RestorationCorpus.UnplantWow(cell.Damaged, cell.SampleRate, cell.PlantedPercent), all) - raw);
         }, (r, why) => excluded.Add($"{r.Corpus}/{r.ShortName}: {why}"));
         watch.Stop();
 
@@ -118,37 +127,37 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
         foreach (var planted in rows.Select(r => r.PlantedPercent).Distinct().OrderByDescending(x => x))
         {
             var at = rows.Where(r => r.PlantedPercent == planted).ToList();
-            output.WriteLine($"  planted {planted:0.0}%: measured {at.Average(r => r.MeasuredBefore):0.000}% " +
-                $"-> {at.Average(r => r.MeasuredAfter):0.000}% after correction, " +
-                $"confidence {at.Average(r => r.Confidence):P0}, " +
-                $"waveform {at.Average(r => r.WaveformGain):+0.00;-0.00} dB " +
-                $"(worst {at.Min(r => r.WaveformGain):+0.00;-0.00})");
+            output.WriteLine($"  planted {planted:0.0}% (expect {planted * 0.559:0.000}% rms): " +
+                $"reads {at.Average(r => r.Measured):0.000}%  |  residual shift " +
+                $"{at.Average(r => r.ShiftRaw):0} uncorrected -> {at.Average(r => r.ShiftFixed):0} samples " +
+                $"(frame-to-frame: {at.Average(r => r.ShiftVelocity):0})  |  " +
+                $"a perfect correction would score {at.Average(r => r.Ceiling):+0.0;-0.0} dB");
         }
-        foreach (var group in rows.GroupBy(r => r.Corpus).OrderBy(g => g.Key))
-            output.WriteLine($"  {group.Key,-10} {group.Count(),3} cells  waveform {group.Average(r => r.WaveformGain):+0.00;-0.00} dB  " +
-                $"measured {group.Average(r => r.MeasuredBefore):0.000}% -> {group.Average(r => r.MeasuredAfter):0.000}%");
 
         Assert.NotEmpty(rows);
 
-        // What can honestly be asserted is that the reading rises with the planted deviation. The
-        // absolute reading cannot: measured against a known warp it under-reads by about half even
-        // after allowing that RmsPercent should be around 0.56 of the planted peak, and it sits on a
-        // floor near 0.2-0.3% on digital material that has no speed variation at all. Both are
-        // reported above.
-        var byPlanted = rows.GroupBy(r => r.PlantedPercent)
-            .OrderBy(g => g.Key)
-            .Select(g => (Planted: g.Key, Measured: g.Average(r => r.MeasuredBefore)))
-            .ToList();
-        for (int i = 1; i < byPlanted.Count; i++)
-            Assert.True(byPlanted[i].Measured > byPlanted[i - 1].Measured,
-                $"planting {byPlanted[i].Planted:0.0}% read {byPlanted[i].Measured:0.000}% but " +
-                $"{byPlanted[i - 1].Planted:0.0}% read {byPlanted[i - 1].Measured:0.000}%");
+        // The correction must not be worse than the one it replaced. Measured, it is far better at
+        // every severity: 215 against 277 samples of residual drift at 2.4%, and 47 against 223 at
+        // 0.3%, where the old path injected seven times the error that was there.
+        foreach (var planted in rows.Select(r => r.PlantedPercent).Distinct())
+        {
+            var at = rows.Where(r => r.PlantedPercent == planted).ToList();
+            Assert.True(at.Average(r => r.ShiftFixed) < at.Average(r => r.ShiftVelocity),
+                $"at {planted:0.0}% the correction left {at.Average(r => r.ShiftFixed):0} samples against " +
+                $"{at.Average(r => r.ShiftVelocity):0} for the frame-to-frame estimator it replaced");
+        }
 
-        // And that correcting reduces what the estimator itself sees.
-        Assert.True(rows.Average(r => r.MeasuredAfter) < rows.Average(r => r.MeasuredBefore),
-            "correction should reduce the measured deviation");
+        // And it must remove drift where the wow is gross. Below about 1% it does not yet: the
+        // residual rises slightly rather than falling, which is reported and not asserted because
+        // nothing has been fitted to gate it.
+        foreach (var planted in rows.Select(r => r.PlantedPercent).Distinct().Where(p => p >= 1.2))
+        {
+            var at = rows.Where(r => r.PlantedPercent == planted).ToList();
+            Assert.True(at.Average(r => r.ShiftFixed) < at.Average(r => r.ShiftRaw),
+                $"a {planted:0.0}% wow should come down from {at.Average(r => r.ShiftRaw):0} samples, " +
+                $"not {at.Average(r => r.ShiftFixed):0}");
+        }
     }
-
     /// <summary>
     /// Spectral repair of a planted noise burst, scored over the span the repair replaced.
     /// </summary>

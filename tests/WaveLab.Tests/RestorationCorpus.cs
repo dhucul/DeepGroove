@@ -123,6 +123,97 @@ public static class RestorationCorpus
         return damaged;
     }
 
+    /// <summary>
+    /// Undoes <see cref="PlantWow"/> with the exact warp that was planted, using the same linear
+    /// interpolation the correction uses. <b>This is the ceiling</b>: whatever signal to noise a
+    /// perfect estimator could reach, given the same resampler. Without it a negative waveform
+    /// result cannot be read, because resampling costs accuracy on its own and the measurement
+    /// would be charging the correction for it.
+    /// </summary>
+    public static float[] UnplantWow(float[] damaged, int sampleRate, double peakPercent)
+    {
+        double wowHz = 0.7, flutterHz = 6.3;
+        double depth = peakPercent / 100.0;
+
+        // Where each output sample was read from when the warp was planted.
+        var readAt = new double[damaged.Length];
+        double position = 0;
+        for (int i = 0; i < damaged.Length; i++)
+        {
+            readAt[i] = position;
+            double t = i / (double)sampleRate;
+            position += 1.0 + depth * (0.75 * Math.Sin(2 * Math.PI * wowHz * t)
+                                     + 0.25 * Math.Sin(2 * Math.PI * flutterHz * t + 1.1));
+        }
+
+        // Invert that map: for each original sample, find where it ended up.
+        var restored = new float[damaged.Length];
+        int cursor = 0;
+        for (int n = 0; n < damaged.Length; n++)
+        {
+            while (cursor + 1 < damaged.Length && readAt[cursor + 1] <= n) cursor++;
+            if (cursor + 1 >= damaged.Length) { restored[n] = damaged[cursor]; continue; }
+            double span = readAt[cursor + 1] - readAt[cursor];
+            double frac = span > 1e-9 ? (n - readAt[cursor]) / span : 0;
+            frac = Math.Clamp(frac, 0, 1);
+            restored[n] = (float)(damaged[cursor] * (1 - frac) + damaged[cursor + 1] * frac);
+        }
+        return restored;
+    }
+
+    /// <summary>
+    /// Root-mean-square timing error between two signals, in samples, measured by cross-correlating
+    /// them in windows.
+    /// </summary>
+    /// <remarks>
+    /// <b>Signal to noise is the wrong instrument for a timing error and this is the right one.</b>
+    /// At 0.3% the planted drift reaches about 22 samples; halving it to 11 leaves the waveforms
+    /// still uncorrelated sample for sample, so signal to noise reads about the same for a
+    /// half-corrected recording as for an uncorrected one — it is nearly all-or-nothing, and cannot
+    /// tell a correction that recovered most of the drift from one that recovered none. Residual
+    /// shift is linear in what was recovered and says which happened.
+    /// </remarks>
+    public static double ResidualShiftSamples(float[] reference, float[] candidate, int sampleRate)
+    {
+        // The reach has to exceed the drift being measured or the search saturates and reports a
+        // number that looks like a result. A 2.4% wow at 0.7 Hz drifts about 180 samples, so 512.
+        const int window = 8192, reach = 512;
+        int step = Math.Max(window, sampleRate);
+        double sum = 0;
+        int counted = 0;
+
+        for (int start = reach; start + window + reach < Math.Min(reference.Length, candidate.Length);
+             start += step)
+        {
+            double energy = 0;
+            for (int i = start; i < start + window; i++) energy += (double)reference[i] * reference[i];
+            if (energy <= 1e-9) continue;
+
+            double best = double.NegativeInfinity;
+            int bestLag = 0;
+            var scores = new double[reach * 2 + 1];
+            for (int lag = -reach; lag <= reach; lag++)
+            {
+                double dot = 0;
+                for (int i = start; i < start + window; i++) dot += (double)reference[i] * candidate[i + lag];
+                scores[lag + reach] = dot;
+                if (dot > best) { best = dot; bestLag = lag; }
+            }
+            if (best <= 0) continue;
+
+            int index = bestLag + reach;
+            double before = index > 0 ? scores[index - 1] : best;
+            double after = index < scores.Length - 1 ? scores[index + 1] : best;
+            double denominator = before - 2 * best + after;
+            double refined = bestLag + (Math.Abs(denominator) > 1e-12
+                ? 0.5 * (before - after) / denominator : 0);
+
+            sum += refined * refined;
+            counted++;
+        }
+        return counted == 0 ? 0 : Math.Sqrt(sum / counted);
+    }
+
     // ---------- spectral repair ----------
 
     /// <summary>Burst amplitude relative to the local RMS, in dB.</summary>

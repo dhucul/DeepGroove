@@ -13,6 +13,16 @@ namespace WaveLab.Audio.Dsp;
 /// change the pitch of the record.
 /// </param>
 /// <param name="MinimumCorrelation">How well two frames must agree for their shift to be believed.</param>
+/// <param name="ReferenceSeconds">
+/// Width of the local reference each block is matched against. <b>This is what the measurement
+/// rests on.</b> Matching a block against its immediate predecessor measures the <i>velocity</i> of
+/// the speed error, and recovering the speed itself then needs an integration — which turns
+/// measurement noise into a random walk, and forces smoothing of the derivative to contain it.
+/// Median-smoothing a derivative does not preserve its integral, so that costs amplitude as well.
+/// Matching instead against the average of the blocks around it measures the <i>position</i>
+/// directly: no integration, no walk, and the quantity being measured is ten times larger. Set to
+/// zero for the old frame-to-frame behaviour.
+/// </param>
 /// <param name="SmoothingBlocks">
 /// Centred smoothing applied to the per-block shifts before they are integrated. Integrating
 /// measurement noise is a random walk, and a walk in the position map is a slow speed error put
@@ -26,7 +36,8 @@ public readonly record struct WowFlutterOptions(
     double MaximumDeviation = 0.06,
     double BaselineSeconds = 4,
     double MinimumCorrelation = 0.6,
-    int SmoothingBlocks = 2)
+    int SmoothingBlocks = 2,
+    double ReferenceSeconds = 0.75)
 {
     /// <remarks>Spelled out rather than <c>new()</c>, which zero-initialises a record struct.</remarks>
     /// <remarks>
@@ -140,23 +151,60 @@ public static class WowFlutter
             spectra[b] = LogSpectrum(re, im, bins, sampleRate, block, lowest, highest, points);
         }
 
-        // Shift between consecutive frames, in log-frequency points.
         int reach = Math.Max(2, (int)Math.Ceiling(options.MaximumDeviation * perOctave / Math.Log(2) * 1.5));
         var shift = new double[blocks];
         var believed = new bool[blocks];
         int trusted = 0;
+        int referenceRadius = options.ReferenceSeconds > 0
+            ? Math.Max(1, (int)Math.Round(options.ReferenceSeconds * sampleRate / hop / 2))
+            : 0;
 
-        for (int b = 1; b < blocks; b++)
+        if (referenceRadius > 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report(0.5 + 0.3 * b / blocks);
+            // Each block against the average of the blocks around it, which measures where the
+            // spectrum sits rather than how fast it is moving. See ReferenceSeconds.
+            var reference = new double[points];
+            var running = new double[points];
+            int windowFrom = 0, windowTo = 0;
 
-            (double offset, double quality) = BestShift(spectra[b - 1], spectra[b], points, reach);
-            if (quality >= options.MinimumCorrelation)
+            for (int b = 0; b < blocks; b++)
             {
-                shift[b] = offset;
-                believed[b] = true;
-                trusted++;
+                cancellationToken.ThrowIfCancellationRequested();
+                progress?.Report(0.5 + 0.3 * b / blocks);
+
+                int wantFrom = Math.Max(0, b - referenceRadius);
+                int wantTo = Math.Min(blocks, b + referenceRadius + 1);
+                while (windowTo < wantTo) { Add(running, spectra[windowTo], points, 1); windowTo++; }
+                while (windowFrom < wantFrom) { Add(running, spectra[windowFrom], points, -1); windowFrom++; }
+
+                int width = windowTo - windowFrom;
+                if (width < 2) continue;
+                for (int p = 0; p < points; p++) reference[p] = running[p] / width;
+
+                (double offset, double quality) = BestShift(reference, spectra[b], points, reach);
+                if (quality >= options.MinimumCorrelation)
+                {
+                    shift[b] = offset;
+                    believed[b] = true;
+                    trusted++;
+                }
+            }
+        }
+        else
+        {
+            // Shift between consecutive frames, in log-frequency points.
+            for (int b = 1; b < blocks; b++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                progress?.Report(0.5 + 0.3 * b / blocks);
+
+                (double offset, double quality) = BestShift(spectra[b - 1], spectra[b], points, reach);
+                if (quality >= options.MinimumCorrelation)
+                {
+                    shift[b] = offset;
+                    believed[b] = true;
+                    trusted++;
+                }
             }
         }
 
@@ -170,10 +218,21 @@ public static class WowFlutter
         // dozen samples across ten seconds, which is a slow speed error introduced by the very tool
         // meant to remove one. Wow is a variation of a few hertz, so a hundred milliseconds of
         // centred smoothing costs nothing real and removes most of the walk.
-        SmoothTrajectory(shift, Math.Max(0, options.SmoothingBlocks));
-
-        var cumulative = new double[blocks];
-        for (int b = 1; b < blocks; b++) cumulative[b] = cumulative[b - 1] + shift[b];
+        double[] cumulative;
+        if (referenceRadius > 0)
+        {
+            // Already a position, so there is nothing to integrate and nothing to smooth away. A
+            // mean of three blocks takes the edge off without touching wow: three blocks is 70 ms
+            // against a 1.4 s cycle at 0.7 Hz.
+            cumulative = shift;
+            MeanSmooth(cumulative, 1);
+        }
+        else
+        {
+            SmoothTrajectory(shift, Math.Max(0, options.SmoothingBlocks));
+            cumulative = new double[blocks];
+            for (int b = 1; b < blocks; b++) cumulative[b] = cumulative[b - 1] + shift[b];
+        }
 
         int baseline = Math.Max(1, (int)Math.Round(options.BaselineSeconds * sampleRate / hop));
         Detrend(cumulative, baseline);
@@ -446,6 +505,29 @@ public static class WowFlutter
         }
 
         for (int i = 0; i < values.Length; i++) values[i] -= baseline[i];
+    }
+
+    private static void Add(double[] running, double[] spectrum, int points, int sign)
+    {
+        for (int p = 0; p < points; p++) running[p] += sign * spectrum[p];
+    }
+
+    /// <summary>Centred mean. Linear, so unlike a median it preserves what it smooths.</summary>
+    private static void MeanSmooth(double[] values, int radius)
+    {
+        if (radius <= 0 || values.Length < radius * 2 + 1) return;
+        var source = (double[])values.Clone();
+        for (int i = 0; i < values.Length; i++)
+        {
+            double total = 0;
+            int used = 0;
+            for (int k = -radius; k <= radius; k++)
+            {
+                int index = i + k;
+                if ((uint)index < (uint)values.Length) { total += source[index]; used++; }
+            }
+            values[i] = total / used;
+        }
     }
 
     private static double[] Hann(int n)
