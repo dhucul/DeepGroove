@@ -10,14 +10,14 @@ namespace WaveLab.Tests;
 /// <remarks>
 /// <para>
 /// A-SPADE knows only that the clipped samples reached the rail, so it may reconstruct a peak far
-/// above one. Capping it everywhere costs 0.71 dB a cell over three corpora; capping it nowhere
+/// above one. Capping it everywhere costs 0.71 dB a cell over the first three corpora; capping it nowhere
 /// leaves the lightest-damage cells barely worth repairing. What separates the two is <b>the size
 /// of the overshoot the shoulders themselves claim</b> — not the length of the plateau, which was
 /// swept over thirteen settings and never beat leaving the reconstruction alone.
 /// </para>
 /// <para>
 /// The numbers in these tests are measured, not invented: the claims come from real cells in the
-/// three corpora named in <c>docs/validation-corpora.md</c>. They are here so the threshold cannot
+/// four corpora named in <c>docs/validation-corpora.md</c>. They are here so the threshold cannot
 /// be moved without someone seeing which real material changes sides.
 /// </para>
 /// </remarks>
@@ -94,17 +94,19 @@ public sealed class SparseReconstructionBoundTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// <b>The threshold sits next to a cliff and the margin is the point.</b> Measured over 272
-    /// cells the rule gains +46.5 dB at 0.15 and +49.6 at 0.167, then collapses: +16.1 at 0.20 and
-    /// −16.2 at 0.25. Leaving out a whole corpus at a time, the folds chose 0.15, 0.16 and 0.17, so
-    /// it is set at the bottom of that range rather than at the in-sample optimum.
+    /// <b>The threshold sits next to a cliff and the margin is the point.</b> Measured over the first
+    /// 272 cells the rule gains +46.5 dB at 0.15 and +49.6 at 0.167, then collapses: +16.1 at 0.20
+    /// and −16.2 at 0.25. Leaving out a whole corpus at a time, the folds chose 0.15, 0.16 and 0.17,
+    /// so it is set at the bottom of that range rather than at the in-sample optimum. A fourth
+    /// corpus of spoken word, added afterwards, costs the rule 5.2 dB and does not move the
+    /// threshold.
     /// </summary>
     [Fact]
     public void TheThresholdStaysBelowTheMeasuredCliff()
     {
         Assert.InRange(Restoration.MaximumBoundedOvershoot, 0.10, 0.18);
         output.WriteLine($"bounding below a mean claim of {Restoration.MaximumBoundedOvershoot:P0}; " +
-            "0.20 was worth +16.1 dB and 0.25 was worth -16.2 over the same 272 cells");
+            "0.20 was worth +16.1 dB and 0.25 was worth -16.2 over the same cells");
     }
 
     /// <summary>

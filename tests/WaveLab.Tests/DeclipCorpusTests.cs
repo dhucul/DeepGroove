@@ -70,16 +70,19 @@ public sealed class DeclipCorpusTests(ITestOutputHelper output)
     {
         if (!DeclipCorpus.Enabled) { output.WriteLine("skipped: set WAVELAB_CORPUS=1"); return; }
 
+        var excluded = new System.Collections.Concurrent.ConcurrentBag<string>();
         var watch = Stopwatch.StartNew();
         var results = DeclipCorpus.Measure(cell =>
         {
             var repaired = Restoration.RepairClipping([cell.Clipped], cell.Events);
             return (cell.Recording.Corpus, cell.Recording.ShortName, cell.Relative,
                 Gain: cell.Score(repaired[0]) - cell.Raw);
-        });
+        }, onExcluded: (r, why) => excluded.Add($"{r.Corpus}/{r.ShortName}: {why}"));
         watch.Stop();
 
         output.WriteLine($"{results.Count} cells in {watch.Elapsed.TotalMinutes:0.0} min");
+        foreach (var line in excluded.OrderBy(x => x, StringComparer.Ordinal))
+            output.WriteLine($"  EXCLUDED {line}");
         foreach (var group in results.GroupBy(r => r.Corpus).OrderBy(g => g.Key))
         {
             var gains = group.Select(r => r.Gain).ToList();
@@ -144,7 +147,8 @@ public sealed class DeclipCorpusTests(ITestOutputHelper output)
         if (!DeclipCorpus.Enabled) { output.WriteLine("skipped: set WAVELAB_CORPUS=1"); return; }
 
         double maximumGain = Math.Pow(10.0, 6.0 / 20.0);
-        double[] multipliers = [1.00, 1.10, 1.25, 1.40, 1.60, 2.00];
+        // 0 stands for "do not cap at all", which is what the rule is judged against.
+        double[] multipliers = [0.00, 1.00, 1.10, 1.25, 1.40, 1.60, 2.00];
 
         var watch = Stopwatch.StartNew();
         var results = DeclipCorpus.Measure(cell =>
@@ -160,7 +164,7 @@ public sealed class DeclipCorpusTests(ITestOutputHelper output)
             {
                 for (int i = 0; i < candidate.Length; i++)
                     candidate[i] = (float)Math.Clamp(solved[i], -flat, flat);
-                if (bounded)
+                if (bounded && multipliers[m] > 0)
                 {
                     foreach (var e in cell.Events)
                     {
@@ -186,7 +190,7 @@ public sealed class DeclipCorpusTests(ITestOutputHelper output)
         for (int m = 0; m < multipliers.Length; m++)
         {
             int index = m;
-            output.WriteLine($"  x{multipliers[m]:0.00}  " + string.Join("  ",
+            output.WriteLine($"  {(multipliers[m] == 0 ? "no cap" : $"x{multipliers[m]:0.00}"),-6}  " + string.Join("  ",
                 results.GroupBy(r => r.Corpus).OrderBy(g => g.Key).Select(g =>
                     $"{g.Key} {g.Average(r => r.Scores[index]):+0.000;-0.000}")) +
                 $"   ALL {results.Average(r => r.Scores[index]):+0.000;-0.000}");

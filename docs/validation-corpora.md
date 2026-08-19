@@ -17,7 +17,9 @@ this `ClippingAnalysisOptions.MinimumPeakLevel` skips the channel. And on 78rpm 
 level is taken from a **click-resistant programme peak** (99.95th percentile), not the absolute
 peak: a shellac transfer's loudest sample is a surface click, measured here at 15.6 dB above the
 music, so clipping relative to it barely touches the programme. `RecordingLevelAnalyzer` guards
-the same trap for the same reason.
+the same trap for the same reason. Finally, **a recording that is already clipped is excluded and
+the exclusion reported**: it has no clean reference, so every gain measured against it is measured
+against the wrong thing, and a corpus that quietly shrinks is one nobody can reproduce.
 
 **Verify the harness against `Restoration.RepairClipping` before believing its numbers.** A probe
 that reproduces the repair inline - to sweep a parameter without re-running the solver each time -
@@ -94,3 +96,41 @@ https://archive.org/download/<identifier>/<file>.mp3
 20. `78_2nd-regiment-connecticut-march_banner-military-band-d-w-reeves_gbia3013767a`  (1921-08)
 21. `78_2nd-regiment-connecticut-march_lieut-francis-sutherland-and-his-7th-regiment-band_gbia0089957b`  (1922)
 22. `78_2nd-regiment-connecticut-national-guard-march_gbia0474460a`  (1910)
+
+## Corpus 4 — LibriVox spoken word (16 recordings, 64 cells)
+
+Public-domain readings, fetched as one chapter each. **Speech is the signal class the other three
+corpora have none of**: a single source, long silences, formant structure and no percussion at all.
+It was added because three corpora make leave-one-corpus-out a three-fold test, and three of the
+four refinements measured against this chain passed leave-one-recording-out and failed
+leave-one-corpus-out — a fourth population is worth more than further tuning against the first
+three.
+
+It earned that immediately. **The chain does well on speech — 64 of 64 cells, mean +10.80 dB — but
+the thinnest margin in the whole 336-cell set is here, +0.10 dB**, where the worst over the first
+three corpora was +1.57. And the shoulder cap, which gains on corpora 1 and 2 and leaves 3
+untouched, **loses 5.18 dB on this one**.
+
+Many readers, rooms and microphones, plus three languages besides English, so the within-corpus
+variety is high. Fetched as the MP3 derivative:
+
+```
+https://archive.org/download/<identifier>/<file>.mp3
+```
+
+ 1. `0_sense_and_sensibility_librivox` - Sense and Sensibility, Austen
+ 2. `101_mexican_dishes_2303_librivox` - 101 Mexican Dishes, Southworth
+ 3. `10thanniversarycollection_1508_librivox` - LibriVox 10th Anniversary Collection
+ 4. `11theses_librivox` - Eleven Theses on Feuerbach, Marx
+ 5. `12thanniversarycollection_1708_librivox` - LibriVox 12th Anniversary Collection
+ 6. `13thanniversarycollection_1808_librivox` - LibriVox 13th Anniversary Collection
+ 7. `1601_0903_librivox` - 1601, Twain
+ 8. `19thanniversary_2408_librivox` - LibriVox 19th Anniversary Collection
+ 9. `1chronicles_jc_librivox` - Bible (KJV) 1 Chronicles
+10. `1corinthians_ylt_2111_librivox` - Bible (YLT) 1 Corinthians
+11. `1henryIV_0804_librivox` - King Henry IV Part 1, Shakespeare
+12. `20000_mijlen_1003_librivox` - 20.000 Mijlen onder Zee, Verne (Dutch)
+13. `21stanniversarycollection_2608_librivox` - LibriVox 21st Anniversary Collection
+14. `2br02b_0801_librivox` - 2 B R 0 2 B, Vonnegut
+15. `2corinthians_analyticallyexpounded_2402_librivox` - 2 Corinthians, Dickson
+16. `2corinthianswnt_1502_librivox` - 2 Corinthians (WNT)

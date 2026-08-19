@@ -55,7 +55,13 @@ public sealed record CorpusCell(CorpusRecording Recording, double Relative, int 
 /// <b>It is opt-in and does nothing unless <c>WAVELAB_CORPUS=1</c>.</b> The corpora are external and
 /// mostly not redistributable, so the ordinary suite must not depend on them, and a harness that
 /// runs by accident is how a 10-second suite became a 5m43s one. Paths come from
-/// <c>WAVELAB_CORPUS1</c>, <c>WAVELAB_CORPUS2</c> and <c>WAVELAB_CORPUS3</c> when set.
+/// <c>WAVELAB_CORPUS1</c> to <c>WAVELAB_CORPUS4</c> when set.
+/// </para>
+/// <para>
+/// <b>Recordings that are already clipped are excluded and reported.</b> A repair can only be
+/// scored against a clean reference, and a recording that arrived damaged has none: every gain
+/// measured against it is measured against the wrong thing. Reporting rather than silently
+/// dropping matters, because a corpus that quietly shrinks is one nobody can reproduce.
 /// </para>
 /// <para>
 /// Two things make it fast enough to iterate with. Recordings are measured <b>in parallel</b>, one
@@ -126,6 +132,11 @@ public static class DeclipCorpus
             foreach (var file in Directory.GetFiles(three, "*.mp3").OrderBy(f => f, StringComparer.Ordinal))
                 found.Add(new CorpusRecording("3", file, true));
 
+        string four = Root("WAVELAB_CORPUS4", "");
+        if (Directory.Exists(four))
+            foreach (var file in Directory.GetFiles(four, "*.mp3").OrderBy(f => f, StringComparer.Ordinal))
+                found.Add(new CorpusRecording("4", file, false));
+
         return found;
     }
 
@@ -188,7 +199,8 @@ public static class DeclipCorpus
     /// Runs <paramref name="measure"/> over every cell, one worker per recording, and returns the
     /// results in a deterministic order regardless of how the work was scheduled.
     /// </summary>
-    public static List<T> Measure<T>(Func<CorpusCell, T> measure, int? maximumParallelism = null)
+    public static List<T> Measure<T>(Func<CorpusCell, T> measure, int? maximumParallelism = null,
+        Action<CorpusRecording, string>? onExcluded = null)
     {
         ArgumentNullException.ThrowIfNull(measure);
         var recordings = Recordings();
@@ -212,7 +224,23 @@ public static class DeclipCorpus
             AudioDocument document;
             try { document = Load(recording.Path); }
             catch (Exception) { return; }
-            if (document.Channels.Count == 0 || document.Channels[0].Length < 4096) return;
+            if (document.Channels.Count == 0 || document.Channels[0].Length < 4096)
+            {
+                onExcluded?.Invoke(recording, "too short to measure");
+                return;
+            }
+
+            // A repair can only be scored against a clean reference, so a recording that is already
+            // clipped is not usable: its "clean" channel is itself damaged, and every gain measured
+            // against it is measured against the wrong thing. This is reported rather than silently
+            // dropped, because a corpus that quietly shrinks is a corpus nobody can reproduce.
+            var asFound = Restoration.AnalyzeClipping([document.Channels[0]], document.SampleRate,
+                new ClippingAnalysisOptions());
+            if (asFound.Events.Count > 0)
+            {
+                onExcluded?.Invoke(recording, $"already clipped: {asFound.Events.Count} events before any damage");
+                return;
+            }
 
             var results = new List<(double, T)>();
             foreach (double relative in Levels)

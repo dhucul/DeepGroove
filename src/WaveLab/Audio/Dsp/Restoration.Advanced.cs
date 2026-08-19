@@ -729,12 +729,14 @@ public static partial class Restoration
     /// the material really is clipped hard and the reconstruction should be let run.
     /// </para>
     /// <para>
-    /// Measured on three corpora, capping below a mean claim of 15% gains <b>+46.5 dB over 272
-    /// cells</b> — records +15.9, Windows Media +30.6, 78rpm untouched — and survives the check
-    /// that killed every earlier rule of this kind: held out a whole corpus at a time it gains
-    /// <b>+44.6 dB with no fold negative</b>, and held out a recording at a time, +46.9. It fires
-    /// on 17 of 272 cells, 16 of which improve and one of which loses 2.11 dB, and it never takes a
-    /// cell below leaving the damage alone. <b>The threshold is close to a cliff</b>: 0.20 gives
+    /// Measured on four corpora, capping below a mean claim of 15% gains <b>+41.3 dB over 336
+    /// cells</b> — records +15.9, Windows Media +30.6, 78rpm untouched, <b>spoken word −5.2</b> — and
+    /// survives the check that killed every earlier rule of this kind: held out a whole corpus at a
+    /// time it gains <b>+41.3 dB and every fold selects it</b>. <b>One fold of four is negative:</b>
+    /// on the first three corpora this was +44.6 with none negative, and adding spoken word turned
+    /// that into a 5.2 dB loss on the held-out fold. The rule still wins clearly and no cell in any
+    /// corpus falls below leaving the damage alone, but <i>no fold negative</i> was a fact about
+    /// three populations rather than about the rule. <b>The threshold is close to a cliff</b>: 0.20 gives
     /// +16.1 and 0.25 gives −16.2, so it is set at the low end of the 0.15–0.17 the folds chose.
     /// </para>
     /// </remarks>
