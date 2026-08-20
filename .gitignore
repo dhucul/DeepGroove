@@ -13,3 +13,6 @@ installer/Output/
 
 # WaveLab runtime artifacts
 *.wlmeta.json
+
+# Listening-pass renders
+listening/

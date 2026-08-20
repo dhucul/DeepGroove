@@ -42,6 +42,20 @@ public sealed class HumRemovalEffect : EffectBase
     private double[] _harmonicEnergy = [];
     private double[] _harmonicSmoothing = [];
 
+    // Detection probes: each mains candidate with its first two harmonics, then three frequencies
+    // that are harmonics of neither, which measure what the programme alone is doing.
+    private static readonly double[] ProbeFrequencies =
+        [50, 100, 150, 60, 120, 180, 37, 73, 137];
+    private const int MainsProbesEach = 3;
+    private const double DetectionWindowSeconds = 0.25;
+
+    private double[] _probeCoefficient = [];
+    private double[] _probeS1 = [];
+    private double[] _probeS2 = [];
+    private int _windowFrames;
+    private int _windowFilled;
+    private double _score50, _score60;
+
     public override string TypeId => "dehum";
     public override string DisplayName => "Hum Removal";
     public override IReadOnlyList<EffectParam> Params => P;
@@ -61,6 +75,20 @@ public sealed class HumRemovalEffect : EffectBase
         _notches = bank;
         _applied = null;
         _activeHarmonics = 0;
+
+        // The detector's accumulators, allocated here for the same reason the bank is: it runs on
+        // the audio thread and may allocate nothing there.
+        _probeCoefficient = new double[ProbeFrequencies.Length];
+        _probeS1 = new double[ProbeFrequencies.Length];
+        _probeS2 = new double[ProbeFrequencies.Length];
+        for (int probe = 0; probe < ProbeFrequencies.Length; probe++)
+            _probeCoefficient[probe] = 2 * Math.Cos(2 * Math.PI * ProbeFrequencies[probe] / SampleRate);
+
+        // A quarter of a second resolves 50 Hz from 60: the analysis lobe is 1/T wide, so 4 Hz
+        // here, and the two candidates sit fifteen lobes apart. A block-sized window does not --
+        // at a 10 ms buffer a 50 Hz cycle has not finished, and the two are indistinguishable.
+        _windowFrames = Math.Max(1, (int)(SampleRate * DetectionWindowSeconds));
+        _windowFilled = 0;
     }
 
     protected override void OnParamsChanged() => Volatile.Write(ref _requested, new HumTuning(
@@ -111,6 +139,11 @@ public sealed class HumRemovalEffect : EffectBase
         Array.Clear(_harmonicSmoothing);
         _detectedFundamental = GetParam("frequency");
         _fundamentalConfidence = 0;
+        _score50 = 0;
+        _score60 = 0;
+        _windowFilled = 0;
+        Array.Clear(_probeS1);
+        Array.Clear(_probeS2);
         // The detector has been rewound, so the next block retunes to the manual frequency.
         _applied = null;
     }
@@ -179,53 +212,129 @@ public sealed class HumRemovalEffect : EffectBase
         }
     }
 
+    /// <summary>
+    /// Decide whether the mains here is 50 or 60 Hz, from a fixed window and by prominence.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two things this must not do, and the version it replaces did both. It must not measure over
+    /// whatever block the caller happens to bring: the resolution of the analysis is one over its
+    /// length, so a 10 ms buffer cannot tell 50 Hz from 60 at all, and a 1.37 s offline block
+    /// yields so few windows that nothing converges. The window is a fixed quarter of a second
+    /// whatever the block, accumulated a sample at a time so no buffer is held and no cost arrives
+    /// in a burst.
+    /// </para>
+    /// <para>
+    /// And it must not gate on <em>share of total energy</em>. Mains hum 22 dB under programme
+    /// holds well under a percent of it and is still perfectly visible, because it is a narrow line
+    /// and the programme is not — so the old 2% gate meant the detector fired on hum with nothing
+    /// over it and never on a real transfer. What decides it here is **prominence**: each
+    /// candidate's fundamental and first harmonics against three frequencies that are harmonics of
+    /// neither, which is what the music alone is doing. `HumTracker` reached the same conclusion
+    /// for the same reason.
+    /// </para>
+    /// <para>
+    /// The estimate is one of the two candidates and never a blend of them. Smoothing a frequency
+    /// toward whichever candidate won each block put the notches at 54.4 Hz — a frequency no mains
+    /// supply has ever run at, and between the two it was choosing from. Confidence is smoothed;
+    /// the answer is voted.
+    /// </para>
+    /// </remarks>
     private void DetectFundamental(float[] buffer, int offset, int count)
     {
-        // Goertzel power at 50 and 60 Hz, gated against the total signal power:
-        // a mains fundamental must carry a meaningful share of the energy, so
-        // bass-heavy music (e.g. a 55 Hz A1 note) cannot false-lock the detector.
+        if (_probeS1.Length != ProbeFrequencies.Length) return;
+
         int frames = count / ChannelCount;
-        if (frames < 64) return;
-
-        double w50 = 2 * Math.PI * 50 / SampleRate, w60 = 2 * Math.PI * 60 / SampleRate;
-        double c50 = 2 * Math.Cos(w50), c60 = 2 * Math.Cos(w60);
-        double s50a = 0, s50b = 0, s60a = 0, s60b = 0, total = 0;
-
         for (int f = 0; f < frames; f++)
         {
             double x = buffer[offset + f * ChannelCount];
-            double y50 = x + c50 * s50a - s50b;
-            s50b = s50a; s50a = y50;
-            double y60 = x + c60 * s60a - s60b;
-            s60b = s60a; s60a = y60;
-            total += x * x;
-        }
-        if (total <= 1e-9) return;
+            for (int probe = 0; probe < ProbeFrequencies.Length; probe++)
+            {
+                double s0 = x + _probeCoefficient[probe] * _probeS1[probe] - _probeS2[probe];
+                _probeS2[probe] = _probeS1[probe];
+                _probeS1[probe] = s0;
+            }
 
-        double p50 = s50a * s50a + s50b * s50b - c50 * s50a * s50b;
-        double p60 = s60a * s60a + s60b * s60b - c60 * s60a * s60b;
-
-        // Normalized share of signal energy at each mains candidate (1 = all of it)
-        double share50 = 2 * p50 / (frames * total);
-        double share60 = 2 * p60 / (frames * total);
-        double candidate = share50 > share60 ? 50 : 60;
-        double share = Math.Max(share50, share60);
-
-        // Full confidence once the candidate holds ≳17% of the signal energy
-        double confidence = Math.Clamp((share - 0.02) / 0.15, 0, 1);
-
-        // Smooth the detection
-        if (confidence > 0)
-        {
-            // The caller retunes the notch bank once the locked estimate has actually moved —
-            // updating the readout alone left the notches on the manual frequency.
-            _detectedFundamental = 0.9 * _detectedFundamental + 0.1 * candidate;
-            _fundamentalConfidence = 0.9 * _fundamentalConfidence + 0.1 * confidence;
-        }
-        else
-        {
-            _fundamentalConfidence *= 0.95;
+            if (++_windowFilled >= _windowFrames) CompleteDetectionWindow();
         }
     }
 
+    /// <summary>Read the accumulators, score the two candidates, and start the next window.</summary>
+    private void CompleteDetectionWindow()
+    {
+        // What the programme is doing where no mains harmonic can be: the median of the three, so
+        // one bass note landing on a probe cannot pass for the whole background.
+        double a = PowerAt(6), b = PowerAt(7), c = PowerAt(8);
+        double background = Math.Max(Math.Max(Math.Min(a, b), Math.Min(Math.Max(a, b), c)), 1e-24);
+
+        double strength50 = Strength(0, background);
+        double strength60 = Strength(3, background);
+
+        _windowFilled = 0;
+        Array.Clear(_probeS1);
+        Array.Clear(_probeS2);
+
+        double winner = Math.Max(strength50, strength60);
+        if (winner <= 0)
+        {
+            // Nothing that looks like mains. Let the lock decay rather than dropping it, so a
+            // passage that briefly buries the hum does not retune the bank away from it.
+            _score50 *= ScoreDecay;
+            _score60 *= ScoreDecay;
+        }
+        else if (strength50 >= strength60)
+        {
+            _score50 += (1 - _score50) * ScoreRise;
+            _score60 *= ScoreDecay;
+        }
+        else
+        {
+            _score60 += (1 - _score60) * ScoreRise;
+            _score50 *= ScoreDecay;
+        }
+
+        _detectedFundamental = _score50 >= _score60 ? 50 : 60;
+        _fundamentalConfidence = Math.Max(_score50, _score60);
+    }
+
+    private const double ScoreRise = 0.15;
+    private const double ScoreDecay = 0.8;
+
+    /// <summary>
+    /// How far a candidate stands above the programme, or zero if it does not stand above it at
+    /// all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only the fundamental is required. Requiring the second partial as well — which is what
+    /// `HumTracker` does, and it is right to, having a whole spectrum to search — rejects a hum
+    /// that is very nearly a sine, and magnetically induced mains hum often is. It cost nothing
+    /// here anyway: there are two candidates rather than a spectrum of them, so the comb cannot
+    /// pick out a subharmonic of the music the way it can there.
+    /// </para>
+    /// <para>
+    /// The partials still count, because they are added into the strength: between two candidates
+    /// that both stand clear, the one that looks like a comb wins. What guards against a sustained
+    /// bass note near a mains frequency is that it has to hold for about three quarters of a
+    /// second before the score crosses the confidence the tuning needs — mains hum runs for the
+    /// whole side, and a note does not.
+    /// </para>
+    /// </remarks>
+    private double Strength(int firstProbe, double background)
+    {
+        if (PowerAt(firstProbe) < background * MinimumProminence) return 0;
+
+        double total = PowerAt(firstProbe) + PowerAt(firstProbe + 1) + PowerAt(firstProbe + 2);
+        return total / (MainsProbesEach * background);
+    }
+
+    /// <summary>A mains line has to stand 8 dB clear of what the music is doing off the comb.</summary>
+    private const double MinimumProminence = 6.3;
+
+    private double PowerAt(int probe)
+    {
+        double scale = 1.0 / ((double)_windowFrames * _windowFrames);
+        return (_probeS1[probe] * _probeS1[probe] + _probeS2[probe] * _probeS2[probe]
+                - _probeCoefficient[probe] * _probeS1[probe] * _probeS2[probe]) * scale;
+    }
 }
