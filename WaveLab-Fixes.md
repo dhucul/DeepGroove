@@ -1,5 +1,7 @@
 # WaveLab — Audit Fixes Applied
 
+> **This is a snapshot of 15 August 2026, not a current status.** 96 commits have landed since, and everything described below was committed — the "Nothing is committed" line is no longer true. One item has been re-checked against the code: filter-coefficient tearing, listed under *What could NOT be verified* as fixed only in `FilterEffect` and `EqEffect`, was closed on 17 August by `45275fb`, which moved all nine filtered effects onto the `BiquadCoefficients` snapshot and added `CoefficientPublishingTests` to pin it. Nothing else here has been re-verified — treat every remaining caveat as equally out of date until it is checked. *(Noted 20 August 2026.)*
+
 **Result:** all 81 findings fixed across 59 files. `dotnet build` clean (0 errors, 0 warnings), `dotnet test` 229/229 passing, 3 consecutive runs with no flakiness. `59 files changed, 2150 insertions(+), 610 deletions(-)`.
 
 **Nothing is committed.** All changes sit in the working tree on `main` for you to review (`git diff`). The only untracked file is `WaveLab-Audit.md`.

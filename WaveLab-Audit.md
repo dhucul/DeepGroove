@@ -1,5 +1,7 @@
 # WaveLab — Architecture Audit
 
+> **This is a snapshot of 15 August 2026, not a current status.** Every finding below was fixed and committed (see `WaveLab-Fixes.md`), so the code quoted here is the code *before* the fix — read it as a record of what was wrong, never as a description of what is there now. 96 commits have landed since, and `src/` and `tests/` now hold 267 `.cs` files against the 127 this audit read, so its coverage claim no longer describes the codebase either. The engineering record maintained alongside the code is `CLAUDE.md`. *(Noted 20 August 2026.)*
+
 **Scope:** all 127 `.cs` files under `src/` and `tests/` (obj/bin/.git excluded). 9 modules, read in full — nothing sampled or skipped.
 **Focus:** resource management · sequence flow · runtime errors · business logic (plus security/performance where concrete).
 **Findings:** 1 CRITICAL · 17 HIGH · 63 MEDIUM.
