@@ -77,10 +77,14 @@ listed as a nice-to-have. Both are done.
   detection: raising the nomination threshold from 8 to 14 sigma costs one point of recall and no
   gain at all. False detections on digital-born material fell from 45.9 events a second at worst to
   9.9, but 9.9 on an undamaged alarm is still 9.9.
-- **Whether record transfers reading 1.21 events a second is right cannot be settled here.** Corpus
-  1 is analogue and genuinely carries surface clicks, so the rise from 0.22 tracks the recall gain
-  rather than contradicting it. Settling it needs a transfer with its real clicks marked by hand,
-  which no corpus here has.
+- **Whether record transfers reading 1.21 events a second is right cannot be settled here, and two
+  attempts to settle it physically both failed.** Differencing two transfers of the same performance
+  fails because different pressings do not correlate at sample level (0.05 to 0.08). The vertical
+  groove component is not music-free enough, and does not apply to stereo LPs anyway. It needs a
+  recording with its clicks marked by ear.
+- **Recall below 12 dB is worse than the synthetic figures say.** Measured against real click shapes
+  lifted off shellac, recall is 74% at 12 dB above the local level and 40% at 6 dB, against 85% and
+  51% for invented damage. Read the synthetic numbers as about eleven points optimistic.
 
 - **Spectral heal can make a burst at the local level worse** — 17 of 58 cells, down to −4.9 dB —
   where above the local level it is reliable. Nothing is fitted for that regime.

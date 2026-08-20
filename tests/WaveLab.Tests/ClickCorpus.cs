@@ -60,11 +60,13 @@ public static class ClickCorpus
     public static IReadOnlyList<double> Severities { get; } = [24.0, 18.0, 12.0, 6.0];
 
     public const double ClicksPerSecond = 8.0;
-    private const int LocalWindowMs = 20;
+    internal const int LocalWindowMs = 20;
     private const int MinimumLengthSamples = 1;
     private const int MaximumLengthSamples = 20;
 
     /// <summary>Local RMS over a window centred on <paramref name="at"/>.</summary>
+    internal static double LocalRmsAt(float[] x, int at, int half) => LocalRms(x, at, half);
+
     private static double LocalRms(float[] x, int at, int half)
     {
         int from = Math.Max(0, at - half), to = Math.Min(x.Length, at + half);
