@@ -75,7 +75,7 @@ listed as a nice-to-have. Both are done.
   the ceiling is about 0.4 dB a cell on record transfers, and every attempt so far has cost more
   elsewhere than it gained there.
 
-- **The click detector now finds 83% of clicks 6 dB above the local level, against 15% this
+- **The click detector now finds 82% of clicks 6 dB above the local level, against 15% this
   morning**, after four mechanism fixes, a prediction-residual nomination pass and a confidence
   floor that only became meaningful once the recovery gate stopped conflating quiet with
   unrecovered. What it costs is false detections on speech, 2.75 to 4.51 a second on undamaged
@@ -87,8 +87,9 @@ listed as a nice-to-have. Both are done.
   groove component is not music-free enough, and does not apply to stereo LPs anyway. It needs a
   recording with its clicks marked by ear.
 - **Recall below 12 dB is worse than the synthetic figures say.** Measured against real click shapes
-  lifted off shellac, recall is 74% at 12 dB above the local level and 40% at 6 dB, against 85% and
-  51% for invented damage. Read the synthetic numbers as about eleven points optimistic.
+  lifted off shellac, recall is 84% at 12 dB above the local level and 65% at 6 dB, against 94% and
+  82% for invented damage. Read the synthetic numbers as ten points optimistic at 12 dB and
+  seventeen at 6.
 
 - **Spectral heal at the local level is close to clean.** Weighting cells by how far they stand
   above their own surroundings — strictly where the continuation refused, loosely where it
