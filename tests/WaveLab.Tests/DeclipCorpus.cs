@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using WaveLab.Audio;
@@ -55,7 +55,7 @@ public sealed record CorpusCell(CorpusRecording Recording, double Relative, int 
 /// <b>It is opt-in and does nothing unless <c>WAVELAB_CORPUS=1</c>.</b> The corpora are external and
 /// mostly not redistributable, so the ordinary suite must not depend on them, and a harness that
 /// runs by accident is how a 10-second suite became a 5m43s one. Paths come from
-/// <c>WAVELAB_CORPUS1</c> to <c>WAVELAB_CORPUS5</c> when set.
+/// <c>WAVELAB_CORPUS1</c> to <c>WAVELAB_CORPUS6</c> when set.
 /// </para>
 /// <para>
 /// <b>Recordings that are already clipped are excluded and reported.</b> A repair can only be
@@ -74,8 +74,8 @@ public sealed record CorpusCell(CorpusRecording Recording, double Relative, int 
 /// <b>The cache is far larger than the reasoning behind it suggested, and the measurement is the
 /// number to trust.</b> <c>Spade.Project</c> restores every reliable sample to exactly its windowed
 /// input, so it looked as though the output would differ only around the plateaus and the deltas
-/// would come to a few megabytes. Measured, the solver moves <b>9.65% of samples</b>, not the
-/// fraction of a percent the plateaus occupy, and the three corpora cost <b>977 MB across 272
+/// would come to a few megabytes. Measured, the solver moves <b>10.25% of samples</b>, not the
+/// fraction of a percent the plateaus occupy, and the six corpora cost <b>3.8 GB across 532
 /// cells</b>: overlap-add sums in double and divides by the window weight, so a sample can come
 /// back changed in its last bit or two without the reconstruction being wrong anywhere.
 /// <i>Reconstructed exactly</i> and <i>bit-identical</i> are not the same claim. Each cell is
@@ -141,6 +141,11 @@ public static class DeclipCorpus
         if (Directory.Exists(five))
             foreach (var file in Directory.GetFiles(five, "*.mp3").OrderBy(f => f, StringComparer.Ordinal))
                 found.Add(new CorpusRecording("5", file, false));
+
+        string six = Root("WAVELAB_CORPUS6", "");
+        if (Directory.Exists(six))
+            foreach (var file in Directory.GetFiles(six, "*.mp3").OrderBy(f => f, StringComparer.Ordinal))
+                found.Add(new CorpusRecording("6", file, false));
 
         return found;
     }

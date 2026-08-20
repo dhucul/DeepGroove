@@ -31,7 +31,7 @@ tempo estimation, polyphase sample-rate conversion.
 **Restoration** — declip (arch reconstruction and A-SPADE, chosen per channel), click and crackle
 repair, spectral noise reduction with a learned profile, hum removal, wow and flutter, needle-drop
 and run-out detection, and a spectral editor with time-frequency reassignment and region repair.
-Validated against four external corpora; see `docs/validation-corpora.md`.
+Validated against six external corpora; see `docs/validation-corpora.md`.
 
 **Analysis & metering** — peak pyramid waveform, spectrum analyser, spectrogram, constant-Q,
 amplitude and frequency rulers, vertical amplitude zoom, EBU R128 loudness with history, true peak,
@@ -71,25 +71,44 @@ listed as a nice-to-have. Both are done.
   corpus scored it −38.6 dB held out. The axis is now known — the cap gains on dense material and
   loses on sparse — but with five corpora splitting two dense and two sparse, any gate that
   separates them is as likely to be fitting corpus identity as signal, and leave-one-corpus-out
-  would only partly catch it. **What would justify trying again is more corpora, not another idea**:
-  the ceiling is about 0.4 dB a cell on record transfers, and every attempt so far has cost more
-  elsewhere than it gained there.
+  would only partly catch it. This entry used to say **what would justify trying again is more
+  corpora, not another idea**. A sixth arrived — Creative Commons netlabel music, the first
+  measurably dense population here at a 12.9 dB median crest factor — and it **sharpened the
+  problem without softening it**: four of its 68 cells now score below leaving the damage alone,
+  the first cells to do so in 532, all four at the mildest severity with under 1.1% of samples
+  clipped, and the arch wins three of them outright. So the axis is confirmed and the corner is
+  now visible on real material rather than inferred. It is still not a licence to fit a gate: the
+  two rules that would catch exactly these cells, a damage floor and a short-plateau exception,
+  were each shipped and each destroyed by a later corpus, at 19.8 and 668.7 dB. The ceiling is
+  about 0.4 dB a cell on record transfers, and every attempt so far has cost more elsewhere than
+  it gained there.
+
+- **Four cells of 532 now lose to leaving the damage alone, and the gate was weakened rather than
+  the defect fixed.** They are named in `docs/validation-corpora.md` with their clipped fractions
+  and plateau lengths. `DeclipCorpusTests.TheChainBeatsLeavingTheDamageAlone` no longer asserts
+  every cell; it asserts that nothing loses once there is real damage (every cell at 0.50 and
+  below, all six corpora), that every population gains by a wide margin, and that losses stay rare
+  and stay at the mildest severity — so it still fails if the corner spreads.
 
 - **The click detector now finds 82% of clicks 6 dB above the local level, against 15% this
   morning**, after four mechanism fixes, a prediction-residual nomination pass and a confidence
   floor that only became meaningful once the recovery gate stopped conflating quiet with
   unrecovered. What it costs is false detections on speech, 2.75 to 4.51 a second on undamaged
   audio, where classical is unchanged at 0.06. Measured against real click shapes rather than
-  invented ones, expect ten points less at 12 dB and seventeen at 6.
-- **Whether record transfers reading 1.21 events a second is right cannot be settled here, and two
+  invented ones, expect eleven points less at 12 dB and nineteen at 6. **A sixth corpus makes that
+  trade look worse than it did**: dense percussive music is digital-born and click-shaped, and the
+  same recovery gate takes it from 0.35 to 1.45 events a second median and 3.1 to 11.8 at worst —
+  the highest false-positive rate of any digital corpus here, above Windows Media's 10.7. It also
+  takes the record transfers from 1.21 to 2.56. The cost is on music as well as speech.
+- **Whether record transfers reading 2.56 events a second is right cannot be settled here, and two
   attempts to settle it physically both failed.** Differencing two transfers of the same performance
   fails because different pressings do not correlate at sample level (0.05 to 0.08). The vertical
   groove component is not music-free enough, and does not apply to stereo LPs anyway. It needs a
   recording with its clicks marked by ear.
 - **Recall below 12 dB is worse than the synthetic figures say.** Measured against real click shapes
-  lifted off shellac, recall is 84% at 12 dB above the local level and 65% at 6 dB, against 94% and
-  82% for invented damage. Read the synthetic numbers as ten points optimistic at 12 dB and
-  seventeen at 6.
+  lifted off shellac, and now over six corpora, recall is 83% at 12 dB above the local level and 63%
+  at 6 dB, against 94% and 82% for invented damage. Read the synthetic numbers as eleven points
+  optimistic at 12 dB and nineteen at 6.
 
 - **Spectral heal at the local level is close to clean.** Weighting cells by how far they stand
   above their own surroundings — strictly where the continuation refused, loosely where it
@@ -100,6 +119,7 @@ listed as a nice-to-have. Both are done.
   injected 220 to 290 samples of drift whatever was planted; it now measures position and leaves 230
   down to 80. The reported figure is compensated for the reference window's own filter and reads 70
   to 93% of the truth from 2.4% down to 0.6%, against 36 to 52% before. Below that it over-reads —
-  0.3% planted reads 0.254% — because it is measuring its own noise and the compensation amplifies
-  that too. Below about 1% wow the correction still does not improve on leaving the recording
-  alone.
+  0.3% planted reads 0.283% — because it is measuring its own noise and the compensation amplifies
+  that too. **Below about 1% wow the correction is worse than leaving the recording alone**, and
+  over six corpora that is now measured rather than suspected: residual timing error goes 96 → 98
+  samples at 0.6% planted and 55 → 78 at 0.3%, against 269 → 225 at 2.4%.

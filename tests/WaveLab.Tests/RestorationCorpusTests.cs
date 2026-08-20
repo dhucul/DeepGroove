@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using WaveLab.Audio.Dsp;
 using Xunit;
@@ -139,9 +139,9 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
 
         Assert.NotEmpty(rows);
 
-        // The correction must not be worse than the one it replaced. Measured, it is far better at
-        // every severity: 215 against 277 samples of residual drift at 2.4%, and 47 against 223 at
-        // 0.3%, where the old path injected seven times the error that was there.
+        // The correction must not be worse than the one it replaced. Measured over six corpora it is
+        // far better at every severity: 225 against 287 samples of residual drift at 2.4%, and 78
+        // against 233 at 0.3%, where the old path injected four times the error that was there.
         foreach (var planted in rows.Select(r => r.PlantedPercent).Distinct())
         {
             var at = rows.Where(r => r.PlantedPercent == planted).ToList();
@@ -150,9 +150,10 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
                 $"{at.Average(r => r.ShiftVelocity):0} for the frame-to-frame estimator it replaced");
         }
 
-        // And it must remove drift where the wow is gross. Below about 1% it does not yet: the
-        // residual rises slightly rather than falling, which is reported and not asserted because
-        // nothing has been fitted to gate it.
+        // And it must remove drift where the wow is gross. Below about 1% it does not: at 0.6% the
+        // residual is a wash (96 uncorrected against 98 corrected) and at 0.3% the correction adds
+        // to it (55 against 78), because there the estimator is reading its own floor. Reported and
+        // not asserted, because nothing has been fitted to gate it.
         foreach (var planted in rows.Select(r => r.PlantedPercent).Distinct().Where(p => p >= 1.2))
         {
             var at = rows.Where(r => r.PlantedPercent == planted).ToList();
