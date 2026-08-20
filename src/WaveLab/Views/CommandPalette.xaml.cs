@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -19,6 +20,7 @@ public partial class CommandPalette : Window
     private const int MaxResults = 200;
 
     private readonly List<Command> _all;
+    private bool _closing;
 
     public CommandPalette(List<Command> commands)
     {
@@ -128,5 +130,25 @@ public partial class CommandPalette : Window
         }
     }
 
-    private void OnDeactivated(object sender, EventArgs e) => Close();
+    /// <summary>
+    /// Deactivation dismisses the palette, which is what makes clicking away close it.
+    /// </summary>
+    /// <remarks>
+    /// Every other way of closing it deactivates it as well — Windows takes the focus back to the
+    /// main window while the palette is on its way out — so without this guard choosing a command
+    /// re-entered <see cref="Window.Close"/> inside the close already running, and that throws.
+    /// The application's dispatcher handler caught it, so the symptom was an error report where
+    /// there should have been a command.
+    /// </remarks>
+    private void OnDeactivated(object sender, EventArgs e)
+    {
+        if (_closing) return;
+        Close();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        _closing = true;
+        base.OnClosing(e);
+    }
 }
