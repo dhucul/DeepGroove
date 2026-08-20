@@ -22,10 +22,10 @@ namespace WaveLab.Tests;
 /// fails here, and every one of those is invisible to a unit test that never builds a window.
 /// </para>
 /// <para>
-/// What is deliberately not here: <c>MainWindow</c>, whose close path writes its position to the
-/// real settings file; <c>SettingsDialog</c>, which needs the redirected app-data root that lives
-/// in another collection; and the dialogs that want hardware or a disc — record, CD import, CD
-/// transfer — or a long analysis to be running before they are worth looking at.
+/// What is not here: <c>MainWindow</c> and <c>SettingsDialog</c>, which both need the redirected
+/// app-data root and so live in <see cref="ShellWindowTests"/>; and the dialogs that want hardware
+/// or a disc — record, CD import, CD transfer — or a long analysis to be running before they are
+/// worth looking at.
 /// </para>
 /// </remarks>
 public sealed class DialogLoadTests

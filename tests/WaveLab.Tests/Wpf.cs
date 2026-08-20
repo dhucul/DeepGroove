@@ -126,12 +126,22 @@ internal static class Wpf
     /// pass — which is what turns a constructed window into one that has actually been through the
     /// path a user's would.
     /// </summary>
-    public static void Pump()
+    public static void Pump() => Pump(DispatcherPriority.ContextIdle);
+
+    /// <summary>
+    /// Drain everything queued above <paramref name="until"/>, then return.
+    /// </summary>
+    /// <remarks>
+    /// The priority is the whole of it. A frame ends when its own callback runs, so anything queued
+    /// *below* that priority is still waiting when the pump returns — and <c>MainWindow</c> queues
+    /// its final close at <see cref="DispatcherPriority.ApplicationIdle"/>, which sits under
+    /// <see cref="DispatcherPriority.ContextIdle"/>. Pumped at the default the shell simply never
+    /// closed, and it looked like a hang in its shutdown rather than a pump that stopped too soon.
+    /// </remarks>
+    public static void Pump(DispatcherPriority until)
     {
         var frame = new DispatcherFrame();
-        Dispatcher.CurrentDispatcher.BeginInvoke(
-            DispatcherPriority.ContextIdle,
-            new Action(() => frame.Continue = false));
+        Dispatcher.CurrentDispatcher.BeginInvoke(until, new Action(() => frame.Continue = false));
         Dispatcher.PushFrame(frame);
     }
 
@@ -161,7 +171,27 @@ internal static class Wpf
         finally
         {
             window.Close();
-            Pump();
+
+            // Not one pump: a window may cancel its own Closing, do asynchronous shutdown work and
+            // re-close itself afterwards, which is exactly what MainWindow does. The wait is in
+            // time rather than in pumps, because the work it is waiting on is on other threads and
+            // a tight loop of pumps outruns it. Give up loudly rather than leave it open for the
+            // next test.
+            var deadline = Environment.TickCount64 + 15_000;
+            while (window.IsVisible && Environment.TickCount64 < deadline)
+            {
+                Pump(DispatcherPriority.SystemIdle);
+                Thread.Sleep(5);
+            }
+            // A window that will not close has usually thrown on the way out, and that exception is
+            // on the dispatcher rather than in this stack — so say both or the useful half is lost.
+            if (window.IsVisible)
+            {
+                Exception[] onTheWayOut = DrainFailures();
+                Assert.Fail($"{window.GetType().Name} would not close. Dispatcher raised " +
+                            $"{onTheWayOut.Length}: " +
+                            string.Join(" | ", onTheWayOut.Select(f => $"{f.GetType().Name}: {f.Message}")));
+            }
         }
 
         // Closing counts: a window that throws on its way out is a window that throws every time
