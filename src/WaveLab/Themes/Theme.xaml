@@ -843,6 +843,13 @@
                         <Trigger Property="Orientation" Value="Horizontal">
                             <Setter Property="Height" Value="8"/>
                             <Setter Property="Width" Value="Auto"/>
+                            <!-- MinHeight as well as Height, or the bar stays 17 px tall however
+                                 slim it is asked to be: what this style does not declare falls
+                                 through to the built-in ScrollBar style, which sets a minimum from
+                                 SystemParameters. Height read 8 and ActualHeight measured 17, and
+                                 the difference came out of the file tabs. -->
+                            <Setter Property="MinHeight" Value="8"/>
+                            <Setter Property="MinWidth" Value="0"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

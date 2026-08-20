@@ -249,4 +249,37 @@ public sealed class ThemeTemplateTests
         }
         return "";
     }
+
+    /// <summary>
+    /// The slim scroll bar is slim in both directions.
+    /// </summary>
+    /// <remarks>
+    /// Setting <c>Height</c> is not enough. What a style does not declare falls through to the
+    /// built-in <c>ScrollBar</c> style, which sets a minimum from <c>SystemParameters</c> — so the
+    /// horizontal bar reported <c>Height</c> 8 and measured 17, and the nine pixels came out of
+    /// whatever it was scrolling. In the file tab strip that was visible as a strip 49 px tall
+    /// instead of 40.
+    /// </remarks>
+    [Fact]
+    public void TheHorizontalScrollBarIsAsSlimAsItIsAskedToBe()
+    {
+        double height = Wpf.Run(() =>
+        {
+            var bar = new System.Windows.Controls.Primitives.ScrollBar
+            {
+                Orientation = Orientation.Horizontal,
+                Maximum = 100,
+                ViewportSize = 10,
+            };
+            double measured = 0;
+            Wpf.Show(new Window { Content = bar, Width = 400, Height = 200 }, _ =>
+            {
+                Wpf.Pump();
+                measured = bar.ActualHeight;
+            });
+            return measured;
+        });
+
+        Assert.Equal(8, height, 0);
+    }
 }
