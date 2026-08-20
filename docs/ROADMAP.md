@@ -64,12 +64,16 @@ listed as a nice-to-have. Both are done.
 
 ## 3. Actually open
 
-- **A-SPADE overshoots on lightly clipped material and nothing currently stops it.** A cap keyed on
-  the overshoot the shoulders claim shipped and was withdrawn: it gains on dense material and loses
-  on sparse, because the shoulders claim little overshoot exactly when the signal is sparse. Over
-  five corpora it is worth 0.017 dB a cell and −38.6 dB held out. The problem is real; the fix has
-  to **separate dense material from sparse**, and has to clear five corpora. Five attempts so far,
-  five declined.
+- **A-SPADE overshoots on lightly clipped material. Closed, not solved — do not start a sixth
+  attempt without new evidence.** Five have been made and all five declined: a hard
+  `EstimatedTruePeak` bound, headroom scaled by plateau length, per-event gating, recentring the
+  estimator, and the shoulder-claim cap, which shipped and was withdrawn the same day when a fifth
+  corpus scored it −38.6 dB held out. The axis is now known — the cap gains on dense material and
+  loses on sparse — but with five corpora splitting two dense and two sparse, any gate that
+  separates them is as likely to be fitting corpus identity as signal, and leave-one-corpus-out
+  would only partly catch it. **What would justify trying again is more corpora, not another idea**:
+  the ceiling is about 0.4 dB a cell on record transfers, and every attempt so far has cost more
+  elsewhere than it gained there.
 
 - **The click detector now finds 83% of clicks 6 dB above the local level, against 15% this
   morning**, after four mechanism fixes, a prediction-residual nomination pass and a confidence
