@@ -80,7 +80,7 @@ listed as a nice-to-have. Both are done.
   floor that only became meaningful once the recovery gate stopped conflating quiet with
   unrecovered. What it costs is false detections on speech, 2.75 to 4.51 a second on undamaged
   audio, where classical is unchanged at 0.06. Measured against real click shapes rather than
-  invented ones, expect roughly eleven points less than these figures.
+  invented ones, expect ten points less at 12 dB and seventeen at 6.
 - **Whether record transfers reading 1.21 events a second is right cannot be settled here, and two
   attempts to settle it physically both failed.** Differencing two transfers of the same performance
   fails because different pressings do not correlate at sample level (0.05 to 0.08). The vertical
