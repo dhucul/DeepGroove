@@ -260,14 +260,16 @@ public sealed class ThemeTemplateTests
     /// whatever it was scrolling. In the file tab strip that was visible as a strip 49 px tall
     /// instead of 40.
     /// </remarks>
-    [Fact]
-    public void TheHorizontalScrollBarIsAsSlimAsItIsAskedToBe()
+    [Theory]
+    [InlineData(Orientation.Horizontal)]
+    [InlineData(Orientation.Vertical)]
+    public void TheScrollBarIsAsSlimAsItIsAskedToBe(Orientation orientation)
     {
-        double height = Wpf.Run(() =>
+        double thickness = Wpf.Run(() =>
         {
             var bar = new System.Windows.Controls.Primitives.ScrollBar
             {
-                Orientation = Orientation.Horizontal,
+                Orientation = orientation,
                 Maximum = 100,
                 ViewportSize = 10,
             };
@@ -275,11 +277,11 @@ public sealed class ThemeTemplateTests
             Wpf.Show(new Window { Content = bar, Width = 400, Height = 200 }, _ =>
             {
                 Wpf.Pump();
-                measured = bar.ActualHeight;
+                measured = orientation == Orientation.Horizontal ? bar.ActualHeight : bar.ActualWidth;
             });
             return measured;
         });
 
-        Assert.Equal(8, height, 0);
+        Assert.Equal(8, thickness, 0);
     }
 }

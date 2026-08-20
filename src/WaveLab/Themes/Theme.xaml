@@ -816,6 +816,11 @@
     <!-- ── slim scrollbar ──────────────────────────────────── -->
     <Style TargetType="ScrollBar">
         <Setter Property="Width" Value="8"/>
+        <!-- MinWidth as well as Width, for the reason spelled out on the horizontal trigger below:
+             the built-in style sets a 17 px minimum from SystemParameters, and a minimum wins over
+             a width. Without this the slim scroll bar has never once been slim. -->
+        <Setter Property="MinWidth" Value="8"/>
+        <Setter Property="MinHeight" Value="0"/>
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Template">
             <Setter.Value>
