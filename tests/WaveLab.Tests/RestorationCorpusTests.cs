@@ -175,41 +175,66 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
             int binTo = (int)(cell.HighHz * fft / cell.SampleRate) + 1;
             var mask = SpectralMask.Rectangle(frameFrom, frameTo, binFrom, binTo, 2);
 
-            var healed = SpectralRepair.Heal(cell.Damaged, 0, mask);
-            var candidate = (float[])cell.Damaged.Clone();
-            if (!healed.IsEmpty)
-                for (int i = 0; i < healed.Samples.Length && healed.Start + i < candidate.Length; i++)
-                    candidate[healed.Start + i] = healed.Samples[i];
-
             var span = new bool[cell.Clean.Length];
             for (int i = cell.From; i < cell.To; i++) span[i] = true;
             double raw = DeclipCorpus.SnrDb(cell.Clean, cell.Damaged, span);
-            double fixedUp = DeclipCorpus.SnrDb(cell.Clean, candidate, span);
+
+            (double Gain, int Replaced) Run(SpectralRepairOptions o)
+            {
+                var healed = SpectralRepair.Heal(cell.Damaged, 0, mask, o);
+                var candidate = (float[])cell.Damaged.Clone();
+                if (!healed.IsEmpty)
+                    for (int i = 0; i < healed.Samples.Length && healed.Start + i < candidate.Length; i++)
+                        candidate[healed.Start + i] = healed.Samples[i];
+                return (DeclipCorpus.SnrDb(cell.Clean, candidate, span) - raw, healed.Samples.Length);
+            }
+
+            var now = Run(SpectralRepairOptions.Default);
+            var was = Run(SpectralRepairOptions.Default with { ExcessWeighted = false });
             return (cell.Recording.Corpus, cell.Recording.ShortName, cell.Severity,
-                Gain: fixedUp - raw, Replaced: healed.Samples.Length);
+                Gain: now.Gain, Replaced: now.Replaced, OldGain: was.Gain);
         }, (r, why) => excluded.Add($"{r.Corpus}/{r.ShortName}: {why}"));
         watch.Stop();
 
         output.WriteLine($"{rows.Count} cells in {watch.Elapsed.TotalMinutes:0.0} min, {excluded.Count} recordings excluded");
         Report(rows, r => r.Corpus, r => r.Severity, r => r.Gain);
+        foreach (double severity in rows.Select(r => r.Severity).Distinct().OrderByDescending(x => x))
+        {
+            var at = rows.Where(r => r.Severity == severity).ToList();
+            output.WriteLine($"    {severity,5:0.0} dB: mask-weighted {at.Average(r => r.OldGain):+0.00;-0.00} dB " +
+                $"worst {at.Min(r => r.OldGain):+0.00;-0.00} ({at.Count(r => r.OldGain < 0)} worse)  ->  " +
+                $"excess-weighted {at.Average(r => r.Gain):+0.00;-0.00} dB " +
+                $"worst {at.Min(r => r.Gain):+0.00;-0.00} ({at.Count(r => r.Gain < 0)} worse)");
+        }
         foreach (var r in rows.OrderBy(r => r.Gain).Take(6))
             output.WriteLine($"  worst: {r.Corpus}/{r.ShortName} @{r.Severity:+0;-0} dB {r.Gain:+0.00;-0.00} dB " +
-                $"(replaced {r.Replaced} samples)");
+                $"(was {r.OldGain:+0.00;-0.00}, replaced {r.Replaced} samples)");
 
         Assert.NotEmpty(rows);
         Assert.All(rows, r => Assert.True(r.Replaced > 0, $"{r.ShortName}: the heal replaced nothing"));
 
-        // Above the local level the heal is reliable and the claim is no harm. At the local level it
-        // is not: 17 of 58 cells there come out worse, down to -4.9 dB, because the mask then covers
-        // as much wanted signal as unwanted and the reconstruction replaces real content with a
-        // guess. That regime is reported rather than asserted, since nothing has been fitted for it.
+        // Above the local level the heal must never make a cell worse.
         foreach (var r in rows.Where(r => r.Severity >= 6))
             Assert.True(r.Gain >= 0,
                 $"{r.ShortName} at {r.Severity:0} dB above local scored {r.Gain:+0.00;-0.00} dB against leaving the burst alone");
+
+        // At the local level the selection holds as much wanted signal as unwanted, and a few cells
+        // still come out behind. Weighting the mask by how anomalous each refused cell is took that
+        // from 13 cells and -4.5 dB to 2 and -2.2, so what is pinned is the improved state rather
+        // than perfection: no cell may fall more than 3 dB behind, and no more than a tenth of them
+        // may fall behind at all.
         var atLevel = rows.Where(r => r.Severity <= 0).ToList();
         if (atLevel.Count > 0)
-            output.WriteLine($"  at the local level: {atLevel.Count(r => r.Gain < 0)} of {atLevel.Count} cells " +
-                $"come out worse, worst {atLevel.Min(r => r.Gain):+0.00;-0.00} dB");
+        {
+            int behind = atLevel.Count(r => r.Gain < 0);
+            output.WriteLine($"  at the local level: {behind} of {atLevel.Count} cells come out worse, " +
+                $"worst {atLevel.Min(r => r.Gain):+0.00;-0.00} dB");
+            Assert.True(atLevel.Min(r => r.Gain) > -3.0,
+                $"a cell at the local level lost {atLevel.Min(r => r.Gain):0.00} dB");
+            Assert.True(behind <= atLevel.Count / 10,
+                $"{behind} of {atLevel.Count} cells at the local level came out worse");
+        }
+
     }
 
     private static bool[] Everything(int length)

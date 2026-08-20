@@ -36,7 +36,8 @@ public readonly record struct SpectralRepairOptions(
     int Hop = 512,
     double PartialDriftRadians = 0.10,
     SpectralHealMethod Method = SpectralHealMethod.PartialContinuation,
-    SparseInpaintOptions Sparse = default)
+    SparseInpaintOptions Sparse = default,
+    bool ExcessWeighted = true)
 {
     /// <remarks>
     /// Spelled out field by field rather than written <c>new()</c>: on a record struct the
@@ -48,7 +49,8 @@ public readonly record struct SpectralRepairOptions(
         Hop: 512,
         PartialDriftRadians: 0.10,
         Method: SpectralHealMethod.PartialContinuation,
-        Sparse: default);
+        Sparse: default,
+        ExcessWeighted: true);
 }
 
 /// <summary>The span of audio a repair replaces, ready for <c>ReplaceRange</c>.</summary>
@@ -240,11 +242,108 @@ public static class SpectralRepair
             progress?.Report(0.5);
         }
 
-        Blend(observedRe, observedIm, frame.MaskWeight, frame.Re, frame.Im);
+        // Not when the gate is shut. A zero drift radius is an instruction to empty the selection
+        // rather than to rebuild it, and ClosingTheGateCompletelyIsExactlyRemovingTheSelection holds
+        // that Heal and Attenuate agree exactly there. Weighing how anomalous a cell is would leave
+        // the unremarkable ones behind, which is a repair, not a removal.
+        float[] weight = options.ExcessWeighted && options.PartialDriftRadians > 0
+            ? WeightByExcess(observedRe, observedIm, frame.Re, frame.Im, frame.MaskWeight,
+                frame.Frames, frame.Bins)
+            : frame.MaskWeight;
+        Blend(observedRe, observedIm, weight, frame.Re, frame.Im);
         SpectralRepairResult result = frame.Synthesize(cancellationToken);
         progress?.Report(1);
         return result;
     }
+
+    /// <summary>
+    /// Scales the mask by how anomalous each selected cell actually is, so a repair only takes over
+    /// where there is something to take over from.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A mask says <i>where the user pointed</i>, not <i>what is wrong there</i>, and healing on the
+    /// mask alone replaces whatever the selection happens to contain. That is right when the defect
+    /// dominates the selection and wrong when it does not: measured, a burst 12 dB above the local
+    /// signal healed to +13.4 dB and 6 dB to +9.5, every cell positive, but a burst <i>at</i> the
+    /// local level scored +4.7 with <b>17 of 58 cells coming out worse, down to −4.9 dB</b>. At that
+    /// level the selection holds as much wanted signal as unwanted, and the reconstruction trades
+    /// real content for a guess.
+    /// </para>
+    /// <para>
+    /// The cells at issue are the ones the continuation <b>refused</b> — where it found no partial
+    /// to carry across and so writes silence, which the mask then honours. Emptying is right when
+    /// the cell held a defect and wrong when it held music, and at the local level it usually held
+    /// both. Cells the continuation did reconstruct are left alone by this: there the model is
+    /// confident and replacing is the repair doing its job.
+    /// </para>
+    /// <para>
+    /// The evidence needed is already present. Each bin continues either side of the selection, and
+    /// that surrounding magnitude is what the bin ought to be doing; a cell far above it holds
+    /// something that does not belong, and a cell level with it is probably just the music. So the
+    /// weight is scaled by that excess, <b>per cell rather than per selection</b> — within one burst
+    /// some bins are dominated by the defect and others by the music, and this keeps the repair on
+    /// the first without spending the second.
+    /// </para>
+    /// </remarks>
+    private static float[] WeightByExcess(float[] observedRe, float[] observedIm,
+        float[] builtRe, float[] builtIm, float[] maskWeight, int frames, int bins)
+    {
+        var scaled = (float[])maskWeight.Clone();
+        var expected = new double[bins];
+
+        for (int bin = 0; bin < bins; bin++)
+        {
+            // What this bin does either side of the selection, which is what it ought to be doing
+            // inside it. A mean over the unmasked frames is enough: the question is whether the
+            // selected cells stand well clear of it, not exactly where it sits.
+            double total = 0;
+            int counted = 0;
+            for (int t = 0; t < frames; t++)
+            {
+                int index = t * bins + bin;
+                if (maskWeight[index] > 0.05f) continue;
+                total += Magnitude(observedRe[index], observedIm[index]);
+                counted++;
+            }
+            expected[bin] = counted > 0 ? total / counted : 0;
+        }
+
+        for (int t = 0; t < frames; t++)
+        {
+            for (int bin = 0; bin < bins; bin++)
+            {
+                int index = t * bins + bin;
+                if (maskWeight[index] <= 0) continue;
+
+                // Only where the continuation refused. A cell it did reconstruct has a partial
+                // running through it that the model is confident about, and replacing that cell is
+                // the repair working: holding back there was measurably worse, costing a wide
+                // synthetic burst 2.5 dB. A refused cell is different - the continuation had no
+                // model, so honouring the mask empties it, and emptying a cell that was never
+                // anomalous throws away music the user did not ask to lose.
+                if (builtRe[index] != 0 || builtIm[index] != 0) continue;
+
+                // No surrounding evidence: the selection covers this bin's whole span, so there is
+                // nothing to compare against and the mask is all there is to go on.
+                double reference = expected[bin];
+                if (reference <= 1e-9) continue;
+
+                double excess = Magnitude(observedRe[index], observedIm[index]) / reference;
+                double confidence = Math.Clamp((excess - LowestExcess) / (FullExcess - LowestExcess), 0, 1);
+                scaled[index] = (float)(maskWeight[index] * confidence);
+            }
+        }
+        return scaled;
+
+        static double Magnitude(float re, float im) => Math.Sqrt((double)re * re + (double)im * im);
+    }
+
+    /// <summary>Excess at which a selected cell is left alone: it looks like its own surroundings.</summary>
+    private const double LowestExcess = 1.4;
+
+    /// <summary>Excess at which the mask is honoured in full.</summary>
+    private const double FullExcess = 3.0;
 
     /// <summary>
     /// The selected cells the continuation declined to reconstruct, which it marks by writing exact
