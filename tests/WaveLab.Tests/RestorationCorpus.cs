@@ -290,7 +290,7 @@ public static class RestorationCorpus
             var results = new List<T>();
             foreach (double severity in CrackleSeverities)
             {
-                int seed = recording.Path.GetHashCode(StringComparison.Ordinal) ^ (int)(severity * 32);
+                int seed = DeclipCorpus.StableHash(recording.Path) ^ (int)(severity * 32);
                 var (clean, damaged, hit, count) = PlantCrackle(source, document.SampleRate, severity, seed);
                 if (count < 50) continue;
                 results.Add(measure(new CrackleCell(recording, severity, document.SampleRate,
@@ -332,7 +332,7 @@ public static class RestorationCorpus
             var results = new List<T>();
             foreach (double severity in BurstSeverities)
             {
-                int seed = recording.Path.GetHashCode(StringComparison.Ordinal) ^ (int)(severity * 8);
+                int seed = DeclipCorpus.StableHash(recording.Path) ^ (int)(severity * 8);
                 var (clean, damaged, from, to) = PlantBurst(source, document.SampleRate, severity, seed);
                 results.Add(measure(new SpectralCell(recording, severity, document.SampleRate,
                     clean, damaged, from, to, BurstLowHz, BurstHighHz)));

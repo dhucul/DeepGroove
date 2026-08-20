@@ -78,7 +78,7 @@ public sealed class RealClickTests(ITestOutputHelper output)
                 var results = new List<(string, string, double, int, int, double, int, double)>();
                 foreach (double severity in ClickCorpus.Severities)
                 {
-                    int seed = recording.Path.GetHashCode(StringComparison.Ordinal) ^ (int)(severity * 64);
+                    int seed = DeclipCorpus.StableHash(recording.Path) ^ (int)(severity * 64);
 
                     var real = RealClickLibrary.Plant(source, document.SampleRate, library, severity, seed);
                     if (real.Count < 8) continue;

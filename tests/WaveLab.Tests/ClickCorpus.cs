@@ -148,7 +148,7 @@ public static class ClickCorpus
             var results = new List<T>();
             foreach (double severity in Severities)
             {
-                int seed = recording.Path.GetHashCode(StringComparison.Ordinal) ^ (int)(severity * 16);
+                int seed = DeclipCorpus.StableHash(recording.Path) ^ (int)(severity * 16);
                 var (clean, damaged, hit, count) = Damage(source, document.SampleRate, severity, seed);
                 if (count < 8) continue;
                 results.Add(measure(new ClickCell(recording, severity, document.SampleRate,

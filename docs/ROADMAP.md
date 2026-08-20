@@ -90,9 +90,10 @@ listed as a nice-to-have. Both are done.
   lifted off shellac, recall is 74% at 12 dB above the local level and 40% at 6 dB, against 85% and
   51% for invented damage. Read the synthetic numbers as about eleven points optimistic.
 
-- **Spectral heal at the local level is much better but not clean.** Weighting refused cells by how
-  far they stand above their own surroundings took cells that came out worse from 13 of 61 to 2, and
-  the worst from −4.5 dB to −2.2, while improving every other severity as well. Two cells still lose.
+- **Spectral heal at the local level is close to clean.** Weighting cells by how far they stand
+  above their own surroundings — strictly where the continuation refused, loosely where it
+  reconstructed — took cells that came out worse from 14 of 55 to 2, and the worst from −4.60 dB
+  to −1.33, improving every other severity too. Two cells still lose, both tonal orchestral.
 - **Wow and flutter removes drift instead of adding it, and now reports close to the truth — but
   the floor is the remaining limit.** The estimator measured velocity and integrated it, which
   injected 220 to 290 samples of drift whatever was planted; it now measures position and leaves 230

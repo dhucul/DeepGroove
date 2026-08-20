@@ -145,6 +145,33 @@ public static class DeclipCorpus
         return found;
     }
 
+    /// <summary>
+    /// A hash that is the same in every process, for seeding damage from a file's name.
+    /// </summary>
+    /// <remarks>
+    /// <b><c>string.GetHashCode</c> is randomised per process in .NET</b>, including the
+    /// <c>StringComparison.Ordinal</c> overload, so seeding from it makes every measurement
+    /// irreproducible in a way that is invisible: the corpus, the cell count and the code are all
+    /// identical and the numbers still move. It was found when the same spectral-heal measurement
+    /// gave a worst cell of −0.85 dB and then −1.46 dB with nothing changed between the runs, and
+    /// <c>Heal</c> itself proved bit-identical over five trials. FNV-1a instead, which is fixed.
+    /// </remarks>
+    public static int StableHash(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        unchecked
+        {
+            const uint offset = 2166136261, prime = 16777619;
+            uint hash = offset;
+            foreach (char c in text)
+            {
+                hash = (hash ^ (byte)(c & 0xFF)) * prime;
+                hash = (hash ^ (byte)(c >> 8)) * prime;
+            }
+            return (int)(hash & 0x7FFFFFFF);
+        }
+    }
+
     public static double SnrDb(float[] clean, float[] candidate, bool[] damaged)
     {
         double signal = 0, error = 0;

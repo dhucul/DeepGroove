@@ -316,21 +316,24 @@ public static class SpectralRepair
                 int index = t * bins + bin;
                 if (maskWeight[index] <= 0) continue;
 
-                // Only where the continuation refused. A cell it did reconstruct has a partial
-                // running through it that the model is confident about, and replacing that cell is
-                // the repair working: holding back there was measurably worse, costing a wide
-                // synthetic burst 2.5 dB. A refused cell is different - the continuation had no
-                // model, so honouring the mask empties it, and emptying a cell that was never
-                // anomalous throws away music the user did not ask to lose.
-                if (builtRe[index] != 0 || builtIm[index] != 0) continue;
-
                 // No surrounding evidence: the selection covers this bin's whole span, so there is
                 // nothing to compare against and the mask is all there is to go on.
                 double reference = expected[bin];
                 if (reference <= 1e-9) continue;
 
+                // A cell the continuation reconstructed is held to a much lower bar than one it
+                // refused. There a partial runs through that the model is confident about and
+                // replacing is the repair working — holding back on the same terms as a refused
+                // cell cost a wide synthetic burst 2.5 dB. But a reconstruction is not always
+                // right, and where the cell looks no different from its own surroundings there was
+                // nothing to reconstruct: those are the ones that still came out behind, all of
+                // them tonal orchestral material where the continuation invents confidently.
+                bool reconstructed = builtRe[index] != 0 || builtIm[index] != 0;
+                double lowest = reconstructed ? ReconstructedLowestExcess : LowestExcess;
+                double full = reconstructed ? ReconstructedFullExcess : FullExcess;
+
                 double excess = Magnitude(observedRe[index], observedIm[index]) / reference;
-                double confidence = Math.Clamp((excess - LowestExcess) / (FullExcess - LowestExcess), 0, 1);
+                double confidence = Math.Clamp((excess - lowest) / (full - lowest), 0, 1);
                 scaled[index] = (float)(maskWeight[index] * confidence);
             }
         }
@@ -344,6 +347,13 @@ public static class SpectralRepair
 
     /// <summary>Excess at which the mask is honoured in full.</summary>
     private const double FullExcess = 3.0;
+
+    /// <summary>As above, for a cell the continuation did reconstruct. Deliberately much lower: the
+    /// model is confident there and only a cell indistinguishable from its surroundings is held
+    /// back.</summary>
+    private const double ReconstructedLowestExcess = 1.0;
+
+    private const double ReconstructedFullExcess = 1.6;
 
     /// <summary>
     /// The selected cells the continuation declined to reconstruct, which it marks by writing exact

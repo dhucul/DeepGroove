@@ -221,18 +221,18 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
             Assert.True(r.Gain >= 0,
                 $"{r.ShortName} at {r.Severity:0} dB above local scored {r.Gain:+0.00;-0.00} dB against leaving the burst alone");
 
-        // At the local level the selection holds as much wanted signal as unwanted, and a few cells
-        // still come out behind. Weighting the mask by how anomalous each refused cell is took that
-        // from 13 cells and -4.5 dB to 2 and -2.2, so what is pinned is the improved state rather
-        // than perfection: no cell may fall more than 3 dB behind, and no more than a tenth of them
-        // may fall behind at all.
+        // At the local level the selection holds as much wanted signal as unwanted. Weighting the
+        // mask by how anomalous each cell is - strictly where the continuation refused, loosely
+        // where it reconstructed - took cells that come out behind from 14 of 55 at -4.60 dB to 2
+        // at -1.33. What is pinned is that improved state rather than perfection, with margin: no
+        // cell may fall more than 2 dB behind, and no more than a tenth of them behind at all.
         var atLevel = rows.Where(r => r.Severity <= 0).ToList();
         if (atLevel.Count > 0)
         {
             int behind = atLevel.Count(r => r.Gain < 0);
             output.WriteLine($"  at the local level: {behind} of {atLevel.Count} cells come out worse, " +
                 $"worst {atLevel.Min(r => r.Gain):+0.00;-0.00} dB");
-            Assert.True(atLevel.Min(r => r.Gain) > -3.0,
+            Assert.True(atLevel.Min(r => r.Gain) > -2.0,
                 $"a cell at the local level lost {atLevel.Min(r => r.Gain):0.00} dB");
             Assert.True(behind <= atLevel.Count / 10,
                 $"{behind} of {atLevel.Count} cells at the local level came out worse");
