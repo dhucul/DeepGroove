@@ -71,12 +71,12 @@ listed as a nice-to-have. Both are done.
   to **separate dense material from sparse**, and has to clear five corpora. Five attempts so far,
   five declined.
 
-- **The click detector still misses about half the quietest clicks.** Recall is now 86% at 12 dB
-  above the local level and 51% at 6 dB, up from 68% and 15%, after three mechanism fixes and a
-  prediction-residual nomination pass. What limits it now is the acceptance tests rather than
-  detection: raising the nomination threshold from 8 to 14 sigma costs one point of recall and no
-  gain at all. False detections on digital-born material fell from 45.9 events a second at worst to
-  9.9, but 9.9 on an undamaged alarm is still 9.9.
+- **The click detector now finds 83% of clicks 6 dB above the local level, against 15% this
+  morning**, after four mechanism fixes, a prediction-residual nomination pass and a confidence
+  floor that only became meaningful once the recovery gate stopped conflating quiet with
+  unrecovered. What it costs is false detections on speech, 2.75 to 4.51 a second on undamaged
+  audio, where classical is unchanged at 0.06. Measured against real click shapes rather than
+  invented ones, expect roughly eleven points less than these figures.
 - **Whether record transfers reading 1.21 events a second is right cannot be settled here, and two
   attempts to settle it physically both failed.** Differencing two transfers of the same performance
   fails because different pressings do not correlate at sample level (0.05 to 0.08). The vertical

@@ -89,10 +89,16 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
         {
             LocalHighFrequencyContrast = false,
             PredictiveDetection = false,
+            TrendRelativeRecovery = false,
         };
         (string Name, ClickAnalysisOptions Options)[] probes =
         [
-            ("curvature only", new ClickAnalysisOptions { PredictiveDetection = false }),
+            ("old recovery", new ClickAnalysisOptions { TrendRelativeRecovery = false }),
+            ("before today", new ClickAnalysisOptions
+            {
+                TrendRelativeRecovery = false,
+                MinimumConfidence = 0.60,
+            }),
         ];
         var results = ClickCorpus.Measure(cell =>
         {
@@ -181,8 +187,8 @@ public sealed class ClickCorpusTests(ITestOutputHelper output)
                 double oldPerSecond = Restoration.AnalyzeClicks([source], document.SampleRate,
                     new ClickAnalysisOptions
                     {
-                        LocalHighFrequencyContrast = false,
-                        PredictiveDetection = false,
+                        TrendRelativeRecovery = false,
+                        MinimumConfidence = 0.60,
                     }).Events.Count / seconds;
                 return ([(recording.Corpus, recording.ShortName, perSecond, oldPerSecond)], null);
             });

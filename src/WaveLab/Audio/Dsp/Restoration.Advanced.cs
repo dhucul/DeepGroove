@@ -33,10 +33,7 @@ public static partial class Restoration
         // conspicuous flat/decaying pops surface at working sensitivities.
         double outlierRatioThreshold = 8.0 - 5.0 * sensitivityT;
 
-        // Slightly higher default minimum confidence: was 0.58, now 0.60.
-        // This filters the weakest false positives without blocking genuine clicks.
         double minimumConfidence = Math.Clamp(options.MinimumConfidence, 0.0, 1.0);
-        if (minimumConfidence <= 0.58) minimumConfidence = 0.60;
         double maximumClickLengthMs = Math.Clamp(options.MaximumClickLengthMs, 0.05, 2.0);
         int maximumClickSamples = Math.Max(1,
             (int)Math.Round(sampleRate * maximumClickLengthMs / 1000.0));
@@ -135,7 +132,8 @@ public static partial class Restoration
                         TryCreateClickEvent(samples, curvature, channelIndex, start, end, peak,
                             peakCurvature, threshold, robustScale, localRms, sampleRate,
                             maximumClickSamples, options.PreserveTransients,
-                            options.LocalHighFrequencyContrast, out var clickEvent) &&
+                            options.LocalHighFrequencyContrast, options.TrendRelativeRecovery,
+                            options.MinimumRecovery, out var clickEvent) &&
                         clickEvent.Confidence >= minimumConfidence)
                     {
                         AddOrMergeClickEvent(events, clickEvent, maximumClickSamples);
@@ -806,7 +804,8 @@ public static partial class Restoration
                 if (TryCreateClickEvent(samples, curvature, channel, spanStart, spanEnd, peak,
                         curvature[peak], (float)limit, scale, localRms, sampleRate,
                         maximumClickSamples, options.PreserveTransients,
-                        options.LocalHighFrequencyContrast, out var candidate) &&
+                        options.LocalHighFrequencyContrast, options.TrendRelativeRecovery,
+                        options.MinimumRecovery, out var candidate) &&
                     candidate.Confidence >= minimumConfidence)
                 {
                     found.Add(candidate);
@@ -836,7 +835,7 @@ public static partial class Restoration
         int channel, int start, int end, int peak, float peakCurvature,
         float threshold, double robustScale, double localRms, int sampleRate,
         int maximumClickSamples, bool preserveTransients, bool localContrast,
-        out ClickEvent result)
+        bool trendRelativeRecovery, double minimumRecovery, out ClickEvent result)
     {
         result = default;
         if (start < 2 || end >= samples.Length - 1 || end <= start) return false;
@@ -936,10 +935,31 @@ public static partial class Restoration
         for (int i = start; i < end; i++)
             clickAmplitude = Math.Max(clickAmplitude, Math.Abs(samples[i] - preLevel));
 
-        double recoveryRatio = clickAmplitude > 1e-9
-            ? maxDeviation / clickAmplitude
-            : 1.0;
-        double recoveryScore = 1.0 - Math.Clamp(recoveryRatio, 0.0, 1.0);
+        double recoveryScore;
+        if (trendRelativeRecovery)
+        {
+            // What the audio was already doing before the candidate, measured the same way, so the
+            // comparison is like for like. A defect leaves the two alike; an attack raises the
+            // second. Dividing by the candidate's amplitude, as this used to, asked instead whether
+            // the event was louder than the music - which a quiet click is not, however cleanly it
+            // recovered.
+            int lookBack = Math.Max(4, recoveryWindow);
+            double beforeDeviation = 0;
+            for (int i = Math.Max(1, start - lookBack); i < start; i++)
+                beforeDeviation = Math.Max(beforeDeviation, Math.Abs(samples[i] - preLevel));
+
+            double scaleFor = Math.Max(clickAmplitude, beforeDeviation);
+            recoveryScore = scaleFor > 1e-9
+                ? 1.0 - Math.Clamp((maxDeviation - beforeDeviation) / scaleFor, 0.0, 1.0)
+                : 1.0;
+        }
+        else
+        {
+            double recoveryRatio = clickAmplitude > 1e-9
+                ? maxDeviation / clickAmplitude
+                : 1.0;
+            recoveryScore = 1.0 - Math.Clamp(recoveryRatio, 0.0, 1.0);
+        }
 
         // ── 4. Bipolar check ──────────────────────────────────────
         // Real clicks are often bipolar (positive then negative spike).
@@ -1006,7 +1026,10 @@ public static partial class Restoration
         // and it was skipped for spans of three samples or fewer - which is exactly the shape a
         // sharp musical attack makes. Short candidates are now held to it too, a little more
         // loosely because there is less of them to measure.
-        if (recoveryScore < (spanLength > 3 ? 0.2 : 0.12)) return false;
+        double recoveryFloor = trendRelativeRecovery
+            ? minimumRecovery * (spanLength > 3 ? 1.0 : 0.6)
+            : (spanLength > 3 ? 0.2 : 0.12);
+        if (recoveryScore < recoveryFloor) return false;
 
         double severityRatio = clickAmplitude / Math.Max(1e-6, localRms);
         float severity = (float)Math.Clamp(1.0 - Math.Exp(-severityRatio * 0.5), 0.0, 1.0);

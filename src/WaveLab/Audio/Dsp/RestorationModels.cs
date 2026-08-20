@@ -32,7 +32,18 @@ public sealed class ClickAnalysisOptions
     public double Sensitivity { get; init; } = 5.0;
 
     /// <summary>Events below this confidence are left untouched. Range 0..1.</summary>
-    public double MinimumConfidence { get; init; } = 0.58;
+    /// <remarks>
+    /// <b>Raised from 0.58 with <see cref="TrendRelativeRecovery"/>, which is what made it work.</b>
+    /// Before that change this gate did nothing measurable — dropping it from 0.60 to 0.30 moved
+    /// recall by not one point at any severity, because the recovery term feeding it was near zero
+    /// for every quiet event whatever it did. With recovery measured against the trend the score
+    /// separates events again, and the floor became the effective control over false alarms:
+    /// swept, it trades false alarms on clean material against recall at the quiet end. It sits at
+    /// 0.65 rather than higher because <b>0.70 loses pop detection outright</b> - the two synthetic
+    /// pop tests fail there and pass at 0.68, and a threshold one hundredth from a cliff is not a
+    /// threshold. 0.65 keeps a margin.
+    /// </remarks>
+    public double MinimumConfidence { get; init; } = 0.65;
 
     /// <summary>Maximum duration classified as a click.</summary>
     public double MaximumClickLengthMs { get; init; } = 0.35;
@@ -89,6 +100,35 @@ public sealed class ClickAnalysisOptions
     /// classical. What limits recall is further down, in the acceptance tests, not here.
     /// </remarks>
     public double PredictiveSigma { get; init; } = 12.0;
+
+    /// <summary>
+    /// Judge the return to baseline against what the audio was already doing, rather than against
+    /// the size of the candidate.
+    /// </summary>
+    /// <remarks>
+    /// The test exists to separate a defect, which the waveform returns from, from a musical attack,
+    /// which it does not. The original form divided the post-event deviation by the candidate's own
+    /// amplitude — fine for a loud click, where the music around it is negligible, and wrong for a
+    /// quiet one, where the music <i>is</i> the deviation and the ratio approaches one however
+    /// cleanly the waveform recovered. Measured, that gate rejected <b>14,053 of 36,685 candidates
+    /// at 6 dB above the local level against 770 at 24 dB</b>: it was the single reason quiet clicks
+    /// were missed. Comparing the audio after the event against the audio before it asks the
+    /// intended question and does not depend on how loud the event was.
+    /// </remarks>
+    public bool TrendRelativeRecovery { get; init; } = true;
+
+    /// <summary>
+    /// How completely the waveform must return to what it was doing before the candidate. Raised
+    /// with <see cref="TrendRelativeRecovery"/>, because that changed what the score means.
+    /// </summary>
+    /// <remarks>
+    /// The old score divided by the candidate's own amplitude, so a quiet click scored near zero
+    /// whatever it did and 0.2 was as much as could be asked. Measured against the trend instead,
+    /// the same clean recovery scores high, and the threshold has to rise or the gate stops
+    /// separating anything: it was suppressing false alarms as a side effect of being too strict on
+    /// quiet events, and removing that strictness without replacing it doubled them.
+    /// </remarks>
+    public double MinimumRecovery { get; init; } = 0.55;
 }
 
 /// <summary>Metadata returned by automatic click/pop analysis.</summary>
@@ -178,7 +218,7 @@ public sealed class ClippingAnalysisOptions
     public int MaximumGapSamples { get; init; } = 1;
 
     /// <summary>Events below this confidence are omitted. Range 0..1.</summary>
-    public double MinimumConfidence { get; init; } = 0.62;
+    public double MinimumConfidence { get; init; } = 0.65;
 }
 
 /// <summary>Metadata returned by clipping analysis.</summary>
