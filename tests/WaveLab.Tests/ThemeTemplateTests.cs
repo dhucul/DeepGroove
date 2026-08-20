@@ -146,4 +146,107 @@ public sealed class ThemeTemplateTests
         Assert.Equal(IconSquare, padded, 0);
         Assert.Equal(120, minimum, 0);
     }
+
+    /// <summary>
+    /// A combo bound through <c>DisplayMemberPath</c> shows the path's value, not the item's type.
+    /// </summary>
+    /// <remarks>
+    /// The themed template bound <c>SelectionBoxItem</c> and <c>SelectionBoxItemTemplate</c> but not
+    /// <c>ContentTemplateSelector</c>, and <c>DisplayMemberPath</c> reaches the closed box through
+    /// the selector — so the box fell back to <c>ToString()</c>. On the CD import dialog that put
+    /// "WaveLab.Views.CdImportDialog+DriveRow" where the drive's name belonged, which is what a real
+    /// disc rip surfaced. The stock template binds all three.
+    /// </remarks>
+    [Fact]
+    public void AComboBoxShowsItsDisplayMemberPathRatherThanTheItemsTypeName()
+    {
+        string shown = Wpf.Run(() =>
+        {
+            var combo = new ComboBox
+            {
+                DisplayMemberPath = "DisplayText",
+                ItemsSource = new[] { new Row() },
+            };
+            string text = "";
+            Wpf.Show(new Window { Content = combo, Width = 400, Height = 120 }, _ =>
+            {
+                combo.SelectedIndex = 0;
+                Wpf.Pump();
+                text = FirstText(combo);
+            });
+            return text;
+        });
+
+        Assert.Equal(Row.Expected, shown);
+    }
+
+    public sealed class Row
+    {
+        public const string Expected = "Pioneer BD-RW · 12 audio track(s)";
+        public string DisplayText => Expected;
+    }
+
+    /// <summary>
+    /// A tab strip long enough to scroll keeps its tabs at full height.
+    /// </summary>
+    /// <remarks>
+    /// The strip scrolls horizontally once the open files outrun the window, and the scroll bar has
+    /// to come from somewhere. In a fixed-height row it comes out of the tabs: fourteen files — one
+    /// CD — took the usable height from 35 px to 18 and cut every tab and every name in half.
+    /// <c>MainWindow</c>'s tab row is <c>Auto</c> so the strip grows instead, and this is the
+    /// measurement that says why.
+    /// </remarks>
+    [Theory]
+    [InlineData(3)]
+    [InlineData(14)]
+    public void AScrollingTabStripKeepsItsTabsAtFullHeight(int tabs)
+    {
+        double height = Wpf.Run(() =>
+        {
+            var list = new ListBox
+            {
+                Style = Resource("FileTabs"),
+                VerticalAlignment = VerticalAlignment.Bottom,
+                ItemTemplate = TabTemplate(),
+                ItemsSource = Enumerable.Range(1, tabs)
+                    .Select(i => $"Audio CD - Track {i:00}").ToList(),
+            };
+
+            var host = new Grid();
+            host.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            host.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            host.Children.Add(list);
+
+            double measured = 0;
+            Wpf.Show(new Window { Content = host, Width = 1280, Height = 800 }, _ =>
+            {
+                Wpf.Pump();
+                var container = (ListBoxItem?)list.ItemContainerGenerator.ContainerFromIndex(tabs - 1);
+                measured = container?.ActualHeight ?? 0;
+            });
+            return measured;
+        });
+
+        Assert.Equal(30, height, 0);
+    }
+
+    private static DataTemplate TabTemplate() => (DataTemplate)System.Windows.Markup.XamlReader.Parse(
+        """
+        <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+          <TextBlock Text="{Binding}" FontSize="12.5" MaxWidth="220" TextTrimming="CharacterEllipsis"/>
+        </DataTemplate>
+        """);
+
+    private static string FirstText(DependencyObject root)
+    {
+        int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            DependencyObject child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is TextBlock block && block.Text.Length > 0) return block.Text;
+            string found = FirstText(child);
+            if (found.Length > 0) return found;
+        }
+        return "";
+    }
 }

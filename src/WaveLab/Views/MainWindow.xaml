@@ -32,6 +32,7 @@
         <KeyBinding Key="S" Modifiers="Control" Command="{Binding SaveCommand}"/>
         <KeyBinding Key="S" Modifiers="Control+Shift" Command="{Binding SaveAsCommand}"/>
         <KeyBinding Key="W" Modifiers="Control" Command="{Binding CloseTabCommand}"/>
+        <KeyBinding Key="W" Modifiers="Control+Shift" Command="{Binding CloseAllCommand}"/>
         <KeyBinding Key="Z" Modifiers="Control" Command="{Binding UndoCommand}"/>
         <KeyBinding Key="Y" Modifiers="Control" Command="{Binding RedoCommand}"/>
         <KeyBinding Key="X" Modifiers="Control" Command="{Binding CutCommand}"/>
@@ -61,7 +62,11 @@
             <!-- Auto, not fixed: the spectral bar stacks under the transport in this row and the
                  row has to grow for it. The transport keeps its own height below. -->
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="36"/>
+            <!-- Auto, not 36: the tab strip scrolls horizontally once the files outrun the window,
+                 and a fixed row leaves the scroll bar nowhere to go but into the tabs. At fourteen
+                 files - one CD - it took the strip's usable height from 35 px to 18 and cut every
+                 tab, and its name, in half. -->
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="27"/>
         </Grid.RowDefinitions>
@@ -135,6 +140,7 @@
                     <MenuItem Header="Recording Setup…" Command="{Binding RecordSetupCommand}"/>
                     <Separator/>
                     <MenuItem Header="Close File" InputGestureText="Ctrl+W" Command="{Binding CloseTabCommand}"/>
+                    <MenuItem Header="Close All Files" InputGestureText="Ctrl+Shift+W" Command="{Binding CloseAllCommand}"/>
                     <MenuItem Header="Exit" Command="{Binding ExitCommand}"/>
                 </MenuItem>
                 <MenuItem Header="_Edit">
@@ -616,7 +622,8 @@
                                     VerticalAlignment="Center">
                                 <TextBlock Text="{Binding Kind}" FontSize="9" Foreground="{StaticResource Faint}"/>
                             </Border>
-                            <TextBlock Text="{Binding Title}" FontSize="12.5" Foreground="{StaticResource Text}"/>
+                            <TextBlock Text="{Binding Title}" FontSize="12.5" Foreground="{StaticResource Text}"
+                                       MaxWidth="220" TextTrimming="CharacterEllipsis"/>
                             <Button Margin="8,0,0,0" Padding="2" Background="Transparent" BorderThickness="0"
                                     Foreground="{StaticResource Faint}" Cursor="Hand"
                                     Command="{Binding DataContext.CloseTabCommand, RelativeSource={RelativeSource AncestorType=Window}}"

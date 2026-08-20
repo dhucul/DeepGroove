@@ -534,8 +534,14 @@
                                 </ControlTemplate>
                             </ToggleButton.Template>
                         </ToggleButton>
+                        <!-- ContentTemplateSelector is not decoration: DisplayMemberPath reaches the closed
+                             box through the selector rather than through SelectionBoxItemTemplate, so
+                             without it every combo bound that way drew the item's ToString(), which for a
+                             row class is its type name. The stock template binds all three. -->
                         <ContentPresenter Content="{TemplateBinding SelectionBoxItem}"
                                           ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                          ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
                                           Margin="12,0,30,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
                         <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True"
                                Focusable="False" PopupAnimation="Fade" VerticalOffset="4">

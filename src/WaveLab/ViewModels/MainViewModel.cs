@@ -96,6 +96,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SaveAsCommand = new RelayCommand(SaveAs, () => _active != null);
         CloseTabCommand = new RelayCommand<TabViewModel>(CloseTab,
             tab => tab != null ? Documents.Contains(tab) : _activeTab != null);
+        CloseAllCommand = new RelayCommand(CloseAll, () => Documents.Count > 0);
         ExitCommand = new RelayCommand(() => Application.Current.MainWindow?.Close());
 
         UndoCommand = new RelayCommand(Undo, () => _active?.Doc.CanUndo == true);
@@ -206,6 +207,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// requery, not merely when clicked.
     /// </summary>
     public RelayCommand<TabViewModel> CloseTabCommand { get; }
+    public RelayCommand CloseAllCommand { get; }
     public RelayCommand ExitCommand { get; }
     public RelayCommand UndoCommand { get; }
     public RelayCommand RedoCommand { get; }
@@ -1006,9 +1008,47 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally { _tabCloseOperations.Remove(operation); }
     }
 
-    private void CloseMontageTab(MontageViewModel montage)
+    /// <summary>
+    /// Close every open tab, asking once rather than once per file.
+    /// </summary>
+    /// <remarks>
+    /// One prompt covering all of them, all or nothing, which is the bargain batch convert already
+    /// makes for the same reason: a CD import opens a tab per track, and a dozen separate "close
+    /// anyway?" boxes is not a question, it is an obstacle. Files are taken in a snapshot because
+    /// closing mutates the collection, and one at a time because each close still has real work to
+    /// do — flushing markers, releasing playback, clearing autosave.
+    /// </remarks>
+    private async void CloseAll()
     {
-        if (montage.IsDirty && MessageBox.Show(
+        var tabs = Documents.ToList();
+        if (tabs.Count == 0) return;
+
+        int dirty = tabs.Count(tab => tab.IsDirty);
+        if (dirty > 0 && MessageBox.Show(
+                dirty == 1
+                    ? "One open file has unsaved changes. Close everything anyway?"
+                    : $"{dirty} open files have unsaved changes. Close everything anyway?",
+                "Close all files", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+
+        foreach (TabViewModel tab in tabs)
+        {
+            if (!Documents.Contains(tab)) continue;
+            if (tab is MontageViewModel montage) { CloseMontageTab(montage, prompt: false); continue; }
+            if (tab is not DocumentViewModel document) continue;
+
+            var operation = CloseTabAsync(document, prompt: false);
+            _tabCloseOperations.Add(operation);
+            try { await operation; }
+            finally { _tabCloseOperations.Remove(operation); }
+        }
+
+        ReportAction(tabs.Count == 1 ? "File closed." : $"{tabs.Count} files closed.");
+    }
+
+    private void CloseMontageTab(MontageViewModel montage, bool prompt = true)
+    {
+        if (prompt && montage.IsDirty && MessageBox.Show(
                 $"“{montage.Title}” has unsaved changes. Close it anyway?", "Close montage",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
@@ -1019,7 +1059,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ActiveTab = Documents.Count > 0 ? Documents[Math.Clamp(index, 0, Documents.Count - 1)] : null;
     }
 
-    private async Task CloseTabAsync(DocumentViewModel? vm)
+    private async Task CloseTabAsync(DocumentViewModel? vm, bool prompt = true)
     {
         vm ??= _active;
         if (vm == null || !Documents.Contains(vm)) return;
@@ -1030,7 +1070,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        if (vm.IsDirty &&
+        if (prompt && vm.IsDirty &&
             MessageBox.Show($"{vm.Doc.Title} has unsaved changes. Close anyway?", "Unsaved changes",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
@@ -1683,6 +1723,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SaveCommand.RaiseCanExecuteChanged();
         SaveAsCommand.RaiseCanExecuteChanged();
         CloseTabCommand.RaiseCanExecuteChanged();
+        CloseAllCommand.RaiseCanExecuteChanged();
         SelectAllCommand.RaiseCanExecuteChanged();
         PlayCommand.RaiseCanExecuteChanged();
         GoToStartCommand.RaiseCanExecuteChanged();
