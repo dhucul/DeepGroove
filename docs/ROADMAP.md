@@ -93,9 +93,11 @@ listed as a nice-to-have. Both are done.
 - **Spectral heal at the local level is much better but not clean.** Weighting refused cells by how
   far they stand above their own surroundings took cells that came out worse from 13 of 61 to 2, and
   the worst from −4.5 dB to −2.2, while improving every other severity as well. Two cells still lose.
-- **Wow and flutter now removes drift instead of adding it, but still under-reports.** The
-  estimator measured velocity and integrated it, which injected 220 to 290 samples of drift
-  whatever was planted; it now measures position and leaves 227 down to 75. What it *reports* is
-  still about 2.5x low, and the reference width that would fix the number makes the correction
-  worse, so the two cannot currently be had together. Below about 1% wow the correction still does
-  not improve on leaving the recording alone.
+- **Wow and flutter removes drift instead of adding it, and now reports close to the truth — but
+  the floor is the remaining limit.** The estimator measured velocity and integrated it, which
+  injected 220 to 290 samples of drift whatever was planted; it now measures position and leaves 230
+  down to 80. The reported figure is compensated for the reference window's own filter and reads 70
+  to 93% of the truth from 2.4% down to 0.6%, against 36 to 52% before. Below that it over-reads —
+  0.3% planted reads 0.254% — because it is measuring its own noise and the compensation amplifies
+  that too. Below about 1% wow the correction still does not improve on leaving the recording
+  alone.

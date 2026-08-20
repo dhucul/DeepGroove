@@ -114,6 +114,8 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
 
             return (cell.Recording.Corpus, cell.Recording.ShortName, cell.PlantedPercent,
                 Measured: WowFlutter.Analyze(cell.Damaged, cell.SampleRate, shipped).RmsPercent,
+                Uncompensated: WowFlutter.Analyze(cell.Damaged, cell.SampleRate,
+                    shipped with { CompensateReference = false }).RmsPercent,
                 ShiftRaw: RestorationCorpus.ResidualShiftSamples(cell.Clean, cell.Damaged, cell.SampleRate),
                 ShiftFixed: RestorationCorpus.ResidualShiftSamples(cell.Clean, corrected, cell.SampleRate),
                 ShiftVelocity: RestorationCorpus.ResidualShiftSamples(cell.Clean,
@@ -128,7 +130,8 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
         {
             var at = rows.Where(r => r.PlantedPercent == planted).ToList();
             output.WriteLine($"  planted {planted:0.0}% (expect {planted * 0.559:0.000}% rms): " +
-                $"reads {at.Average(r => r.Measured):0.000}%  |  residual shift " +
+                $"reads {at.Average(r => r.Measured):0.000}% " +
+                $"(uncompensated {at.Average(r => r.Uncompensated):0.000}%)  |  residual shift " +
                 $"{at.Average(r => r.ShiftRaw):0} uncorrected -> {at.Average(r => r.ShiftFixed):0} samples " +
                 $"(frame-to-frame: {at.Average(r => r.ShiftVelocity):0})  |  " +
                 $"a perfect correction would score {at.Average(r => r.Ceiling):+0.0;-0.0} dB");

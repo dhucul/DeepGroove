@@ -184,11 +184,21 @@ public sealed class WowFlutterTests(ITestOutputHelper output)
     /// to 75 and falls with the damage as it should. So the numbers here got worse and the tool got
     /// better, and a test on a stationary tone is exactly the instrument that could not see it.
     /// </para>
+    /// <para>
+    /// The remaining-wow figure was loosened again for the slowest case when the reported deviation
+    /// began being compensated for the reference window. <b>That is a reporting change, not a
+    /// correction one</b>: the waveform gain here is identical either side of it, and residual drift
+    /// on the corpora is unchanged. Compensation is a low-frequency boost, and what is left after a
+    /// correction is noisier down there than the wow it removed, so it gains more from the boost
+    /// than the original did — which flatters the before-and-after ratio less. This is the same
+    /// circular metric the corpus test warns about; the waveform assertion below is the one that
+    /// means something.
+    /// </para>
     /// </remarks>
     [Theory]
     [InlineData(0.003, 1.5, 5.0, 0.50)]
     [InlineData(0.006, 2.0, 2.0, 0.70)]
-    [InlineData(0.012, 0.8, 0.8, 0.70)]
+    [InlineData(0.012, 0.8, 0.8, 0.85)]
     public void CorrectingMovesTheAudioBackTowardTheOriginal(double depth, double wowHz,
         double expectedGainDb, double expectedRemaining)
     {
