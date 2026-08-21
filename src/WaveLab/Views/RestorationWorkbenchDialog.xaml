@@ -127,7 +127,7 @@
                                               Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
                                 </Grid>
                                 <TextBlock Text="Signal-adaptive interpolation protects sustained musical attacks."
-                                           Margin="0,5,0,12" Foreground="{StaticResource Faint}" FontSize="10.5"/>
+                                           Style="{StaticResource CardCaption}"/>
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
                                     <TextBlock Text="Detection sensitivity" Foreground="{StaticResource Muted}"/>
@@ -154,7 +154,7 @@
                                               Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
                                 </Grid>
                                 <TextBlock Text="Rebuilds peaks that clipping flattened, from the audio that survived."
-                                           Margin="0,5,0,10" Foreground="{StaticResource Faint}" FontSize="10.5"/>
+                                           Style="{StaticResource CardCaption}" Margin="0,5,0,10"/>
                                 <TextBlock Text="METHOD" Style="{StaticResource UpperLabel}"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
                                     <ToggleButton x:Name="declipAuto" Style="{StaticResource SegmentButton}"
@@ -196,7 +196,7 @@
                                               Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
                                 </Grid>
                                 <TextBlock Text="A smoothed spectral gate follows the learned surface-noise profile."
-                                           Margin="0,5,0,12" Foreground="{StaticResource Faint}" FontSize="10.5"/>
+                                           Style="{StaticResource CardCaption}"/>
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
                                     <TextBlock Text="Maximum reduction" Foreground="{StaticResource Muted}"/>
@@ -227,7 +227,7 @@
                                               Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
                                 </Grid>
                                 <TextBlock Text="Matched, narrow notches remove mains hum without shifting stereo alignment."
-                                           Margin="0,5,0,12" Foreground="{StaticResource Faint}" FontSize="10.5"/>
+                                           Style="{StaticResource CardCaption}"/>
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="100"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <StackPanel>

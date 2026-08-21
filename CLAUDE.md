@@ -506,10 +506,18 @@ and it is worth much less than the ceiling suggested — but what it is worth is
   line in place: **370 px of room, 286 px wanted, one line**. The mockup originally quoted 365 and
   268 from `FormattedText`; glyph metrics are not the built control, and the render is what the
   numbers now come from.
-- **That render also found a defect that is not mine and is not fixed**: at the 860 px minimum the
-  **Hum Removal card cuts its description mid-word** — “without shifting stereo alignm”. It has no
-  `TextWrapping`, like the captions the rack note already records. Left alone because it is outside
-  what was asked for, and recorded here so it is not found twice.
+- **That render found a second defect and it is fixed: at the 860 px minimum the Hum Removal card
+  cut its description mid-word** — “without shifting stereo alignm”. Same fault as the rack’s render
+  buttons and the plugin name under the power LED, and the same cause: a caption with no
+  `TextWrapping`. **The fix is a style rather than an attribute**, because all four workbench card
+  captions repeated the identical three attributes inline with nothing shared — exactly the
+  duplication recorded above for `UpperLabel`. `CardCaption` in `Theme.xaml` carries `Faint`,
+  `SecondarySize` and `Wrap`; the declip card keeps its 10 px bottom margin as the one override.
+  Only six places in the app used that triple and two of them are different components — a trimmed
+  status line and an inline “BPM ·” label — so they are left alone.
+- **Wrapping costs about 14 px of card height and that is the right trade.** The hum caption becomes
+  two lines, which pushes the output-mix row down; the panel already scrolls, so nothing is lost. A
+  caption cut mid-glyph reads as a drawing fault, a caption on two lines reads as a caption.
 
 ## Gotchas
 
