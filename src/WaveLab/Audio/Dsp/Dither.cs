@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>What kind of dither, if any, is applied when reducing bit depth.</summary>
 public enum DitherKind
@@ -142,11 +142,24 @@ public sealed class Dither
         double wanted = sample * FullScale - feedback + Noise(channel);
         double quantised = Math.Round(wanted);
 
+        // Clamped first, and the error recorded against what is actually written, not
+        // against the value the quantiser would have liked to write. The shaper can push
+        // `wanted` past the rail at full scale, and feeding back the unclamped error left
+        // the loop believing it had emitted something it had not.
+        //
+        // Bounded, because the committed error is only a correctable quantity while the
+        // converter still has headroom to correct it. Sustained overload — a square wave
+        // at the rail, say — otherwise asks the loop to make up a deficit that grows
+        // every sample, and it runs away. Ordinary operation never reaches this: the
+        // dither is +/-1 LSB and rounding adds half of one, so the error is under 1.5.
+        const double MaximumFeedbackError = 2.0;
+        double output = Math.Clamp(quantised, -FullScale, FullScale - 1);
+
         // Shift the history and record what this quantisation cost.
         for (int k = history.Length - 1; k > 0; k--) history[k] = history[k - 1];
-        history[0] = quantised - wanted;
+        history[0] = Math.Clamp(output - wanted, -MaximumFeedbackError, MaximumFeedbackError);
 
-        return Math.Clamp(quantised, -FullScale, FullScale - 1) * Lsb;
+        return output * Lsb;
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>
 /// Turns a magnitude response into the unique minimum-phase impulse response that has it.
@@ -69,8 +69,16 @@ public static class MinimumPhase
     }
 
     /// <summary>
-    /// A zero-phase impulse response with the given magnitude, centred in the buffer.
+    /// A zero-phase impulse response with the given magnitude, centred on index zero.
     /// </summary>
+    /// <remarks>
+    /// Centred on index <b>zero</b>, not in the middle of the buffer: the inverse
+    /// transform of a real symmetric magnitude is circularly symmetric, so the response
+    /// runs forward from index 0 and its negative half wraps to the end. A caller that
+    /// wants it centred has to rotate it — <c>LinearPhaseEqEffect</c> does, with
+    /// <c>(i - half + size) % size</c>. The doc used to claim otherwise, which is the
+    /// kind of thing that only shows up as a filter that sounds wrong.
+    /// </remarks>
     public static double[] ZeroPhase(double[] magnitude)
     {
         ArgumentNullException.ThrowIfNull(magnitude);

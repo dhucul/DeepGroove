@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>YIN pitch detection (median over frames) and note naming.</summary>
 public static class PitchDetect
@@ -12,9 +12,15 @@ public static class PitchDetect
         int tauMin = Math.Max(2, sampleRate / 1500);          // up to 1.5 kHz
         var results = new List<(double f, double conf)>();
 
+        // Out of the frame loop: a three-minute file is about 1,900 frames, and these two
+        // were being allocated for every one of them.
+        if (tauMax <= tauMin) return (0, 0);
+        var diff = new double[tauMax];
+        var cmnd = new double[tauMax];
+
         for (int start = 0; start + window * 2 <= mono.Length; start += window)
         {
-            var diff = new double[tauMax];
+            Array.Clear(diff);
             for (int tau = tauMin; tau < tauMax; tau++)
             {
                 double sum = 0;
@@ -27,7 +33,7 @@ public static class PitchDetect
             }
 
             // cumulative mean normalized difference
-            var cmnd = new double[tauMax];
+            Array.Clear(cmnd);
             double running = 0;
             cmnd[0] = 1;
             for (int tau = 1; tau < tauMax; tau++)

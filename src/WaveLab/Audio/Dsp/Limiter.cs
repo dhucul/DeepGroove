@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>
 /// Advanced lookahead brickwall limiter with 4x oversampled true-peak / ISP
@@ -50,7 +50,19 @@ public sealed class Limiter
     private long[] _maxFrames = [];
     private int _maxHead, _maxCount;
     private long _frameNumber;
-    private double _gain = 1.0, _releaseCoeff;
+    private double _gain = 1.0;
+
+    /// <summary>
+    /// Release coefficients for the program-dependent release, by peak ratio.
+    /// </summary>
+    /// <remarks>
+    /// The coefficient is exp(-1 / (rate * ms / 1000)) and the only thing that moves is
+    /// the peak ratio, which is bounded to [0, 1]. Evaluating it per frame put a
+    /// Math.Exp on the audio thread for every sample of every stream; a table over the
+    /// ratio, rebuilt whenever the rate changes, is indistinguishable at audio rates.
+    /// </remarks>
+    private const int ReleaseTableSize = 65;
+    private double[] _releaseTable = [];
     private double _thresholdDb, _ceilingDb = -1.0;
     private double _gainReductionDb;
     private int _enabled = 1;
@@ -116,7 +128,13 @@ public sealed class Limiter
         _frameNumber = 0;
         _gain = 1.0;
         GainReductionDb = 0;
-        _releaseCoeff = Math.Exp(-1.0 / (_sampleRate * ReleaseMs / 1000.0));
+        _releaseTable = new double[ReleaseTableSize];
+        for (int i = 0; i < ReleaseTableSize; i++)
+        {
+            double ratio = (double)i / (ReleaseTableSize - 1);
+            double ms = ReleaseMs * (0.4 + 0.6 * ratio);
+            _releaseTable[i] = Math.Exp(-1.0 / (_sampleRate * ms / 1000.0));
+        }
 
         // True-peak interpolator state
         _ispDelay = new float[_channels][];
@@ -147,7 +165,8 @@ public sealed class Limiter
 
     public void Process(float[] interleaved, int offset, int count)
     {
-        if (_delay.Length != _channels) Configure(_sampleRate, _channels);
+        if (_delay.Length != _channels || _releaseTable.Length != ReleaseTableSize)
+            Configure(_sampleRate, _channels);
         int frames = count / _channels;
         double drive = Math.Pow(10, -ThresholdDb / 20.0);
         double ceiling = Math.Pow(10, CeilingDb / 20.0);
@@ -224,8 +243,12 @@ public sealed class Limiter
             // Program-dependent release: gain stays pinned while a peak dominates the
             // lookahead window, then releases faster over transient material.
             double peakRatio = wmax > 1e-9 ? Math.Clamp(framePeak / wmax, 0.0, 1.0) : 1.0;
-            double adaptiveReleaseMs = ReleaseMs * (0.4 + 0.6 * peakRatio);
-            double adaptiveReleaseCoeff = Math.Exp(-1.0 / (_sampleRate * adaptiveReleaseMs / 1000.0));
+            double tableIndex = peakRatio * (ReleaseTableSize - 1);
+            int lower = (int)tableIndex;
+            int upper = Math.Min(lower + 1, ReleaseTableSize - 1);
+            double blend = tableIndex - lower;
+            double adaptiveReleaseCoeff =
+                _releaseTable[lower] + (_releaseTable[upper] - _releaseTable[lower]) * blend;
 
             if (target < _gain)
                 _gain = target; // instant attack (lookahead absorbs it)

@@ -1,4 +1,4 @@
-using WaveLab.Util;
+﻿using WaveLab.Util;
 
 namespace WaveLab.Audio.Dsp;
 
@@ -116,12 +116,21 @@ public static class Decrackle
         var coefficients = new double[order + 1];
         var autocorrelation = new double[order + 1];
 
-        for (int start = 0; start + block <= samples.Length; start += block)
+        // The final partial block is scanned as well, clamped back to the last full
+        // block's worth of samples. Stopping at the last whole block left up to a block
+        // of audio — about 93 ms at 44.1 kHz — never examined at the end of the channel.
+        int lastStart = samples.Length - block;
+        for (int start = 0; ; start += block)
         {
+            if (start > lastStart) start = lastStart;
             cancellationToken.ThrowIfCancellationRequested();
             progress?.Report(start / (double)samples.Length);
 
-            if (!FitPredictor(samples, start, block, order, autocorrelation, coefficients)) continue;
+            if (!FitPredictor(samples, start, block, order, autocorrelation, coefficients))
+            {
+                if (start == lastStart) break;
+                continue;
+            }
 
             for (int i = 0; i < block; i++)
             {
@@ -136,10 +145,15 @@ public static class Decrackle
             }
 
             double scale = RobustScale(magnitude);
-            if (scale <= 1e-9) continue;
+            if (scale <= 1e-9)
+            {
+                if (start == lastStart) break;
+                continue;
+            }
             double limit = scale * Math.Max(1, options.Threshold);
 
             CollectRuns(magnitude, start, limit, options, samples.Length, events);
+            if (start == lastStart) break;
         }
 
         progress?.Report(1);

@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>Three-band master EQ: low shelf 80 Hz, peaking 650 Hz, high shelf 8 kHz.</summary>
 public sealed class StudioEq
@@ -10,7 +10,17 @@ public sealed class StudioEq
     private int _sampleRate, _channels;
     private double _lowDb, _midDb, _highDb;
 
-    public bool Enabled { get; set; } = true;
+    private int _enabled = 1;
+
+    /// <remarks>
+    /// Volatile, like every other field in this class that crosses to the render thread.
+    /// A plain auto-property was the one exception.
+    /// </remarks>
+    public bool Enabled
+    {
+        get => Volatile.Read(ref _enabled) != 0;
+        set => Volatile.Write(ref _enabled, value ? 1 : 0);
+    }
 
     public double LowGainDb { get => _lowDb; set { _lowDb = value; Rebuild(); } }
     public double MidGainDb { get => _midDb; set { _midDb = value; Rebuild(); } }
@@ -61,12 +71,14 @@ public sealed class StudioEq
         if (bands.Count != 3) return;
         for (int b = 0; b < 3; b++) bands.ApplyTo(filters[b], b);
 
+        // An incrementing counter rather than a division per sample.
+        int c = 0;
         for (int i = offset; i < offset + count; i++)
         {
-            int c = (i - offset) % channels;
             float v = interleaved[i];
             for (int b = 0; b < 3; b++) v = filters[b][c].Process(v);
             interleaved[i] = v;
+            if (++c == channels) c = 0;
         }
     }
 

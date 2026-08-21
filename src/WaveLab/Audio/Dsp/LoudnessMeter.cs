@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>
 /// EBU R128 / ITU-R BS.1770 loudness meter: momentary (400 ms), short-term (3 s),
@@ -78,7 +78,10 @@ public sealed class LoudnessMeter
     private double _rangeCacheValue;
     private double _momentaryLufs = double.NegativeInfinity;
     private double _shortTermLufs = double.NegativeInfinity;
-    private double _truePeakDb = double.NegativeInfinity;
+    // Tracked linearly and converted once on read. Taking 20*log10 per sample per
+     // channel, and again for each of the four interpolation phases, put roughly
+     // three-quarters of a million logarithms a second on the render thread.
+    private double _truePeakLinear;
     private long _framesProcessed;
 
     public double MomentaryLufs
@@ -93,58 +96,83 @@ public sealed class LoudnessMeter
     }
     public double TruePeakDb
     {
-        get => Volatile.Read(ref _truePeakDb);
-        private set => Volatile.Write(ref _truePeakDb, value);
+        get
+        {
+            double linear = Volatile.Read(ref _truePeakLinear);
+            return linear > 0 ? 20 * Math.Log10(linear) : double.NegativeInfinity;
+        }
+    }
+
+    private void ObserveTruePeak(double magnitude)
+    {
+        if (magnitude > Volatile.Read(ref _truePeakLinear)) Volatile.Write(ref _truePeakLinear, magnitude);
     }
 
     public void Configure(int sampleRate, int channels)
     {
-        _sampleRate = sampleRate;
-        _channels = channels;
-        _stage1 = new Biquad[channels];
-        _stage2 = new Biquad[channels];
+        // Built first, published under the lock Process holds. Assigning _channels before
+        // the arrays it indexes let a render thread already inside Process see the new
+        // channel count against the old, shorter arrays — an IndexOutOfRangeException on
+        // the audio thread. Reachable, because PlaybackEngine tears the previous output
+        // down asynchronously, so an old render thread can still be in MasterSection.Read
+        // while Play reconfigures.
+        var stage1 = new Biquad[channels];
+        var stage2 = new Biquad[channels];
         for (int c = 0; c < channels; c++)
         {
             // K-weighting: high shelf +4 dB @ ~1.68 kHz, then high-pass @ ~38 Hz
-            _stage1[c] = Biquad.HighShelf(sampleRate, 1681.97, 3.99982, 1.0);
-            _stage2[c] = Biquad.HighPass(sampleRate, 38.13, 0.5);
+            stage1[c] = Biquad.HighShelf(sampleRate, 1681.97, 3.99982, 1.0);
+            stage2[c] = Biquad.HighPass(sampleRate, 38.13, 0.5);
         }
-        _truePeakDelay = Enumerable.Range(0, channels)
+        float[][] delay = Enumerable.Range(0, channels)
             .Select(_ => new float[TruePeakTapsPerPhase])
             .ToArray();
-        _truePeakHistory = new int[channels];
-        _subBlockSize = Math.Max(1, sampleRate / 10);
-        Reset();
+
+        lock (_lock)
+        {
+            _sampleRate = sampleRate;
+            _channels = channels;
+            _stage1 = stage1;
+            _stage2 = stage2;
+            _truePeakDelay = delay;
+            _truePeakHistory = new int[channels];
+            _subBlockSize = Math.Max(1, sampleRate / 10);
+            ResetCore();
+        }
     }
 
     public void Reset()
     {
-        lock (_lock)
-        {
-            for (int channel = 0; channel < _stage1.Length; channel++) _stage1[channel].Reset();
-            for (int channel = 0; channel < _stage2.Length; channel++) _stage2[channel].Reset();
-            foreach (float[] delay in _truePeakDelay) Array.Clear(delay);
-            Array.Clear(_truePeakHistory);
-            _subBlockSumSq = new double[_channels];
-            _subBlockFill = 0;
-            _last400.Clear();
-            _last3s.Clear();
-            _blockLoudnessStart = 0;
-            _blockLoudnessCount = 0;
-            _shortTermStart = 0;
-            _shortTermCount = 0;
-            _subBlocksSinceShortTerm = 0;
-            // Keep the version monotonic across resets: a reader that sampled the
-            // pre-reset history must never store its result under a key this meter
-            // can hand out again.
-            _blockLoudnessVersion++;
-            _integratedCacheVersion = -1;
-            _integratedCacheValue = double.NegativeInfinity;
-            _rangeCacheVersion = -1;
-            _rangeCacheValue = 0;
-            _framesProcessed = 0;
-            MomentaryLufs = ShortTermLufs = TruePeakDb = double.NegativeInfinity;
-        }
+        lock (_lock) ResetCore();
+    }
+
+    /// <summary>Call while holding <see cref="_lock"/>.</summary>
+    private void ResetCore()
+    {
+        for (int channel = 0; channel < _stage1.Length; channel++) _stage1[channel].Reset();
+        for (int channel = 0; channel < _stage2.Length; channel++) _stage2[channel].Reset();
+        foreach (float[] delay in _truePeakDelay) Array.Clear(delay);
+        Array.Clear(_truePeakHistory);
+        _subBlockSumSq = new double[_channels];
+        _subBlockFill = 0;
+        _last400.Clear();
+        _last3s.Clear();
+        _blockLoudnessStart = 0;
+        _blockLoudnessCount = 0;
+        _shortTermStart = 0;
+        _shortTermCount = 0;
+        _subBlocksSinceShortTerm = 0;
+        // Keep the version monotonic across resets: a reader that sampled the
+        // pre-reset history must never store its result under a key this meter
+        // can hand out again.
+        _blockLoudnessVersion++;
+        _integratedCacheVersion = -1;
+        _integratedCacheValue = double.NegativeInfinity;
+        _rangeCacheVersion = -1;
+        _rangeCacheValue = 0;
+        _framesProcessed = 0;
+        MomentaryLufs = ShortTermLufs = double.NegativeInfinity;
+        Volatile.Write(ref _truePeakLinear, 0);
     }
 
     public void Process(float[] interleaved, int offset, int count)
@@ -166,8 +194,7 @@ public sealed class LoudnessMeter
                     }
                     else
                     {
-                        double sampleDb = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(raw)));
-                        if (sampleDb > TruePeakDb) TruePeakDb = sampleDb;
+                        ObserveTruePeak(Math.Abs(raw));
 
                         // Capture can begin at an arbitrary waveform phase. Wait
                         // for a complete real-sample history rather than filtering
@@ -207,7 +234,9 @@ public sealed class LoudnessMeter
                         if (_last3s.Count == ShortTermSubBlocks) AddShortTermLoudness(ShortTermLufs);
                     }
 
-                    _subBlockSumSq = new double[_channels];
+                    // Cleared, not reallocated: this ran ten times a second on the
+                    // render thread.
+                    Array.Clear(_subBlockSumSq);
                     _subBlockFill = 0;
                 }
 
@@ -253,8 +282,7 @@ public sealed class LoudnessMeter
             double interpolated = 0;
             for (int tap = 0; tap < TruePeakTapsPerPhase; tap++)
                 interpolated += phase[tap] * delay[tap];
-            double db = 20 * Math.Log10(Math.Max(1e-9, Math.Abs(interpolated)));
-            if (db > TruePeakDb) TruePeakDb = db;
+            ObserveTruePeak(Math.Abs(interpolated));
         }
     }
 

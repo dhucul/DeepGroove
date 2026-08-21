@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>Analysis-first, non-destructive restoration operations.</summary>
 public static partial class Restoration
@@ -165,7 +165,6 @@ public static partial class Restoration
                         events.Count, events.Count));
                 }
             }
-            nextCandidateSample = 2;
 
             if (options.PredictiveDetection)
             {
@@ -759,11 +758,20 @@ public static partial class Restoration
         var autocorrelation = new double[order + 1];
         var found = new List<ClickEvent>();
 
-        for (int start = 0; start + block <= samples.Length; start += block)
+        // The final partial block is scanned too, clamped back to the last full block's
+        // worth of samples. Stopping at the last whole block dropped up to 4096 samples —
+        // about 93 ms at 44.1 kHz — off the end of every channel, which on a record side
+        // is the run-out.
+        int lastStart = samples.Length - block;
+        for (int start = 0; ; start += block)
         {
+            if (start > lastStart) start = lastStart;
             cancellationToken.ThrowIfCancellationRequested();
             if (!Decrackle.FitPredictor(samples, start, block, order, autocorrelation, coefficients))
+            {
+                if (start == lastStart) break;
                 continue;
+            }
 
             double squareSum = 0;
             for (int i = 0; i < block; i++)
@@ -811,6 +819,8 @@ public static partial class Restoration
                     found.Add(candidate);
                 }
             }
+
+            if (start == lastStart) break;
         }
 
         // Merged rather than appended: the curvature pass has already found the loud ones, and the
@@ -1014,6 +1024,10 @@ public static partial class Restoration
 
         // ── 7. Combined confidence ────────────────────────────────
         // Weighted toward HF ratio (best discriminator) and recovery (return to baseline).
+        // 0.85 without the bipolar bonus, 1.00 with it - so a monopolar click cannot
+        // score above 0.85 however cleanly it passes every other test. MinimumConfidence
+        // defaults to 0.65, well under that, but a preset setting it higher would reject
+        // every click that is not bipolar.
         double confidence = 0.35 * hfScore
                           + 0.30 * recoveryScore
                           + 0.20 * peakScore
@@ -1679,10 +1693,19 @@ public static partial class Restoration
             // Quick validation: must return to near-baseline after the spike.
             // Skip a short guard region to allow the opposite-polarity lobe to pass.
             int recoverySkip = Math.Max(2, spanLength);
-            int recoveryEnd = Math.Min(n - 1, end + recoverySkip + spanLength * 3);
+            int recoveryStart = end + recoverySkip;
+            int recoveryEnd = Math.Min(n - 1, recoveryStart + spanLength * 3);
+
+            // Near the end of the buffer this range collapses, and an empty range left
+            // maxPostDeviation at zero — which passed the return-to-baseline test
+            // unconditionally. That test is the strongest thing separating a defect from
+            // an instrument, so a musical attack in the last few milliseconds of a side
+            // was being accepted as a pop.
+            if (recoveryEnd - recoveryStart < 2) continue;
+
             double preLevel = start > 0 ? samples[start - 1] : 0;
             double maxPostDeviation = 0;
-            for (int j = end + recoverySkip; j < recoveryEnd; j++)
+            for (int j = recoveryStart; j < recoveryEnd; j++)
                 maxPostDeviation = Math.Max(maxPostDeviation, Math.Abs(samples[j] - preLevel));
 
             double clickAmp = 0;
@@ -2117,19 +2140,21 @@ public static partial class Restoration
             Math.Max(Math.Abs(samples[left]), Math.Abs(samples[right])));
         double maximumPeak = Math.Max(observedLevel, observedLevel * maximumGain);
 
+        // The height the shoulders say the peak reached, bounded by the reconstruction
+        // ceiling. Without it this method only smoothed the flat top: a natural cubic
+        // spline interpolates its knots, and every knot here sits at or below the rail.
+        double targetPeak = Math.Min(
+            Math.Max(observedLevel, Math.Abs(clippedPeak.EstimatedTruePeak)), maximumPeak);
+
+        // The gap lies in exactly one segment by construction — the one bridging the last
+        // knot before it and the first after — so the answer is contextBefore. Searching
+        // for it per sample scanned every knot each time and, if it ever failed, silently
+        // evaluated segment zero thousands of samples from its origin.
+        int seg = contextBefore;
+        double reconstructedSignedPeak = double.NegativeInfinity;
+        var reconstruction = new double[end - start];
         for (int i = start; i < end; i++)
         {
-            // Find the correct spline segment
-            int seg = 0;
-            for (int s = 0; s < n; s++)
-            {
-                if (xValues[s] <= i && i <= xValues[s + 1])
-                {
-                    seg = s;
-                    break;
-                }
-            }
-
             double dx = i - xValues[seg];
             double value = yValues[seg] + b[seg] * dx + c[seg] * dx * dx + d[seg] * dx * dx * dx;
 
@@ -2138,8 +2163,27 @@ public static partial class Restoration
                 double t = (double)(i - left) / span;
                 value = samples[left] + (samples[right] - samples[left]) * t;
             }
+            reconstruction[i - start] = value;
+            reconstructedSignedPeak = Math.Max(reconstructedSignedPeak, value * sign);
+        }
 
+        // Lift the arch to the height the shoulders claim, as ReconstructClippedPeak does.
+        double missingPeak = Math.Max(0.0, targetPeak - reconstructedSignedPeak);
+        for (int i = start; i < end; i++)
+        {
+            double t = (double)(i - left) / span;
+            double bump = Math.Sin(Math.PI * t);
+            double value = reconstruction[i - start] + sign * missingPeak * bump * bump;
             value = Math.Clamp(value, -maximumPeak, maximumPeak);
+
+            // Never come back under what was recorded. A railed sample was at least the
+            // rail, and an arch drawn between two shoulders that both sit below it can dip
+            // under away from the centre. ReconstructClippedPeak carries a note recording
+            // that this clamp was the whole of a measured regression on percussive
+            // material; this path was written without it.
+            double recorded = samples[i];
+            value = sign > 0 ? Math.Max(value, recorded) : Math.Min(value, recorded);
+
             samples[i] += ((float)value - samples[i]) * strength;
         }
     }

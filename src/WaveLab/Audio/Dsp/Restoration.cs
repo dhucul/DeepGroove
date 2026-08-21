@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>Restoration DSP: spectral noise reduction, click repair, hum removal, silence detection.</summary>
 public static partial class Restoration
@@ -81,7 +81,10 @@ public static partial class Restoration
         var window = Fft.HannWindow(NrFftSize);
         float floorGain = (float)Math.Pow(10, -Math.Abs(reductionDb) / 20.0);
         double thresholdMul = Math.Pow(10, sensitivityDb / 20.0);
-        int bins = NrFftSize / 2;
+        // DC through Nyquist inclusive, which is what the processor is handed. Stopping
+        // at NrFftSize / 2 left the Nyquist bin passing through at unity while every
+        // other bin was gated.
+        int bins = NrFftSize / 2 + 1;
 
         var stft = NoiseReductionStft(window);
 
@@ -154,7 +157,7 @@ public static partial class Restoration
         var window = Fft.HannWindow(NrFftSize);
         float floorGain = (float)Math.Pow(10, -Math.Abs(reductionDb) / 20.0);
         double thresholdMul = Math.Pow(10, sensitivityDb / 20.0);
-        int bins = NrFftSize / 2;
+        int bins = NrFftSize / 2 + 1;   // DC through Nyquist, as handed to the processor
         double alpha = 0.98; // decision-directed smoothing
 
         var stft = NoiseReductionStft(window);
@@ -275,8 +278,9 @@ public static partial class Restoration
 
     /// <summary>
     /// Advanced hum removal with adaptive fundamental tracking and dynamic notch depth.
-    /// Uses zero-crossing analysis to detect the actual mains frequency and reduces
-    /// notch depth at harmonics where sustained musical energy is present.
+    /// Compares the energy actually present at each mains candidate to decide the
+    /// fundamental, and reduces notch depth at harmonics where the energy the notch is
+    /// removing behaves like music rather than hum.
     /// </summary>
     public static void RemoveHumAdvanced(float[][] data, int sampleRate, double baseFreq, int harmonics,
         double q, double strength, bool adaptiveFrequency = true, bool dynamicDepth = true,
@@ -290,7 +294,7 @@ public static partial class Restoration
         double effectiveFreq = baseFreq;
         if (adaptiveFrequency)
         {
-            effectiveFreq = DetectMainsFrequency(data, sampleRate);
+            effectiveFreq = DetectMainsFrequency(data, sampleRate, baseFreq);
         }
 
         foreach (var channel in data)
@@ -317,16 +321,22 @@ public static partial class Restoration
 
                     if (dynamicDepth)
                     {
-                        double energy = Math.Abs(dry);
-                        harmonicEnergy[hIdx] = 0.95 * harmonicEnergy[hIdx] + 0.05 * energy;
-                        harmonicSmoothing[hIdx] = 0.9 * harmonicSmoothing[hIdx] + 0.1 * harmonicEnergy[hIdx];
+                        // What the notch removes is the energy at this harmonic; |dry| was the
+                        // whole programme, so anything above about -40 dBFS pinned every notch
+                        // at 30% strength for the length of the file whatever the hum was doing.
+                        double harmonic = Math.Abs(dry - filtered);
 
-                        double dynamicAmount = amount;
-                        if (harmonicSmoothing[hIdx] > 0.01)
-                        {
-                            double reduction = Math.Clamp(harmonicSmoothing[hIdx] * 20, 0, 1);
-                            dynamicAmount *= (1 - reduction * 0.7);
-                        }
+                        // Hum is steady, so a fast and a slow envelope of what the notch takes
+                        // out agree with each other. Musical energy sitting on the harmonic
+                        // moves, and the two diverge — which is the actual discriminator, and
+                        // the one the two arrays here were always named for.
+                        harmonicEnergy[hIdx] = 0.95 * harmonicEnergy[hIdx] + 0.05 * harmonic;
+                        harmonicSmoothing[hIdx] = 0.9995 * harmonicSmoothing[hIdx] + 0.0005 * harmonic;
+
+                        double slow = Math.Max(1e-9, harmonicSmoothing[hIdx]);
+                        double variation = Math.Abs(harmonicEnergy[hIdx] - slow) / slow;
+                        double dynamicAmount =
+                            amount * (1 - 0.7 * Math.Clamp(variation - 0.5, 0.0, 1.0));
                         channel[i] = dry + (filtered - dry) * (float)dynamicAmount;
                     }
                     else
@@ -416,9 +426,20 @@ public static partial class Restoration
         return double.IsFinite(power) && power > 0 ? power / length : 0;
     }
 
-    private static double DetectMainsFrequency(float[][] data, int sampleRate)
+    /// <summary>
+    /// Which mains frequency the transfer actually carries, or <paramref name="fallback"/>
+    /// when neither candidate stands out far enough to be believed.
+    /// </summary>
+    /// <remarks>
+    /// The gate is the point. Comparing the two bins and taking the larger always returns
+    /// an answer, so on a record with bass energy near 50 or 60 Hz it was a coin flip that
+    /// silently overrode whatever the user had chosen. A 55 Hz probe sits between the
+    /// candidates and carries no mains component, so it measures the local floor: neither
+    /// candidate is hum unless it stands well above that, and above the other.
+    /// </remarks>
+    private static double DetectMainsFrequency(float[][] data, int sampleRate, double fallback)
     {
-        if (data.Length == 0 || sampleRate <= 0 || data[0].Length < sampleRate / 4) return 60;
+        if (data.Length == 0 || sampleRate <= 0 || data[0].Length < sampleRate / 4) return fallback;
 
         // Use first channel, analyze middle portion
         var samples = data[0];
@@ -429,14 +450,18 @@ public static partial class Restoration
         // both bins land on complete cycles and the two powers stay comparable.
         int block = Math.Max(1, sampleRate / 10);
         count -= count % block;
-        if (count < block) return 60;
+        if (count < block) return fallback;
 
         // Compare the energy actually present at each candidate rather than
         // inferring a frequency from broadband zero crossings, which measures the
         // programme, not the hum.
         double power50 = GoertzelPower(samples, start, count, 50, sampleRate);
         double power60 = GoertzelPower(samples, start, count, 60, sampleRate);
+        double floor = GoertzelPower(samples, start, count, 55, sampleRate);
 
+        double winner = Math.Max(power50, power60);
+        double loser = Math.Min(power50, power60);
+        if (!(winner > floor * 4) || !(winner > loser * 2)) return fallback;
         return power50 > power60 ? 50 : 60;
     }
 
@@ -444,9 +469,10 @@ public static partial class Restoration
     public static List<(int Start, int End)> DetectSilences(IReadOnlyList<float[]> channels, int sampleRate,
         double thresholdDb, double minLengthMs, CancellationToken cancellationToken = default)
     {
+        int n = ValidateRestorationChannels(channels, sampleRate);
+        if (n == 0) return [];
         double thresholdLin = Math.Pow(10, thresholdDb / 20.0);
         int minLen = Math.Max(1, (int)(minLengthMs / 1000.0 * sampleRate));
-        int n = channels[0].Length;
         const int hop = 256;
 
         var result = new List<(int, int)>();
@@ -482,10 +508,11 @@ public static partial class Restoration
         double thresholdDb, double minLengthMs, double hysteresisDb = 6,
         CancellationToken cancellationToken = default)
     {
+        int n = ValidateRestorationChannels(channels, sampleRate);
+        if (n == 0) return [];
         double thresholdLin = Math.Pow(10, thresholdDb / 20.0);
         double openThreshold = Math.Pow(10, (thresholdDb + hysteresisDb) / 20.0);
         int minLen = Math.Max(1, (int)(minLengthMs / 1000.0 * sampleRate));
-        int n = channels[0].Length;
         int hop = Math.Max(64, sampleRate / 100); // ~10ms hops
 
         // Simple high-pass to ignore subsonic rumble

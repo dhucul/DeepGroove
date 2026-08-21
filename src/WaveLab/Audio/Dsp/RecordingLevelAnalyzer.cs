@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 
 namespace WaveLab.Audio.Dsp;
 
@@ -94,6 +94,38 @@ public sealed class RecordingLevelAnalyzer
     private const double TrimmedPeakFraction = 0.005;
     private const int PeakHistogramBins = 128; // 0.5 dB per bin over a 64 dB range
     private const double PeakHistogramDbPerBin = 0.5;
+
+    /// <summary>
+    /// Lower magnitude bound of each histogram bin, descending.
+    /// </summary>
+    /// <remarks>
+    /// The bin used to come from -20*log10(magnitude), evaluated per sample per channel
+    /// on the WASAPI capture callback — where an overrun drops recorded audio. A binary
+    /// search over these edges is seven comparisons and no transcendental, and lands in
+    /// exactly the bin the logarithm did.
+    /// </remarks>
+    private static readonly double[] PeakHistogramEdges = BuildPeakHistogramEdges();
+
+    private static double[] BuildPeakHistogramEdges()
+    {
+        var edges = new double[PeakHistogramBins];
+        for (int bin = 0; bin < PeakHistogramBins; bin++)
+            edges[bin] = Math.Pow(10, -(bin + 1) * PeakHistogramDbPerBin / 20.0);
+        return edges;
+    }
+
+    /// <summary>Smallest bin whose lower bound <paramref name="magnitude"/> exceeds.</summary>
+    private static int PeakHistogramBin(double magnitude)
+    {
+        int low = 0, high = PeakHistogramBins - 1;
+        while (low < high)
+        {
+            int mid = (low + high) / 2;
+            if (magnitude > PeakHistogramEdges[mid]) high = mid;
+            else low = mid + 1;
+        }
+        return low;
+    }
     private const double MaximumIntersamplePremiumDb = 3;
 
     // Narrow-artifact rejection must not become a blanket amnesty. A block that
@@ -593,11 +625,7 @@ public sealed class RecordingLevelAnalyzer
                     if (sourceClippedSamples is null && magnitude >= DigitalClipLevel) _clippedSamples++;
                     if (magnitude > _overallPeak) _overallPeak = magnitude;
                     if (magnitude > _blockPeak) _blockPeak = magnitude;
-                    if (magnitude > 1e-9)
-                    {
-                        int bin = (int)(-20 * Math.Log10(magnitude) / PeakHistogramDbPerBin);
-                        _peakHistogram[Math.Clamp(bin, 0, PeakHistogramBins - 1)]++;
-                    }
+                    if (magnitude > 1e-9) _peakHistogram[PeakHistogramBin(magnitude)]++;
                     if (channel == 0 && magnitude > _peakLeft) _peakLeft = magnitude;
                     if (channel == 1 && magnitude > _peakRight) _peakRight = magnitude;
 

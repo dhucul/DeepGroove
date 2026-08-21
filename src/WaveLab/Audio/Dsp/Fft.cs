@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Numerics;
 
 namespace WaveLab.Audio.Dsp;
@@ -25,6 +25,18 @@ public static class Fft
 {
     private static readonly ConcurrentDictionary<int, FftPlan> PlanCache = new();
 
+    /// <summary>
+    /// Largest size whose plan is cached. Above this a plan is built per call.
+    /// </summary>
+    /// <remarks>
+    /// A plan holds two doubles per point, and the cache never evicts. Sizes are powers
+    /// of two so the entry count is small, but the bytes are not bounded by that: one
+    /// full-file spectrogram at 2^24 points would pin 256 MB for the life of the
+    /// process. Below the ceiling the tables are worth keeping; above it, the transform
+    /// itself dwarfs the cost of building one.
+    /// </remarks>
+    private const int MaximumCachedPlanSize = 1 << 20;
+
     // Scratch is per-thread rather than per-plan so that plans stay immutable and shareable: the
     // spectrum analyzer renders on the UI thread while offline restoration runs on the pool, and
     // both will ask for the same size.
@@ -33,7 +45,9 @@ public static class Fft
     [ThreadStatic] private static double[]? _swapRe;
     [ThreadStatic] private static double[]? _swapIm;
 
-    internal static FftPlan GetPlan(int size) => PlanCache.GetOrAdd(size, static n => new FftPlan(n));
+    internal static FftPlan GetPlan(int size) => size <= MaximumCachedPlanSize
+        ? PlanCache.GetOrAdd(size, static n => new FftPlan(n))
+        : new FftPlan(size);
 
     /// <summary>Smallest power of two greater than or equal to <paramref name="value"/>.</summary>
     public static int NextPowerOfTwo(int value)
@@ -296,6 +310,12 @@ public static class Fft
     /// </summary>
     public static float[] HannWindow(int n)
     {
+        if (n <= 0) return [];
+        // n == 1 divides by n - 1 and returns NaN. Every caller passes a power of two of
+        // at least four, but the WindowFunctions builders all guard this explicitly and
+        // a window of NaN is not a failure anyone would trace back to here.
+        if (n == 1) return [1f];
+
         var w = new float[n];
         for (int i = 0; i < n; i++)
             w[i] = 0.5f - 0.5f * (float)Math.Cos(2 * Math.PI * i / (n - 1));

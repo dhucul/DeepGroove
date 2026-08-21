@@ -1,3 +1,5 @@
+﻿using System.Buffers;
+
 namespace WaveLab.Audio.Dsp;
 
 /// <summary>Tuning for <see cref="Janssen"/>.</summary>
@@ -110,66 +112,83 @@ public static class Janssen
 
         var filter = new double[order + 1];
         var filterAutocorrelation = new double[order + 1];
-        var matrix = new double[gapLength * gapLength];
-        var rightHandSide = new double[gapLength];
-        var previous = new double[gapLength];
 
-        for (int iteration = 0; iteration < Math.Max(1, options.Iterations); iteration++)
+        // Pooled, not allocated. At the 2048-sample cap the matrix is 33 MB, and even a
+        // ten-millisecond pop is 1.8 MB — past the 85 KB large-object-heap threshold, and
+        // taken fresh for every defect on the record. RecordingLevelAnalyzer already
+        // reaches for the pool for exactly this reason and says so.
+        int cells = gapLength * gapLength;
+        double[] matrix = ArrayPool<double>.Shared.Rent(cells);
+        double[] rightHandSide = ArrayPool<double>.Shared.Rent(gapLength);
+        double[] previous = ArrayPool<double>.Shared.Rent(gapLength);
+        try
         {
-            if (!TryFitModel(signal, length, order, filter)) return iteration > 0;
+            // Rent does not zero, and the band fill below writes only |i-j| <= order.
+            Array.Clear(matrix, 0, cells);
 
-            for (int lag = 0; lag <= order; lag++)
+            for (int iteration = 0; iteration < Math.Max(1, options.Iterations); iteration++)
             {
-                double sum = 0;
-                for (int k = 0; k + lag <= order; k++) sum += filter[k] * filter[k + lag];
-                filterAutocorrelation[lag] = sum;
+                if (!TryFitModel(signal, length, order, filter)) return iteration > 0;
+
+                for (int lag = 0; lag <= order; lag++)
+                {
+                    double sum = 0;
+                    for (int k = 0; k + lag <= order; k++) sum += filter[k] * filter[k + lag];
+                    filterAutocorrelation[lag] = sum;
+                }
+
+                for (int i = 0; i < gapLength; i++)
+                {
+                    int m = gapOffset + i;
+                    for (int j = 0; j < gapLength; j++)
+                    {
+                        int lag = Math.Abs(m - (gapOffset + j));
+                        matrix[i * gapLength + j] = lag <= order ? filterAutocorrelation[lag] : 0;
+                    }
+
+                    double sum = 0;
+                    int lowest = Math.Max(0, m - order);
+                    int highest = Math.Min(length - 1, m + order);
+                    for (int j = lowest; j <= highest; j++)
+                    {
+                        if (j >= gapOffset && j < gapOffset + gapLength) continue;   // unknown
+                        sum += filterAutocorrelation[Math.Abs(m - j)] * signal[j];
+                    }
+                    rightHandSide[i] = -sum;
+                }
+
+                Array.Copy(signal, gapOffset, previous, 0, gapLength);
+                if (!TrySolveSymmetric(matrix, rightHandSide, gapLength)) return iteration > 0;
+
+                double change = 0, scale = 1e-12;
+                for (int i = 0; i < gapLength; i++)
+                {
+                    double value = rightHandSide[i];
+                    if (!double.IsFinite(value) || Math.Abs(value + mean) > options.OutputLimit * 4)
+                    {
+                        Array.Copy(previous, 0, signal, gapOffset, gapLength);
+                        return iteration > 0;
+                    }
+                    change = Math.Max(change, Math.Abs(value - previous[i]));
+                    scale = Math.Max(scale, Math.Abs(value));
+                    signal[gapOffset + i] = value;
+                }
+
+                // The model and the samples stop moving each other well before the iteration cap on
+                // ordinary material; stopping there saves most of the cost on a dense click population.
+                if (change <= scale * 1e-3) break;
             }
 
             for (int i = 0; i < gapLength; i++)
-            {
-                int m = gapOffset + i;
-                for (int j = 0; j < gapLength; j++)
-                {
-                    int lag = Math.Abs(m - (gapOffset + j));
-                    matrix[i * gapLength + j] = lag <= order ? filterAutocorrelation[lag] : 0;
-                }
-
-                double sum = 0;
-                int lowest = Math.Max(0, m - order);
-                int highest = Math.Min(length - 1, m + order);
-                for (int j = lowest; j <= highest; j++)
-                {
-                    if (j >= gapOffset && j < gapOffset + gapLength) continue;   // unknown
-                    sum += filterAutocorrelation[Math.Abs(m - j)] * signal[j];
-                }
-                rightHandSide[i] = -sum;
-            }
-
-            Array.Copy(signal, gapOffset, previous, 0, gapLength);
-            if (!TrySolveSymmetric(matrix, rightHandSide, gapLength)) return iteration > 0;
-
-            double change = 0, scale = 1e-12;
-            for (int i = 0; i < gapLength; i++)
-            {
-                double value = rightHandSide[i];
-                if (!double.IsFinite(value) || Math.Abs(value + mean) > options.OutputLimit * 4)
-                {
-                    Array.Copy(previous, 0, signal, gapOffset, gapLength);
-                    return iteration > 0;
-                }
-                change = Math.Max(change, Math.Abs(value - previous[i]));
-                scale = Math.Max(scale, Math.Abs(value));
-                signal[gapOffset + i] = value;
-            }
-
-            // The model and the samples stop moving each other well before the iteration cap on
-            // ordinary material; stopping there saves most of the cost on a dense click population.
-            if (change <= scale * 1e-3) break;
+                reconstruction[i] = signal[gapOffset + i] + mean;
+            return true;
         }
-
-        for (int i = 0; i < gapLength; i++)
-            reconstruction[i] = signal[gapOffset + i] + mean;
-        return true;
+        finally
+        {
+            ArrayPool<double>.Shared.Return(previous);
+            ArrayPool<double>.Shared.Return(rightHandSide);
+            ArrayPool<double>.Shared.Return(matrix);
+        }
     }
 
     /// <summary>
@@ -195,33 +214,49 @@ public static class Janssen
 
         Array.Clear(filter);
         filter[0] = 1;
-        var scratch = new double[order + 1];
-        double error = autocorrelation[0];
-        int fitted = 0;
 
-        for (int current = 1; current <= order; current++)
+        // One scratch set, swapped with the live one each order step rather than copied
+        // into and back out of — the same trick TryAutoregressivePrediction documents.
+        // Two full copies per step is order-squared of pure copying per fit, and at order
+        // 256 that is 131,000 doubles moved four times over for every gap on the record.
+        double[] scratch = ArrayPool<double>.Shared.Rent(order + 1);
+        double[] live = filter;
+        try
         {
-            double residual = autocorrelation[current];
-            for (int i = 1; i < current; i++) residual += filter[i] * autocorrelation[current - i];
+            Array.Clear(scratch, 0, order + 1);
+            double error = autocorrelation[0];
+            int fitted = 0;
 
-            double reflection = -residual / error;
-            if (!double.IsFinite(reflection)) break;
-            // Keeping the reflection coefficients inside the unit circle keeps the model stable; the
-            // gap is then filled by a decaying resonance rather than a diverging one.
-            reflection = Math.Clamp(reflection, -0.999, 0.999);
+            for (int current = 1; current <= order; current++)
+            {
+                double residual = autocorrelation[current];
+                for (int i = 1; i < current; i++) residual += live[i] * autocorrelation[current - i];
 
-            Array.Copy(filter, scratch, order + 1);
-            for (int i = 1; i < current; i++)
-                scratch[i] = filter[i] + reflection * filter[current - i];
-            scratch[current] = reflection;
-            Array.Copy(scratch, filter, order + 1);
+                double reflection = -residual / error;
+                if (!double.IsFinite(reflection)) break;
+                // Keeping the reflection coefficients inside the unit circle keeps the model stable; the
+                // gap is then filled by a decaying resonance rather than a diverging one.
+                reflection = Math.Clamp(reflection, -0.999, 0.999);
 
-            error *= 1.0 - reflection * reflection;
-            fitted = current;
-            if (!double.IsFinite(error) || error <= autocorrelation[0] * 1e-12) break;
+                scratch[0] = 1;
+                for (int i = 1; i < current; i++)
+                    scratch[i] = live[i] + reflection * live[current - i];
+                scratch[current] = reflection;
+                (live, scratch) = (scratch, live);
+
+                error *= 1.0 - reflection * reflection;
+                fitted = current;
+                if (!double.IsFinite(error) || error <= autocorrelation[0] * 1e-12) break;
+            }
+
+            // The caller owns `filter`, so the result has to land back in it.
+            if (!ReferenceEquals(live, filter)) Array.Copy(live, filter, order + 1);
+            return fitted >= 4;
         }
-
-        return fitted >= 4;
+        finally
+        {
+            ArrayPool<double>.Shared.Return(ReferenceEquals(live, filter) ? scratch : live);
+        }
     }
 
     /// <summary>

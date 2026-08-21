@@ -1,4 +1,4 @@
-using WaveLab.Audio.Effects;
+﻿using WaveLab.Audio.Effects;
 
 namespace WaveLab.Audio.Dsp;
 
@@ -438,6 +438,15 @@ public static class CleanupAnalyzer
         double windowSum = window.Sum(value => (double)value);
         double normalization = 2.0 / Math.Max(1e-12, windowSum);
         var measured = new List<SpectralWindow>(starts.Count);
+
+        // Hoisted out of both loops, and a real transform rather than a complex one on
+        // real input: RealForward does half the work and returns exactly the bins read
+        // below. Allocating the pair per channel per window pushed tens of megabytes
+        // through the heap for an analysis that reads the same shape every time.
+        var windowed = new float[fftSize];
+        var binRe = new float[fftSize / 2 + 1];
+        var binIm = new float[fftSize / 2 + 1];
+
         for (int windowIndex = 0; windowIndex < starts.Count; windowIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -447,19 +456,17 @@ public static class CleanupAnalyzer
             int zeros = 0;
             foreach (float[] channel in channels)
             {
-                var real = new float[fftSize];
-                var imaginary = new float[fftSize];
                 for (int i = 0; i < fftSize; i++)
                 {
                     float sample = Finite(channel[start + i]);
-                    real[i] = sample * window[i];
+                    windowed[i] = sample * window[i];
                     sumSquares += sample * sample;
                     if (sample == 0) zeros++;
                 }
-                Fft.Forward(real, imaginary);
+                Fft.RealForward(windowed, binRe, binIm);
                 for (int bin = 0; bin < power.Length; bin++)
                 {
-                    double magnitude = Math.Sqrt(real[bin] * real[bin] + imaginary[bin] * imaginary[bin]) * normalization;
+                    double magnitude = Math.Sqrt(binRe[bin] * binRe[bin] + binIm[bin] * binIm[bin]) * normalization;
                     power[bin] += magnitude * magnitude / channels.Count;
                 }
             }

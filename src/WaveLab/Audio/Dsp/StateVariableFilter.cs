@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>Which output of the state-variable structure is taken.</summary>
 public enum SvfMode
@@ -143,6 +143,13 @@ public struct StateVariableFilter
     /// Deliberately measured. A hand-derived transfer function is a second implementation of the
     /// filter that has to be kept in step with the first, and when the two disagree the drawn curve
     /// is the one that gets believed. Running the actual structure cannot disagree with itself.
+    /// </para>
+    /// <para>
+    /// <b>Nothing calls this.</b> Measuring costs <c>settle + measure</c> filter evaluations and as
+    /// many sine evaluations per frequency point — over five thousand — so a curve drawn at a few
+    /// hundred points is millions of operations per repaint. That is affordable once, cached; it is
+    /// not affordable per frame. Anything adopting it should measure a coarse grid off the UI thread
+    /// and interpolate, the way the spectrogram does.
     /// </remarks>
     public readonly double MagnitudeDb(double frequency, double sampleRate, int settle = 4_096)
     {

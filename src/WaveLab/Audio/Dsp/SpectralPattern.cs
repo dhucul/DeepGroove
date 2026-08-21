@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>Settings for learning and removing a spectral pattern.</summary>
 /// <param name="FftSize">Transform length; must match the grid the mask was drawn in.</param>
@@ -124,7 +124,9 @@ public sealed class SpectralPattern
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
 
         var repair = new SpectralRepairOptions(options.FftSize, options.Hop, 0);
-        SpectralRepair.Frame? frame = SpectralRepair.Frame.Create(samples, analysisOrigin, mask, repair,
+        // Disposed, like every other Frame.Create call site. The scratch it may hold is a
+        // ThreadLocal, and leaking one of those pins its per-thread values on pool threads.
+        using SpectralRepair.Frame? frame = SpectralRepair.Frame.Create(samples, analysisOrigin, mask, repair,
             cancellationToken);
         if (frame is null) return None;
 
