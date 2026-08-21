@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 
 namespace WaveLab.Audio;
@@ -87,11 +87,18 @@ public static class AiffMetadata
     /// <summary>
     /// An AIFF text chunk is plain characters with no terminator — its length is the chunk's length.
     /// </summary>
+    /// <remarks>
+    /// UTF-8, matching what <see cref="BroadcastMetadata.WriteInfoList"/> writes for a WAV.
+    /// ASCII here silently turned every accented character into a question mark, so a title
+    /// did not survive the WAV to AIFF to WAV round trip <see cref="FileTags"/> exists to
+    /// make work. Plain ASCII text encodes identically either way, so nothing a previous
+    /// version wrote reads differently now.
+    /// </remarks>
     public static byte[] WriteTextChunk(string? text) =>
-        Encoding.ASCII.GetBytes(text ?? string.Empty);
+        Encoding.UTF8.GetBytes(text ?? string.Empty);
 
     public static string ReadTextChunk(byte[]? data) =>
-        data is { Length: > 0 } ? Encoding.ASCII.GetString(data).TrimEnd('\0') : string.Empty;
+        data is { Length: > 0 } ? Encoding.UTF8.GetString(data).TrimEnd('\0') : string.Empty;
 
     // ── COMT ─────────────────────────────────────────────────────
 

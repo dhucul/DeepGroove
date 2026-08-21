@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 
 namespace WaveLab.Audio;
@@ -60,6 +60,7 @@ public sealed class RiffMetadata
     private readonly HashSet<string> _owned;
     private readonly bool _bigEndian;
     private readonly List<RiffChunk> _chunks = [];
+    private long _carriedBytes;
 
     /// <summary>Chunks of a little-endian RIFF file — a WAV.</summary>
     public RiffMetadata() : this(bigEndian: false) { }
@@ -110,11 +111,26 @@ public sealed class RiffMetadata
         // A sane ceiling: a stray length field in a damaged file should not be allowed to ask for
         // hundreds of megabytes of metadata.
         if (data.Length > MaximumChunkBytes) return;
+
+        // The per-chunk ceiling alone does not bound what a file as a whole can ask for. A
+        // hundred megabytes of eight-byte chunk headers is twelve million records, each a
+        // fresh four-character string and a byte array — better than a gigabyte of managed
+        // heap from a file that fits in memory ten times over.
+        if (_chunks.Count >= MaximumChunkCount) return;
+        if (_carriedBytes + data.Length > MaximumTotalBytes) return;
+
+        _carriedBytes += data.Length;
         _chunks.Add(new RiffChunk(id, data));
     }
 
     /// <summary>Largest ancillary chunk carried. Beyond this it is almost certainly a damaged header.</summary>
     public const int MaximumChunkBytes = 16 * 1024 * 1024;
+
+    /// <summary>Largest total ancillary payload carried, across every chunk.</summary>
+    public const long MaximumTotalBytes = 64L * 1024 * 1024;
+
+    /// <summary>Most ancillary chunks carried. A real file has tens, not millions.</summary>
+    public const int MaximumChunkCount = 4096;
 
     public RiffChunk? Find(string id)
     {
@@ -133,13 +149,24 @@ public sealed class RiffMetadata
         for (int i = 0; i < _chunks.Count; i++)
         {
             if (!string.Equals(_chunks[i].Id, id, StringComparison.Ordinal)) continue;
+            _carriedBytes += data.Length - _chunks[i].Data.Length;
             _chunks[i] = new RiffChunk(id, data);
             return;
         }
+        _carriedBytes += data.Length;
         _chunks.Add(new RiffChunk(id, data));
     }
 
-    public bool Remove(string id) => _chunks.RemoveAll(c => string.Equals(c.Id, id, StringComparison.Ordinal)) > 0;
+    public bool Remove(string id)
+    {
+        int removed = _chunks.RemoveAll(c =>
+        {
+            if (!string.Equals(c.Id, id, StringComparison.Ordinal)) return false;
+            _carriedBytes -= c.Data.Length;
+            return true;
+        });
+        return removed > 0;
+    }
 
     // ── LIST chunks ──────────────────────────────────────────────
 
@@ -171,16 +198,24 @@ public sealed class RiffMetadata
         for (int i = 0; i < _chunks.Count; i++)
         {
             if (!IsList(_chunks[i], type)) continue;
+            _carriedBytes += data.Length - _chunks[i].Data.Length;
             _chunks[i] = new RiffChunk("LIST", data);
             return;
         }
+        _carriedBytes += data.Length;
         _chunks.Add(new RiffChunk("LIST", data));
     }
 
     public bool RemoveList(string type)
     {
         ArgumentNullException.ThrowIfNull(type);
-        return _chunks.RemoveAll(c => IsList(c, type)) > 0;
+        int removed = _chunks.RemoveAll(c =>
+        {
+            if (!IsList(c, type)) return false;
+            _carriedBytes -= c.Data.Length;
+            return true;
+        });
+        return removed > 0;
     }
 
     private static bool IsList(RiffChunk chunk, string type) =>
@@ -194,7 +229,11 @@ public sealed class RiffMetadata
         ArgumentNullException.ThrowIfNull(writer);
         foreach (RiffChunk chunk in _chunks)
         {
-            writer.Write(Encoding.ASCII.GetBytes(chunk.Id));
+            // Latin1, not ASCII: the ids come from IdFrom/IdFromBig, which build a string
+            // by widening raw bytes. ASCII maps anything above 0x7F to '?', so a chunk id
+            // with a high byte did not come back out as it went in — and byte-for-byte
+            // fidelity is the whole contract of this type.
+            writer.Write(Encoding.Latin1.GetBytes(chunk.Id));
             int length = chunk.Data.Length;
             if (_bigEndian)
                 for (int shift = 24; shift >= 0; shift -= 8) writer.Write((byte)(length >> shift));
@@ -208,7 +247,11 @@ public sealed class RiffMetadata
     public RiffMetadata Clone()
     {
         var copy = new RiffMetadata(_bigEndian);
-        foreach (RiffChunk chunk in _chunks) copy._chunks.Add(new RiffChunk(chunk.Id, (byte[])chunk.Data.Clone()));
+        foreach (RiffChunk chunk in _chunks)
+        {
+            copy._chunks.Add(new RiffChunk(chunk.Id, (byte[])chunk.Data.Clone()));
+            copy._carriedBytes += chunk.Data.Length;
+        }
         return copy;
     }
 

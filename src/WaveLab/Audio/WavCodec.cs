@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 using WaveLab.Audio.Dsp;
 
@@ -524,18 +524,30 @@ public static class WavCodec
                 // feedback loop, so it cannot be created per sample or shared across channels.
                 var shaper = new Dither(dither ? ditherKind : DitherKind.None, 16, channels,
                     doc.SampleRate, autoBlank: true);
-                var buffer = new byte[blockAlign];
+                // Batched the way DecodeStreaming already batches the read side. One
+                // Stream.Write per sample frame is 159 million calls for an hour of
+                // 44.1 kHz stereo, and the read path was the only half that got fixed.
+                const int targetBlockBytes = 1 << 20;
+                int framesPerBlock = Math.Max(1, targetBlockBytes / blockAlign);
+                var block = new byte[framesPerBlock * blockAlign];
+                int inBlock = 0;
                 for (int frame = 0; frame < frames; frame++)
                 {
                     if ((frame & 4095) == 0)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        progress?.Report(frames > 0 ? (double)frame / frames : 1);
+                        progress?.Report((double)frame / frames);
                     }
 
-                    EncodeFrame(sourceChannels, frame, channels, bitDepth, shaper, buffer);
-                    writer.Write(buffer);
+                    EncodeFrame(sourceChannels, frame, channels, bitDepth, shaper,
+                        block.AsSpan(inBlock * blockAlign, blockAlign));
+                    if (++inBlock == framesPerBlock)
+                    {
+                        writer.Write(block, 0, block.Length);
+                        inBlock = 0;
+                    }
                 }
+                if (inBlock > 0) writer.Write(block, 0, inBlock * blockAlign);
 
                 cancellationToken.ThrowIfCancellationRequested();
                 if ((dataSize & 1) == 1) writer.Write((byte)0);
@@ -566,7 +578,7 @@ public static class WavCodec
     /// of the same audio decode identically, and it can only mean anything if this is shared.
     /// </remarks>
     internal static void EncodeFrame(IReadOnlyList<float[]> source, int frame, int channels,
-        int bitDepth, Dither shaper, byte[] buffer)
+        int bitDepth, Dither shaper, Span<byte> buffer)
     {
         int output = 0;
         for (int channel = 0; channel < channels; channel++)
@@ -600,6 +612,10 @@ public static class WavCodec
                 }
                 default:
                 {
+                    // Sanitised like the two integer paths above. A NaN that reached the
+                    // document — from a plugin, say — was otherwise written into the file
+                    // verbatim and read straight back out again.
+                    if (!float.IsFinite(sample)) sample = 0;
                     int value = BitConverter.SingleToInt32Bits(sample);
                     buffer[output++] = (byte)value;
                     buffer[output++] = (byte)(value >> 8);

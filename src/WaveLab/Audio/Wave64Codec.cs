@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
@@ -192,7 +192,17 @@ public static class Wave64Codec
             done += usable;
         }
 
-        return new AudioDocument(output, sampleRate, bits);
+        // Normalised to the document's domain, as WavCodec.Load and AiffCodec.Load both
+        // do. Passing `bits` straight through meant a 64-bit float Wave64 file decoded in
+        // full and then threw out of AudioDocument's setter, which accepts 16, 24 or 32.
+        int sourceBits = format == FormatIeeeFloat ? 32 : Math.Min(bits, 32);
+        return new AudioDocument(output, sampleRate, sourceBits)
+        {
+            // Set for the same reason the other two codecs set them: without a path the
+            // file opened as "Untitled" and Save silently became Save As.
+            FilePath = path,
+            Title = Path.GetFileName(path),
+        };
     }
 
     private static Guid ReadGuid(BinaryReader reader)
@@ -227,11 +237,18 @@ public static class Wave64Codec
         bool isFloat = bitDepth == 32;
 
         string finalPath = Path.GetFullPath(path);
-        string stagePath = finalPath + ".part";
+        string directory = Path.GetDirectoryName(finalPath)
+            ?? throw new InvalidOperationException("The Wave64 output path has no directory.");
+
+        // Unique and CreateNew, as every other writer here does. A fixed ".part" opened
+        // with FileMode.Create let a second export to the same destination truncate the
+        // first one's staging file instead of failing.
+        string stagePath = Path.Combine(directory,
+            $".{Path.GetFileName(finalPath)}.{Guid.NewGuid():N}.tmp");
 
         try
         {
-            using (var stream = new FileStream(stagePath, FileMode.Create, FileAccess.Write,
+            using (var stream = new FileStream(stagePath, FileMode.CreateNew, FileAccess.Write,
                        FileShare.None, bufferSize: 1 << 16))
             using (var writer = new BinaryWriter(stream))
             {
@@ -278,19 +295,29 @@ public static class Wave64Codec
                 // the samples are and agree exactly about what a sample is.
                 var shaper = new Dither(dither ? ditherKind : DitherKind.None, 16, channels,
                     doc.SampleRate, autoBlank: true);
-                var buffer = new byte[blockAlign];
+                // Batched, for the same reason WavCodec.Save is.
+                const int targetBlockBytes = 1 << 20;
+                int framesPerBlock = Math.Max(1, targetBlockBytes / blockAlign);
+                var block = new byte[framesPerBlock * blockAlign];
+                int inBlock = 0;
 
                 for (int frame = 0; frame < frames; frame++)
                 {
                     if ((frame & 4095) == 0)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        progress?.Report(frames > 0 ? (double)frame / frames : 1);
+                        progress?.Report((double)frame / frames);
                     }
 
-                    WavCodec.EncodeFrame(source, frame, channels, bitDepth, shaper, buffer);
-                    writer.Write(buffer);
+                    WavCodec.EncodeFrame(source, frame, channels, bitDepth, shaper,
+                        block.AsSpan(inBlock * blockAlign, blockAlign));
+                    if (++inBlock == framesPerBlock)
+                    {
+                        writer.Write(block, 0, block.Length);
+                        inBlock = 0;
+                    }
                 }
+                if (inBlock > 0) writer.Write(block, 0, inBlock * blockAlign);
 
                 Pad(writer, dataSize);
                 writer.Flush();

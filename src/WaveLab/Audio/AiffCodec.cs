@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Numerics;
 using System.Text;
 using WaveLab.Audio.Dsp;
@@ -263,57 +263,29 @@ public static class AiffCodec
                 // feedback loop and cannot be shared across channels or rebuilt per sample.
                 var shaper = new Dither(dither ? ditherKind : DitherKind.None, 16, channels,
                     doc.SampleRate, autoBlank: true);
-                var buffer = new byte[blockAlign];
+                // Batched, for the same reason WavCodec.Save is: one Stream.Write per
+                // sample frame is a call per 4 to 12 bytes for the length of the file.
+                const int targetBlockBytes = 1 << 20;
+                int framesPerBlock = Math.Max(1, targetBlockBytes / blockAlign);
+                var block = new byte[framesPerBlock * blockAlign];
+                int inBlock = 0;
                 for (int frame = 0; frame < frames; frame++)
                 {
                     if ((frame & 4095) == 0)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        progress?.Report(frames > 0 ? (double)frame / frames : 1);
+                        progress?.Report((double)frame / frames);
                     }
 
-                    int output = 0;
-                    for (int channel = 0; channel < channels; channel++)
+                    EncodeFrameBigEndian(sourceChannels, frame, channels, bitDepth, shaper,
+                        block.AsSpan(inBlock * blockAlign, blockAlign));
+                    if (++inBlock == framesPerBlock)
                     {
-                        float sample = sourceChannels[channel][frame];
-                        if (!float.IsFinite(sample)) sample = 0;
-                        sample = Math.Clamp(sample, -1f, 1f);
-                        switch (bitDepth)
-                        {
-                            case 16:
-                            {
-                                // The shaper owns the quantiser: there is no error to feed back
-                                // until the rounding has happened.
-                                double value = shaper.Process(channel, sample) * 32768.0;
-                                int quantized = Math.Clamp((int)Math.Round(value),
-                                    short.MinValue, short.MaxValue);
-                                buffer[output++] = (byte)(quantized >> 8);
-                                buffer[output++] = (byte)quantized;
-                                break;
-                            }
-                            case 24:
-                            {
-                                int quantized = Math.Clamp(
-                                    (int)Math.Round(sample * 8388608.0), -8388608, 8388607);
-                                buffer[output++] = (byte)(quantized >> 16);
-                                buffer[output++] = (byte)(quantized >> 8);
-                                buffer[output++] = (byte)quantized;
-                                break;
-                            }
-                            default:
-                            {
-                                long scaled = (long)Math.Round(sample * 2147483648.0);
-                                int quantized = (int)Math.Clamp(scaled, int.MinValue, int.MaxValue);
-                                buffer[output++] = (byte)(quantized >> 24);
-                                buffer[output++] = (byte)(quantized >> 16);
-                                buffer[output++] = (byte)(quantized >> 8);
-                                buffer[output++] = (byte)quantized;
-                                break;
-                            }
-                        }
+                        writer.Write(block, 0, block.Length);
+                        inBlock = 0;
                     }
-                    writer.Write(buffer);
                 }
+                if (inBlock > 0) writer.Write(block, 0, inBlock * blockAlign);
 
                 cancellationToken.ThrowIfCancellationRequested();
                 if ((soundChunkSize & 1) == 1) writer.Write((byte)0);
@@ -396,57 +368,141 @@ public static class AiffCodec
         float[][] destination,
         CancellationToken cancellationToken)
     {
+        // The format decision is made once, above the loop, rather than re-evaluated for
+        // every sample of the file — which is how WavCodec.Decode has always done it.
         int offset = 0;
-        for (int frame = 0; frame < frames; frame++)
+        if (floatingPoint && bits == 32)
         {
-            if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
-            for (int channel = 0; channel < channels; channel++)
+            for (int frame = 0; frame < frames; frame++)
             {
-                float sample;
-                if (floatingPoint && bits == 32)
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 4)
                 {
                     uint value = ReadUInt32(data, offset, littleEndian);
-                    sample = BitConverter.Int32BitsToSingle(unchecked((int)value));
-                    offset += 4;
+                    destination[channel][frameOffset + frame] =
+                        BitConverter.Int32BitsToSingle(unchecked((int)value));
                 }
-                else if (floatingPoint)
+            }
+        }
+        else if (floatingPoint)
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 8)
                 {
                     ulong value = ReadUInt64(data, offset, littleEndian);
-                    sample = (float)BitConverter.Int64BitsToDouble(unchecked((long)value));
-                    offset += 8;
+                    destination[channel][frameOffset + frame] =
+                        (float)BitConverter.Int64BitsToDouble(unchecked((long)value));
                 }
-                else if (bits == 8)
+            }
+        }
+        else if (bits == 8)
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++)
                 {
                     byte value = data[offset++];
-                    sample = unsigned8Bit ? (value - 128) / 128f : unchecked((sbyte)value) / 128f;
+                    destination[channel][frameOffset + frame] =
+                        unsigned8Bit ? (value - 128) / 128f : unchecked((sbyte)value) / 128f;
                 }
-                else if (bits == 16)
+            }
+        }
+        else if (bits == 16)
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 2)
                 {
                     int value = littleEndian
                         ? (short)(data[offset] | data[offset + 1] << 8)
                         : (short)(data[offset] << 8 | data[offset + 1]);
-                    sample = value / 32768f;
-                    offset += 2;
+                    destination[channel][frameOffset + frame] = value / 32768f;
                 }
-                else if (bits == 24)
+            }
+        }
+        else if (bits == 24)
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 3)
                 {
                     int value = littleEndian
                         ? (data[offset + 2] << 24 | data[offset + 1] << 16 | data[offset] << 8) >> 8
                         : (data[offset] << 24 | data[offset + 1] << 16 | data[offset + 2] << 8) >> 8;
-                    sample = value / 8388608f;
-                    offset += 3;
+                    destination[channel][frameOffset + frame] = value / 8388608f;
                 }
-                else
+            }
+        }
+        else
+        {
+            for (int frame = 0; frame < frames; frame++)
+            {
+                if ((frame & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                for (int channel = 0; channel < channels; channel++, offset += 4)
                 {
                     uint value = ReadUInt32(data, offset, littleEndian);
-                    sample = unchecked((int)value) / 2147483648f;
-                    offset += 4;
+                    destination[channel][frameOffset + frame] = unchecked((int)value) / 2147483648f;
                 }
-                destination[channel][frameOffset + frame] = sample;
             }
         }
         cancellationToken.ThrowIfCancellationRequested();
     }
+
+    /// <summary>
+    /// Encodes one frame as big-endian signed PCM into <paramref name="buffer"/>, which must be one
+    /// block long. The AIFF counterpart to <see cref="WavCodec.EncodeFrame"/>; the two differ only
+    /// in byte order.
+    /// </summary>
+    private static void EncodeFrameBigEndian(IReadOnlyList<float[]> source, int frame, int channels,
+        int bitDepth, Dither shaper, Span<byte> buffer)
+    {
+        int output = 0;
+        for (int channel = 0; channel < channels; channel++)
+        {
+            float sample = source[channel][frame];
+            if (!float.IsFinite(sample)) sample = 0;
+            sample = Math.Clamp(sample, -1f, 1f);
+            switch (bitDepth)
+            {
+                case 16:
+                {
+                    // The shaper owns the quantiser: there is no error to feed back
+                    // until the rounding has happened.
+                    double value = shaper.Process(channel, sample) * 32768.0;
+                    int quantized = Math.Clamp((int)Math.Round(value),
+                        short.MinValue, short.MaxValue);
+                    buffer[output++] = (byte)(quantized >> 8);
+                    buffer[output++] = (byte)quantized;
+                    break;
+                }
+                case 24:
+                {
+                    int quantized = Math.Clamp(
+                        (int)Math.Round(sample * 8388608.0), -8388608, 8388607);
+                    buffer[output++] = (byte)(quantized >> 16);
+                    buffer[output++] = (byte)(quantized >> 8);
+                    buffer[output++] = (byte)quantized;
+                    break;
+                }
+                default:
+                {
+                    long scaled = (long)Math.Round(sample * 2147483648.0);
+                    int quantized = (int)Math.Clamp(scaled, int.MinValue, int.MaxValue);
+                    buffer[output++] = (byte)(quantized >> 24);
+                    buffer[output++] = (byte)(quantized >> 16);
+                    buffer[output++] = (byte)(quantized >> 8);
+                    buffer[output++] = (byte)quantized;
+                    break;
+                }
+            }
+        }
+    }
+
 
     private static int ReadSampleRate(BinaryReader reader)
     {
