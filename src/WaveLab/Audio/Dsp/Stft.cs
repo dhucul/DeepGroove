@@ -1,4 +1,4 @@
-namespace WaveLab.Audio.Dsp;
+﻿namespace WaveLab.Audio.Dsp;
 
 /// <summary>Where the first analysis frame begins.</summary>
 public enum StftLeadIn
@@ -41,11 +41,11 @@ public enum StftNormalization
 /// <remarks>
 /// <para>
 /// This exists because the app grew three separate hand-rolled overlap-add loops — in
-/// <c>Restoration.ReduceNoise</c>, <c>Restoration.ReduceNoiseAdvanced</c> and
-/// <c>NoiseReductionEffect</c> — each with its own normalization scheme: one accumulates a running
-/// sum of squared window values and divides at the end, another precomputes a COLA constant, a third
-/// undoes the analysis window on read-back. They agree on the answer only because each was tuned
-/// against its own error.
+/// <c>Restoration.ReduceNoise</c>, <c>Restoration.ReduceNoiseAdvanced</c> (since measured against
+/// the first and deleted) and <c>NoiseReductionEffect</c> — each with its own normalization
+/// scheme: one accumulates a running sum of squared window values and divides at the end, another
+/// precomputes a COLA constant, a third undoes the analysis window on read-back. They agree on the
+/// answer only because each was tuned against its own error.
 /// </para>
 /// <para>
 /// The default window pair is √Hann for both analysis and synthesis at 75% overlap. Applying half

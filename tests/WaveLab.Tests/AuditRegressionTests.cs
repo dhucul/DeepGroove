@@ -185,52 +185,18 @@ public sealed class AuditRegressionTests : IDisposable
     // ── restoration ──────────────────────────────────────────────
 
     /// <summary>
-    /// Both silence detectors indexed channel zero before validating, where every other
+    /// The silence detector indexed channel zero before validating, where every other
     /// public entry point in the file validates first.
     /// </summary>
+    /// <remarks>
+    /// The audit found the same defect in <c>DetectSilencesAdvanced</c> and this test covered both.
+    /// That method was measured against this one and deleted, so only the shipped detector is left
+    /// to pin.
+    /// </remarks>
     [Fact]
     public void SilenceDetectionOnNoChannelsIsEmptyRatherThanAThrow()
     {
         Assert.Empty(Restoration.DetectSilences([], 44_100, -60, 100));
-        Assert.Empty(Restoration.DetectSilencesAdvanced([], 44_100, -60, 100));
-    }
-
-    /// <summary>
-    /// The spline declipper interpolates its knots, and every knot sits at or below the
-    /// rail — so away from the centre it wrote values under what was actually recorded.
-    /// The main declipper carries a note recording that this clamp was the whole of a
-    /// measured regression on percussive material.
-    /// </summary>
-    [Fact]
-    public void SplineDeclipperNeverWritesBelowTheRecordedRail()
-    {
-        const int rate = 44_100;
-        var channel = new float[2_000];
-        for (int i = 0; i < channel.Length; i++)
-            channel[i] = (float)(0.95 * Math.Sin(2 * Math.PI * 220 * i / rate));
-
-        // Flatten a positive peak into a rail.
-        var railed = new List<int>();
-        for (int i = 0; i < channel.Length; i++)
-        {
-            if (channel[i] <= 0.9f) continue;
-            channel[i] = 0.9f;
-            railed.Add(i);
-        }
-        Assert.NotEmpty(railed);
-
-        float[][] source = [(float[])channel.Clone()];
-        ClippingAnalysisResult analysis = Restoration.AnalyzeClipping(source, rate);
-        Assert.NotEmpty(analysis.Events);
-
-        float[][] repaired = Restoration.RepairClippingSpline(source, analysis.Events);
-
-        foreach (int i in railed)
-        {
-            if (source[0][i] <= 0) continue;
-            Assert.True(repaired[0][i] >= source[0][i] - 1e-6f,
-                $"sample {i} came back under the rail: {repaired[0][i]} < {source[0][i]}");
-        }
     }
 
     // ── the predictive detectors ─────────────────────────────────

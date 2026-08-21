@@ -14,6 +14,18 @@ public sealed record CrackleCell(CorpusRecording Recording, double Severity, int
 public sealed record WowCell(CorpusRecording Recording, double PlantedPercent, int SampleRate,
     float[] Clean, float[] Damaged);
 
+/// <summary>One recording with mains hum planted in it.</summary>
+public sealed record HumCell(CorpusRecording Recording, double LevelDb, int SampleRate,
+    float[] Clean, float[] Damaged, bool[] Scored)
+{
+    public double Score(float[] candidate) => DeclipCorpus.SnrDb(Clean, candidate, Scored);
+    public double Raw => Score(Damaged);
+}
+
+/// <summary>One recording with known silent gaps cut into it.</summary>
+public sealed record SilenceCell(CorpusRecording Recording, int SampleRate,
+    float[] Damaged, IReadOnlyList<(int Start, int End)> Planted);
+
 /// <summary>One recording with broadband hiss planted in it, and the profile a tool would learn.</summary>
 public sealed record NoiseCell(CorpusRecording Recording, double SnrDb, int SampleRate,
     float[] Clean, float[] Damaged, float[] Profile, bool[] Scored)
@@ -540,5 +552,176 @@ public static class RestorationCorpus
                     clean, damaged, profile, scored)));
             }
             return (results, (string?)null);
+        }, onExcluded: onExcluded);
+
+    // ---------- mains hum ----------
+
+    /// <summary>
+    /// Mean power at one frequency, by Goertzel, skipping a ring-in at the front.
+    /// </summary>
+    /// <remarks>
+    /// A notch bank is scored in the frequency domain and never by a waveform residual. Cascaded
+    /// notches rotate phase well outside their own bandwidth, and a sample-wise difference charges
+    /// that rotation as error even though nobody hears it: measured, notching clean music with no
+    /// hum in it at all "costs" 19.8 dB by that metric. The same mistake is on record for wow, where
+    /// a whole-file residual reported a good correction as a total failure.
+    /// </remarks>
+    public static double BinPowerDb(float[] signal, int sampleRate, double frequency, int skip)
+    {
+        ArgumentNullException.ThrowIfNull(signal);
+        if (frequency <= 0 || frequency >= sampleRate / 2.0 || signal.Length <= skip) return double.NegativeInfinity;
+
+        double coefficient = 2 * Math.Cos(2 * Math.PI * frequency / sampleRate);
+        double s1 = 0, s2 = 0;
+        for (int i = skip; i < signal.Length; i++)
+        {
+            double s0 = signal[i] + coefficient * s1 - s2;
+            if (!double.IsFinite(s0)) return double.NegativeInfinity;
+            s2 = s1;
+            s1 = s0;
+        }
+        double power = s1 * s1 + s2 * s2 - coefficient * s1 * s2;
+        int length = signal.Length - skip;
+        return power > 0 ? 10 * Math.Log10(power / length) : double.NegativeInfinity;
+    }
+
+    /// <summary>Total power at the mains fundamental and its harmonics, in dB.</summary>
+    public static double HumPowerDb(float[] signal, int sampleRate, double fundamentalHz, int harmonics, int skip)
+    {
+        double total = 0;
+        for (int h = 1; h <= harmonics; h++)
+        {
+            double frequency = fundamentalHz * h;
+            if (frequency >= sampleRate * 0.45) break;
+            double db = BinPowerDb(signal, sampleRate, frequency, skip);
+            if (double.IsFinite(db)) total += Math.Pow(10, db / 10);
+        }
+        return total > 0 ? 10 * Math.Log10(total) : double.NegativeInfinity;
+    }
+
+    /// <summary>
+    /// Frequencies deliberately clear of any 50 or 60 Hz harmonic, for measuring what a hum
+    /// remover costs the music rather than what it takes off the hum.
+    /// </summary>
+    public static IReadOnlyList<double> MusicProbesHz { get; } =
+        [137.0, 271.0, 443.0, 719.0, 1103.0, 1973.0, 3121.0];
+
+    /// <summary>Worst change at any probe frequency, in dB. Zero is a remover that touched no music.</summary>
+    public static double MusicChangeDb(float[] before, float[] after, int sampleRate, int skip)
+    {
+        double worst = 0;
+        foreach (double frequency in MusicProbesHz)
+        {
+            double a = BinPowerDb(before, sampleRate, frequency, skip);
+            double b = BinPowerDb(after, sampleRate, frequency, skip);
+            if (!double.IsFinite(a) || !double.IsFinite(b)) continue;
+            worst = Math.Max(worst, Math.Abs(b - a));
+        }
+        return worst;
+    }
+
+    /// <summary>How far the planted hum fundamental sits below the programme RMS, in dB.</summary>
+    public static IReadOnlyList<double> HumLevels { get; } = [20.0, 30.0, 40.0];
+
+    /// <summary>
+    /// Plants a mains fundamental and its first harmonics, the way a transfer chain picks them up.
+    /// </summary>
+    /// <remarks>
+    /// Harmonics fall off at 6 dB each, which is roughly what an induced hum looks like, and the
+    /// whole comb is scaled so the fundamental sits at the requested level. Deliberately at exactly
+    /// 50 Hz and steady: a drifting fundamental is what <see cref="HumTracker"/> is for, and
+    /// measuring a notch bank against drift would be measuring something it does not claim.
+    /// </remarks>
+    public static (float[] Clean, float[] Damaged) PlantHum(
+        float[] source, int sampleRate, double fundamentalHz, double belowProgrammeDb)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var clean = (float[])source.Clone();
+        var damaged = (float[])source.Clone();
+
+        double energy = 0;
+        foreach (float value in source) energy += (double)value * value;
+        double programme = Math.Sqrt(energy / Math.Max(1, source.Length));
+        if (!(programme > 0)) return (clean, damaged);
+
+        double amplitude = programme * Math.Pow(10, -belowProgrammeDb / 20.0) * Math.Sqrt(2);
+        for (int harmonic = 1; harmonic <= 6; harmonic++)
+        {
+            double frequency = fundamentalHz * harmonic;
+            if (frequency >= sampleRate * 0.45) break;
+            double level = amplitude * Math.Pow(10, -6.0 * (harmonic - 1) / 20.0);
+            for (int i = 0; i < damaged.Length; i++)
+                damaged[i] += (float)(level * Math.Sin(2 * Math.PI * frequency * i / sampleRate));
+        }
+        return (clean, damaged);
+    }
+
+    public static List<T> MeasureHum<T>(Func<HumCell, T> measure,
+        Action<CorpusRecording, string>? onExcluded = null) =>
+        DeclipCorpus.ForEachRecording<T>((recording, document) =>
+        {
+            float[] source = document.Channels[0];
+            if (source.Length < document.SampleRate * 6)
+                return ((List<T>?)null, "shorter than 6 s");
+
+            int analysed = Math.Min(source.Length, document.SampleRate * MaximumAnalysedSeconds);
+            if (analysed < source.Length) source = source[..analysed];
+
+            var scored = new bool[source.Length];
+            Array.Fill(scored, true);
+
+            var results = new List<T>();
+            foreach (double level in HumLevels)
+            {
+                var (clean, damaged) = PlantHum(source, document.SampleRate, 50.0, level);
+                results.Add(measure(new HumCell(recording, level, document.SampleRate,
+                    clean, damaged, scored)));
+            }
+            return (results, (string?)null);
+        }, onExcluded: onExcluded);
+
+    // ---------- silence detection ----------
+
+    /// <summary>
+    /// Cuts known silent gaps into a recording, so a detector can be scored against where they are.
+    /// </summary>
+    public static (float[] Damaged, List<(int Start, int End)> Planted) PlantSilences(
+        float[] source, int sampleRate, int seed)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var damaged = (float[])source.Clone();
+        var planted = new List<(int, int)>();
+
+        var random = new Random(seed);
+        int gap = sampleRate;                       // one second, well over any minimum length
+        int stride = Math.Max(gap * 3, source.Length / 6);
+        for (int at = stride; at + gap < source.Length - stride / 2; at += stride)
+        {
+            int start = at + random.Next(0, stride / 4);
+            int end = Math.Min(source.Length, start + gap);
+            if (end - start < gap) break;
+            Array.Clear(damaged, start, end - start);
+            planted.Add((start, end));
+        }
+        return (damaged, planted);
+    }
+
+    public static List<T> MeasureSilence<T>(Func<SilenceCell, T> measure,
+        Action<CorpusRecording, string>? onExcluded = null) =>
+        DeclipCorpus.ForEachRecording<T>((recording, document) =>
+        {
+            float[] source = document.Channels[0];
+            if (source.Length < document.SampleRate * 20)
+                return ((List<T>?)null, "shorter than 20 s, too short to hold several gaps");
+
+            int analysed = Math.Min(source.Length, document.SampleRate * MaximumAnalysedSeconds);
+            if (analysed < source.Length) source = source[..analysed];
+
+            var (damaged, planted) = PlantSilences(source, document.SampleRate,
+                DeclipCorpus.StableHash(recording.Path));
+            if (planted.Count < 2) return ((List<T>?)null, "no room for two gaps");
+
+            return (new List<T> { measure(new SilenceCell(recording, document.SampleRate,
+                damaged, planted)) }, (string?)null);
         }, onExcluded: onExcluded);
 }

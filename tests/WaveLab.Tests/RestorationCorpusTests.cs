@@ -132,6 +132,117 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
     }
 
     /// <summary>
+    /// The shipped notch bank against real recordings: how much hum comes off the mains harmonics,
+    /// and how much the music moves at frequencies clear of them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two numbers, never one, and never a waveform residual. Cascaded notches rotate phase far
+    /// outside their own bandwidth and a sample-wise difference charges that rotation as error, so
+    /// notching music with <b>no hum in it at all</b> scores about 20 dB of "damage" - a statement
+    /// about the metric rather than about the filter.
+    /// <c>NoiseReductionCostTests.AWaveformResidualCannotScoreANotchBank</c> pins that, and the same
+    /// trap is already on record for wow, where a whole-file residual reads a good correction as a
+    /// total failure.
+    /// </para>
+    /// <para>
+    /// <b>This is what condemned <c>RemoveHumAdvanced</c>.</b> Measured this way over 54 cells the
+    /// adaptive remover took off <b>26.68 dB against the bank's 48.67</b> while moving the music
+    /// <b>2.48 dB against 0.45</b> - 22 dB less hum for five times the damage, winning <b>0 of 54</b>
+    /// cells. By the invalid residual metric it had won 52 of 54, which is the whole reason the
+    /// metric was checked before the verdict was written. It is deleted.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void TheNotchBankTakesTheHumOffWithoutTakingTheMusic()
+    {
+        if (Skip(output)) return;
+        var rows = RestorationCorpus.MeasureHum(cell =>
+        {
+            int skip = cell.SampleRate;          // a second of notch ring-in belongs to neither
+            double before = RestorationCorpus.HumPowerDb(cell.Damaged, cell.SampleRate, 50, 6, skip);
+            float[][] notched = [(float[])cell.Damaged.Clone()];
+            Restoration.RemoveHum(notched, cell.SampleRate, 50.0, 6, 30.0);
+            return (cell.Recording.Corpus, cell.Recording.ShortName, cell.LevelDb,
+                Removed: before - RestorationCorpus.HumPowerDb(notched[0], cell.SampleRate, 50, 6, skip),
+                Cost: RestorationCorpus.MusicChangeDb(cell.Clean, notched[0], cell.SampleRate, skip));
+        });
+        if (rows.Count == 0) { output.WriteLine("no corpus recordings found"); return; }
+
+        output.WriteLine($"hum removal: {rows.Count} cells");
+        output.WriteLine("hum removed (higher is better):");
+        Report(rows, r => r.Corpus, r => r.LevelDb, r => r.Removed);
+        output.WriteLine("music moved at probe frequencies clear of the harmonics (lower is better):");
+        output.WriteLine($"  mean {rows.Average(r => r.Cost):F2} dB, worst {rows.Max(r => r.Cost):F2} dB");
+
+        Assert.True(rows.Average(r => r.Removed) > 20,
+            $"the bank only took off {rows.Average(r => r.Removed):F1} dB of hum");
+        Assert.True(rows.Max(r => r.Cost) < 6,
+            $"the bank moved the music by {rows.Max(r => r.Cost):F1} dB at a probe frequency");
+    }
+
+    /// <summary>
+    /// The shipped silence detector against gaps cut into real recordings at known positions.
+    /// </summary>
+    /// <remarks>
+    /// A detector is not scored by signal to noise. What matters is whether it finds the gaps, how
+    /// close it puts their edges, and how much it invents - split-to-regions turns each boundary
+    /// into a CD track mark, so a gap reported where there is none costs a user a track in the wrong
+    /// place. <b>That is what condemned <c>DetectSilencesAdvanced</c></b>, the unwired
+    /// RMS-with-hysteresis detector: identical 100% recall, but <b>9 ms of edge error against 3</b>
+    /// and <b>2 spurious gaps against none</b>. Hysteresis holds a gap open past where it ended,
+    /// which is exactly the error a track mark cannot afford. It is deleted.
+    /// </remarks>
+    [Fact]
+    public void TheSilenceDetectorFindsPlantedGapsWithoutInventingAny()
+    {
+        if (Skip(output)) return;
+
+        var rows = RestorationCorpus.MeasureSilence(cell =>
+        {
+            var found = Restoration.DetectSilences([cell.Damaged], cell.SampleRate, -60, 250);
+            int matched = 0;
+            double edgeError = 0;
+            var used = new HashSet<int>();
+            foreach (var (start, end) in cell.Planted)
+            {
+                int best = -1;
+                double bestError = double.MaxValue;
+                for (int i = 0; i < found.Count; i++)
+                {
+                    if (used.Contains(i)) continue;
+                    // Overlap at all, then rank by how close the edges land.
+                    if (found[i].End <= start || found[i].Start >= end) continue;
+                    double error = Math.Abs(found[i].Start - start) + Math.Abs(found[i].End - end);
+                    if (error < bestError) { bestError = error; best = i; }
+                }
+                if (best < 0) continue;
+                used.Add(best);
+                matched++;
+                edgeError += bestError / 2.0 / cell.SampleRate;
+            }
+            return (cell.Recording.Corpus, cell.Recording.ShortName, Planted: cell.Planted.Count,
+                Matched: matched, EdgeMs: matched == 0 ? double.NaN : edgeError / matched * 1000,
+                Spurious: found.Count - matched);
+        });
+        if (rows.Count == 0) { output.WriteLine("no corpus recordings found"); return; }
+
+        int planted = rows.Sum(r => r.Planted), matched = rows.Sum(r => r.Matched);
+        int spurious = rows.Sum(r => r.Spurious);
+        var edges = rows.Where(r => !double.IsNaN(r.EdgeMs)).ToList();
+        output.WriteLine($"silence detection over {rows.Count} recordings: " +
+            $"recall {matched / (double)planted:P0}, " +
+            $"edge error {(edges.Count == 0 ? 0 : edges.Average(r => r.EdgeMs)):F0} ms, " +
+            $"{spurious} spurious over {planted} planted gaps");
+        foreach (var row in rows.Where(r => r.Spurious > 0 || r.Matched < r.Planted))
+            output.WriteLine($"  {row.ShortName}: found {row.Matched} of {row.Planted}, " +
+                $"{row.Spurious} spurious");
+
+        Assert.Equal(planted, matched);
+        Assert.True(spurious == 0, $"the detector invented {spurious} gaps that were not planted");
+    }
+
+    /// <summary>
     /// Crackle repair, scored the same way declip and clicks are: signal to noise over the samples
     /// the damage touched, against leaving them alone.
     /// </summary>
