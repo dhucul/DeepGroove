@@ -1,4 +1,5 @@
-using System.IO;
+﻿using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -25,7 +26,7 @@ public sealed class AppSettings
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(value);
             _appDataDir = value;
-            _instance = null;
+            Volatile.Write(ref _instance, null);
         }
     }
 
@@ -34,7 +35,28 @@ public sealed class AppSettings
     public static string PresetsDir => Path.Combine(AppDataDir, "Presets");
 
     private static AppSettings? _instance;
-    public static AppSettings Instance => _instance ??= Load();
+
+    /// <remarks>
+    /// <c>_instance ??= Load()</c> is not atomic. Two threads reaching it first both
+    /// load, one instance wins the field, and the other is handed to a caller who then
+    /// mutates settings nobody will ever save. Every reader is on the UI thread today,
+    /// but this is read from forty-odd places across the audio layer and the next one
+    /// added will not know that.
+    /// </remarks>
+    public static AppSettings Instance
+    {
+        get
+        {
+            AppSettings? current = Volatile.Read(ref _instance);
+            if (current != null) return current;
+            lock (SaveLock)
+            {
+                current = _instance;
+                if (current == null) Volatile.Write(ref _instance, current = Load());
+                return current;
+            }
+        }
+    }
 
     // Audio
     public string? OutputDeviceId { get; set; }
@@ -209,11 +231,22 @@ public sealed class AppSettings
     {
         lock (SaveLock)
         {
-            string temporary = SettingsPath + ".tmp";
+            // Unique and CreateNew, like the codecs, and flushed before the move. A fixed
+            // "<name>.tmp" is shared with any other copy of the app running against the
+            // same profile, and File.WriteAllText truncates rather than failing.
+            string temporary = Path.Combine(
+                AppDataDir, $".settings.{Guid.NewGuid():N}.tmp");
             try
             {
                 Directory.CreateDirectory(AppDataDir);
-                File.WriteAllText(temporary, JsonSerializer.Serialize(this, JsonOpts));
+                using (var stream = new FileStream(temporary, FileMode.CreateNew,
+                           FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 1 << 12, leaveOpen: true))
+                {
+                    writer.Write(JsonSerializer.Serialize(this, JsonOpts));
+                    writer.Flush();
+                    stream.Flush(flushToDisk: true);
+                }
                 File.Move(temporary, SettingsPath, overwrite: true);
                 LastSaveError = null;
                 return true;

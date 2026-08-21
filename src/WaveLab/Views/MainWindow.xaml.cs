@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -189,7 +189,11 @@ public partial class MainWindow : Window
         CloseAllPluginEditors();
         try
         {
-            await _startupTask;
+            // Bounded. Startup work is best-effort by the time the user is closing, and
+            // _closing has already latched — so a session restore stuck on a disconnected
+            // network path made the window impossible to close by any means.
+            try { await _startupTask.WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (TimeoutException) { }
             await _vm.OnCleanExitAsync();
         }
         catch (Exception ex)

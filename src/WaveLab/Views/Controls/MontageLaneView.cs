@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -240,30 +240,64 @@ public sealed class MontageLaneView : FrameworkElement
     /// A colour per source. Clips of the same take share one, which is what makes a retake spliced
     /// into a side visible as a different colour rather than having to be read.
     /// </summary>
+    // Static, not rebuilt per call: this ran once per clip per frame.
+    private static readonly (int R, int G, int B)[] Palette =
+    [
+        (0x31, 0xA9, 0x98),   // the house teal
+        (0x9B, 0x8C, 0xE0),   // violet
+        (0xE0, 0xA0, 0x6B),   // amber-brown
+        (0x6B, 0xA8, 0xE0),   // blue
+        (0xD0, 0x7E, 0xA8),   // rose
+    ];
+
     private static int SourceColour(int sourceIndex, int alpha)
     {
-        (int R, int G, int B)[] palette =
-        [
-            (0x31, 0xA9, 0x98),   // the house teal
-            (0x9B, 0x8C, 0xE0),   // violet
-            (0xE0, 0xA0, 0x6B),   // amber-brown
-            (0x6B, 0xA8, 0xE0),   // blue
-            (0xD0, 0x7E, 0xA8),   // rose
-        ];
-        (int r, int g, int b) = palette[Math.Abs(sourceIndex) % palette.Length];
+        (int r, int g, int b) = Palette[Math.Abs(sourceIndex) % Palette.Length];
         return (alpha << 24) | (r << 16) | (g << 8) | b;
     }
 
     /// <summary>The overview's block colour for a source, so the two views agree at a glance.</summary>
     public static Brush OverviewFill(int sourceIndex) => SourceBrush(sourceIndex, 0x8C);
 
+    /// <summary>
+    /// Cached, frozen, one per palette slot and alpha.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every other brush and pen in this file is a static frozen field; these were built
+    /// fresh on every call, and the call is once per clip per frame from OnRender. The
+    /// colour is a pure function of the source index, so there is nothing per-clip about
+    /// it to rebuild.
+    /// </para>
+    /// <para>
+    /// Plain dictionaries rather than concurrent ones: both call sites are OnRender, which
+    /// WPF runs on the UI thread, and there are at most ten entries between them. A lock
+    /// per clip per frame would cost more than the allocations this removes.
+    /// </remarks>
+    private static readonly Dictionary<(int Slot, byte Alpha), Brush> SourceBrushes = [];
+    private static readonly Dictionary<int, Pen> SourceEdges = [];
+
     private static Brush SourceBrush(int sourceIndex, byte alpha)
     {
+        var key = (Math.Abs(sourceIndex) % Palette.Length, alpha);
+        if (SourceBrushes.TryGetValue(key, out Brush? cached)) return cached;
+
         int packed = SourceColour(sourceIndex, alpha);
-        var brush = new SolidColorBrush(Color.FromArgb(
-            (byte)(packed >> 24), (byte)(packed >> 16), (byte)(packed >> 8), (byte)packed));
-        brush.Freeze();
+        Brush brush = Freeze(new SolidColorBrush(Color.FromArgb(
+            (byte)(packed >> 24), (byte)(packed >> 16), (byte)(packed >> 8), (byte)packed)));
+        SourceBrushes[key] = brush;
         return brush;
+    }
+
+    /// <summary>The clip outline for a source, frozen and cached like its fill.</summary>
+    private static Pen SourceEdge(int sourceIndex)
+    {
+        int slot = Math.Abs(sourceIndex) % Palette.Length;
+        if (SourceEdges.TryGetValue(slot, out Pen? cached)) return cached;
+
+        Pen pen = FreezePen(new Pen(SourceBrush(slot, 0xC0), 1));
+        SourceEdges[slot] = pen;
+        return pen;
     }
 
     private static readonly Brush HeaderFill =
@@ -311,7 +345,7 @@ public sealed class MontageLaneView : FrameworkElement
             // the same take butt together into what looks like one clip, and the boundary a user is
             // about to drag is invisible.
             dc.DrawRoundedRectangle(selected ? SelectedFill : SourceBrush(clip.SourceIndex, 0x1C),
-                selected ? SelectedEdge : new Pen(SourceBrush(clip.SourceIndex, 0xC0), 1),
+                selected ? SelectedEdge : SourceEdge(clip.SourceIndex),
                 body, 5, 5);
 
             // Header strip with the clip's name and gain.

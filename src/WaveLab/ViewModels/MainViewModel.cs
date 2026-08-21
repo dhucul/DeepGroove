@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -20,6 +20,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private static float[][]? _clipboard;
     private static int _clipboardRate;
+
+    /// <summary>
+    /// Largest selection held on the clipboard for a paste that may never come.
+    /// </summary>
+    /// <remarks>
+    /// It is static, so it outlives the view model that filled it, and nothing cleared
+    /// it: copying an hour-long stereo selection kept about 600 MB resident for the life
+    /// of the process whether or not any file was still open.
+    /// </remarks>
+    private const long MaximumClipboardBytes = 512L * 1024 * 1024;
 
     private DocumentViewModel? _active;
     private TabViewModel? _activeTab;
@@ -1093,6 +1103,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AutosaveService.Remove(vm.Doc.SessionId);
         _autosavedVersions.Remove(vm.Doc.SessionId);
         _saveFailures.Remove(vm.Doc.SessionId);
+        vm.Unhook();
         int idx = Documents.IndexOf(vm);
         Documents.Remove(vm);
 
@@ -1158,6 +1169,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 }
                 return copy;
             });
+            long bytes = (long)_clipboard.Length * count * sizeof(float);
+            if (bytes > MaximumClipboardBytes)
+            {
+                _clipboard = null;
+                _clipboardRate = 0;
+                MessageBox.Show(
+                    "That selection is too large to hold on the clipboard. Render or export "
+                    + "the range instead, or copy it in smaller pieces.",
+                    "Copy", MessageBoxButton.OK, MessageBoxImage.Information);
+                return false;
+            }
+
             _clipboardRate = sampleRate;
             return true;
         }
@@ -2090,6 +2113,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0) return failure;
 
         _shuttingDown = true;
+
+        // The clipboard is static and survives this object; releasing it here is the only
+        // point at which we know nothing is going to paste it.
+        _clipboard = null;
+        _clipboardRate = 0;
+
         CompositionTarget.Rendering -= OnRendering;
         _autosaveTimer.Stop();
         _timer.Stop();

@@ -114,6 +114,9 @@ public sealed class RecordingLevelAnalyzer
         return edges;
     }
 
+    /// <summary>Test seam for <see cref="PeakHistogramBin"/>, which is on the capture path.</summary>
+    internal static int PeakHistogramBinForTests(double magnitude) => PeakHistogramBin(magnitude);
+
     /// <summary>Smallest bin whose lower bound <paramref name="magnitude"/> exceeds.</summary>
     private static int PeakHistogramBin(double magnitude)
     {

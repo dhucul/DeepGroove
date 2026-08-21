@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using WaveLab.Audio;
 using WaveLab.Util;
 
@@ -540,4 +540,15 @@ public sealed class DocumentViewModel : TabViewModel
         Raise(nameof(IsDirty));
         Raise(nameof(FormatText));
     }
+
+    /// <summary>
+    /// Detaches from the document. Call when the tab closes.
+    /// </summary>
+    /// <remarks>
+    /// The document holds this view model through its Changed event, and this view model
+    /// holds a PeakStore — the whole min/max/RMS pyramid. The pair is collectable
+    /// together while nothing else refers to the document, which is why this was never a
+    /// leak, but it was the one subscription in the view layer with no matching detach.
+    /// </remarks>
+    public void Unhook() => Doc.Changed -= OnDocChanged;
 }
