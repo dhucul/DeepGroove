@@ -515,6 +515,21 @@ and it is worth much less than the ceiling suggested — but what it is worth is
   `SecondarySize` and `Wrap`; the declip card keeps its 10 px bottom margin as the one override.
   Only six places in the app used that triple and two of them are different components — a trimmed
   status line and an inline “BPM ·” label — so they are left alone.
+- **Reviewing the readout found that it re-measured on every slider tick, and the fix is an API
+  split.** `UpdateNoiseDepthReadout` runs from `UpdateReadouts`, which fires on every movement of
+  any of the dialog’s ten sliders, and it called the `float[][]` overload of
+  `SuggestReductionDepthDb` — which walks every sample and then slides a two-second window over
+  them. **Measured: 388 ms for a 22-minute stereo side, 88 ms for five minutes**, on the dispatcher,
+  per tick. The cached `_noiseToProgrammeDb` field existed for exactly this and was not being used.
+  There are now two overloads: one that measures, one that takes an estimate and is three
+  comparisons, with `BothOverloadsOfTheRuleAgree` pinning that they cannot drift.
+- **The render path now uses that same cached estimate, so the readout cannot disagree with what
+  ran.** It had been re-measuring from `work`, which by the noise stage has already been through
+  click repair, declip and hum removal — so its floor is not the one the user was shown a number
+  for. Same lesson as `DescribeDeclipChoices`, which is deliberately the call the selection is made
+  with.
+- **The line also ignored the card’s own Enabled switch**, so a switched-off card still reported
+  “Applying 2.3 dB” for a stage that would not run. The switch is now the first thing it reports.
 - **Wrapping costs about 14 px of card height and that is the right trade.** The hum caption becomes
   two lines, which pushes the output-mix row down; the panel already scrolls, so nothing is lost. A
   caption cut mid-glyph reads as a drawing fault, a caption on two lines reads as a caption.

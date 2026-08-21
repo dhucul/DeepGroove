@@ -171,11 +171,24 @@ public sealed class AdaptiveNoiseDepthTests(ITestOutputHelper output)
             foreach (var held in groups)
             {
                 var rest = cells.Where(c => !held.Contains(c)).ToList();
+
+                // Nothing to fit on. Reachable with a single corpus or a single recording present,
+                // which is an ordinary way to run this - and Average() throws on an empty sequence,
+                // so without this the run dies with "Sequence contains no elements" instead of
+                // reporting what it does have.
+                if (rest.Count == 0)
+                {
+                    output.WriteLine($"held out by {what,-10} skipped: only one {what} in the corpus");
+                    heldOut = baseline = double.NaN;
+                    break;
+                }
+
                 var rule = BestRule(rest, Requested);
                 chosen.Add((rule.Cutoff, rule.Full));
                 heldOut += Score(held, rule.Cutoff, rule.Full, Requested) * held.Count();
                 baseline += held.Sum(c => c.Gain[^1]);
             }
+            if (double.IsNaN(heldOut)) continue;
             heldOut /= cells.Count;
             baseline /= cells.Count;
             int agreed = chosen.Count(c => c == (fit.Cutoff, fit.Full));
@@ -290,6 +303,31 @@ public sealed class AdaptiveNoiseDepthTests(ITestOutputHelper output)
         Assert.True(noisyDepth > cleanDepth, "a noisier recording was not reduced harder");
         Assert.True(noisyDepth > 0, "a recording that is mostly hiss was not reduced at all");
         Assert.Equal(0, cleanDepth);
+    }
+
+    /// <summary>
+    /// The rule and the measurement are separate calls, and they must not drift apart.
+    /// </summary>
+    /// <remarks>
+    /// The overload taking an estimate exists because the measurement walks every sample — 388 ms on
+    /// a 22-minute stereo side — while the rule is three comparisons, and anything drawing the depth
+    /// on screen re-evaluates it on every movement of a slider. Two implementations of one rule is
+    /// how they diverge, so there is one, and this pins that the convenience overload is really
+    /// calling it.
+    /// </remarks>
+    [Fact]
+    public void BothOverloadsOfTheRuleAgree()
+    {
+        const int rate = 44_100;
+        foreach (double amplitude in new[] { 0.40, 0.05, 0.004, 0.0005 })
+        {
+            float[][] data = Programme(rate, amplitude, seed: 8);
+            double estimate = Restoration.EstimateNoiseToProgrammeDb(data, rate);
+            foreach (double requested in new[] { 0.0, 1.0, 10.0, 24.0 })
+                Assert.Equal(
+                    Restoration.SuggestReductionDepthDb(data, rate, requested),
+                    Restoration.SuggestReductionDepthDb(estimate, requested), 9);
+        }
     }
 
     /// <summary>The rule never asks for more than it was given, or for a negative depth.</summary>

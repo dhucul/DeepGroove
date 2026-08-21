@@ -19,7 +19,7 @@ public sealed class NoiseDepthReadoutTests(ITestOutputHelper output)
 {
     private static string Line(bool analysed, bool hasProfile,
         double requested, double applied, double estimate) =>
-        RestorationWorkbenchDialog.DescribeNoiseDepth(analysed, hasProfile, requested, applied, estimate)
+        RestorationWorkbenchDialog.DescribeNoiseDepth(true, analysed, hasProfile, requested, applied, estimate)
             .ToString();
 
     [Fact]
@@ -31,12 +31,34 @@ public sealed class NoiseDepthReadoutTests(ITestOutputHelper output)
         Assert.Equal("Applying 2.3 dB · hiss sits 7.7 dB under the programme.", line);
     }
 
+    /// <summary>
+    /// The card's own switch is reported before anything about the audio.
+    /// </summary>
+    /// <remarks>
+    /// The stage does not run when the card is switched off, so a line saying "Applying 2.3 dB"
+    /// would be describing something that will not happen — the same disagreement between what is
+    /// shown and what runs that this whole readout exists to prevent. Missed on the first pass:
+    /// the readout consulted the audio and the slider and never the checkbox.
+    /// </remarks>
+    [Fact]
+    public void ASwitchedOffCardSaysSoBeforeAnythingAboutTheAudio()
+    {
+        var readout = RestorationWorkbenchDialog.DescribeNoiseDepth(
+            enabled: false, analysed: true, hasProfile: true,
+            requestedDb: 10, appliedDb: 7.5, estimateDb: 2.0);
+        output.WriteLine(readout.ToString());
+
+        Assert.Equal("Not reducing \u00b7 this card is switched off.", readout.ToString());
+        Assert.True(readout.Declining);
+        Assert.DoesNotContain("7.5", readout.ToString());
+    }
+
     /// <summary>The state that must never be silent.</summary>
     [Fact]
     public void DecliningSaysSoAndSaysWhy()
     {
         var readout = RestorationWorkbenchDialog.DescribeNoiseDepth(
-            analysed: true, hasProfile: true, requestedDb: 10, appliedDb: 0, estimateDb: 12.4);
+            enabled: true, analysed: true, hasProfile: true, requestedDb: 10, appliedDb: 0, estimateDb: 12.4);
         output.WriteLine(readout.ToString());
 
         Assert.Equal("Not reducing · hiss already 12.4 dB under the programme.", readout.ToString());
@@ -53,7 +75,7 @@ public sealed class NoiseDepthReadoutTests(ITestOutputHelper output)
     public void AZeroMaximumIsNotBlamedOnTheAudio()
     {
         var readout = RestorationWorkbenchDialog.DescribeNoiseDepth(
-            analysed: true, hasProfile: true, requestedDb: 0, appliedDb: 0, estimateDb: 3.0);
+            enabled: true, analysed: true, hasProfile: true, requestedDb: 0, appliedDb: 0, estimateDb: 3.0);
         output.WriteLine(readout.ToString());
 
         Assert.Equal("Not reducing · the maximum is set to zero.", readout.ToString());
@@ -68,7 +90,7 @@ public sealed class NoiseDepthReadoutTests(ITestOutputHelper output)
         bool analysed, bool hasProfile, string expected)
     {
         var readout = RestorationWorkbenchDialog.DescribeNoiseDepth(
-            analysed, hasProfile, requestedDb: 10, appliedDb: 0, estimateDb: 0);
+            enabled: true, analysed, hasProfile, requestedDb: 10, appliedDb: 0, estimateDb: 0);
 
         Assert.Equal(expected, readout.ToString());
         Assert.False(readout.Declining);        // nothing has been decided yet, so nothing is amber
@@ -78,12 +100,11 @@ public sealed class NoiseDepthReadoutTests(ITestOutputHelper output)
     /// The longest wording the line can produce still fits the card, measured rather than assumed.
     /// </summary>
     /// <remarks>
-    /// The card has <b>365 px</b> of content at the dialog's 860 px minimum — the same column the
-    /// declip readout was measured in. Both numbers are bounded: the slider stops at 24 dB, and the
-    /// estimate is only printed below the ceiling that switches reduction off, so neither can grow
-    /// without limit. This asserts the character count as a proxy, because measuring glyphs needs a
-    /// window; the real widths were measured with <c>FormattedText</c> at Inter 10.5 px when the
-    /// mockup was drawn and the longest came to <b>268 px, leaving 97 px spare</b>.
+    /// Both numbers are bounded: the slider stops at 24 dB, and the estimate is only printed below
+    /// the ceiling that switches reduction off, so neither can grow without limit. This asserts the
+    /// character count as a proxy, because measuring glyphs needs a window
+    /// — <see cref="NoiseDepthRenderProbe"/> does that against the built control and reports
+    /// <b>370 px of room for a 286 px line</b>.
     /// </remarks>
     [Fact]
     public void TheLongestWordingIsBounded()
@@ -99,7 +120,7 @@ public sealed class NoiseDepthReadoutTests(ITestOutputHelper output)
         string worst = longest.MaxBy(l => l.Length)!;
         output.WriteLine($"{worst.Length} characters: {worst}");
 
-        // 268 px measured at Inter 10.5 px for a 55-character line, against 365 px of card.
+        // 286 px measured in the built control for a 55-character line, against 370 px of card.
         Assert.True(worst.Length <= 60, $"the line grew to {worst.Length} characters: {worst}");
     }
 }

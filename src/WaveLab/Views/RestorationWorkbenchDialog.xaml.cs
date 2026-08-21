@@ -669,7 +669,14 @@ public partial class RestorationWorkbenchDialog : Window
             // fixed depth is measurably worse than doing nothing where the hiss is already far
             // down. The chosen depth is reported rather than applied silently - a tool quietly
             // ignoring most of a slider's travel is indistinguishable from one that is broken.
-            double depth = Restoration.SuggestReductionDepthDb(work, _sampleRate,
+            // From the estimate taken when the analysis landed, not re-measured here. Two
+            // reasons, and either alone would settle it. The readout on the card was computed from
+            // that same number, and a report computed separately can disagree with what actually
+            // ran - the declip readout carries the same note for the same reason. And `work` has
+            // already been through click repair, declip and hum removal by this point, so its floor
+            // is no longer the one the user was shown a figure for.
+            double depth = Restoration.SuggestReductionDepthDb(
+                _noiseToProgrammeDb ?? Restoration.EstimateNoiseToProgrammeDb(work, _sampleRate),
                 settings.NoiseReductionDb);
             progress.Report(new OperationProgress(depth <= 0
                 ? "Little hiss under the programme — leaving broadband noise alone…"
@@ -924,9 +931,13 @@ public partial class RestorationWorkbenchDialog : Window
     /// way and for the same reason.
     /// </para>
     /// </remarks>
-    internal static NoiseDepthLine DescribeNoiseDepth(bool analysed, bool hasProfile,
+    internal static NoiseDepthLine DescribeNoiseDepth(bool enabled, bool analysed, bool hasProfile,
         double requestedDb, double appliedDb, double estimateDb)
     {
+        // The card's own switch comes first, or the line reports a depth for a stage that will not
+        // run at all - the same disagreement between what is shown and what happens that the rest
+        // of this readout exists to prevent.
+        if (!enabled) return new NoiseDepthLine("Not reducing", "this card is switched off.", true);
         if (!analysed) return new NoiseDepthLine("Run analysis to see the depth.", "", false);
         if (!hasProfile) return new NoiseDepthLine("Learn a noise profile to reduce hiss.", "", false);
         if (requestedDb <= 0)
@@ -946,11 +957,15 @@ public partial class RestorationWorkbenchDialog : Window
         bool hasProfile = _noiseProfile is { Length: > 0 };
         double estimate = _noiseToProgrammeDb ?? 0;
         double requested = noiseReduction.Value;
+
+        // The cached estimate, never a fresh measurement: this runs on the dispatcher on every
+        // movement of every slider in the dialog, and measuring costs 388 ms on a 22-minute side.
         double applied = analysed && hasProfile
-            ? Restoration.SuggestReductionDepthDb(_source!, _sampleRate, requested)
+            ? Restoration.SuggestReductionDepthDb(estimate, requested)
             : 0;
 
-        NoiseDepthLine line = DescribeNoiseDepth(analysed, hasProfile, requested, applied, estimate);
+        NoiseDepthLine line = DescribeNoiseDepth(noiseEnabled.IsChecked == true,
+            analysed, hasProfile, requested, applied, estimate);
         noiseDepthLead.Text = line.Lead;
         noiseDepthDetail.Text = line.Detail.Length == 0 ? "" : $" \u00b7 {line.Detail}";
 

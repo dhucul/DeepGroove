@@ -52,7 +52,7 @@ public sealed class NoiseDepthRenderProbe(ITestOutputHelper output)
 
                 // The longest wording the readout can produce, put straight into the control.
                 var line = RestorationWorkbenchDialog.DescribeNoiseDepth(
-                    analysed: true, hasProfile: true, requestedDb: 10, appliedDb: 0, estimateDb: 12.4);
+                    enabled: true, analysed: true, hasProfile: true, requestedDb: 10, appliedDb: 0, estimateDb: 12.4);
                 workbench.noiseDepthLead.Text = line.Lead;
                 workbench.noiseDepthDetail.Text = $" · {line.Detail}";
                 workbench.UpdateLayout();
