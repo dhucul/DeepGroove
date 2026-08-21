@@ -96,6 +96,7 @@ internal sealed unsafe class Vst3SyntheticPlugin : IDisposable
     private GCHandle _self;
     private void* _factory;
     private readonly List<nint> _allocations = [];
+    private readonly List<Vst3Module> _modules = [];
 
     /// <summary>Every value the processor was handed through <c>IParameterChanges</c>, in order.</summary>
     public List<(uint Id, double Value)> ProcessorSawParameters { get; } = [];
@@ -153,7 +154,18 @@ internal sealed unsafe class Vst3SyntheticPlugin : IDisposable
     }
 
     /// <summary>A module over this factory, which <c>Vst3Plugin.Create</c> takes unmodified.</summary>
-    public Vst3Module CreateModule() => Vst3Module.FromFactory(_factory, "synthetic.vst3");
+    /// <remarks>
+    /// The module is kept and disposed here because <c>Vst3Plugin</c> does not own the one it is
+    /// handed. Releasing it after these blocks were freed would be a call through a dangling
+    /// pointer - inert today, since the release is a no-op and <c>Vst3Module</c> has no finalizer,
+    /// but not something to leave resting on both of those staying true.
+    /// </remarks>
+    public Vst3Module CreateModule()
+    {
+        var module = Vst3Module.FromFactory(_factory, "synthetic.vst3");
+        _modules.Add(module);
+        return module;
+    }
 
     /// <summary>The <b>controller's</b> current normalised value for a parameter.</summary>
     public double ValueOf(uint id) => _values.TryGetValue(id, out double value) ? value : 0;
@@ -726,8 +738,21 @@ internal sealed unsafe class Vst3SyntheticPlugin : IDisposable
         for (; i < capacity; i++) destination[i] = '\0';
     }
 
+    /// <summary>
+    /// Frees every native block this handed out.
+    /// </summary>
+    /// <remarks>
+    /// <b>Anything holding a pointer into these blocks must be disposed first.</b> A test declares
+    /// the synthetic plugin before the <c>Vst3Plugin</c> built on it, so C# disposes them in the
+    /// reverse order and the host lets go while the memory is still there; declaring them the other
+    /// way round is a use-after-free, and one that would fault rather than fail an assertion.
+    /// </remarks>
     public void Dispose()
     {
+        // Modules first: each holds the factory pointer that is about to be freed.
+        foreach (Vst3Module module in _modules) module.Dispose();
+        _modules.Clear();
+
         foreach (nint block in _allocations) NativeMemory.Free((void*)block);
         _allocations.Clear();
         _factory = null;

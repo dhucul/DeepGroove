@@ -1423,7 +1423,7 @@ public partial class MainWindow : Window
         _vm.ReportAction("Noise profile learned from the selection.");
     }
 
-    private void OnReduceNoise(object sender, RoutedEventArgs e)
+    private async void OnReduceNoise(object sender, RoutedEventArgs e)
     {
         var d = Doc;
         if (d == null) return;
@@ -1439,15 +1439,32 @@ public partial class MainWindow : Window
         var profile = d.NoiseProfile;
         double reduction = dlg.Values[0], sensitivity = dlg.Values[1];
         int sampleRate = d.Doc.SampleRate;          // captured up front, like the profile above
-        _ = RunRangeTool("Reduce Noise", (data, _) =>
+
+        double? chosen = null, floor = null;
+        await RunRangeTool("Reduce Noise", (data, _) =>
         {
             // The depth follows how much noise there is to remove rather than the slider alone.
             // Measured, a fixed depth comes out worse than leaving the audio alone on 46 of 108
             // corpus cells; this takes that to 15. See Restoration.SuggestReductionDepthDb.
-            double depth = Restoration.SuggestReductionDepthDb(data, sampleRate, reduction);
-            if (depth > 0) Restoration.ReduceNoise(data, profile, depth, sensitivity);
+            floor = Restoration.EstimateNoiseToProgrammeDb(data, sampleRate);
+            double depth = Restoration.SuggestReductionDepthDb(floor.Value, reduction);
+            chosen = depth;
+
+            // Null, not the untouched buffer. Returning it splices the range over itself, which
+            // costs an undo step and a dirty document for an edit that changed nothing.
+            if (depth <= 0) return null;
+
+            Restoration.ReduceNoise(data, profile, depth, sensitivity);
             return data;
         }, d);
+
+        // Unlike the restoration workbench this path has no card to carry a readout, so the one
+        // case that needs explaining gets a dialog: a tool that declines silently is
+        // indistinguishable from one that failed.
+        if (chosen is <= 0 && floor is { } measured)
+            InfoDialog.Show(this, "Reduce Noise",
+                $"The hiss already sits {measured:0.0} dB under the programme, where a fixed "
+                + "reduction costs more music than it saves noise. Nothing was changed.");
     }
 
     private async void OnRemoveClicks(object sender, RoutedEventArgs e)

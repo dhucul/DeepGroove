@@ -528,6 +528,12 @@ and it is worth much less than the ceiling suggested — but what it is worth is
   click repair, declip and hum removal — so its floor is not the one the user was shown a number
   for. Same lesson as `DescribeDeclipChoices`, which is deliberately the call the selection is made
   with.
+- **A declined reduction on the plain Reduce Noise path was making an edit and saying nothing.**
+  `RunRangeTool` skips the splice when the transform returns `null`, and it was returning the
+  untouched buffer instead — which splices a range over itself, costing an undo step and a dirty
+  document for an edit that changed nothing. It returns `null` now. That path has no card to carry a
+  readout, so the one case that needs explaining gets an `InfoDialog` naming the measured figure; a
+  tool that declines silently is indistinguishable from one that failed.
 - **The line also ignored the card’s own Enabled switch**, so a switched-off card still reported
   “Applying 2.3 dB” for a stage that would not run. The switch is now the first thing it reports.
 - **Wrapping costs about 14 px of card height and that is the right trade.** The hum caption becomes

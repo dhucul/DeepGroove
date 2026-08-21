@@ -1,4 +1,4 @@
-﻿using WaveLab.Audio.Dsp;
+using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Tests;
 
@@ -656,6 +656,18 @@ public static class RestorationCorpus
         return (clean, damaged);
     }
 
+    /// <summary>
+    /// Plants hum at each level in <see cref="HumLevels"/> and measures every recording.
+    /// </summary>
+    /// <remarks>
+    /// <b>Deliberately no <c>UsableReference</c> screen</b>, for the same reason
+    /// <see cref="MeasureNoise"/> has none and a stronger one. That screen rejects a recording
+    /// carrying clicks, which matters where a real defect contaminates the clean reference - but
+    /// hum is scored in the frequency domain, at the mains harmonics and at probe frequencies clear
+    /// of them, and a surface click is broadband and appears identically in both signals. It cannot
+    /// move the score. Applying the screen would drop all nine record transfers, which are the
+    /// material a mains-hum tool exists for.
+    /// </remarks>
     public static List<T> MeasureHum<T>(Func<HumCell, T> measure,
         Action<CorpusRecording, string>? onExcluded = null) =>
         DeclipCorpus.ForEachRecording<T>((recording, document) =>
