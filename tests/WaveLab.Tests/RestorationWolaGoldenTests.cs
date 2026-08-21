@@ -4,8 +4,8 @@ using Xunit;
 namespace WaveLab.Tests;
 
 /// <summary>
-/// Pins the output of the two offline spectral-restoration passes so that refactoring the
-/// overlap-add machinery underneath them cannot quietly change how they sound.
+/// Pins the output of the offline spectral gate so that refactoring the overlap-add machinery
+/// underneath it cannot quietly change how it sounds.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -16,7 +16,7 @@ namespace WaveLab.Tests;
 /// normalization to slip through.
 /// </para>
 /// <para>
-/// <b>Re-pinned once.</b> Both passes looped to <c>NrFftSize / 2</c> where the processor is handed
+/// <b>Re-pinned once.</b> The pass looped to <c>NrFftSize / 2</c> where the processor is handed
 /// <c>NrFftSize / 2 + 1</c> bins, so the Nyquist bin was passing through at unity gain while every
 /// other bin was gated. Correcting the bound moved these numbers, and the size of the move is the
 /// evidence that it was the only thing that changed: the learned profile is bit-identical, the RMS
@@ -89,21 +89,6 @@ public sealed class RestorationWolaGoldenTests
             [0.019493433, 0.001093167, -0.018105946, -0.012146194, 0.010408811, -0.075237699, 0.292047948, 0.025766347]);
     }
 
-    [Fact]
-    public void EphraimMalahOutputIsUnchanged()
-    {
-        float[][] source = Signal();
-        float[] profile = Restoration.LearnNoiseProfile(source, 0, 2800);
-        float[][] data = [(float[])source[0].Clone(), (float[])source[1].Clone()];
-
-        Restoration.ReduceNoiseAdvanced(data, profile, 12.0, 3.0);
-
-        AssertMatches(data[0], 0.226708733, 0.501992345,
-            [0.017721303, 0.001224617, -0.018343234, -0.012479023, 0.014125021, -0.086149618, 0.312485039, 0.025743216]);
-        AssertMatches(data[1], 0.203592294, 0.453703195,
-            [0.019493433, 0.001093167, -0.020225322, -0.013962405, 0.014697989, -0.076658674, 0.278764307, 0.022766458]);
-    }
-
     /// <summary>
     /// The very first samples sit under a window value of zero, so no overlap weight accumulates
     /// there and the original audio is left in place rather than divided by nothing. Both passes must
@@ -116,11 +101,8 @@ public sealed class RestorationWolaGoldenTests
         float[] profile = Restoration.LearnNoiseProfile(source, 0, 2800);
 
         float[][] simple = [(float[])source[0].Clone(), (float[])source[1].Clone()];
-        float[][] advanced = [(float[])source[0].Clone(), (float[])source[1].Clone()];
         Restoration.ReduceNoise(simple, profile, 12.0, 3.0);
-        Restoration.ReduceNoiseAdvanced(advanced, profile, 12.0, 3.0);
 
         Assert.Equal(source[0][0], simple[0][0], Tolerance);
-        Assert.Equal(source[0][0], advanced[0][0], Tolerance);
     }
 }

@@ -35,6 +35,102 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
             $"worst {all.Min(gain):+0.00;-0.00}");
     }
 
+
+    /// <summary>
+    /// The hiss harness is calibrated before anything is measured with it: planting at a stated
+    /// signal-to-noise ratio has to read back as that ratio.
+    /// </summary>
+    /// <remarks>
+    /// Needs no corpus, so it runs in the ordinary suite. A damage model whose level is out by a
+    /// few decibels does not fail loudly — it quietly moves every severity band, and every number
+    /// taken with it is then wrong in a way nobody can see from the output.
+    /// </remarks>
+    [Fact]
+    public void PlantedHissArrivesAtTheSignalToNoiseRatioItWasAskedFor()
+    {
+        const int rate = 44_100;
+        var source = new float[rate * 3];
+        for (int i = 0; i < source.Length; i++)
+            source[i] = (float)(0.3 * Math.Sin(2 * Math.PI * 440 * i / rate)
+                              + 0.1 * Math.Sin(2 * Math.PI * 1970 * i / rate));
+
+        var scored = new bool[source.Length];
+        Array.Fill(scored, true);
+
+        foreach (double planted in RestorationCorpus.HissSeverities)
+        {
+            var (clean, damaged) = RestorationCorpus.PlantHiss(source, planted, seed: 99);
+            double measured = DeclipCorpus.SnrDb(clean, damaged, scored);
+            Assert.Equal(planted, measured, 0.5);
+        }
+    }
+
+    /// <summary>
+    /// The shipped spectral gate against leaving the hiss alone, across the range of severities a
+    /// user would meet.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Scored by <b>segmental</b> SNR — the mean of per-frame decibels — rather than a whole-signal
+    /// figure. A global ratio is dominated by the loudest passages, where noise is masked and every
+    /// suppressor passes the audio through at unity; what separates one from another is what each
+    /// does in the quiet, and a global figure weights the quiet almost out of existence.
+    /// </para>
+    /// <para>
+    /// <b>The gate is expected to lose on clean material and that is not a fault.</b> A fixed 10 dB
+    /// reduction applied to hiss already 30 dB below the programme costs more music than it saves
+    /// noise, and the numbers say so: −8.13 dB at 30 dB down, crossing to positive at 12 and
+    /// reaching +4.43 at 0. The assertion is therefore made where the tool is actually used.
+    /// </para>
+    /// <para>
+    /// <b>This is what condemned <c>ReduceNoiseAdvanced</c>.</b> Measured head to head over 108
+    /// cells, the Ephraim-Malah MMSE estimator that had never been wired into anything lost to the
+    /// gate at <b>every severity, on both metrics, on both corpora</b> — winning 4 cells of 108 for
+    /// a total of −136.3 dB, and worse in 54 of 54 record-transfer cells. It was deleted on those
+    /// numbers rather than kept as an unmeasured upgrade path.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void TheSpectralGateBeatsLeavingHissAloneWhereThereIsHissToRemove()
+    {
+        if (Skip(output)) return;
+
+        // The workbench's own defaults, so it is measured where a user would meet it.
+        const double ReductionDb = 10.0, SensitivityDb = 5.0;
+
+        var excluded = new ConcurrentBag<string>();
+        var stopwatch = Stopwatch.StartNew();
+        var rows = RestorationCorpus.MeasureNoise(cell =>
+        {
+            float[][] gate = [(float[])cell.Damaged.Clone()];
+            Restoration.ReduceNoise(gate, cell.Profile, ReductionDb, SensitivityDb);
+
+            return (cell.Recording.Corpus, cell.Recording.ShortName, cell.SnrDb,
+                Global: cell.Score(gate[0]) - cell.Raw,
+                Segmental: cell.Segmental(gate[0]) - cell.RawSegmental);
+        }, (recording, why) => excluded.Add($"{recording.Corpus} {recording.ShortName}: {why}"));
+
+        if (rows.Count == 0) { output.WriteLine("no corpus recordings found"); return; }
+        output.WriteLine($"noise reduction: {rows.Count} cells in {stopwatch.Elapsed.TotalSeconds:0.0} s");
+        foreach (string line in excluded.OrderBy(x => x, StringComparer.Ordinal))
+            output.WriteLine($"  excluded {line}");
+
+        output.WriteLine("whole-signal SNR:");
+        Report(rows, r => r.Corpus, r => r.SnrDb, r => r.Global);
+        output.WriteLine("segmental SNR:");
+        Report(rows, r => r.Corpus, r => r.SnrDb, r => r.Segmental);
+
+        // Where there is hiss worth removing, the gate has to earn its place.
+        foreach (double severity in new[] { 12.0, 6.0, 0.0 })
+        {
+            var at = rows.Where(r => r.SnrDb == severity).ToList();
+            if (at.Count == 0) continue;
+            Assert.True(at.Average(r => r.Segmental) > 0,
+                $"the gate does not beat do-nothing at {severity:0} dB SNR: " +
+                $"{at.Average(r => r.Segmental):+0.00;-0.00} dB over {at.Count} cells");
+        }
+    }
+
     /// <summary>
     /// Crackle repair, scored the same way declip and clicks are: signal to noise over the samples
     /// the damage touched, against leaving them alone.

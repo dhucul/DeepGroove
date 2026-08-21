@@ -233,6 +233,51 @@ public sealed class AuditRegressionTests : IDisposable
         }
     }
 
+    // ── the predictive detectors ─────────────────────────────────
+
+    /// <summary>
+    /// A file whose last block is digitally silent must not hang the click analyzer.
+    /// </summary>
+    /// <remarks>
+    /// This is a regression against the audit itself. Making predictive detection scan the tail
+    /// replaced a bounded loop with one carrying a clamped index, and the pre-existing
+    /// <c>continue</c> for a zero residual scale then re-clamped to the same block forever. A
+    /// silent tail gives exactly that scale, <c>PredictiveDetection</c> is on by default, and the
+    /// symptom was the whole application wedged with no error - found only because a corpus run
+    /// burned 51 CPU-hours on one 8-second Windows chime.
+    /// </remarks>
+    [Theory]
+    [InlineData(22_050)]
+    [InlineData(44_100)]
+    public async Task AFileWithASilentTailDoesNotHangClickAnalysis(int sampleRate)
+    {
+        var channel = new float[sampleRate * 8];
+        int music = channel.Length - 6000;              // a tail shorter than one 4096 block
+        for (int i = 0; i < music; i++)
+            channel[i] = (float)(0.3 * Math.Sin(2 * Math.PI * 440 * i / sampleRate));
+        // channel[music..] stays exactly zero: a constant block, so the residual scale is zero.
+
+        var analysis = Task.Run(() => Restoration.AnalyzeClicks(
+            [channel], sampleRate, new ClickAnalysisOptions { PredictiveDetection = true }));
+
+        ClickAnalysisResult result = await analysis.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.NotNull(result);
+    }
+
+    /// <summary>Crackle detection carries the same clamped-index loop, so it gets the same test.</summary>
+    [Fact]
+    public async Task ASilentTailDoesNotHangCrackleDetection()
+    {
+        const int rate = 44_100;
+        var channel = new float[rate * 8];
+        int music = channel.Length - 6000;
+        for (int i = 0; i < music; i++)
+            channel[i] = (float)(0.3 * Math.Sin(2 * Math.PI * 440 * i / rate));
+
+        var detection = Task.Run(() => Decrackle.Process(channel));
+        await detection.WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
     // ── the offline render ───────────────────────────────────────
 
     /// <summary>

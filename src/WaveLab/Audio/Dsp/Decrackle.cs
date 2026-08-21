@@ -120,17 +120,22 @@ public static class Decrackle
         // block's worth of samples. Stopping at the last whole block left up to a block
         // of audio — about 93 ms at 44.1 kHz — never examined at the end of the channel.
         int lastStart = samples.Length - block;
-        for (int start = 0; ; start += block)
+        // The block starts, built up front and including a final one clamped back so the tail is
+        // scanned too. Deliberately a list rather than an index advanced inside the loop: the body
+        // has several `continue` paths, and with a clamped index every one of them is a chance to
+        // re-clamp to the same block and spin. That is exactly what happened - a silent tail block
+        // gives a zero residual scale, and the `continue` for it looped forever on any file whose
+        // last block is constant.
+        var starts = new List<int>();
+        for (int start = 0; start + block <= samples.Length; start += block) starts.Add(start);
+        if (starts.Count == 0 || starts[^1] != lastStart) starts.Add(lastStart);
+
+        foreach (int start in starts)
         {
-            if (start > lastStart) start = lastStart;
             cancellationToken.ThrowIfCancellationRequested();
             progress?.Report(start / (double)samples.Length);
 
-            if (!FitPredictor(samples, start, block, order, autocorrelation, coefficients))
-            {
-                if (start == lastStart) break;
-                continue;
-            }
+            if (!FitPredictor(samples, start, block, order, autocorrelation, coefficients)) continue;
 
             for (int i = 0; i < block; i++)
             {
@@ -145,15 +150,10 @@ public static class Decrackle
             }
 
             double scale = RobustScale(magnitude);
-            if (scale <= 1e-9)
-            {
-                if (start == lastStart) break;
-                continue;
-            }
+            if (scale <= 1e-9) continue;
             double limit = scale * Math.Max(1, options.Threshold);
 
             CollectRuns(magnitude, start, limit, options, samples.Length, events);
-            if (start == lastStart) break;
         }
 
         progress?.Report(1);

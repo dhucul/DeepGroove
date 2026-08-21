@@ -1,4 +1,4 @@
-using WaveLab.Audio.Dsp;
+﻿using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Tests;
 
@@ -13,6 +13,20 @@ public sealed record CrackleCell(CorpusRecording Recording, double Severity, int
 /// <summary>One recording with a known speed variation warped into it.</summary>
 public sealed record WowCell(CorpusRecording Recording, double PlantedPercent, int SampleRate,
     float[] Clean, float[] Damaged);
+
+/// <summary>One recording with broadband hiss planted in it, and the profile a tool would learn.</summary>
+public sealed record NoiseCell(CorpusRecording Recording, double SnrDb, int SampleRate,
+    float[] Clean, float[] Damaged, float[] Profile, bool[] Scored)
+{
+    /// <summary>Whole-signal signal-to-noise ratio, the way declip and clicks are scored.</summary>
+    public double Score(float[] candidate) => DeclipCorpus.SnrDb(Clean, candidate, Scored);
+    public double Raw => Score(Damaged);
+
+    /// <summary>Segmental signal-to-noise ratio, which is the one that can see this tool work.</summary>
+    public double Segmental(float[] candidate) =>
+        RestorationCorpus.SegmentalSnrDb(Clean, candidate, SampleRate);
+    public double RawSegmental => Segmental(Damaged);
+}
 
 /// <summary>One recording with a noise burst planted in one time-frequency region.</summary>
 public sealed record SpectralCell(CorpusRecording Recording, double Severity, int SampleRate,
@@ -336,6 +350,194 @@ public static class RestorationCorpus
                 var (clean, damaged, from, to) = PlantBurst(source, document.SampleRate, severity, seed);
                 results.Add(measure(new SpectralCell(recording, severity, document.SampleRate,
                     clean, damaged, from, to, BurstLowHz, BurstHighHz)));
+            }
+            return (results, (string?)null);
+        }, onExcluded: onExcluded);
+
+    // ---------- broadband hiss ----------
+
+    /// <summary>
+    /// Segmental signal-to-noise ratio: the mean over short frames of each frame's ratio in dB.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The standard measure in speech enhancement, and it is here for the reason it is standard
+    /// there. A whole-signal ratio is dominated by the loudest passages — where the noise is masked
+    /// and every suppressor passes the audio through at unity — while what separates a spectral
+    /// gate from an MMSE estimator is what each does <b>in the quiet</b>. Averaging per-frame
+    /// decibels gives every frame one vote, so the quiet gets a say proportional to how much of the
+    /// record it is rather than to how little energy it carries.
+    /// </para>
+    /// <para>
+    /// Clamped to [-10, +35] dB per frame, as the literature clamps it. An untouched frame reports
+    /// an enormous ratio that would carry the mean on its own, and a destroyed one a hugely
+    /// negative one; neither is information about typical behaviour. Frames with no signal at all
+    /// are dropped rather than counted, because a lead-in has no ratio to have.
+    /// </para>
+    /// </remarks>
+    public static double SegmentalSnrDb(float[] clean, float[] candidate, int sampleRate)
+    {
+        ArgumentNullException.ThrowIfNull(clean);
+        ArgumentNullException.ThrowIfNull(candidate);
+
+        int frame = Math.Max(64, sampleRate / 50);   // 20 ms
+        double total = 0;
+        int counted = 0;
+        for (int start = 0; start + frame <= clean.Length; start += frame)
+        {
+            double signal = 0, error = 0;
+            for (int i = start; i < start + frame; i++)
+            {
+                double difference = clean[i] - candidate[i];
+                signal += (double)clean[i] * clean[i];
+                error += difference * difference;
+            }
+            if (signal <= 0) continue;
+            total += Math.Clamp(10 * Math.Log10(signal / Math.Max(error, 1e-30)), -10, 35);
+            counted++;
+        }
+        return counted == 0 ? 0 : total / counted;
+    }
+
+    /// <summary>Seconds of each recording the hiss measurement uses.</summary>
+    public const int MaximumAnalysedSeconds = 60;
+
+    /// <summary>How far the planted hiss sits below the programme RMS, in dB.</summary>
+    /// <remarks>
+    /// A worn transfer and a clean one, and the range where the decision is interesting. Above
+    /// about 30 dB down there is little to remove and every method looks alike; below about 12 the
+    /// noise is most of the signal and no spectral method can do much without taking the music
+    /// with it.
+    /// </remarks>
+    public static IReadOnlyList<double> HissSeverities { get; } = [30.0, 24.0, 18.0, 12.0, 6.0, 0.0];
+
+    /// <summary>
+    /// Plants broadband hiss at a known signal-to-noise ratio.
+    /// </summary>
+    /// <remarks>
+    /// <b>Tilted, not white.</b> Surface noise is, and a flat floor would let a single threshold do
+    /// as well as a learned profile — which is precisely the thing the profile exists for, so a
+    /// white floor would under-test both methods and flatter the simpler one. It is also
+    /// <b>stationary</b>, which is the assumption both estimators are built on: measuring them
+    /// against noise that drifts would be measuring something neither claims to do.
+    /// </remarks>
+    public static (float[] Clean, float[] Damaged) PlantHiss(float[] source, double snrDb, int seed)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var clean = (float[])source.Clone();
+        var damaged = (float[])source.Clone();
+
+        double programmeEnergy = 0;
+        foreach (float value in source) programmeEnergy += (double)value * value;
+        double programme = Math.Sqrt(programmeEnergy / Math.Max(1, source.Length));
+        if (!(programme > 0)) return (clean, damaged);
+
+        double target = programme * Math.Pow(10, -snrDb / 20.0);
+
+        // Generated twice from the same seed rather than stored. Keeping the noise in a
+        // double[] the length of the recording put a 114 MB large-object allocation on
+        // every severity of every parallel worker, and the run spent more time in the
+        // collector than in the estimators it was supposed to be comparing.
+        double energy = 0;
+        foreach (double sample in TiltedNoise(source.Length, seed)) energy += sample * sample;
+        double scale = target / Math.Sqrt(Math.Max(1e-30, energy / Math.Max(1, source.Length)));
+
+        int index = 0;
+        foreach (double sample in TiltedNoise(source.Length, seed))
+        {
+            damaged[index] = (float)(damaged[index] + sample * scale);
+            index++;
+        }
+        return (clean, damaged);
+    }
+
+    /// <summary>
+    /// Surface-noise-shaped noise: white with a one-pole tilt, deterministic in the seed so it can
+    /// be regenerated rather than held.
+    /// </summary>
+    private static IEnumerable<double> TiltedNoise(int count, int seed)
+    {
+        var random = new Random(seed);
+        double state = 0;
+        for (int i = 0; i < count; i++)
+        {
+            double white = random.NextDouble() * 2 - 1;
+            state = 0.72 * state + 0.28 * white;
+            yield return white * 0.55 + state * 1.6;
+        }
+    }
+
+    /// <summary>
+    /// The profile the workbench would learn: the quietest two-second window of the <b>damaged</b>
+    /// audio, found the same way <c>BuildAutomaticNoiseProfile</c> finds it.
+    /// </summary>
+    /// <remarks>
+    /// Learning from the clean signal, or from the planted noise on its own, would measure a
+    /// suppressor nobody can run. Where a recording has no genuinely quiet passage the profile
+    /// contains music and both methods suffer for it — which is the situation a user is actually
+    /// in, and both are handed the identical profile, so the comparison stays fair.
+    /// </remarks>
+    public static float[] LearnProfileAsTheWorkbenchWould(float[] damaged, int sampleRate)
+    {
+        ArgumentNullException.ThrowIfNull(damaged);
+        if (damaged.Length < Restoration.NrFftSize) return [];
+
+        int windowLength = Math.Min(damaged.Length,
+            Math.Max(Restoration.NrFftSize, checked(sampleRate * 2)));
+        int hop = Math.Min(windowLength, 4096);
+
+        double rolling = 0;
+        for (int i = 0; i < windowLength; i++) rolling += (double)damaged[i] * damaged[i];
+        double quietest = rolling;
+        int quietestStart = 0, previousStart = 0;
+        for (int start = hop; start + windowLength <= damaged.Length; start += hop)
+        {
+            for (int i = previousStart; i < start; i++) rolling -= (double)damaged[i] * damaged[i];
+            for (int i = previousStart + windowLength; i < start + windowLength; i++)
+                rolling += (double)damaged[i] * damaged[i];
+            if (rolling < quietest) { quietest = rolling; quietestStart = start; }
+            previousStart = start;
+        }
+
+        return Restoration.LearnNoiseProfile([damaged], quietestStart, windowLength);
+    }
+
+    public static List<T> MeasureNoise<T>(Func<NoiseCell, T> measure,
+        Action<CorpusRecording, string>? onExcluded = null) =>
+        DeclipCorpus.ForEachRecording<T>((recording, document) =>
+        {
+            // Deliberately NOT screened by UsableReference. That screen rejects a recording
+            // carrying clicks, which is right for crackle and spectral repair, where a real
+            // defect contaminates the clean reference. Hiss is different: the recording's own
+            // surface clicks appear identically in the reference and in the processed output, so
+            // they cancel out of the score. Applying the click screen here excluded all nine
+            // record transfers - the exact material this tool exists for - and left the
+            // measurement standing on five notification chimes.
+            float[] source = document.Channels[0];
+
+            // Two seconds go to the profile window, so anything near that length would be
+            // learning its noise floor from most of the programme.
+            if (source.Length < document.SampleRate * 6)
+                return ((List<T>?)null, "shorter than 6 s, too short to hold a profile window and programme");
+
+            // Capped. Hiss is stationary and both estimators reach steady state in seconds, so a
+            // minute of a side measures them as well as five does and the run stays tractable —
+            // uncapped it was two CPU-hours, nearly all of it collecting the damage buffers.
+            int analysed = Math.Min(source.Length, document.SampleRate * MaximumAnalysedSeconds);
+            if (analysed < source.Length) source = source[..analysed];
+
+            var scored = new bool[source.Length];
+            Array.Fill(scored, true);
+
+            var results = new List<T>();
+            foreach (double snr in HissSeverities)
+            {
+                int seed = DeclipCorpus.StableHash(recording.Path) ^ (int)(snr * 16);
+                var (clean, damaged) = PlantHiss(source, snr, seed);
+                float[] profile = LearnProfileAsTheWorkbenchWould(damaged, document.SampleRate);
+                if (profile.Length == 0 || !profile.Any(value => value > 0)) continue;
+                results.Add(measure(new NoiseCell(recording, snr, document.SampleRate,
+                    clean, damaged, profile, scored)));
             }
             return (results, (string?)null);
         }, onExcluded: onExcluded);
