@@ -201,7 +201,7 @@ WaveLab-style audio editor for Windows. C# / WPF / .NET 10 (`net10.0-windows`), 
 - **Scanning runs out of process** — this same executable re-run with `--vst3-scan`, so one binary and the scan exercises the code the host will use rather than a parallel copy. A plugin that faults during initialisation, which is exactly when a broken install does, would otherwise take the app and every unsaved document with it. Results are cached against the binary's timestamp, and a plugin that crashed the scanner is **not retried** until it is reinstalled — retrying on every start makes one bad plugin a permanent tax on launching. `Program.Main` runs ahead of WPF because `StartupUri` refuses null and a scanner wants no message loop for a plugin to post to.
 - **Report the Win32 code, not a guess.** "Wrong architecture" for what is actually a missing dependency (error 126 against 193) sends a user looking for a 32-bit build that does not exist. Adobe's two internal plugins fail exactly this way outside Audition.
 - **Measured against 22 real plugins**: all 22 load, enumerate their classes, instantiate, configure at 44.1 kHz stereo and process a block finitely. Latencies read 0 to 5120 samples, and a 512-sample block through a plugin reporting 5120 correctly comes back silent — that is the latency, not a fault.
-- **All 22 report zero host-visible parameters *and* no editor, and that is the plugins, not the host.** Five hypotheses were eliminated in order: a wrong `IEditController` identifier (disproved — the factory matched it and returned an object), a wrong vtable slot (disproved — the controller class id read from `getControllerClassId` matches the factory's own listing exactly), a null host context (disproved — a real `IHostApplication` changed nothing), a missing component-to-controller state handover (disproved — `setComponentState` answers `kNotImplemented`), and a missing `IComponentHandler` (disproved — accepted, and still nothing). These controllers implement `initialize` and essentially nothing else; the plugins can only be operated from the software they shipped with. **The editor and parameter code is therefore written but unverifiable here** — it needs a plugin that publishes something. It is still exercised end to end as far as it can be: all 22 open as rack effects, configure, process and round-trip their state, and each one's card carries the note explaining that there is nothing to adjust.
+- **All 22 report zero host-visible parameters *and* no editor, and that is the plugins, not the host.** Five hypotheses were eliminated in order: a wrong `IEditController` identifier (disproved — the factory matched it and returned an object), a wrong vtable slot (disproved — the controller class id read from `getControllerClassId` matches the factory's own listing exactly), a null host context (disproved — a real `IHostApplication` changed nothing), a missing component-to-controller state handover (disproved — `setComponentState` answers `kNotImplemented`), and a missing `IComponentHandler` (disproved — accepted, and still nothing). These controllers implement `initialize` and essentially nothing else; the plugins can only be operated from the software they shipped with. **The editor and parameter code was therefore written but unverifiable here** — it needed a plugin that publishes something, and it now has one: see the VST3 parameter section below, where a synthetic plugin built in-process closes it. It is still exercised end to end as far as it can be: all 22 open as rack effects, configure, process and round-trip their state, and each one's card carries the note explaining that there is nothing to adjust.
 - `Vst3PlugView` + `Vst3PlugFrame` + `Views/Controls/Vst3EditorHost` — the editor path. A VST3 editor is a native window wanting an `HWND` parent, so `HwndHost` is the seam; a plain `STATIC` child window is created rather than a class of this app's own, because the plugin owns everything inside it and a custom class would mean a window procedure with nothing to do. **The order on the way out is load-bearing**: detach the view, *then* destroy the window. A plugin whose window disappears underneath it is drawing into a handle that no longer exists and will not find out until it faults. `IPlugFrame` is not optional either — a plugin with a collapsible panel resizes itself while open, and without a frame it has nowhere to ask.
 - `Vst3ComponentHandler` is a host obligation, not a courtesy: `performEdit` is the only way a host hears that a user moved something in a plugin's own editor, and `restartComponent` is the plugin saying its latency has changed. **Nothing raised on a host callback may throw** — the exception would unwind through a C++ frame that has no idea what a managed exception is — so every one catches and answers `kResultFalse` instead.
 - **A plugin with no editor is not an error, and the window says so.** Showing an empty frame would read as a broken host; the fallback names the situation and points out that the audio still processes.
@@ -344,6 +344,59 @@ ten members went with them.
 - **This is the third time in this repo a waveform residual has given the wrong answer about a filter**, after wow (where a whole-file residual reads a good correction as total failure, because correcting a time base integrates a rate) and declip (where A-SPADE was scored against the damage rather than against the incumbent). The pattern: **a residual is only a valid score when the two signals are meant to be sample-aligned and equal.** Anything that legitimately moves phase or time needs a metric that does not look at sample differences.
 - **Two of the four comparisons are kept as characterisation tests of the shipped tools, and two are not.** `TheNotchBankTakesTheHumOffWithoutTakingTheMusic` and `TheSilenceDetectorFindsPlantedGapsWithoutInventingAny` cover ground nothing else did — there was no corpus measurement of either tool before this. The click and declip comparisons are dropped, because `ClickCorpusTests` and `DeclipCorpusTests` already measure those shipped paths over the same corpora and a second copy would only be a second thing to keep in step.
 - **`Restoration.GoertzelPower` and `DetectMainsFrequency` went with the hum remover.** `DetectMainsFrequency` was the audit's coin-flip finding — it always answered, so it silently overrode a user's 50 Hz choice — and `GoertzelPower` served nothing else. Note that `RecordingLevelAnalyzer.GoertzelPowerDb` is a **different method** and is still live; the names are close enough to be worth stating.
+
+## VST3 parameters, verified against a plugin built to be verified against
+
+The parameter and editor path had been written and never executed: every plugin installed here
+publishes **zero host-visible parameters**, so `ReadParameters`, `SetParameter`, `ApplyParameter`,
+`Vst3ParameterChanges` and the rack's flag filtering were correct-looking code with nothing to run
+against. "Written but unverifiable" was the standing entry. It is now verified.
+
+- **`tests/WaveLab.Tests/Vst3SyntheticPlugin.cs` is a VST3 plugin built in this process out of
+  vtables of function pointers**, and the host cannot tell the difference: a factory, a component, a
+  separate controller, real slot numbers, `stdcall`. `Vst3Plugin` runs against it **completely
+  unmodified**. It is the existing pattern turned around — `Vst3HostContext` and `Vst3MemoryStream`
+  are managed objects handed *outwards* as `[UnmanagedCallersOnly]` vtables plus a `GCHandle`; this
+  is one handed *inwards*. The only production change is `Vst3Module.FromFactory`, which wraps a
+  factory pointer this process already holds instead of calling `LoadLibrary`.
+- **The component and the processor must be different addresses, and that is the ABI rather than a
+  detail.** `IComponent` slot 7 is `getBusCount`; `IAudioProcessor` slot 7 is `setupProcessing`.
+  Returning one pointer for both calls the wrong function with the right arguments. The native block
+  carries two vtable pointers and hands out its own address for one and that address plus eight for
+  the other, which is what a C++ compiler emits for two base subobjects.
+- **Every object shares one layout, because two layouts put the handle at two offsets.** A component
+  block puts its processor vtable exactly where a plain object puts its `GCHandle`, so recovering the
+  managed object from a component pointer read a vtable as a handle. That is a fault, not a wrong
+  answer, and it is the same class of bug the `AudioBusBuffers` note already warns about. The factory
+  and the controller carry a null second vtable and eight wasted bytes to keep the offset uniform.
+- **The instrument reproduced the bug it was built to detect, and the negative test caught it.**
+  The first version backed the controller and the processor with **one** value dictionary — so
+  `setParamNormalized` alone appeared to change the audio, which is exactly the failure-that-looks-
+  like-success this file exists to pin. VST3 splits a plugin so the halves can live in different
+  processes; they hold their own copies and the host is what keeps them in step. They are two
+  dictionaries now, and `SettingOnlyTheControllerDoesNotChangeTheAudio` asserts the controller moved
+  and the processor did not.
+- **What the six tests establish**: the host reads a published list with identifiers that are not
+  indices and flags intact; setting round-trips through the controller and clamps out-of-range values
+  before the plugin sees them; **a parameter set on the host reaches `process` and changes every
+  sample** (0.5 → 0.5000, 0.25 → 0.2500); setting only the controller changes nothing; an edit made in
+  the plugin's own editor reaches the host through `performEdit`; state round-trips and the controller
+  is told; and the rack draws **1 slider from 4 published parameters**, hiding the bypass, the hidden
+  one and the read-only meter.
+- **`ApplyParameter` does not reach the processor until a block is processed, and that surfaced
+  here.** It writes the controller and *queues* for the processor, and the queue is read only inside
+  `process` — so a parameter moved while nothing is playing has not reached the component when
+  `getState` is called, and the state saved is the value from **before** the move. Found by writing
+  the state test without a block in the middle and watching 0.8 come back as 0.5.
+- **It is a property rather than a defect, and only because two things are true at once.** A rack
+  preset stores each parameter value *as well as* the opaque state, and restores state first so the
+  values land on top; and a plugin publishing no parameters — all 22 here — has a component state
+  that never depended on the queue. Break either and stale state ships. Worth knowing before anything
+  starts saving presets from a plugin that both publishes parameters and is not playing.
+- **This does not make the 22 local plugins publish anything**, and nothing about them has changed.
+  The claim that their emptiness is the plugins rather than the host stands on the five eliminated
+  hypotheses recorded above; what is new is that the host side is now known to work when given
+  something to work with.
 
 ## Gotchas
 

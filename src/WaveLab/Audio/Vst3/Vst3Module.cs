@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Runtime.InteropServices;
 
 namespace WaveLab.Audio.Vst3;
@@ -286,6 +286,24 @@ public sealed unsafe class Vst3Module : IDisposable
     {
         void* result;
         return Vst3Abi.Ok(_queryInterface(_factory, &iid, &result)) ? result : null;
+    }
+
+    /// <summary>
+    /// Wraps a factory this process already holds, with no binary behind it.
+    /// </summary>
+    /// <remarks>
+    /// This is the seam the parameter path is tested through, and it exists because it cannot be
+    /// tested any other way here: every VST3 plugin installed on this machine publishes <b>zero</b>
+    /// host-visible parameters, so <c>ReadParameters</c>, <c>SetParameter</c> and the whole
+    /// <c>IParameterChanges</c> route are dead code at runtime however correct they are. A synthetic
+    /// factory built in-process out of the same kind of vtable <see cref="Vst3HostContext"/> and
+    /// <c>Vst3MemoryStream</c> hand <i>outwards</i> gives them something to talk to. Nothing in the
+    /// app calls this; <c>Load</c> is the only way a real plugin arrives.
+    /// </remarks>
+    internal static Vst3Module FromFactory(void* factory, string path)
+    {
+        if (factory == null) throw new ArgumentNullException(nameof(factory));
+        return new Vst3Module(0, factory, path) { _initialised = true };
     }
 
     /// <summary>
