@@ -1,4 +1,4 @@
-# Deep Groove — status and what is deliberately not here
+﻿# Deep Groove — status and what is deliberately not here
 
 This was the v1 expansion plan. **Everything it classified as Phase A through D is built**, so it
 is no longer a plan; it is kept as a status map and as the record of what was deliberately declined
@@ -57,6 +57,13 @@ listed as a nice-to-have. Both are done.
   makes the join measurable. No mixer, no bus, no send, no automation.
 - **MIDI** — little value in a stereo wave editor with no instrument path.
 - **Vocal isolation / ML denoise** — needs bundled models; out of scope for a lean native app.
+  **Still declined, but the ceiling is now measured rather than assumed**: an oracle Wiener mask,
+  which is what a perfect estimator of this kind produces, beats the shipped spectral gate by
+  **+9.63 dB over 108 cells and wins 108 of 108** — **+7.15 dB** against the better of the gate and
+  doing nothing. So there is real room. What comes before a model is the cheap half of it: the gate
+  scores *below do-nothing* on quiet hiss, and a rule that declined to fire there would collect
+  8.13 dB of the 13.21 dB gap at 30 dB down for nothing. See `NoiseReductionCeilingTests` and the
+  CLAUDE.md section.
 - **OGG Vorbis / Opus** — no Windows system codec, so it would add a native dependency.
 - **AU / LV2** — not applicable on Windows.
 - **Customizable shortcut editor, workspace layouts** — never started, and nothing has asked for

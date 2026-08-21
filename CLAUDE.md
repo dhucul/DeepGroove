@@ -398,6 +398,47 @@ against. "Written but unverifiable" was the standing entry. It is now verified.
   hypotheses recorded above; what is new is that the host side is now known to work when given
   something to work with.
 
+## ML denoise: the ceiling, measured before anything was built
+
+The roadmap declines ML denoise as "needs bundled models; out of scope for a lean native app".
+Reversing that starts with a number, not a model — and the number can be had **without a model, a
+runtime, a download or a training set**.
+
+- **Every single-channel denoiser in the class being proposed estimates the same thing: a per-bin
+  gain on the noisy magnitude spectrum.** RNNoise, DTLN, the DNS-Challenge models and the
+  Ephraim-Malah MMSE-STSA this repo just deleted differ only in how well they estimate it. So
+  compute it **exactly** — from the clean signal and the noise the harness planted — and run it in
+  the same STFT the shipped gate uses. That is the Wiener mask, no estimator can beat it in this
+  framework, and the gap to the shipped gate is the entire headroom available to any of them.
+- **The verdict is that the headroom is large: +9.63 dB over 108 cells, and the oracle wins 108 of
+  108.** By severity, gate against oracle: −8.13/+5.09 at 30 dB down, −4.32/+6.83 at 24,
+  −1.26/+8.20 at 18, +1.14/+9.52 at 12, +3.05/+10.84 at 6, +4.43/+12.23 at 0. **The oracle is
+  positive at every severity and the gate is not**, which is the shape of the opportunity: the
+  gate's documented failure on quiet hiss is not intrinsic to masking, it is intrinsic to *this*
+  mask.
+- **Measured honestly the figure is +7.15 dB, and that is the one to quote.** Headroom over the gate
+  flatters any replacement, because the gate scores *below do-nothing* at the two quietest
+  severities — a fixed 10 dB reduction applied to hiss already 30 dB under the programme costs more
+  music than it saves noise. A rule that simply declined to fire there would collect **8.13 dB of
+  the 13.21 dB gap at 30 dB down for free, with no model at all**. Against the better of the gate
+  and doing nothing, what remains is +7.15 dB, and that part is reachable only by estimating the
+  mask better.
+- **So the cheap experiment comes first, and it is not machine learning.** Making the reduction
+  depth follow the measured noise-to-programme ratio — or simply not firing when the floor is
+  already far down — is a few lines against days of training and a native dependency, and it
+  targets the largest single component of the gap. Whatever it fails to collect is the honest
+  brief for a model.
+- **A ceiling is not a forecast.** Real estimators reach a fraction of an oracle mask, and this repo
+  has a worked example of a principled one landing *below* a crude one: MMSE-STSA lost to this same
+  gate on these same cells, by 136.3 dB in total. +7.15 dB is what is on the table, not what a model
+  would get.
+- **The oracle is exact and its floor is measured rather than assumed.** `TheOracleMaskIsActuallyAnOracle`
+  calibrates it with no corpus: +16.68 dB on noise it can see perfectly, and on clean audio it costs
+  **0.00 dB beyond a bare STFT round trip**. That round trip is 35.0 dB segmental — a magnitude mask
+  leaves the noisy phase alone, so even a perfect one falls short of the clean signal — and since
+  the gate runs through the identical STFT the floor cancels out of the comparison. Quoting the
+  ceiling without it invites the reading that the oracle is near-perfect reconstruction. It is not.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).
