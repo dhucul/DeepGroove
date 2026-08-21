@@ -1,0 +1,239 @@
+<div id="wavelab-noise-readout">
+  <style>
+    #wavelab-noise-readout {
+      font-family: "Segoe UI", Inter, sans-serif;
+      color: #E7EAEE;
+      background: #0D0F12;
+      width: 100%;
+      padding: 14px;
+      box-sizing: border-box;
+    }
+    #wavelab-noise-readout * { box-sizing: border-box; }
+    #wavelab-noise-readout .wl-sheet { width: min(1180px, 100%); margin: 0 auto; }
+    #wavelab-noise-readout h1 {
+      font-size: 15px; font-weight: 600; margin: 0 0 4px; letter-spacing: .01em;
+    }
+    #wavelab-noise-readout .wl-sub { color: #5D646D; font-size: 11px; margin: 0 0 16px; line-height: 1.55; }
+    #wavelab-noise-readout .wl-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;
+    }
+    #wavelab-noise-readout .wl-opt { display: grid; gap: 6px; align-content: start; }
+    #wavelab-noise-readout .wl-tag {
+      font-size: 10px; letter-spacing: .10em; text-transform: uppercase; color: #5D646D;
+    }
+    #wavelab-noise-readout .wl-tag b { color: #3FD6C2; font-weight: 600; }
+    #wavelab-noise-readout .wl-tag i { color: #FFB454; font-style: normal; font-weight: 600; }
+    #wavelab-noise-readout .wl-why { font-size: 11px; color: #9AA1A9; line-height: 1.5; }
+
+    /* the card, matching Themes/Theme.xaml Card */
+    #wavelab-noise-readout .wl-card {
+      background: #14171B; border: 1px solid #272E36; border-radius: 10px; padding: 14px;
+      width: 394px;                       /* 365 px of content at the dialog's 860 px MinWidth */
+    }
+    #wavelab-noise-readout .wl-head { display: flex; align-items: baseline; }
+    #wavelab-noise-readout .wl-card-title { font-size: 14px; font-weight: 600; flex: 1; }
+    #wavelab-noise-readout .wl-check { font-size: 11px; color: #9AA1A9; }
+    #wavelab-noise-readout .wl-check b {
+      display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+      border: 1px solid #2E5A54; background: #173A36; margin-right: 5px;
+      position: relative; top: 1px;
+    }
+    #wavelab-noise-readout .wl-card-desc {
+      font-size: 10.5px; color: #5D646D; margin: 5px 0 12px; line-height: 1.45;
+    }
+    #wavelab-noise-readout .wl-row { display: flex; align-items: baseline; }
+    #wavelab-noise-readout .wl-row .t { font-size: 11px; color: #9AA1A9; flex: 1; }
+    #wavelab-noise-readout .wl-row .v {
+      font-size: 11px; color: #3FD6C2; width: 70px; text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    #wavelab-noise-readout .wl-row .v.split { color: #E7EAEE; }
+    #wavelab-noise-readout .wl-row .v.split s { color: #5D646D; text-decoration: none; }
+    #wavelab-noise-readout .wl-row .v.off { color: #5D646D; }
+    #wavelab-noise-readout .wl-track {
+      height: 3px; border-radius: 2px; background: #262C33; margin: 7px 0 0; position: relative;
+    }
+    #wavelab-noise-readout .wl-track i {
+      position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px;
+      background: linear-gradient(90deg, #2BA393, #3FD6C2);
+    }
+    #wavelab-noise-readout .wl-track b {
+      position: absolute; top: -5px; width: 13px; height: 13px; border-radius: 50%;
+      background: #E7EAEE; transform: translateX(-50%);
+    }
+    /* the applied span, drawn over a dimmed requested one */
+    #wavelab-noise-readout .wl-track.split i {
+      background: #2A4C48;
+    }
+    #wavelab-noise-readout .wl-track u {
+      position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px;
+      background: #3FD6C2; text-decoration: none;
+    }
+    /* the readout line: 10.5px Muted, one line, ellipsis - same as the declip readout */
+    #wavelab-noise-readout .wl-readout {
+      font-size: 10.5px; color: #9AA1A9; margin: 8px 0 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 365px;
+    }
+    #wavelab-noise-readout .wl-readout .dim { color: #5D646D; }
+    #wavelab-noise-readout .wl-readout .amber { color: #FFB454; }
+    #wavelab-noise-readout .wl-gap { height: 9px; }
+    #wavelab-noise-readout .wl-px {
+      font-size: 10px; color: #5D646D; font-variant-numeric: tabular-nums;
+    }
+    #wavelab-noise-readout .wl-px b { color: #3FD07A; font-weight: 600; }
+    #wavelab-noise-readout .wl-px i { color: #FFB454; font-style: normal; font-weight: 600; }
+    #wavelab-noise-readout .wl-foot {
+      margin-top: 18px; font-size: 11px; color: #9AA1A9; line-height: 1.65;
+      border-top: 1px solid #1D2228; padding-top: 12px;
+    }
+    #wavelab-noise-readout .wl-foot b { color: #E7EAEE; font-weight: 600; }
+    #wavelab-noise-readout .wl-foot .num { color: #3FD6C2; font-weight: 600; }
+    #wavelab-noise-readout .wl-foot p { margin: 0 0 8px; }
+    #wavelab-noise-readout code { font-family: Consolas, monospace; font-size: 10.5px; color: #b8c0c8; }
+  </style>
+
+  <div class="wl-sheet">
+    <h1>Noise &amp; Hiss Reduction &mdash; showing the depth the tool actually chose</h1>
+    <p class="wl-sub">
+      The reduction depth now follows how much hiss there is to remove, so the slider is a ceiling
+      and the applied value can be far below it &mdash; or zero. Without a readout that is a slider
+      whose travel does nothing, which reads as a broken control.<br>
+      Card drawn at the dialog's <b>860&nbsp;px minimum</b>, where the card has <b>365&nbsp;px</b> of
+      content &mdash; the same column the declip readout was measured in. String widths below are
+      measured with <code>FormattedText</code> at Inter&nbsp;10.5&nbsp;px, not estimated.
+    </p>
+
+    <div class="wl-grid">
+
+      <!-- reference: today -->
+      <div class="wl-opt">
+        <div class="wl-tag"><i>reference</i> &mdash; today, and it looks broken</div>
+        <div class="wl-card">
+          <div class="wl-head">
+            <div class="wl-card-title">Noise &amp; Hiss Reduction</div>
+            <div class="wl-check"><b></b>Enabled</div>
+          </div>
+          <div class="wl-card-desc">A smoothed spectral gate follows the learned surface-noise profile.</div>
+          <div class="wl-row"><span class="t">Maximum reduction</span><span class="v">10.0 dB</span></div>
+          <div class="wl-track"><i style="width:42%"></i><b style="left:42%"></b></div>
+          <div class="wl-gap"></div>
+          <div class="wl-row"><span class="t">Profile sensitivity</span><span class="v">5.0 dB</span></div>
+          <div class="wl-track"><i style="width:42%"></i><b style="left:42%"></b></div>
+        </div>
+        <div class="wl-px">no readout</div>
+        <div class="wl-why">
+          The user asks for 10&nbsp;dB. On a quiet transfer the tool applies <b>none of it</b>, and
+          nothing on the card says so. Dragging the slider changes nothing audible at any position.
+        </div>
+      </div>
+
+      <!-- A: sentence readout -->
+      <div class="wl-opt">
+        <div class="wl-tag"><b>A</b> &mdash; a line under the slider (recommended)</div>
+        <div class="wl-card">
+          <div class="wl-head">
+            <div class="wl-card-title">Noise &amp; Hiss Reduction</div>
+            <div class="wl-check"><b></b>Enabled</div>
+          </div>
+          <div class="wl-card-desc">A smoothed spectral gate follows the learned surface-noise profile.</div>
+          <div class="wl-row"><span class="t">Maximum reduction</span><span class="v">10.0 dB</span></div>
+          <div class="wl-track split">
+            <i style="width:42%"></i><u style="width:9.7%"></u><b style="left:42%"></b>
+          </div>
+          <div class="wl-readout">Applying 2.3 dB &middot; hiss sits 7.7 dB under the programme.</div>
+          <div class="wl-gap"></div>
+          <div class="wl-row"><span class="t">Profile sensitivity</span><span class="v">5.0 dB</span></div>
+          <div class="wl-track"><i style="width:42%"></i><b style="left:42%"></b></div>
+        </div>
+        <div class="wl-px">256 px of 365 &mdash; <b>fits</b>, 109 px spare</div>
+        <div class="wl-why">
+          Follows the declip readout exactly: a sentence carrying <b>the number the decision was made
+          from</b>. The bright stub on the track shows the applied depth inside the
+          dimmed requested one, so the gap is visible without reading. <b>That tint is optional</b>
+          — it needs a local slider template, and the line alone is the whole fix.
+        </div>
+      </div>
+
+      <!-- A: declining -->
+      <div class="wl-opt">
+        <div class="wl-tag"><b>A</b> &mdash; the surprising state: declining entirely</div>
+        <div class="wl-card">
+          <div class="wl-head">
+            <div class="wl-card-title">Noise &amp; Hiss Reduction</div>
+            <div class="wl-check"><b></b>Enabled</div>
+          </div>
+          <div class="wl-card-desc">A smoothed spectral gate follows the learned surface-noise profile.</div>
+          <div class="wl-row"><span class="t">Maximum reduction</span><span class="v">10.0 dB</span></div>
+          <div class="wl-track"><i style="width:42%"></i><b style="left:42%"></b></div>
+          <div class="wl-readout">
+            <span class="amber">Not reducing</span> &middot; hiss already 12.4 dB under the programme.
+          </div>
+          <div class="wl-gap"></div>
+          <div class="wl-row"><span class="t">Profile sensitivity</span><span class="v">5.0 dB</span></div>
+          <div class="wl-track"><i style="width:42%"></i><b style="left:42%"></b></div>
+        </div>
+        <div class="wl-px">268 px of 365 &mdash; <b>fits</b>, 97 px spare &mdash; the longest wording</div>
+        <div class="wl-why">
+          The state that must never be silent. Amber on the verb only, not the whole line: this is a
+          <b>decision, not a fault</b>, and colouring a fact like a fault teaches the user to distrust
+          the colour &mdash; the lesson from the VST3 &ldquo;no parameters&rdquo; note.
+        </div>
+      </div>
+
+      <!-- B: split value -->
+      <div class="wl-opt">
+        <div class="wl-tag"><b>B</b> &mdash; applied and requested in the value column</div>
+        <div class="wl-card">
+          <div class="wl-head">
+            <div class="wl-card-title">Noise &amp; Hiss Reduction</div>
+            <div class="wl-check"><b></b>Enabled</div>
+          </div>
+          <div class="wl-card-desc">A smoothed spectral gate follows the learned surface-noise profile.</div>
+          <div class="wl-row">
+            <span class="t">Maximum reduction</span>
+            <span class="v split">2.3 <s>/ 10 dB</s></span>
+          </div>
+          <div class="wl-track split">
+            <i style="width:42%"></i><u style="width:9.7%"></u><b style="left:42%"></b>
+          </div>
+          <div class="wl-readout dim">Hiss sits 7.7 dB under the programme.</div>
+          <div class="wl-gap"></div>
+          <div class="wl-row"><span class="t">Profile sensitivity</span><span class="v">5.0 dB</span></div>
+          <div class="wl-track"><i style="width:42%"></i><b style="left:42%"></b></div>
+        </div>
+        <div class="wl-px">value 50 px of 70 &mdash; <b>fits</b>; worst case <b>56 px</b> (24.0 / 24 dB)</div>
+        <div class="wl-why">
+          Tighter, and the applied figure sits where the eye already looks for a value. But
+          <b>&ldquo;&mdash; / 10 dB&rdquo; is a poor way to say &ldquo;not reducing&rdquo;</b>, and the
+          value column is shared by every other slider in the dialog, so this one alone would carry
+          two numbers.
+        </div>
+      </div>
+
+    </div>
+
+    <div class="wl-foot">
+      <p>
+        <b>Why the card has to say anything at all.</b> Measured over
+        <span class="num">108 corpus cells</span>, a fixed 10&nbsp;dB reduction scores
+        <span class="num">&minus;0.85&nbsp;dB</span> segmental &mdash; <b>worse than leaving the audio
+        alone</b> &mdash; because a fixed depth applied to hiss already 30&nbsp;dB under the programme
+        costs more music than it saves noise. Scaling the depth takes cells that come out worse than
+        doing nothing from <span class="num">46 of 108 to 15</span>, and cells worse than
+        &minus;3&nbsp;dB from <span class="num">31 to 8</span>. The tool is now right to ignore most
+        of the slider on a clean transfer, which is exactly why it must be seen to be doing it.
+      </p>
+      <p>
+        <b>The slider keeps its label and its range.</b> It already says <i>Maximum</i> reduction, so
+        it was always a ceiling; nothing about the control changes and no preset is invalidated. Only
+        the readout is added.
+      </p>
+      <p>
+        <b>Recommendation: A.</b> It matches the pattern already shipped for declip, it states the
+        measured number rather than a verdict, it has room for the longest wording with 97&nbsp;px to
+        spare, and it degrades to an ellipsis rather than a clipped glyph if the card is ever
+        squeezed. B is worth having only if the second line proves too noisy in use.
+      </p>
+    </div>
+  </div>
+</div>
