@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using WaveLab.Audio.Effects;
 using WaveLab.Util;
 
@@ -163,29 +163,36 @@ public sealed class Vst3PluginHost
             return null;
         }
 
+        Vst3Module module;
         lock (_gate)
         {
-            if (!_modules.TryGetValue(path, out Vst3Module? module))
+            if (!_modules.TryGetValue(path, out Vst3Module? cached))
             {
-                module = Vst3Module.Load(path, out error);
-                if (module?.Info == null)
+                cached = Vst3Module.Load(path, out error);
+                if (cached?.Info == null)
                 {
                     if (string.IsNullOrWhiteSpace(error)) error = "The plugin would not load.";
                     return null;
                 }
-                _modules[path] = module;
+                _modules[path] = cached;
             }
-
-            Vst3ClassInfo? effect = module.Info!.Effects.FirstOrDefault();
-            if (effect == null)
-            {
-                error = "The plugin offers no audio effect class.";
-                return null;
-            }
-
-            Vst3Plugin? plugin = Vst3Plugin.Create(module, effect, out error);
-            return plugin == null ? null : new Vst3PluginRef(plugin, path, scan);
+            module = cached;
         }
+
+        Vst3ClassInfo? effect = module.Info!.Effects.FirstOrDefault();
+        if (effect == null)
+        {
+            error = "The plugin offers no audio effect class.";
+            return null;
+        }
+
+        // Outside the host lock. Create runs the plugin's own createInstance and
+        // initialize — seconds for one that scans a sample library, indefinite for one
+        // that deadlocks — and every other plugin operation in the process was queuing
+        // behind it. Two racing opens may each build an instance, which is what they
+        // asked for; the module and its factory are what needed to be shared.
+        Vst3Plugin? plugin = Vst3Plugin.Create(module, effect, out error);
+        return plugin == null ? null : new Vst3PluginRef(plugin, path, scan);
     }
 
     /// <summary>Rescans, keeping cached results for binaries that have not changed.</summary>

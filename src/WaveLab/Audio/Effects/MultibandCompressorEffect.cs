@@ -1,4 +1,4 @@
-using WaveLab.Audio.Dsp;
+﻿using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio.Effects;
 
@@ -155,11 +155,27 @@ public sealed class MultibandCompressorEffect : EffectBase
         if (_envelope.Length != BandCount || _envelope[0].Length != ChannelCount) return;
 
         Span<float> bands = stackalloc float[BandCount];
-        double worst = 0;
 
+        // Tracked as a gain and converted once, rather than a logarithm per band per
+        // sample for a readout that updates at screen rate. Maximising -20*log10(g) is
+        // minimising g.
+        double quietest = 1.0;
+
+        // ProgramRelease converts a coefficient to a time constant, scales it and
+        // converts back — a Math.Log and a Math.Exp — and its only varying input is the
+        // crest factor, whose follower has a ten-thousand-sample time constant.
+        // Evaluating it per band per sample measured something that could not have moved.
+        const int releaseTableSize = 33;
+        Span<double> releaseTable = stackalloc double[releaseTableSize];
+        for (int i = 0; i < releaseTableSize; i++)
+        {
+            releaseTable[i] = ProgramRelease(
+                parameters.Release, 1.0 + 7.0 * i / (releaseTableSize - 1));
+        }
+
+        int c = 0;
         for (int i = offset; i < offset + count; i++)
         {
-            int c = (i - offset) % ChannelCount;
             crossover.ProcessSample(c, buffer[i], bands);
 
             float sum = 0;
@@ -171,22 +187,27 @@ public sealed class MultibandCompressorEffect : EffectBase
                 _peak[b][c] = Math.Max(magnitude, magnitude + 0.999 * (_peak[b][c] - magnitude));
                 _crest[b][c] = magnitude * magnitude + 0.9999 * (_crest[b][c] - magnitude * magnitude);
 
-                double crest = _peak[b][c] / Math.Sqrt(Math.Max(_crest[b][c], 1e-12));
-                double release = ProgramRelease(parameters.Release, crest);
+                double crest = Math.Clamp(
+                    _peak[b][c] / Math.Sqrt(Math.Max(_crest[b][c], 1e-12)), 1.0, 8.0);
+                double position = (crest - 1.0) / 7.0 * (releaseTableSize - 1);
+                int lower = (int)position;
+                int upper = Math.Min(lower + 1, releaseTableSize - 1);
+                double release = releaseTable[lower]
+                    + (releaseTable[upper] - releaseTable[lower]) * (position - lower);
 
                 double coefficient = magnitude > _envelope[b][c] ? parameters.Attack : release;
                 _envelope[b][c] = magnitude + coefficient * (_envelope[b][c] - magnitude);
 
                 double gain = GainFor(_envelope[b][c], parameters);
-                double reductionDb = gain < 1 ? -20 * Math.Log10(gain) : 0;
-                if (reductionDb > worst) worst = reductionDb;
+                if (gain < quietest) quietest = gain;
 
                 sum += (float)(bands[b] * gain) * parameters.MakeUp[b];
             }
             buffer[i] = sum;
+            if (++c == ChannelCount) c = 0;
         }
 
-        Volatile.Write(ref _reduction, worst);
+        Volatile.Write(ref _reduction, quietest < 1 ? -20 * Math.Log10(quietest) : 0);
     }
 
     /// <summary>

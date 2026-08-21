@@ -130,7 +130,7 @@ public sealed class MasterSection : ISampleProvider
         {
             oldA = _snapshotA;
             oldB = _snapshotB;
-            _snapshotA = _chain.Select(EffectFactory.Clone).ToList();
+            _snapshotA = CloneAll(_chain);
             _snapshotB = null;
             _isComparingB = false;
         }
@@ -148,7 +148,7 @@ public sealed class MasterSection : ISampleProvider
         lock (_chainLock)
         {
             oldB = _snapshotB;
-            _snapshotB = _chain.Select(EffectFactory.Clone).ToList();
+            _snapshotB = CloneAll(_chain);
             _isComparingB = false;
         }
         Retire(oldB);
@@ -169,13 +169,13 @@ public sealed class MasterSection : ISampleProvider
         {
             if (_snapshotA == null) return false;
 
-            var current = _chain.Select(EffectFactory.Clone).ToList();
+            var current = CloneAll(_chain);
             displaced = [.. _chain];
 
             if (_isComparingB)
             {
                 // Restore current chain from snapshot A
-                incoming = _snapshotA.Select(EffectFactory.Clone).ToList();
+                incoming = CloneAll(_snapshotA);
                 discarded = _snapshotA;
                 _snapshotA = current;
                 _isComparingB = false;
@@ -186,7 +186,7 @@ public sealed class MasterSection : ISampleProvider
                 // Save current as A, show B (or swap if B exists)
                 if (_snapshotB != null)
                 {
-                    incoming = _snapshotB.Select(EffectFactory.Clone).ToList();
+                    incoming = CloneAll(_snapshotB);
                     discarded = _snapshotB;
                     _snapshotB = current;
                 }
@@ -275,6 +275,28 @@ public sealed class MasterSection : ISampleProvider
         if (fx is IDisposable disposable)
         {
             try { disposable.Dispose(); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Clones a whole chain, releasing what it has already built if one of them throws.
+    /// </summary>
+    /// <remarks>
+    /// A half-built snapshot is unreachable the moment the exception leaves the method,
+    /// and for a plugin every clone in it holds a reference nothing will ever drop.
+    /// </remarks>
+    private static List<IAudioEffect> CloneAll(IEnumerable<IAudioEffect> source)
+    {
+        var clones = new List<IAudioEffect>();
+        try
+        {
+            foreach (IAudioEffect effect in source) clones.Add(EffectFactory.Clone(effect));
+            return clones;
+        }
+        catch
+        {
+            Retire(clones);
+            throw;
         }
     }
 

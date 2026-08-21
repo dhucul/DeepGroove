@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace WaveLab.Audio.Vst3;
 
@@ -56,6 +56,19 @@ public sealed unsafe class Vst3Plugin : IDisposable
     private int _channels;
     private int _blockSize;
     private bool _active;
+
+    /// <summary>
+    /// Held across anything that frees or replaces the native buffers, and tried by the
+    /// processing path.
+    /// </summary>
+    /// <remarks>
+    /// Configure calls Deactivate and then AllocateBuffers, whose first act is to free
+    /// the planes ProcessBlock writes through. Nothing coordinated the two, so a
+    /// reconfiguration on the control thread could free memory the render thread was in
+    /// the middle of filling. The callers are careful about this now, but the invariant
+    /// belongs here rather than in every one of them.
+    /// </remarks>
+    private readonly object _lifetimeGate = new();
     private bool _processing;
     private bool _disposed;
 
@@ -533,6 +546,11 @@ public sealed unsafe class Vst3Plugin : IDisposable
         if (_disposed || _processor == null || _component == null) return false;
         if (channels is < 1 or > 8 || sampleRate <= 0 || maxBlockSize <= 0) return false;
 
+        lock (_lifetimeGate) return ConfigureCore(sampleRate, channels, maxBlockSize, offline);
+    }
+
+    private bool ConfigureCore(int sampleRate, int channels, int maxBlockSize, bool offline)
+    {
         Deactivate();
 
         // 32-bit float only. A plugin that cannot take it is rare enough that converting the whole
@@ -625,17 +643,28 @@ public sealed unsafe class Vst3Plugin : IDisposable
         if (_disposed || !_processing || _channels <= 0) return false;
         if (buffer == null || count <= 0) return false;
 
-        int frames = count / _channels;
-        if (frames <= 0) return false;
-
-        int done = 0;
-        while (done < frames)
+        // TryEnter rather than Enter. Configure and Dispose free the planes this writes
+        // through, so the two must not overlap — but waiting behind somebody else's
+        // setActive call would stall the render thread for as long as the plugin takes.
+        // Failing the block costs one buffer and is reported through Readout; overlapping
+        // costs the process.
+        if (!Monitor.TryEnter(_lifetimeGate)) return false;
+        try
         {
-            int block = Math.Min(_blockSize, frames - done);
-            if (!ProcessBlock(buffer, offset + done * _channels, block)) return false;
-            done += block;
+            if (_disposed || !_processing || _channels <= 0) return false;
+            int frames = count / _channels;
+            if (frames <= 0) return false;
+
+            int done = 0;
+            while (done < frames)
+            {
+                int block = Math.Min(_blockSize, frames - done);
+                if (!ProcessBlock(buffer, offset + done * _channels, block)) return false;
+                done += block;
+            }
+            return true;
         }
-        return true;
+        finally { Monitor.Exit(_lifetimeGate); }
     }
 
     private bool ProcessBlock(float[] buffer, int offset, int frames)
@@ -764,6 +793,12 @@ public sealed unsafe class Vst3Plugin : IDisposable
     }
 
     public void Dispose()
+    {
+        if (_disposed) return;
+        lock (_lifetimeGate) DisposeCore();
+    }
+
+    private void DisposeCore()
     {
         if (_disposed) return;
         _disposed = true;

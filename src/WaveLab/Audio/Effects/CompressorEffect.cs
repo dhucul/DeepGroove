@@ -1,4 +1,4 @@
-using WaveLab.Audio.Dsp;
+﻿using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio.Effects;
 
@@ -193,7 +193,9 @@ public sealed class CompressorEffect : EffectBase
             else
                 _autoMakeupDb = 0;
 
-            float gain = (float)(Math.Pow(10, (_autoMakeupDb - grDb) / 20.0) * makeupLin);
+            // exp(x * ln(10)/20) rather than Math.Pow(10, x / 20): the same value for
+            // about a third of the cost, on a path that runs once per sample frame.
+            float gain = (float)(Math.Exp((_autoMakeupDb - grDb) * 0.11512925464970229) * makeupLin);
 
             // --- lookahead delay (true passthrough at 0 ms) ---
             for (int c = 0; c < ChannelCount; c++)

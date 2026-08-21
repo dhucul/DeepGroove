@@ -1,4 +1,4 @@
-using WaveLab.Audio.Dsp;
+﻿using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio.Effects;
 
@@ -101,6 +101,9 @@ public sealed class DeEsserEffect : EffectBase
         // wants a contiguous channel; the rack hands over interleaved audio.
         for (int c = 0; c < ChannelCount; c++)
         {
+            // Grown here only if a host ever exceeds the block ceiling OnConfigure sized
+            // for. Allocating on the audio callback is what this is avoiding, not what it
+            // is doing.
             if (_input[c].Length < frames) _input[c] = new float[frames];
             if (_output[c].Length < frames) _output[c] = new float[frames];
             for (int f = 0; f < frames; f++) _input[c][f] = buffer[offset + f * ChannelCount + c];
