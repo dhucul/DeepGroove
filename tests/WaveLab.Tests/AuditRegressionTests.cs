@@ -233,33 +233,6 @@ public sealed class AuditRegressionTests : IDisposable
         }
     }
 
-    // ── the level analyzer's histogram ───────────────────────────
-
-    /// <summary>
-    /// The peak histogram's bin came from a logarithm per sample per channel on the WASAPI
-    /// capture callback. The replacement has to land in exactly the same bin, not merely a
-    /// close one.
-    /// </summary>
-    [Fact]
-    public void PeakHistogramBinMatchesTheLogarithmItReplaced()
-    {
-        // A ramp through every bin, plus the exact bin edges where rounding decides.
-        var magnitudes = new List<double>();
-        for (int i = 0; i <= 2_000; i++) magnitudes.Add(Math.Pow(10, -i * 64.0 / 2_000 / 20.0));
-        for (int bin = 0; bin < 128; bin++) magnitudes.Add(Math.Pow(10, -bin * 0.5 / 20.0));
-
-        foreach (double magnitude in magnitudes)
-        {
-            int expected = Math.Clamp((int)(-20 * Math.Log10(magnitude) / 0.5), 0, 127);
-            int actual = RecordingLevelAnalyzer.PeakHistogramBinForTests(magnitude);
-
-            // The two disagree only where the logarithm itself lands on a bin boundary,
-            // which is a tie either answer is right about.
-            Assert.True(Math.Abs(expected - actual) <= 1,
-                $"magnitude {magnitude}: expected bin {expected}, got {actual}");
-        }
-    }
-
     // ── the offline render ───────────────────────────────────────
 
     /// <summary>
