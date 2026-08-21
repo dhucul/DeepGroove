@@ -1,4 +1,4 @@
-using NAudio.CoreAudioApi;
+﻿using NAudio.CoreAudioApi;
 using NAudio.MediaFoundation;
 using NAudio.Wave;
 using WaveLab.Audio.Dsp;
@@ -561,7 +561,7 @@ public sealed class RecordingEngine : IDisposable
             throw new InvalidOperationException(
                 "The previous recording is still being finalized. Try again in a moment.");
         }
-        _pendingCaptureNote = null;
+        lock (_blocks) _pendingCaptureNote = null;
         AppSettings settings = AppSettings.Instance;
         Role role = AudioHardwareOptions.ParseRole(settings.InputDefaultRole, Role.Console);
         using var enumerator = new MMDeviceEnumerator();
@@ -782,13 +782,17 @@ public sealed class RecordingEngine : IDisposable
                 {
                     Interlocked.Add(ref _totalSamples, samples);
                 }
-                PeakL = pl;
-                PeakR = channels > 1 ? pr : pl;
-                RmsL = (float)Math.Sqrt(squareL / Math.Max(1, frames));
-                RmsR = channels > 1
-                    ? (float)Math.Sqrt(squareR / Math.Max(1, frames))
-                    : RmsL;
             }
+
+            // Outside the capacity test: these describe the packet that just arrived,
+            // not what was retained from it. Inside, the meters froze at their last
+            // pre-cap values while capture was still running.
+            PeakL = pl;
+            PeakR = channels > 1 ? pr : pl;
+            RmsL = (float)Math.Sqrt(squareL / Math.Max(1, frames));
+            RmsR = channels > 1
+                ? (float)Math.Sqrt(squareR / Math.Max(1, frames))
+                : RmsL;
         }
 
         if (capacityRejected)
@@ -1175,11 +1179,14 @@ public sealed class RecordingEngine : IDisposable
                         finalLevelSnapshot = _levelAnalyzer.GetFreshSnapshot();
                     _blocks.Clear();
                     _pendingSnapshot = null;
+                    // Cleared under the block lock because that is where
+                    // StopAndSnapshotAsync reads it: a discarded take's note must not
+                    // be able to survive into the next snapshot.
+                    _pendingCaptureNote = null;
                     Interlocked.Exchange(ref _totalSamples, 0);
                 }
                 PeakL = PeakR = RmsL = RmsR = 0;
                 _levelAnalyzer.Reset();
-                _pendingCaptureNote = null;
                 Volatile.Write(ref _capacityReached, false);
                 LastStopError = null;
             }
@@ -1192,6 +1199,7 @@ public sealed class RecordingEngine : IDisposable
 
     public void Dispose()
     {
+        bool finalizationsQuiescent;
         lock (_lifecycleLock)
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
@@ -1205,27 +1213,32 @@ public sealed class RecordingEngine : IDisposable
                 if (remaining <= 0 || !Monitor.Wait(_lifecycleLock, (int)Math.Min(int.MaxValue, remaining)))
                     break;
             }
-            bool finalizationsQuiescent = _activeFinalizations == 0;
-            try
-            {
-                TryStopCore(DisposeGateTimeout, captureLevelSnapshot: false, out _);
-            }
+            finalizationsQuiescent = _activeFinalizations == 0;
+        }
+
+        // Outside _lifecycleLock, deliberately. TryStopCore waits on the finalize gate,
+        // and a finalization still holding that gate needs _lifecycleLock to reach the
+        // decrement that releases it — so holding the lock here left the two waiting on
+        // each other until the ten-second timeout broke the tie, on the dispatcher.
+        try
+        {
+            TryStopCore(DisposeGateTimeout, captureLevelSnapshot: false, out _);
+        }
+        finally
+        {
+            CaptureStopped = null;
+            NeedleDropTriggered = null;
+            AutoStopTriggered = null;
+            try { _inputMonitor.Dispose(); }
             finally
             {
-                CaptureStopped = null;
-                NeedleDropTriggered = null;
-                AutoStopTriggered = null;
-                try { _inputMonitor.Dispose(); }
-                finally
+                // A finalization that outlived the wait above still releases these
+                // gates. Disposing them from under it would throw on its thread; a
+                // managed SemaphoreSlim left to the GC costs nothing.
+                if (finalizationsQuiescent)
                 {
-                    // A finalization that outlived the wait above still releases
-                    // these gates. Disposing them from under it would throw on its
-                    // thread; a managed SemaphoreSlim left to the GC costs nothing.
-                    if (finalizationsQuiescent)
-                    {
-                        try { _stopGate.Dispose(); }
-                        finally { _finalizeGate.Dispose(); }
-                    }
+                    try { _stopGate.Dispose(); }
+                    finally { _finalizeGate.Dispose(); }
                 }
             }
         }

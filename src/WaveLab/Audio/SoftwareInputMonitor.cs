@@ -1,4 +1,4 @@
-using NAudio.CoreAudioApi;
+﻿using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using WaveLab.Util;
@@ -234,7 +234,19 @@ internal sealed class SoftwareInputMonitor : IDisposable
             if (Volatile.Read(ref _stoppingOrDisposed) != 0) return;
             Volatile.Write(ref _unexpectedStopError, e.Exception);
             Volatile.Write(ref _unexpectedlyStopped, 1);
-            _onUnexpectedStop(this, e.Exception);
+
+            // Never take the owner's lock on WasapiOut's play thread. A concurrent
+            // StopStream/Dispose/Configure holds it and calls WasapiOut.Stop, which joins
+            // this very thread: the flag check above cannot close that window, because it
+            // is passed before the other thread has begun tearing anything down.
+            // Configure's own TryGetUnexpectedStop check still sees an early failure
+            // synchronously, so nothing is lost by reporting it from elsewhere.
+            ThreadPool.QueueUserWorkItem(static state =>
+            {
+                var (session, error) = ((MonitorSession, Exception?))state!;
+                if (Volatile.Read(ref session._stoppingOrDisposed) != 0) return;
+                session._onUnexpectedStop(session, error);
+            }, (this, e.Exception));
         }
 
         public bool TryGetUnexpectedStop(out Exception? error)

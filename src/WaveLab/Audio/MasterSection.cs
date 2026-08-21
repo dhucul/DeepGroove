@@ -1,4 +1,4 @@
-using NAudio.Wave;
+﻿using NAudio.Wave;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
 
@@ -75,12 +75,17 @@ public sealed class MasterSection : ISampleProvider
         get { lock (_chainLock) return _rackEnabled; }
         set
         {
+            IAudioEffect[] toReset;
             lock (_chainLock)
             {
                 if (_rackEnabled == value) return;
                 _rackEnabled = value;
-                foreach (var fx in _chain) fx.ResetState();
+                toReset = [.. _chain];
             }
+            // Outside the lock Read holds: clearing a reverb tail or a convolver's
+            // history is real work, and doing it in here stalled the audio callback
+            // for as long as it took.
+            foreach (IAudioEffect fx in toReset) fx.ResetState();
         }
     }
 
@@ -93,12 +98,14 @@ public sealed class MasterSection : ISampleProvider
         get { lock (_chainLock) return _msMode; }
         set
         {
+            IAudioEffect[] toReset;
             lock (_chainLock)
             {
                 if (_msMode == value) return;
                 _msMode = value;
-                foreach (var fx in _chain) fx.ResetState();
+                toReset = [.. _chain];
             }
+            foreach (IAudioEffect fx in toReset) fx.ResetState();
         }
     }
 
@@ -155,6 +162,7 @@ public sealed class MasterSection : ISampleProvider
     {
         List<IAudioEffect>? displaced = null;
         List<IAudioEffect>? discarded = null;
+        List<IAudioEffect>? incoming = null;
         bool showingB;
 
         lock (_chainLock)
@@ -167,8 +175,7 @@ public sealed class MasterSection : ISampleProvider
             if (_isComparingB)
             {
                 // Restore current chain from snapshot A
-                _chain.Clear();
-                _chain.AddRange(_snapshotA.Select(EffectFactory.Clone));
+                incoming = _snapshotA.Select(EffectFactory.Clone).ToList();
                 discarded = _snapshotA;
                 _snapshotA = current;
                 _isComparingB = false;
@@ -179,8 +186,7 @@ public sealed class MasterSection : ISampleProvider
                 // Save current as A, show B (or swap if B exists)
                 if (_snapshotB != null)
                 {
-                    _chain.Clear();
-                    _chain.AddRange(_snapshotB.Select(EffectFactory.Clone));
+                    incoming = _snapshotB.Select(EffectFactory.Clone).ToList();
                     discarded = _snapshotB;
                     _snapshotB = current;
                 }
@@ -193,7 +199,20 @@ public sealed class MasterSection : ISampleProvider
                 _isComparingB = true;
                 showingB = true;
             }
-            foreach (var fx in _chain) fx.Configure(_sampleRate, _channels);
+        }
+
+        if (incoming != null)
+        {
+            // Configured before it is published, never after and never under the lock.
+            // For a plugin this is setActive(false) / setState / setActive(true) inside
+            // somebody else's code, and running it while Read holds the same lock is a
+            // dropout for however long the plugin takes to come back.
+            foreach (IAudioEffect fx in incoming) fx.Configure(_sampleRate, _channels);
+            lock (_chainLock)
+            {
+                _chain.Clear();
+                _chain.AddRange(incoming);
+            }
         }
 
         // Every list that has just stopped being reachable, released outside the lock. For plugins
@@ -271,9 +290,13 @@ public sealed class MasterSection : ISampleProvider
         {
             if (!_chain.Contains(fx) || fx.Enabled == enabled) return false;
             fx.Enabled = enabled;
-            fx.ResetState();
-            return true;
         }
+
+        // Reset outside the lock, as the rack and M/S switches do. An effect that has
+        // just been disabled is skipped by Read regardless, and one being enabled starts
+        // from the state this clears either way.
+        fx.ResetState();
+        return true;
     }
 
     public bool MoveEffect(IAudioEffect fx, int delta)
@@ -293,7 +316,18 @@ public sealed class MasterSection : ISampleProvider
         // configure (allocates delay/reverb buffers) OUTSIDE the lock so the audio
         // callback never stalls on a preset load
         var list = effects.ToList();
-        foreach (var fx in list) fx.Configure(_sampleRate, _channels);
+
+        // Only effects that are not already running may be configured out here. The
+        // Retire line below shows the incoming and outgoing chains are expected to
+        // overlap, and reconfiguring a carried-over effect outside the lock would do it
+        // while Read is inside that effect - which for a plugin frees the native buffers
+        // the audio thread is writing into. One that stays is already configured for
+        // this stream.
+        List<IAudioEffect> running;
+        lock (_chainLock) running = [.. _chain];
+        foreach (var fx in list)
+            if (!running.Contains(fx))
+                fx.Configure(_sampleRate, _channels);
 
         List<IAudioEffect> replaced;
         lock (_chainLock)
@@ -460,31 +494,40 @@ public sealed class MasterSection : ISampleProvider
     /// <summary>Most recent n mono samples for the spectrum analyzer.</summary>
     public void CopyLatest(float[] dest)
     {
+        ArgumentNullException.ThrowIfNull(dest);
         lock (_ringLock)
         {
-            int n = dest.Length;
-            int start = (_ringPos - n + _ringL.Length * 4) % _ringL.Length;
+            // Clamped to the ring: the old "+ Length * 4" bias went negative once a
+            // caller asked for more samples than four rings held, and indexed backwards
+            // out of the buffer.
+            int n = Math.Min(dest.Length, _ringL.Length);
+            int start = ((_ringPos - n) % _ringL.Length + _ringL.Length) % _ringL.Length;
             for (int i = 0; i < n; i++)
             {
                 int p = (start + i) % _ringL.Length;
                 dest[i] = (_ringL[p] + _ringR[p]) * 0.5f;
             }
+            if (n < dest.Length) Array.Clear(dest, n, dest.Length - n);
         }
     }
 
     /// <summary>Most recent n stereo sample pairs for the goniometer.</summary>
     public void CopyLatestStereo(float[] destL, float[] destR)
     {
+        ArgumentNullException.ThrowIfNull(destL);
+        ArgumentNullException.ThrowIfNull(destR);
         lock (_ringLock)
         {
-            int n = destL.Length;
-            int start = (_ringPos - n + _ringL.Length * 4) % _ringL.Length;
+            int n = Math.Min(Math.Min(destL.Length, destR.Length), _ringL.Length);
+            int start = ((_ringPos - n) % _ringL.Length + _ringL.Length) % _ringL.Length;
             for (int i = 0; i < n; i++)
             {
                 int p = (start + i) % _ringL.Length;
                 destL[i] = _ringL[p];
                 destR[i] = _ringR[p];
             }
+            if (n < destL.Length) Array.Clear(destL, n, destL.Length - n);
+            if (n < destR.Length) Array.Clear(destR, n, destR.Length - n);
         }
     }
 
@@ -500,47 +543,67 @@ public sealed class MasterSection : ISampleProvider
         CancellationToken cancellationToken = default,
         IProgress<double>? progress = null)
     {
+        ArgumentNullException.ThrowIfNull(data);
+        if (data.Length == 0) return [];
+        int frames = data[0].Length;
+        if (data.Any(channel => channel is null || channel.Length != frames))
+            throw new ArgumentException("All source channels must have the same length.", nameof(data));
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+
         cancellationToken.ThrowIfCancellationRequested();
         progress?.Report(0);
         IAudioEffect[] enabledEffects;
         lock (_chainLock)
             enabledEffects = _rackEnabled ? _chain.Where(f => f.Enabled).ToArray() : [];
-        var chain = enabledEffects.Select(EffectFactory.Clone).ToList();
-        bool expandMono = data.Length == 1 && enabledEffects.Any(fx => fx.TypeId == "mono-stereo");
-        float[][] sourceData = expandMono ? [data[0], data[0]] : data;
-        int channels = sourceData.Length;
-        foreach (var fx in chain) fx.Configure(sampleRate, channels);
-        int latency = chain.Sum(f => f.LatencySamples);
 
-        int frames = data[0].Length;
-        int totalFrames = frames + latency;
-        const int block = 65536;
-        var interleaved = new float[block * channels];
-        var output = new float[channels][];
-        for (int c = 0; c < channels; c++) output[c] = new float[frames];
-
-        int outFrame = -latency; // skip the first `latency` processed frames
-        for (int start = 0; start < totalFrames; start += block)
+        // Its own instances, not the live rack's: see CloneForOfflineRender.
+        var chain = new List<IAudioEffect>(enabledEffects.Length);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            int n = Math.Min(block, totalFrames - start);
-            for (int f = 0; f < n; f++)
+            foreach (IAudioEffect effect in enabledEffects)
+                chain.Add(EffectFactory.CloneForOfflineRender(effect));
+
+            bool expandMono = data.Length == 1 && enabledEffects.Any(fx => fx.TypeId == "mono-stereo");
+            float[][] sourceData = expandMono ? [data[0], data[0]] : data;
+            int channels = sourceData.Length;
+            foreach (var fx in chain) fx.Configure(sampleRate, channels);
+            int latency = checked(chain.Sum(f => f.LatencySamples));
+
+            int totalFrames = checked(frames + latency);
+            const int block = 65536;
+            var interleaved = new float[checked(block * channels)];
+            var output = new float[channels][];
+            for (int c = 0; c < channels; c++) output[c] = new float[frames];
+
+            int outFrame = -latency; // skip the first `latency` processed frames
+            for (int start = 0; start < totalFrames; start += block)
             {
-                int srcF = start + f;
-                for (int c = 0; c < channels; c++)
-                    interleaved[f * channels + c] = srcF < frames ? sourceData[c][srcF] : 0f;
+                cancellationToken.ThrowIfCancellationRequested();
+                int n = Math.Min(block, totalFrames - start);
+                for (int f = 0; f < n; f++)
+                {
+                    int srcF = start + f;
+                    for (int c = 0; c < channels; c++)
+                        interleaved[f * channels + c] = srcF < frames ? sourceData[c][srcF] : 0f;
+                }
+                foreach (var fx in chain) fx.Process(interleaved, 0, n * channels);
+                for (int f = 0; f < n; f++, outFrame++)
+                {
+                    if (outFrame < 0 || outFrame >= frames) continue;
+                    for (int c = 0; c < channels; c++)
+                        output[c][outFrame] = interleaved[f * channels + c];
+                }
+                progress?.Report((double)(start + n) / totalFrames);
             }
-            foreach (var fx in chain) fx.Process(interleaved, 0, n * channels);
-            for (int f = 0; f < n; f++, outFrame++)
-            {
-                if (outFrame < 0 || outFrame >= frames) continue;
-                for (int c = 0; c < channels; c++)
-                    output[c][outFrame] = interleaved[f * channels + c];
-            }
-            progress?.Report((double)(start + n) / totalFrames);
+            if (totalFrames == 0) progress?.Report(1);
+            return output;
         }
-        if (totalFrames == 0) progress?.Report(1);
-        return output;
+        finally
+        {
+            // Same contract as RemoveEffect and ReplaceChain: a clone that leaves scope
+            // drops its reference. Cancellation lands here too.
+            Retire(chain);
+        }
     }
 
     /// <summary>
@@ -573,65 +636,76 @@ public sealed class MasterSection : ISampleProvider
         lock (_chainLock)
             enabledEffects = _rackEnabled ? _chain.Where(effect => effect.Enabled).ToArray() : [];
 
-        var chain = enabledEffects.Select(EffectFactory.Clone).ToList();
-        bool expandMono = data.Length == 1 && enabledEffects.Any(effect => effect.TypeId == "mono-stereo");
-        float[][] sourceData = expandMono ? [data[0], data[0]] : data;
-        int channels = sourceData.Length;
-        var output = new float[channels][];
-        for (int channel = 0; channel < channels; channel++) output[channel] = new float[frameCount];
-        if (frameCount == 0)
+        // Its own instances, not the live rack's: see CloneForOfflineRender.
+        var chain = new List<IAudioEffect>(enabledEffects.Length);
+        try
         {
-            progress?.Report(1);
-            return output;
-        }
-
-        if (chain.Count == 0)
-        {
-            for (int channel = 0; channel < channels; channel++)
+            foreach (IAudioEffect effect in enabledEffects)
+                chain.Add(EffectFactory.CloneForOfflineRender(effect));
+            bool expandMono = data.Length == 1 && enabledEffects.Any(effect => effect.TypeId == "mono-stereo");
+            float[][] sourceData = expandMono ? [data[0], data[0]] : data;
+            int channels = sourceData.Length;
+            var output = new float[channels][];
+            for (int channel = 0; channel < channels; channel++) output[channel] = new float[frameCount];
+            if (frameCount == 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                Array.Copy(sourceData[channel], rangeStart, output[channel], 0, frameCount);
+                progress?.Report(1);
+                return output;
             }
-            progress?.Report(1);
-            return output;
-        }
 
-        foreach (var effect in chain) effect.Configure(sampleRate, channels);
-        int latency = checked(chain.Sum(effect => effect.LatencySamples));
-        int rangeEnd = checked(rangeStart + frameCount);
-        int framesToProcess = checked(rangeEnd + latency);
-        const int block = 65536;
-        var interleaved = new float[checked(block * channels)];
-
-        for (int processStart = 0; processStart < framesToProcess; processStart += block)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            int framesInBlock = Math.Min(block, framesToProcess - processStart);
-            for (int frame = 0; frame < framesInBlock; frame++)
+            if (chain.Count == 0)
             {
-                int sourceFrame = processStart + frame;
                 for (int channel = 0; channel < channels; channel++)
                 {
-                    interleaved[frame * channels + channel] = sourceFrame < sourceFrames
-                        ? sourceData[channel][sourceFrame]
-                        : 0f;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    Array.Copy(sourceData[channel], rangeStart, output[channel], 0, frameCount);
                 }
+                progress?.Report(1);
+                return output;
             }
 
-            foreach (var effect in chain)
-                effect.Process(interleaved, 0, framesInBlock * channels);
+            foreach (var effect in chain) effect.Configure(sampleRate, channels);
+            int latency = checked(chain.Sum(effect => effect.LatencySamples));
+            int rangeEnd = checked(rangeStart + frameCount);
+            int framesToProcess = checked(rangeEnd + latency);
+            const int block = 65536;
+            var interleaved = new float[checked(block * channels)];
 
-            int outputFrame = processStart - latency;
-            for (int frame = 0; frame < framesInBlock; frame++, outputFrame++)
+            for (int processStart = 0; processStart < framesToProcess; processStart += block)
             {
-                if (outputFrame < rangeStart || outputFrame >= rangeEnd) continue;
-                int destinationFrame = outputFrame - rangeStart;
-                for (int channel = 0; channel < channels; channel++)
-                    output[channel][destinationFrame] = interleaved[frame * channels + channel];
+                cancellationToken.ThrowIfCancellationRequested();
+                int framesInBlock = Math.Min(block, framesToProcess - processStart);
+                for (int frame = 0; frame < framesInBlock; frame++)
+                {
+                    int sourceFrame = processStart + frame;
+                    for (int channel = 0; channel < channels; channel++)
+                    {
+                        interleaved[frame * channels + channel] = sourceFrame < sourceFrames
+                            ? sourceData[channel][sourceFrame]
+                            : 0f;
+                    }
+                }
+
+                foreach (var effect in chain)
+                    effect.Process(interleaved, 0, framesInBlock * channels);
+
+                int outputFrame = processStart - latency;
+                for (int frame = 0; frame < framesInBlock; frame++, outputFrame++)
+                {
+                    if (outputFrame < rangeStart || outputFrame >= rangeEnd) continue;
+                    int destinationFrame = outputFrame - rangeStart;
+                    for (int channel = 0; channel < channels; channel++)
+                        output[channel][destinationFrame] = interleaved[frame * channels + channel];
+                }
+                progress?.Report((double)(processStart + framesInBlock) / framesToProcess);
             }
-            progress?.Report((double)(processStart + framesInBlock) / framesToProcess);
+            return output;
         }
-        return output;
+        finally
+        {
+            // Same contract as ProcessOffline: the clones are this render's to release.
+            Retire(chain);
+        }
     }
 
 }

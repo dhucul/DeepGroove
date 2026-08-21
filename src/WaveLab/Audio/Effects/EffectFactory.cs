@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 using System.Text.Json;
 using WaveLab.Audio.Vst3;
@@ -154,6 +154,36 @@ public static class EffectFactory
             result.Add(fx);
         }
         return result;
+    }
+
+    /// <summary>
+    /// A copy for an offline render, which must not share a plugin instance with the
+    /// live rack.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Clone"/> shares the instance, which is right for an A/B snapshot: a
+    /// snapshot never plays while the chain it came from is playing. An offline render
+    /// does exactly that. Configure on the shared instance deactivates it and frees its
+    /// native buffers while the audio thread is writing into them, and two threads
+    /// calling process on one instance is undefined even without that. The module and
+    /// its factory are already cached, so a second instance costs a createInstance
+    /// rather than a reload.
+    /// </remarks>
+    public static IAudioEffect CloneForOfflineRender(IAudioEffect source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (source is not Vst3Effect plugin) return Clone(source);
+
+        Vst3Effect? copy = Vst3PluginHost.Instance.Open(plugin.PluginPath, out string error);
+        if (copy == null)
+        {
+            throw new InvalidOperationException(
+                $"'{plugin.DisplayName}' could not be opened a second time for the render: {error}");
+        }
+
+        copy.Enabled = plugin.Enabled;
+        copy.ApplyStateNow(plugin.SaveStateBase64());
+        return copy;
     }
 
     public static IAudioEffect Clone(IAudioEffect source)
