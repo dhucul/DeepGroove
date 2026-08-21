@@ -98,9 +98,9 @@
       The reduction depth now follows how much hiss there is to remove, so the slider is a ceiling
       and the applied value can be far below it &mdash; or zero. Without a readout that is a slider
       whose travel does nothing, which reads as a broken control.<br>
-      Card drawn at the dialog's <b>860&nbsp;px minimum</b>, where the card has <b>365&nbsp;px</b> of
-      content &mdash; the same column the declip readout was measured in. String widths below are
-      measured with <code>FormattedText</code> at Inter&nbsp;10.5&nbsp;px, not estimated.
+      Card drawn at the dialog's <b>860&nbsp;px minimum</b>. Widths below are <b>measured from the
+      built control</b> &mdash; the dialog rendered offscreen at that width reports <b>370&nbsp;px</b>
+      of room for the readout, and the longest wording asks for <b>286&nbsp;px</b> on one line.
     </p>
 
     <div class="wl-grid">
@@ -145,7 +145,7 @@
           <div class="wl-row"><span class="t">Profile sensitivity</span><span class="v">5.0 dB</span></div>
           <div class="wl-track"><i style="width:42%"></i><b style="left:42%"></b></div>
         </div>
-        <div class="wl-px">256 px of 365 &mdash; <b>fits</b>, 109 px spare</div>
+        <div class="wl-px">274 px of 370 &mdash; <b>fits</b>, 96 px spare</div>
         <div class="wl-why">
           Follows the declip readout exactly: a sentence carrying <b>the number the decision was made
           from</b>. The bright stub on the track shows the applied depth inside the
@@ -172,7 +172,7 @@
           <div class="wl-row"><span class="t">Profile sensitivity</span><span class="v">5.0 dB</span></div>
           <div class="wl-track"><i style="width:42%"></i><b style="left:42%"></b></div>
         </div>
-        <div class="wl-px">268 px of 365 &mdash; <b>fits</b>, 97 px spare &mdash; the longest wording</div>
+        <div class="wl-px">286 px of 370 &mdash; <b>fits</b>, 84 px spare &mdash; the longest wording</div>
         <div class="wl-why">
           The state that must never be silent. Amber on the verb only, not the whole line: this is a
           <b>decision, not a fault</b>, and colouring a fact like a fault teaches the user to distrust
@@ -230,7 +230,7 @@
       </p>
       <p>
         <b>Recommendation: A.</b> It matches the pattern already shipped for declip, it states the
-        measured number rather than a verdict, it has room for the longest wording with 97&nbsp;px to
+        measured number rather than a verdict, it has room for the longest wording with 84&nbsp;px to
         spare, and it degrades to an ellipsis rather than a clipped glyph if the card is ever
         squeezed. B is worth having only if the second line proves too noisy in use.
       </p>

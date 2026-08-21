@@ -496,8 +496,20 @@ and it is worth much less than the ceiling suggested — but what it is worth is
 - **`ReduceNoise` itself is untouched**, so `RestorationWolaGoldenTests` still pins what it always
   pinned; the depth is chosen by the callers. The workbench **reports the depth it chose** rather
   than applying it silently — a tool quietly ignoring most of a slider's travel is
-  indistinguishable from a broken one. A proper readout on the card is a UI change and wants a
-  mockup first.
+  indistinguishable from a broken one. The card carries a readout line under the Maximum reduction
+  slider (design: `docs/design/noise_depth_readout.png`), following the declip readout exactly:
+  “Applying 2.3 dB · hiss sits 7.7 dB under the programme”, or “**Not reducing** · hiss already
+  12.4 dB under the programme” with amber **on the verb alone** — declining is a decision, not a
+  fault, and colouring a fact like a fault is what the VST3 scanner note records as teaching users
+  to distrust the colour. `DescribeNoiseDepth` is pure, so the wording is unit-tested without a
+  window, and `NoiseDepthRenderProbe` builds the real dialog at its 860 px minimum and measures the
+  line in place: **370 px of room, 286 px wanted, one line**. The mockup originally quoted 365 and
+  268 from `FormattedText`; glyph metrics are not the built control, and the render is what the
+  numbers now come from.
+- **That render also found a defect that is not mine and is not fixed**: at the 860 px minimum the
+  **Hum Removal card cuts its description mid-word** — “without shifting stereo alignm”. It has no
+  `TextWrapping`, like the captions the rack note already records. Left alone because it is outside
+  what was asked for, and recorded here so it is not found twice.
 
 ## Gotchas
 

@@ -1,4 +1,4 @@
-<Window x:Class="WaveLab.Views.RestorationWorkbenchDialog"
+﻿<Window x:Class="WaveLab.Views.RestorationWorkbenchDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Vinyl Restoration" Width="960" Height="760" MinWidth="860" MinHeight="680"
@@ -204,6 +204,10 @@
                                 </Grid>
                                 <Slider x:Name="noiseReduction" Minimum="0" Maximum="24" Value="10"
                                         ValueChanged="OnParameterChanged"/>
+                                <TextBlock x:Name="noiseDepthText" Margin="0,8,0,0" FontSize="10.5"
+                                           Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis">
+                                    <Run x:Name="noiseDepthLead"/><Run x:Name="noiseDepthDetail"/>
+                                </TextBlock>
                                 <Grid Margin="0,9,0,0">
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
                                     <TextBlock Text="Profile sensitivity" Foreground="{StaticResource Muted}"/>

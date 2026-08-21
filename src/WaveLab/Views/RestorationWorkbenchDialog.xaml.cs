@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
@@ -246,6 +247,7 @@ public partial class RestorationWorkbenchDialog : Window
             if (!IsCurrent(operation)) return;
             _source = prepared.Source;
             _noiseProfile = prepared.Noise.Profile;
+            _noiseToProgrammeDb = Restoration.EstimateNoiseToProgrammeDb(prepared.Source, _sampleRate);
             _clickAnalysis = prepared.Clicks;
             _clippingAnalysis = prepared.Clipping;
             _analyzedClickSensitivity = prepared.Recommendations.ClickSensitivity;
@@ -886,6 +888,85 @@ public partial class RestorationWorkbenchDialog : Window
             choices.Select(c => $"Channel {c.Channel + 1}: {MethodName(c)} — {FullDetail(c)}"));
     }
 
+
+    // ── the noise depth readout ──────────────────────────────────
+
+    /// <summary>How far the programme sits above its own floor, cached from the analysed audio.</summary>
+    /// <remarks>
+    /// The estimate depends on the audio and not on any control, so it is measured once when the
+    /// analysis lands rather than on every drag of a slider - it walks the whole side.
+    /// </remarks>
+    private double? _noiseToProgrammeDb;
+
+    /// <summary>The two halves of the readout line, so the verb can be coloured on its own.</summary>
+    /// <param name="Lead">Applied depth, or the reason nothing is being applied.</param>
+    /// <param name="Detail">The measured number the decision was made from.</param>
+    /// <param name="Declining">Whether the tool is about to leave the audio alone.</param>
+    internal readonly record struct NoiseDepthLine(string Lead, string Detail, bool Declining)
+    {
+        public override string ToString() =>
+            Detail.Length == 0 ? Lead : Lead.Length == 0 ? Detail : $"{Lead} \u00b7 {Detail}";
+    }
+
+    /// <summary>
+    /// Says how much reduction will actually be applied, and the number that decided it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Without this the slider is a control whose travel does nothing.</b> The depth follows how
+    /// much hiss there is to remove, so on a clean transfer the tool is right to ignore most of the
+    /// slider - measured, a fixed depth is worse than leaving the audio alone on 46 of 108 corpus
+    /// cells and scaling it takes that to 15. A tool that is right to do nothing still has to be
+    /// seen doing it, which is the same argument as the declip readout above.
+    /// </para>
+    /// <para>
+    /// Pure, so the wording is unit-tested without a window - the declip readout is written the same
+    /// way and for the same reason.
+    /// </para>
+    /// </remarks>
+    internal static NoiseDepthLine DescribeNoiseDepth(bool analysed, bool hasProfile,
+        double requestedDb, double appliedDb, double estimateDb)
+    {
+        if (!analysed) return new NoiseDepthLine("Run analysis to see the depth.", "", false);
+        if (!hasProfile) return new NoiseDepthLine("Learn a noise profile to reduce hiss.", "", false);
+        if (requestedDb <= 0)
+            return new NoiseDepthLine("Not reducing", "the maximum is set to zero.", true);
+
+        string measured = $"hiss {(appliedDb <= 0 ? "already " : "sits ")}{estimateDb:0.0} dB under the programme.";
+        return appliedDb <= 0
+            ? new NoiseDepthLine("Not reducing", measured, true)
+            : new NoiseDepthLine($"Applying {appliedDb:0.0} dB", measured, false);
+    }
+
+    private void UpdateNoiseDepthReadout()
+    {
+        if (noiseDepthText == null) return;
+
+        bool analysed = _source != null && _noiseToProgrammeDb.HasValue;
+        bool hasProfile = _noiseProfile is { Length: > 0 };
+        double estimate = _noiseToProgrammeDb ?? 0;
+        double requested = noiseReduction.Value;
+        double applied = analysed && hasProfile
+            ? Restoration.SuggestReductionDepthDb(_source!, _sampleRate, requested)
+            : 0;
+
+        NoiseDepthLine line = DescribeNoiseDepth(analysed, hasProfile, requested, applied, estimate);
+        noiseDepthLead.Text = line.Lead;
+        noiseDepthDetail.Text = line.Detail.Length == 0 ? "" : $" \u00b7 {line.Detail}";
+
+        // Amber on the verb alone. Declining is a decision, not a fault, and colouring a whole line
+        // like a warning is what the VST3 scanner note records as teaching users to distrust the
+        // colour - so the measured half stays in the ordinary muted grey.
+        noiseDepthLead.Foreground = line.Declining
+            ? (Brush)FindResource("Amber")
+            : (Brush)FindResource("Muted");
+        noiseDepthText.ToolTip = analysed && hasProfile
+            ? $"The slider is a ceiling. Measured, a fixed depth applied to hiss already far under "
+              + $"the programme costs more music than it saves noise, so the depth follows the "
+              + $"programme-to-floor ratio \u2014 here {estimate:0.0} dB."
+            : null;
+    }
+
     private static string MethodName(DeclipChannelChoice choice) =>
         choice.Method == DeclipMethod.Sparse ? "sparse" : "peaks";
 
@@ -1123,6 +1204,7 @@ public partial class RestorationWorkbenchDialog : Window
         humHarmonicsText.Text = $"{humHarmonics.Value:0}";
         humQText.Text = $"Q {humQ.Value:0}";
         mixText.Text = $"{globalMix.Value:0}% restored";
+        UpdateNoiseDepthReadout();
     }
 
     private void QueueParameterRefresh(bool shortDelay = false)
