@@ -3,40 +3,100 @@ namespace WaveLab.Audio;
 /// <summary>Channel-layout tools. Same-layout ops are destructive (undoable); layout changes produce new documents.</summary>
 public static class ChannelTools
 {
+    // ── whole-file transforms ────────────────────────────────────
+    //
+    // These take a channel snapshot and return the replacement, rather than editing the
+    // document themselves. That is what lets the caller run them on a worker thread and
+    // commit with ReplaceAllOwned: doing it inside the document cost three full-length
+    // copies of the file (the working copy, the undo copy, and the splice) on whichever
+    // thread called in — which for the channel menu was the dispatcher.
+
+    /// <summary>The channels with left and right exchanged, or null when there is no pair to swap.</summary>
+    public static float[][]? SwapChannelsData(IReadOnlyList<float[]> source, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (source.Count < 2) return null;
+        float[][] data = CloneChannels(source, cancellationToken);
+        (data[0], data[1]) = (data[1], data[0]);
+        return data;
+    }
+
+    /// <summary>The channels with the sign flipped. channel = -1 inverts all of them.</summary>
+    public static float[][] InvertPhaseData(
+        IReadOnlyList<float[]> source, int channel, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        float[][] data = CloneChannels(source, cancellationToken);
+        for (int c = 0; c < data.Length; c++)
+        {
+            if (channel >= 0 && c != channel) continue;
+            float[] ch = data[c];
+            for (int i = 0; i < ch.Length; i++)
+            {
+                if ((i & 0xFFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                ch[i] = -ch[i];
+            }
+        }
+        return data;
+    }
+
+    /// <summary>The channels with independent left/right trims, or null when there is no pair.</summary>
+    public static float[][]? BalanceData(
+        IReadOnlyList<float[]> source, double leftDb, double rightDb,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (source.Count < 2) return null;
+        float[][] data = CloneChannels(source, cancellationToken);
+        // Without a channel mask there is no safe way to classify centre, LFE,
+        // or surround channels as left/right. Adjust the canonical L/R pair only.
+        for (int c = 0; c < Math.Min(2, data.Length); c++)
+        {
+            var g = (float)Math.Pow(10, (c == 0 ? leftDb : rightDb) / 20.0);
+            float[] ch = data[c];
+            for (int i = 0; i < ch.Length; i++)
+            {
+                if ((i & 0xFFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                ch[i] *= g;
+            }
+        }
+        return data;
+    }
+
+    private static float[][] CloneChannels(IReadOnlyList<float[]> source, CancellationToken cancellationToken)
+    {
+        var data = new float[source.Count][];
+        for (int c = 0; c < source.Count; c++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            data[c] = (float[])source[c].Clone();
+        }
+        return data;
+    }
+
+    // ── document-level convenience wrappers ──────────────────────
+    //
+    // Synchronous and single-threaded; the UI takes the transform overloads above instead.
+
     public static void SwapChannels(AudioDocument doc)
     {
-        if (doc.ChannelCount < 2) return;
-        var data = doc.CopyRange(0, doc.Length);
-        (data[0], data[1]) = (data[1], data[0]);
-        doc.ReplaceRange(0, doc.Length, data, "Swap Channels");
+        ArgumentNullException.ThrowIfNull(doc);
+        if (SwapChannelsData(doc.Channels) is { } data)
+            doc.ReplaceAllOwned(data, "Swap Channels");
     }
 
     /// <summary>channel = -1 inverts all channels.</summary>
     public static void InvertPhase(AudioDocument doc, int channel)
     {
-        var data = doc.CopyRange(0, doc.Length);
-        for (int c = 0; c < data.Length; c++)
-        {
-            if (channel >= 0 && c != channel) continue;
-            var ch = data[c];
-            for (int i = 0; i < ch.Length; i++) ch[i] = -ch[i];
-        }
-        doc.ReplaceRange(0, doc.Length, data, "Invert Phase");
+        ArgumentNullException.ThrowIfNull(doc);
+        doc.ReplaceAllOwned(InvertPhaseData(doc.Channels, channel), "Invert Phase");
     }
 
     public static void Balance(AudioDocument doc, double leftDb, double rightDb)
     {
-        if (doc.ChannelCount < 2) return;
-        var data = doc.CopyRange(0, doc.Length);
-        // Without a channel mask there is no safe way to classify centre, LFE,
-        // or surround channels as left/right. Adjust the canonical L/R pair only.
-        for (int c = 0; c < Math.Min(2, data.Length); c++)
-        {
-            float g = (float)Math.Pow(10, (c == 0 ? leftDb : rightDb) / 20.0);
-            var ch = data[c];
-            for (int i = 0; i < ch.Length; i++) ch[i] *= g;
-        }
-        doc.ReplaceRange(0, doc.Length, data, "Channel Balance");
+        ArgumentNullException.ThrowIfNull(doc);
+        if (BalanceData(doc.Channels, leftDb, rightDb) is { } data)
+            doc.ReplaceAllOwned(data, "Channel Balance");
     }
 
     public static AudioDocument MonoMixdown(AudioDocument doc)

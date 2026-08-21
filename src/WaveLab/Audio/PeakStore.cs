@@ -20,10 +20,16 @@ public sealed class PeakStore
 
     private sealed record Level(int BinSize, float[][] Min, float[][] Max, float[][] SumSq);
 
-    private List<Level> _levels = [];
-    private AudioDocument? _doc;
+    /// <summary>
+    /// Everything a query needs, in one immutable object. The pyramid, the document it
+    /// describes and the version stamp have to change together: published as three separate
+    /// fields, a render could pair the new document's length with the previous pyramid.
+    /// </summary>
+    private sealed record State(List<Level> Levels, AudioDocument? Doc, int Version);
 
-    public int Version { get; private set; }
+    private State _state = new([], null, 0);
+
+    public int Version => Volatile.Read(ref _state).Version;
 
     /// <summary>Rebuild from a point-in-time snapshot of the channel arrays (splices never mutate old arrays).</summary>
     public void Rebuild(AudioDocument doc, float[][]? snapshot = null)
@@ -90,17 +96,17 @@ public sealed class PeakStore
             bins = nbins;
         }
 
-        // atomic publish
-        _doc = doc;
-        _levels = newLevels;
-        Version++;
+        // One store, so a reader can never observe a mixed pair.
+        State previous = Volatile.Read(ref _state);
+        Volatile.Write(ref _state, new State(newLevels, doc, previous.Version + 1));
     }
 
     /// <summary>Min/max/rms over [s0, s1). Falls back to raw samples when the range is small.</summary>
     public void Query(int channel, int s0, int s1, out float min, out float max, out float rms)
     {
-        var doc = _doc;
-        var levels = _levels; // local capture — Rebuild swaps the reference atomically
+        State state = Volatile.Read(ref _state); // one point-in-time capture for the whole query
+        AudioDocument? doc = state.Doc;
+        List<Level> levels = state.Levels;
         min = 0; max = 0; rms = 0;
         if (doc == null || doc.Length == 0 || s1 <= s0) return;
         if (channel >= doc.ChannelCount) return;

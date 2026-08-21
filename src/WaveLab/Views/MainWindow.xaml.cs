@@ -1620,21 +1620,79 @@ public partial class MainWindow : Window
 
     // channels
 
-    private void OnSwapChannels(object sender, RoutedEventArgs e) => EditDocument(ChannelTools.SwapChannels);
-    private void OnInvertPhase(object sender, RoutedEventArgs e) => EditDocument(doc => ChannelTools.InvertPhase(doc, -1));
-    private void OnInvertLeft(object sender, RoutedEventArgs e) => EditDocument(doc => ChannelTools.InvertPhase(doc, 0));
-    private void OnInvertRight(object sender, RoutedEventArgs e)
+    private async void OnSwapChannels(object sender, RoutedEventArgs e) =>
+        await EditDocumentAsync("Swap Channels",
+            (channels, token) => ChannelTools.SwapChannelsData(channels, token));
+
+    private async void OnInvertPhase(object sender, RoutedEventArgs e) =>
+        await EditDocumentAsync("Invert Phase",
+            (channels, token) => ChannelTools.InvertPhaseData(channels, -1, token));
+
+    private async void OnInvertLeft(object sender, RoutedEventArgs e) =>
+        await EditDocumentAsync("Invert Phase",
+            (channels, token) => ChannelTools.InvertPhaseData(channels, 0, token));
+
+    private async void OnInvertRight(object sender, RoutedEventArgs e)
     {
-        if (Doc is { Doc.ChannelCount: > 1 } d) { _vm.PrepareForDocumentEdit(d); ChannelTools.InvertPhase(d.Doc, 1); }
+        if (Doc is { Doc.ChannelCount: > 1 })
+            await EditDocumentAsync("Invert Phase",
+                (channels, token) => ChannelTools.InvertPhaseData(channels, 1, token));
     }
 
-    private void EditDocument(Action<AudioDocument> edit)
+    /// <summary>
+    /// Runs a whole-file channel transform off the dispatcher and commits it as one
+    /// undoable edit.
+    /// </summary>
+    /// <remarks>
+    /// These used to run inline on the UI thread, where an LP side at 96 kHz meant three
+    /// full-length copies of the file — the working copy, the undo copy and the splice —
+    /// with the window frozen, unpaintable and uncancellable for all of them. The transform
+    /// returns the replacement channels and ReplaceAllOwned takes them, so the undo entry
+    /// retains the outgoing arrays instead of copying them a third time.
+    /// </remarks>
+    private async Task EditDocumentAsync(
+        string title, Func<float[][], CancellationToken, float[][]?> transform)
     {
-        var document = Doc;
-        if (document == null) return;
+        if (_longOperationRunning || Doc is not { } document) return;
         _vm.PrepareForDocumentEdit(document);
-        try { edit(document.Doc); }
-        catch (Exception ex) { MessageBox.Show(ex.Message, "Edit failed", MessageBoxButton.OK, MessageBoxImage.Warning); }
+
+        // Array references only. A splice replaces them rather than mutating them, so this
+        // stays a coherent point-in-time source for the whole background pass.
+        float[][] source = [.. document.Doc.Channels];
+        int version = document.Doc.EditVersion;
+
+        _longOperationRunning = true;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync(title, "Applying to the whole file",
+                async (_, token) =>
+                {
+                    float[][]? data = await Task.Run(() => transform(source, token), token);
+                    if (data == null) return;
+                    if (document.Doc.EditVersion != version)
+                    {
+                        MessageBox.Show(this,
+                            "The file changed while this edit was running. Nothing was applied.",
+                            title, MessageBoxButton.OK, MessageBoxImage.Information);
+                        return;
+                    }
+                    _vm.PrepareForDocumentEdit(document);
+                    document.Doc.ReplaceAllOwned(data, title);
+                    _vm.ReportAction($"{title} applied · Undo available.");
+                });
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction($"{title} cancelled · the file is unchanged.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Edit failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _longOperationRunning = false;
+        }
     }
     private async void OnMonoMixdown(object sender, RoutedEventArgs e) =>
         await RunGeneratedDocumentTool("Mono Mixdown", ChannelTools.MonoMixdown);
@@ -1683,15 +1741,16 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnChannelBalance(object sender, RoutedEventArgs e)
+    private async void OnChannelBalance(object sender, RoutedEventArgs e)
     {
         if (Doc is not { Doc.ChannelCount: > 1 }) return;
         var dlg = new ParamDialog("Channel Balance", "Apply", null, null, 0,
             new ParamDialog.SliderSpec("Left gain", -24, 6, 0, v => $"{v:+0.0;-0.0;0.0} dB"),
             new ParamDialog.SliderSpec("Right gain", -24, 6, 0, v => $"{v:+0.0;-0.0;0.0} dB")) { Owner = this };
         if (dlg.ShowDialog() != true) return;
-        _vm.PrepareForDocumentEdit(Doc!);
-        ChannelTools.Balance(Doc!.Doc, dlg.Values[0], dlg.Values[1]);
+        double leftDb = dlg.Values[0], rightDb = dlg.Values[1];
+        await EditDocumentAsync("Channel Balance",
+            (channels, token) => ChannelTools.BalanceData(channels, leftDb, rightDb, token));
     }
 
     // time / pitch / rate

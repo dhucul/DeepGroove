@@ -15,9 +15,14 @@ public sealed class MasterSection : ISampleProvider
     private readonly object _chainLock = new();
     private readonly List<IAudioEffect> _chain = [];
     private bool _rackEnabled = true;
-    private readonly object _ringLock = new();
-    private readonly float[] _ringL = new float[16384];
-    private readonly float[] _ringR = new float[16384];
+    /// <summary>
+    /// Scope/goniometer trace history. A power of two so the write index advances with a mask
+    /// rather than a modulo, which is what lets the render thread fill it without a lock.
+    /// </summary>
+    private const int RingSize = 16384;
+    private const int RingMask = RingSize - 1;
+    private readonly float[] _ringL = new float[RingSize];
+    private readonly float[] _ringR = new float[RingSize];
     private int _ringPos;
     private double _corrSmooth;
     private int _sampleRate = 48000, _channels = 2;
@@ -252,8 +257,12 @@ public sealed class MasterSection : ISampleProvider
         {
             if (!_chain.Remove(fx)) return false;
             fx.Enabled = false;
-            fx.ResetState();
         }
+
+        // Reset after the lock, as the rack, M/S and enable switches do. Once it is out of the
+        // chain Read can never reach it again, and clearing a convolver's partition history is
+        // real work — doing it in here stalled the audio callback for as long as it took.
+        fx.ResetState();
 
         // Released after the lock, never inside it. Once it is out of the chain the audio thread can
         // never reach it again, and letting go of a VST3 plugin means terminating somebody else's
@@ -459,21 +468,26 @@ public sealed class MasterSection : ISampleProvider
         int frames = read / channels;
         float pl = 0, pr = 0;
         double sl = 0, sr = 0, slr = 0;
-        lock (_ringLock)
+        // Read is the ring's only writer, so the index needs no lock here. Taking one
+        // meant the render thread could park behind a UI-thread copy of the whole
+        // 16k-sample history — a priority inversion for a scope trace.
+        int ringPos = _ringPos;
+        for (int f = 0; f < frames; f++)
         {
-            for (int f = 0; f < frames; f++)
-            {
-                float l = buffer[offset + f * channels];
-                float r = channels > 1 ? buffer[offset + f * channels + 1] : l;
-                float al = Math.Abs(l), ar = Math.Abs(r);
-                if (al > pl) pl = al;
-                if (ar > pr) pr = ar;
-                sl += l * l; sr += r * r; slr += l * r;
-                _ringL[_ringPos] = l;
-                _ringR[_ringPos] = r;
-                _ringPos = (_ringPos + 1) % _ringL.Length;
-            }
+            float l = buffer[offset + f * channels];
+            float r = channels > 1 ? buffer[offset + f * channels + 1] : l;
+            float al = Math.Abs(l), ar = Math.Abs(r);
+            if (al > pl) pl = al;
+            if (ar > pr) pr = ar;
+            sl += l * l; sr += r * r; slr += l * r;
+            _ringL[ringPos] = l;
+            _ringR[ringPos] = r;
+            ringPos = (ringPos + 1) & RingMask;
         }
+        // Published once per block. A reader that catches the very newest frames mid-write
+        // sees the previous block's samples there instead, which is one refresh of staleness
+        // at the trace's leading edge and invisible at 30 Hz.
+        Volatile.Write(ref _ringPos, ringPos);
         PeakL = pl; PeakR = pr;
         if (frames > 0)
         {
@@ -517,20 +531,17 @@ public sealed class MasterSection : ISampleProvider
     public void CopyLatest(float[] dest)
     {
         ArgumentNullException.ThrowIfNull(dest);
-        lock (_ringLock)
+        // Clamped to the ring: the old "+ Length * 4" bias went negative once a
+        // caller asked for more samples than four rings held, and indexed backwards
+        // out of the buffer. The mask handles a negative start on its own.
+        int n = Math.Min(dest.Length, RingSize);
+        int start = Volatile.Read(ref _ringPos) - n;
+        for (int i = 0; i < n; i++)
         {
-            // Clamped to the ring: the old "+ Length * 4" bias went negative once a
-            // caller asked for more samples than four rings held, and indexed backwards
-            // out of the buffer.
-            int n = Math.Min(dest.Length, _ringL.Length);
-            int start = ((_ringPos - n) % _ringL.Length + _ringL.Length) % _ringL.Length;
-            for (int i = 0; i < n; i++)
-            {
-                int p = (start + i) % _ringL.Length;
-                dest[i] = (_ringL[p] + _ringR[p]) * 0.5f;
-            }
-            if (n < dest.Length) Array.Clear(dest, n, dest.Length - n);
+            int p = (start + i) & RingMask;
+            dest[i] = (_ringL[p] + _ringR[p]) * 0.5f;
         }
+        if (n < dest.Length) Array.Clear(dest, n, dest.Length - n);
     }
 
     /// <summary>Most recent n stereo sample pairs for the goniometer.</summary>
@@ -538,19 +549,16 @@ public sealed class MasterSection : ISampleProvider
     {
         ArgumentNullException.ThrowIfNull(destL);
         ArgumentNullException.ThrowIfNull(destR);
-        lock (_ringLock)
+        int n = Math.Min(Math.Min(destL.Length, destR.Length), RingSize);
+        int start = Volatile.Read(ref _ringPos) - n;
+        for (int i = 0; i < n; i++)
         {
-            int n = Math.Min(Math.Min(destL.Length, destR.Length), _ringL.Length);
-            int start = ((_ringPos - n) % _ringL.Length + _ringL.Length) % _ringL.Length;
-            for (int i = 0; i < n; i++)
-            {
-                int p = (start + i) % _ringL.Length;
-                destL[i] = _ringL[p];
-                destR[i] = _ringR[p];
-            }
-            if (n < destL.Length) Array.Clear(destL, n, destL.Length - n);
-            if (n < destR.Length) Array.Clear(destR, n, destR.Length - n);
+            int p = (start + i) & RingMask;
+            destL[i] = _ringL[p];
+            destR[i] = _ringR[p];
         }
+        if (n < destL.Length) Array.Clear(destL, n, destL.Length - n);
+        if (n < destR.Length) Array.Clear(destR, n, destR.Length - n);
     }
 
     // ── offline ──────────────────────────────────────────────────

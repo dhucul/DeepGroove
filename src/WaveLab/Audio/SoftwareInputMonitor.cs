@@ -143,6 +143,13 @@ internal sealed class SoftwareInputMonitor : IDisposable
         private int _unexpectedlyStopped;
         private int _stoppingOrDisposed;
 
+        /// <summary>
+        /// Capture-thread calls currently inside <see cref="Enqueue"/>. Publishing the session
+        /// reference atomically is not enough on its own: a call admitted before the reference
+        /// was cleared is still running when <see cref="Dispose"/> releases the endpoint.
+        /// </summary>
+        private int _inFlight;
+
         private MonitorSession(
             MMDevice device,
             WasapiOut output,
@@ -263,20 +270,39 @@ internal sealed class SoftwareInputMonitor : IDisposable
         public void Enqueue(float[] samples, int count)
         {
             if (count <= 0) return;
-            if (_output.PlaybackState != PlaybackState.Playing)
-                throw new InvalidOperationException("The monitoring output stopped.");
-            if (_buffer.BufferedDuration > MaximumBufferedDuration)
-                _buffer.ClearBuffer();
 
-            int bytes = checked(count * sizeof(float));
-            if (_transfer.Length < bytes) _transfer = new byte[bytes];
-            Buffer.BlockCopy(samples, 0, _transfer, 0, bytes);
-            _buffer.AddSamples(_transfer, 0, bytes);
+            // Increment first, then test the flag. Both are full fences, so either this call
+            // sees the teardown flag or the teardown sees this call counted: the endpoint can
+            // never be released underneath a buffer that is already being written.
+            Interlocked.Increment(ref _inFlight);
+            try
+            {
+                if (Volatile.Read(ref _stoppingOrDisposed) != 0)
+                    throw new InvalidOperationException("The monitoring output stopped.");
+                if (_output.PlaybackState != PlaybackState.Playing)
+                    throw new InvalidOperationException("The monitoring output stopped.");
+                if (_buffer.BufferedDuration > MaximumBufferedDuration)
+                    _buffer.ClearBuffer();
+
+                int bytes = checked(count * sizeof(float));
+                if (_transfer.Length < bytes) _transfer = new byte[bytes];
+                Buffer.BlockCopy(samples, 0, _transfer, 0, bytes);
+                _buffer.AddSamples(_transfer, 0, bytes);
+            }
+            finally { Interlocked.Decrement(ref _inFlight); }
         }
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _stoppingOrDisposed, 1) != 0) return;
+
+            // Never reached from the capture thread, and bounded by one BlockCopy: wait out
+            // the enqueue that was admitted before the flag above was set. Toggling software
+            // playthrough during a take is what makes this reachable — Configure/SetEnabled
+            // dispose the session while OnData is still feeding it.
+            var spin = new SpinWait();
+            while (Volatile.Read(ref _inFlight) != 0) spin.SpinOnce();
+
             _output.PlaybackStopped -= OnPlaybackStopped;
             try { _output.Stop(); } catch { }
             try { _output.Dispose(); }

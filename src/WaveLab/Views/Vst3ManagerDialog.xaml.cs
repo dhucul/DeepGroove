@@ -119,8 +119,7 @@ public partial class Vst3ManagerDialog : Window
         if (string.IsNullOrWhiteSpace(chosen)) return;
         if (Vst3PluginHost.ScanFolders.Contains(chosen, StringComparer.OrdinalIgnoreCase)) return;
 
-        (AppSettings.Instance.Vst3ExtraFolders ??= []).Add(chosen);
-        AppSettings.Instance.Save();
+        AppSettings.Instance.AddVst3Folder(chosen);
         RefreshFolders();
         statusText.Text = $"Added {chosen} · rescan to pick up what is in it.";
     }
@@ -129,9 +128,7 @@ public partial class Vst3ManagerDialog : Window
     {
         if (sender is not FrameworkElement { Tag: string folder }) return;
 
-        (AppSettings.Instance.Vst3ExtraFolders ??= []).RemoveAll(
-            p => string.Equals(p, folder, StringComparison.OrdinalIgnoreCase));
-        AppSettings.Instance.Save();
+        AppSettings.Instance.RemoveVst3Folder(folder);
 
         // The plugins found there are forgotten with it, otherwise they would go on being offered
         // from a folder that is no longer being looked at.

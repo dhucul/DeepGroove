@@ -510,7 +510,7 @@ public sealed class PlaybackEngine : IDisposable
                 if (available <= 0)
                 {
                     if (!Loop) break;
-                    _pos = _start;
+                    Volatile.Write(ref _pos, _start);
                     available = _end - _pos;
                     if (available <= 0) break;
                 }
@@ -528,7 +528,9 @@ public sealed class PlaybackEngine : IDisposable
                         buffer[destination + frame * 2 + 1] = sample;
                     }
                 }
-                _pos += n;
+                // Published, to match the Volatile.Read in PositionSamples: the UI polls
+                // this while the render thread is inside Read.
+                Volatile.Write(ref _pos, _pos + n);
                 written += n;
                 framesWanted -= n;
             }

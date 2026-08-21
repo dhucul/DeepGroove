@@ -54,6 +54,15 @@ public sealed class RecordingEngine : IDisposable
     private readonly object _lifecycleLock = new();
     private CaptureSnapshot? _pendingSnapshot;
     private int _activeFinalizations;
+    /// <summary>
+    /// Finalizations currently inside the stop/snapshot phase, holding <see cref="_finalizeGate"/>.
+    /// A finalization in that phase may be waiting for NAudio's RecordingStopped, which
+    /// WasapiCapture posts to the dispatcher — the same thread every Start arrives on — so a
+    /// Start that waits on the gate cannot help it finish and only parks the UI for the timeout.
+    /// Counted separately from <see cref="_activeFinalizations"/> because the flatten that follows
+    /// releases the gate, and starting a new take during a flatten is legitimate.
+    /// </summary>
+    private int _finalizeGateHolders;
     private int _disposed;
     private long _nextSessionId;
     private string? _pendingCaptureNote;
@@ -554,6 +563,15 @@ public sealed class RecordingEngine : IDisposable
 
     private long StartCore(string? deviceId, bool retainAudio)
     {
+        // Fail immediately rather than blocking the dispatcher on a wait that provably cannot
+        // succeed: see _finalizeGateHolders. Anything else — including a flatten in progress —
+        // still goes through the bounded stop below.
+        if (Volatile.Read(ref _finalizeGateHolders) != 0)
+        {
+            throw new InvalidOperationException(
+                "The previous recording is still being finalized. Try again in a moment.");
+        }
+
         // Starting over a finalization that is still reading the captured blocks
         // would corrupt both takes, so this stop must succeed before proceeding.
         if (!TryStopCore(StopGateTimeout, captureLevelSnapshot: false, out _))
@@ -962,6 +980,7 @@ public sealed class RecordingEngine : IDisposable
             // which NAudio needs in order to post RecordingStopped — for the whole
             // flatten of up to 768 MiB.
             await _finalizeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref _finalizeGateHolders);
             try
             {
                 CaptureSnapshot? stopped = await StopAndSnapshotAsync(expectedSessionId).ConfigureAwait(false);
@@ -971,7 +990,11 @@ public sealed class RecordingEngine : IDisposable
                 if (!stopped.TryClaimBuild()) return null;
                 snapshot = stopped;
             }
-            finally { _finalizeGate.Release(); }
+            finally
+            {
+                Interlocked.Decrement(ref _finalizeGateHolders);
+                _finalizeGate.Release();
+            }
 
             try
             {

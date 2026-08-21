@@ -89,7 +89,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Engine.PlaybackFailed += OnPlaybackFailed;
         _transportRecorder.CaptureStopped += OnTransportCaptureStopped;
 
-        foreach (var f in AppSettings.Instance.RecentFiles) RecentFiles.Add(f);
+        foreach (var f in AppSettings.Instance.RecentFilesSnapshot()) RecentFiles.Add(f);
         UpdateRecordInputName();
 
         _timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
@@ -753,7 +753,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void SyncRecentFiles()
     {
         RecentFiles.Clear();
-        foreach (var f in AppSettings.Instance.RecentFiles) RecentFiles.Add(f);
+        foreach (var f in AppSettings.Instance.RecentFilesSnapshot()) RecentFiles.Add(f);
     }
 
     private static void ReportSettingsSaveFailure() => MessageBox.Show(
@@ -1680,6 +1680,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // to the dispatcher and retain the final transport position.
         Application.Current?.Dispatcher.BeginInvoke(() =>
         {
+            // Recorded before the staleness guard below. The session id is what pairs this
+            // stop with the device-failure notification queued immediately behind it, and a
+            // session that has already been superseded still has to be able to say why it
+            // ended — otherwise pressing Play again before the dispatcher drained swallowed
+            // the "the audio device failed" message entirely.
+            _stoppedPlaybackSession = playbackSession;
+
             // Ignore a stale completion if this file (or another one) was
             // restarted before the dispatcher callback had a chance to run.
             if (playbackSession != _playbackSession || Engine.IsPlaying || Engine.IsPaused) return;
@@ -1691,10 +1698,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _previewDocument = null;
             _playbackEditVersion = -1;
             _playbackSession = 0;
-            // The session id is unique per Play(), so it is on its own enough to
-            // correlate a following device-failure event. Holding the document
-            // as well would root its whole sample buffer until the next stop.
-            _stoppedPlaybackSession = playbackSession;
             IsPlaying = false;
             RestorePreviewRackOverride();
         });

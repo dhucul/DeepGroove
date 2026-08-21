@@ -67,6 +67,7 @@ public sealed class Limiter
     private double _gainReductionDb;
     private int _enabled = 1;
     private int _oversampleEnabled = 1;
+    private volatile bool _configured;
 
     // True-peak detection state: per-channel FIR delay line plus a fill counter so
     // the interpolator is only trusted once it holds real samples.
@@ -112,8 +113,16 @@ public sealed class Limiter
         private set => Volatile.Write(ref _gainReductionDb, value);
     }
 
+    /// <summary>
+    /// False until <see cref="Configure"/> has sized the working set. <see cref="Process"/>
+    /// passes audio through untouched while this is false rather than allocating on the
+    /// audio callback, so a limiter that never got configured is visible instead of silent.
+    /// </summary>
+    public bool Configured => _configured;
+
     public void Configure(int sampleRate, int channels)
     {
+        _configured = false;
         _sampleRate = Math.Max(8000, sampleRate);
         _channels = Math.Max(1, channels);
         _lookahead = Math.Max(1, (int)(_sampleRate * LookaheadMs / 1000.0));
@@ -140,6 +149,7 @@ public sealed class Limiter
         _ispDelay = new float[_channels][];
         for (int c = 0; c < _channels; c++) _ispDelay[c] = new float[TruePeakTapsPerPhase];
         _ispHistory = new int[_channels];
+        _configured = true;
     }
 
     /// <summary>
@@ -165,8 +175,17 @@ public sealed class Limiter
 
     public void Process(float[] interleaved, int offset, int count)
     {
-        if (_delay.Length != _channels || _releaseTable.Length != ReleaseTableSize)
-            Configure(_sampleRate, _channels);
+        // This is the audio callback: never allocate here. Reconfiguring in place used to
+        // reallocate six arrays under the render thread, and did it against the stored
+        // channel count rather than the stream's. An unconfigured limiter passes audio
+        // through until the control thread calls Configure.
+        if (!_configured || _channels <= 0 || _lookahead <= 0
+            || _delay.Length != _channels || _delayDrive.Length != _lookahead
+            || _releaseTable.Length != ReleaseTableSize)
+        {
+            GainReductionDb = 0;
+            return;
+        }
         int frames = count / _channels;
         double drive = Math.Pow(10, -ThresholdDb / 20.0);
         double ceiling = Math.Pow(10, CeilingDb / 20.0);

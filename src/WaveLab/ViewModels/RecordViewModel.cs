@@ -706,7 +706,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             if (_selectedDevice == null) return "";
-            if (!AppSettings.Instance.InputCalibrations.TryGetValue(_selectedDevice.Id, out var info)) return "";
+            if (AppSettings.Instance.GetInputCalibration(_selectedDevice.Id) is not { } info) return "";
             string gain = info.SuggestedGainDb > 1
                 ? $"raise up to +{info.SuggestedGainDb:0.0} dB"
                 : info.SuggestedGainDb < -1
@@ -720,10 +720,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     /// <summary>The remembered entry for the selected input, or null.</summary>
     private AppSettings.InputCalibrationInfo? RememberedCalibration =>
-        _selectedDevice != null
-        && AppSettings.Instance.InputCalibrations.TryGetValue(_selectedDevice.Id, out var info)
-            ? info
-            : null;
+        AppSettings.Instance.GetInputCalibration(_selectedDevice?.Id);
 
     /// <summary>
     /// Only entries recorded since applied settings were stored can be replayed;
@@ -796,18 +793,18 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     public ForgetMemoryOutcome ForgetDeviceMemory()
     {
         if (_selectedDevice == null) return ForgetMemoryOutcome.NothingRemembered;
-        if (!AppSettings.Instance.InputCalibrations.Remove(
-                _selectedDevice.Id, out AppSettings.InputCalibrationInfo? removed))
-            return ForgetMemoryOutcome.NothingRemembered;
 
-        if (!AppSettings.Instance.Save())
+        // The removal and the write happen under one lock, and the entry is put back if the
+        // write fails — reporting a failure while the live dictionary had already dropped it
+        // would tell the user the memory survived and then let the next unrelated Save()
+        // persist its removal anyway.
+        switch (AppSettings.Instance.RemoveInputCalibration(_selectedDevice.Id))
         {
-            // Put it back. Reporting a failure while the live dictionary has already
-            // dropped the entry would tell the user the memory survived and then let
-            // the next unrelated Save() persist its removal anyway.
-            AppSettings.Instance.InputCalibrations[_selectedDevice.Id] = removed;
-            RaiseDeviceMemoryProperties();
-            return ForgetMemoryOutcome.SaveFailed;
+            case AppSettings.InputCalibrationRemoval.NothingRemembered:
+                return ForgetMemoryOutcome.NothingRemembered;
+            case AppSettings.InputCalibrationRemoval.SaveFailed:
+                RaiseDeviceMemoryProperties();
+                return ForgetMemoryOutcome.SaveFailed;
         }
 
         _calibrationSavedUtc = DateTime.MinValue;
@@ -1354,19 +1351,20 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             TryGetRecommendedInputSetting(out AudioInputSettingPlan candidate) ? candidate : null;
         try
         {
-            AppSettings.Instance.InputCalibrations[_selectedDevice.Id] =
+            // Only claim the memory once it is actually on disk — but still stamp the
+            // attempt. The throttle keys off this timestamp, so leaving it unset while
+            // the file is unwritable (locked by a second instance, read-only profile,
+            // full disk) would put a full serialize and write on every 33 ms tick.
+            bool written = AppSettings.Instance.SetInputCalibration(
+                _selectedDevice.Id,
                 new AppSettings.InputCalibrationInfo(
                     suggestedGainDb,
                     programPeakDb,
                     DateTime.UtcNow,
                     plan?.DeviceLevelDb,
                     plan?.FineTrimDb,
-                    plan?.TotalLevelDb);
-            // Only claim the memory once it is actually on disk — but still stamp the
-            // attempt. The throttle keys off this timestamp, so leaving it unset while
-            // the file is unwritable (locked by a second instance, read-only profile,
-            // full disk) would put a full serialize and write on every 33 ms tick.
-            if (!AppSettings.Instance.Save())
+                    plan?.TotalLevelDb));
+            if (!written)
             {
                 _calibrationSavedUtc = DateTime.UtcNow;
                 return;

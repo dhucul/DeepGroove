@@ -81,7 +81,9 @@ public sealed class Vst3PluginHost
         get
         {
             var folders = new List<string>(Vst3Catalogue.DefaultFolders);
-            foreach (string extra in AppSettings.Instance.Vst3ExtraFolders ?? [])
+            // A snapshot: this enumerates while the VST3 manager dialog may be adding or
+            // removing folders, and a live List<string> would throw mid-scan.
+            foreach (string extra in AppSettings.Instance.Vst3FolderSnapshot())
                 if (!string.IsNullOrWhiteSpace(extra)
                     && !folders.Contains(extra, StringComparer.OrdinalIgnoreCase))
                     folders.Add(extra);

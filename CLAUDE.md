@@ -253,7 +253,9 @@ WaveLab-style audio editor for Windows. C# / WPF / .NET 10 (`net10.0-windows`), 
 ## Threading model (responsiveness)
 
 - File open/save, peak rebuilds, offline processing and exports all run on Task.Run; the UI thread never does O(file) work. Background code always operates on **snapshot channel-array refs** captured up front (splices replace arrays, never mutate them) — follow this pattern for any new heavy op.
-- `PeakStore.Rebuild` builds into fresh lists and swaps atomically; `DocumentViewModel.ScheduleRebuild` coalesces edit bursts. Waveform may show stale peaks for a beat after an edit — by design.
+- `PeakStore.Rebuild` builds into fresh lists and publishes **one immutable `State`** — pyramid, document and version together; `DocumentViewModel.ScheduleRebuild` coalesces edit bursts. Waveform may show stale peaks for a beat after an edit — by design. Stale is fine; *mixed* is not, which is why the three used to be three fields and are now one.
+
+
 - The band bitmap is repainted only when (view, size, ampZoom, peaksVersion, channels, doc) changes; playhead/cursor/selection/markers are overlays drawn on top. Don't put per-frame-changing state into that paint key.
 - `WaveformView`/`OverviewBar` paint the wave per *device-pixel column* from `PeakStore` into a `WriteableBitmap` (Pbgra32, transparent background so the grid shows through), then blit it and draw overlays as vectors. **Do not go back to path geometry for the bands.** The old design cached a 2×-viewport `StreamGeometry` window and rebuilt it every ~0.5 screens of scroll — a rate of roughly `73.5 / samplesPerPixel` Hz, which is zero at both zoom extremes and maximal in between. That is what made playback stutter only at intermediate zoom, and wrapping it in a `BitmapCache` made each rebuild worse, not better.
 - Invalidation in the view-following controls is **synchronous** (`InvalidateVisual` when `Dispatcher.CheckAccess()`). The playhead is driven from `CompositionTarget.Rendering`, which runs inside the render pass; posting the invalidate through `Dispatcher.BeginInvoke` pushed it into the next pass, and at `Normal` priority it also outranked the `Render`-priority meter/spectrum timers and `Input`-priority wheel events — which is why those felt starved whenever the waveform got busy.
@@ -539,6 +541,87 @@ and it is worth much less than the ceiling suggested — but what it is worth is
 - **Wrapping costs about 14 px of card height and that is the right trade.** The hum caption becomes
   two lines, which pushes the output-mix row down; the panel already scrolls, so nothing is lost. A
   caption cut mid-glyph reads as a drawing fault, a caption on two lines reads as a caption.
+
+## Review fixes: five places an invariant this repo already states was not actually held
+
+A review of the timing-critical paths — playback, the master section, capture, the document, the
+codecs, and the async surfaces above them. Most of it held: the copy-on-write document, the
+session-id fencing through `RecordingEngine`, the RF64 bounds checks, the VST3 refcount with
+`Monitor.TryEnter` on the audio thread, and staged-temp-then-move on every writer. What follows is
+the part that did not, and in four of five cases the file already had the correct rule written down
+somewhere else in itself.
+
+- **`MasterSection.RemoveEffect` cleared the effect under the lock `Read` holds for the whole
+  chain, and the comment three lines below it said the opposite.** `RackEnabled`, `MidSideMode` and
+  `SetEffectEnabled` all deliberately reset outside that lock and each says why; this one did not.
+  Removing a Convolution Reverb mid-playback therefore parked the render thread on
+  `ConvolutionReverbEffect.ResetState` — every partitioned convolver plus five per-channel buffer
+  sets, megabytes for a multi-second IR — which is an underrun, i.e. a click.
+  `RemovingAnEffectResetsItWithTheChainLockAlreadyReleased` pins it by having another thread take
+  the chain lock from inside `ResetState`; against the old code that thread blocks for the test's
+  full two-second budget.
+- **The metering ring took a lock on the render thread so the UI could copy 16 384 samples under
+  it.** A monitor is not priority-inheriting, and the spectrum analyser and goniometer each hold it
+  for a full ring at 30 Hz — the same objection this repo already raised against `StudioEq`
+  locking around `Process`. The ring is a power of two now, so the write index advances with a mask
+  instead of a modulo, `Read` is its only writer, and the position is published once per block with
+  `Volatile.Write`. A reader that catches the leading edge mid-write sees the previous block's
+  samples there: one refresh of staleness on a scope trace, against a stall on the audio callback.
+- **`PeakStore`'s "atomic publish" was three unsynchronized stores.** `_doc`, `_levels` and
+  `Version`, written on a thread-pool rebuild and read by `WaveformView.OnRender`. Every index is
+  clamped so it never faulted; what it could do is pair the new document's length with the previous
+  pyramid for a frame. One immutable `State` record makes the comment true.
+- **`SoftwareInputMonitor` published the session reference atomically and then disposed it out from
+  under a call already inside it.** `Volatile.Read`/`Volatile.Write` order the *reference*, not the
+  work: between the capture thread reading `_session` and calling `Enqueue`, `StopSession` can null
+  the field and COM-release the `WasapiOut` and `MMDevice`. The reachable trigger is toggling
+  software playthrough **during a take** — `RecordingEngine.SoftwarePlaythroughEnabled` calls
+  `SetEnabled`/`Configure` while `OnData` is still feeding the monitor; the other stop paths are
+  safe only because `capture.Dispose()` joins the capture thread first. `MonitorSession` now counts
+  in-flight enqueues and `Dispose` spins them out. Increment-then-test against
+  exchange-then-read: both are full fences, so either the enqueue sees the flag or the teardown
+  sees the count.
+- **The device-failure dialog was dropped whenever a new `Play()` beat the dispatcher.**
+  `PlaybackEngine` raises `PlaybackStopped` then `PlaybackFailed` back-to-back, so the two
+  `BeginInvoke`s are adjacent and the session id pairs them correctly — but `MainViewModel` set
+  `_stoppedPlaybackSession` *after* the staleness guard, so a superseded session returned before
+  recording the id its own failure notification was about to look for. Playback stopped and said
+  nothing. It is recorded before the guard now.
+
+Four more, smaller, and none of them races:
+
+- **`Limiter.Process` reconfigured itself from inside the audio callback** — six allocations — and
+  did it against the stored channel count rather than the stream's. It passes audio through and
+  reports `Configured` false instead; a safety ceiling that silently stops limiting is worse than
+  one that says so, so `LimiterEffect.Readout` surfaces it.
+- **The channel menu ran whole-file edits inline on the dispatcher, at three full-length copies of
+  the file apiece** — the working copy, the undo copy, and the splice. An LP side at 96 kHz is
+  ~700 MB a copy with the window frozen and uncancellable, while every comparable operation in the
+  app already goes through `Progress.RunBlockingAsync`. `ChannelTools` now has pure
+  `…Data(channels, …)` transforms that a worker can run and `MainWindow.EditDocumentAsync` commits
+  with `ReplaceAllOwned`, which retains the outgoing arrays and removes the third copy. The
+  transforms clone rather than alias, deliberately: `ReplaceAllOwned` takes ownership of what it is
+  handed.
+- **`Processing.InsertSilence` cast an unbounded `seconds * SampleRate` straight into `new
+  float[n]`.** Only ever called with a literal `1.0`, but it is public and a negative length is an
+  odd way to find that out.
+- **`AppSettings.Save` serialized the live object while nothing ordered the mutations against it.**
+  A dictionary edited mid-serialize throws out of the writer and loses the whole file, not the one
+  entry — and the class's own comment already worried that "the next one added will not know" the
+  threading rule. Rather than sprinkle locks at fourteen call sites, the mutable collections are
+  reached through accessors that take `SyncRoot` (`GetInputCalibration`, `SetInputCalibration`,
+  `RemoveInputCalibration`, `AddVst3Folder`, `RemoveVst3Folder`, and the two snapshot readers).
+  `SetInputCalibration` also rolls the entry back when the write fails, which is what
+  `ForgetDeviceMemory` had always done and `WriteCalibration` had not.
+
+And one that was left as it was, with the reasoning recorded because it looks like a bug:
+`RecordingEngine.Start` reaches `TryStopCore` from the dispatcher and waits on `_finalizeGate`,
+which a finalization may hold while waiting for the `RecordingStopped` that `WasapiCapture` posts
+to *that same thread*. The wait cannot help it finish; it parks the UI for the timeout and fails
+anyway. Failing on `_activeFinalizations` instead would regress the legitimate case — the flatten
+releases the gate, and starting a new take during one has always worked — so a separate
+`_finalizeGateHolders` counter marks only the stop/snapshot phase, and `StartCore` fails fast on
+that alone.
 
 ## Gotchas
 

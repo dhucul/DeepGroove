@@ -260,16 +260,125 @@ public sealed class AppSettings
         }
     }
 
+    /// <summary>
+    /// The gate that orders every mutation of the mutable collections below against the
+    /// serialize in <see cref="Save"/>.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Save"/> walks the whole object graph. A dictionary or list being edited on
+    /// another thread at that moment throws out of the serializer and loses the write for the
+    /// entire file, not just that entry. Every reader and writer of the collections goes
+    /// through the accessors below rather than touching them directly, because this is read
+    /// and written from across the audio layer and the next caller added will not know the
+    /// rule. Monitor is reentrant, so an accessor may call <see cref="Save"/> while holding it.
+    /// </remarks>
+    public static object SyncRoot => SaveLock;
+
     public bool AddRecentFile(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        var previous = RecentFiles.ToList();
-        RecentFiles.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
-        RecentFiles.Insert(0, path);
-        if (RecentFiles.Count > 10) RecentFiles.RemoveRange(10, RecentFiles.Count - 10);
-        if (Save()) return true;
-        RecentFiles = previous;
-        return false;
+        lock (SaveLock)
+        {
+            var previous = RecentFiles.ToList();
+            RecentFiles.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+            RecentFiles.Insert(0, path);
+            if (RecentFiles.Count > 10) RecentFiles.RemoveRange(10, RecentFiles.Count - 10);
+            if (Save()) return true;
+            RecentFiles = previous;
+            return false;
+        }
+    }
+
+    /// <summary>A stable copy of the recent-file list, safe to enumerate.</summary>
+    public List<string> RecentFilesSnapshot()
+    {
+        lock (SaveLock) return [.. RecentFiles];
+    }
+
+    /// <summary>A stable copy of the extra VST3 scan folders, safe to enumerate.</summary>
+    public List<string> Vst3FolderSnapshot()
+    {
+        lock (SaveLock) return [.. Vst3ExtraFolders ?? []];
+    }
+
+    /// <summary>Adds a VST3 scan folder and persists it. False when the write failed.</summary>
+    public bool AddVst3Folder(string folder)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(folder);
+        lock (SaveLock)
+        {
+            List<string> folders = Vst3ExtraFolders ??= [];
+            if (folders.Contains(folder, StringComparer.OrdinalIgnoreCase)) return true;
+            folders.Add(folder);
+            if (Save()) return true;
+            folders.RemoveAll(p => string.Equals(p, folder, StringComparison.OrdinalIgnoreCase));
+            return false;
+        }
+    }
+
+    /// <summary>Removes a VST3 scan folder and persists it. False when the write failed.</summary>
+    public bool RemoveVst3Folder(string folder)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(folder);
+        lock (SaveLock)
+        {
+            List<string> folders = Vst3ExtraFolders ??= [];
+            var previous = folders.ToList();
+            if (folders.RemoveAll(p => string.Equals(p, folder, StringComparison.OrdinalIgnoreCase)) == 0)
+                return true;
+            if (Save()) return true;
+            Vst3ExtraFolders = previous;
+            return false;
+        }
+    }
+
+    /// <summary>The remembered level-check outcome for a capture device, or null.</summary>
+    public InputCalibrationInfo? GetInputCalibration(string? deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId)) return null;
+        lock (SaveLock)
+            return InputCalibrations.TryGetValue(deviceId, out InputCalibrationInfo? info) ? info : null;
+    }
+
+    /// <summary>Records a level-check outcome for a capture device and persists it.</summary>
+    /// <returns>False when the settings file could not be written; the entry is rolled back.</returns>
+    public bool SetInputCalibration(string deviceId, InputCalibrationInfo info)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        ArgumentNullException.ThrowIfNull(info);
+        lock (SaveLock)
+        {
+            InputCalibrations.TryGetValue(deviceId, out InputCalibrationInfo? previous);
+            InputCalibrations[deviceId] = info;
+            if (Save()) return true;
+            // Reporting a failure while the live dictionary already holds the new entry would
+            // let the next unrelated Save() persist it anyway.
+            if (previous == null) InputCalibrations.Remove(deviceId);
+            else InputCalibrations[deviceId] = previous;
+            return false;
+        }
+    }
+
+    /// <summary>Forgets the remembered outcome for a capture device and persists the removal.</summary>
+    public InputCalibrationRemoval RemoveInputCalibration(string deviceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        lock (SaveLock)
+        {
+            if (!InputCalibrations.Remove(deviceId, out InputCalibrationInfo? removed))
+                return InputCalibrationRemoval.NothingRemembered;
+            if (Save()) return InputCalibrationRemoval.Removed;
+            InputCalibrations[deviceId] = removed;
+            return InputCalibrationRemoval.SaveFailed;
+        }
+    }
+
+    /// <summary>Outcome of <see cref="RemoveInputCalibration"/>.</summary>
+    public enum InputCalibrationRemoval
+    {
+        NothingRemembered,
+        Removed,
+        SaveFailed,
     }
 
     internal static AppSettings Normalize(AppSettings settings)

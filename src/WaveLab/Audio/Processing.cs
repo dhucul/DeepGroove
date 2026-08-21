@@ -209,9 +209,28 @@ public static class Processing
 
     public static void InsertSilence(AudioDocument doc, int at, double seconds)
     {
-        int n = (int)Math.Round(seconds * doc.SampleRate);
-        var data = new float[doc.ChannelCount][];
-        for (int c = 0; c < doc.ChannelCount; c++) data[c] = new float[n];
+        ArgumentNullException.ThrowIfNull(doc);
+        if (!double.IsFinite(seconds) || seconds < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(seconds), seconds, "The silence duration must be a finite, non-negative number of seconds.");
+        }
+
+        // Rounded as a double and bounded before it is cast: a duration long enough to
+        // overflow int reached `new float[n]` as a negative length.
+        double exact = Math.Round(seconds * doc.SampleRate);
+        long limit = Math.Min(Array.MaxLength, Array.MaxLength - (long)doc.Length);
+        if (exact > limit)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(seconds), seconds, "The silence is longer than this file can grow to hold.");
+        }
+
+        var n = (int)exact;
+        if (n == 0) return;
+        int channels = doc.ChannelCount;
+        var data = new float[channels][];
+        for (int c = 0; c < channels; c++) data[c] = new float[n];
         doc.ReplaceRange(at, 0, data, "Insert Silence");
     }
 

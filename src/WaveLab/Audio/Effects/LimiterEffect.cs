@@ -24,7 +24,9 @@ public sealed class LimiterEffect : EffectBase
     public override string DisplayName => "Precision Limiter";
     public override IReadOnlyList<EffectParam> Params => P;
     public override int LatencySamples => Math.Max(1, SampleRate * 5 / 1000);
-    public override string? Readout => $"GR −{_limiter.GainReductionDb:0.0} dB";
+    public override string? Readout => _limiter.Configured
+        ? $"GR −{_limiter.GainReductionDb:0.0} dB"
+        : "not configured for this stream";
 
     protected override void OnConfigure() => _limiter.Configure(SampleRate, ChannelCount);
 
