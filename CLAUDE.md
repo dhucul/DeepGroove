@@ -425,9 +425,11 @@ runtime, a download or a training set**.
   mask better.
 - **So the cheap experiment comes first, and it is not machine learning.** Making the reduction
   depth follow the measured noise-to-programme ratio — or simply not firing when the floor is
-  already far down — is a few lines against days of training and a native dependency, and it
-  targets the largest single component of the gap. Whatever it fails to collect is the honest
-  brief for a model.
+  already far down — is a few lines against days of training and a native dependency.
+  **It was done, and the section below has the result: it is worth about half a decibel of mean and
+  a large cut in the tail, not the 8.13 dB this bullet originally implied.** That figure was the gap
+  at one severity; a six-severity average can be at most a sixth of it, and only for a rule that
+  identifies those cells perfectly. What it fails to collect is the honest brief for a model.
 - **A ceiling is not a forecast.** Real estimators reach a fraction of an oracle mask, and this repo
   has a worked example of a principled one landing *below* a crude one: MMSE-STSA lost to this same
   gate on these same cells, by 136.3 dB in total. +7.15 dB is what is on the table, not what a model
@@ -438,6 +440,64 @@ runtime, a download or a training set**.
   leaves the noisy phase alone, so even a perfect one falls short of the clean signal — and since
   the gate runs through the identical STFT the floor cancels out of the comparison. Quoting the
   ceiling without it invites the reading that the oracle is near-perfect reconstruction. It is not.
+
+## The cheap half of the noise headroom: reduce less where there is less to remove
+
+Built, measured, held out, and **wired up** — `Restoration.SuggestReductionDepthDb`, called from
+both noise-reduction entry points. It is the non-ML half of the +7.15 dB the oracle mask showed,
+and it is worth much less than the ceiling suggested — but what it is worth is not in the mean.
+
+- **My own earlier framing overstated it and the correction matters.** The ceiling run said a rule
+  that declined to fire would collect "8.13 dB of the 13.21 dB gap at 30 dB down". True *at that
+  severity*, and a corpus average over six severities can be at most a sixth of it — and only for a
+  rule that identifies those cells perfectly, which no estimator built from the audio alone can.
+- **The measured value is about half a decibel of mean, and the tail is the real result.** A fixed
+  10 dB scores **−0.85 dB segmental over 108 cells, worse than leaving the audio alone**. The rule
+  scores **+0.04 fitted, −0.37 held out by recording, −0.40 held out by corpus**. But **cells that
+  come out worse than doing nothing fall from 46 of 108 to 15, and cells worse than −3 dB from 31
+  to 8**, worst cell −21.13 → −17.26. It improves 52 and worsens 56 and still gains, because what
+  it gives up is small and what it prevents is large. "The noise reducer rarely makes things
+  audibly worse" is worth more than half a decibel of average.
+- **The depth response is why, and it is worth reading.** Segmental gain by planted severity against
+  reduction depth: at **30 and 24 dB down every depth is negative** and monotonically worse
+  (−1.38 at 1 dB through −8.13 at 10); at **18** it peaks at +0.36 at 1 dB and turns over; at **12**
+  it peaks at +1.30 at 6 dB; at **6 and 0** it is still climbing at 10 dB (+3.05, +4.43). So the
+  optimum depth moves from zero to more-than-offered across the range, and one fixed number cannot
+  serve both ends.
+- **The parameters sit on a plateau, not a peak, and that is the reason to trust them.** The whole
+  fitted surface spans about half a decibel and every ceiling between 8 and 10 dB scores within 0.01
+  of the best. Folds disagree about the argmax — 2 of 18 by recording, 0 of 2 by corpus — and that
+  is **near-ties moving under tiny corpus differences, not the instability that killed five declip
+  calibrations**, where variants swung by tens of decibels. Reading fold disagreement without
+  looking at the surface would have condemned this wrongly.
+- **The ceiling for this whole class of fix is +2.64 dB and it collects about a fifth.** Best depth
+  chosen per cell in hindsight scores +1.79 against the fixed −0.85. Adapting the depth is the
+  cheap part; the oracle mask's +7.15 dB is still out there and still needs a better estimator.
+- **The estimator is the quietest two-second window against the whole-signal level**, both from the
+  audio alone — a rule needing a clean reference could not ship. Over the corpus it tracks the
+  planted severity monotonically: **15.9 / 14.8 / 12.7 / 9.5 / 5.9 / 2.7 dB** for hiss planted at
+  30 / 24 / 18 / 12 / 6 / 0 dB down. It is compressed, because each recording carries its own floor
+  and the quiet window holds music, and the spread within a severity is wide — 22.1 dB at the
+  quietest. That overlap is exactly why the rule collects a fifth of its ceiling rather than most
+  of it.
+- **A low percentile of the windows is the more defensible-looking statistic and is measurably
+  worse.** It was built and run: readings compress to **8.7/8.5/7.8/6.4/4.3/2.0** and the rule takes
+  cells-worse-than-nothing to **29** where the minimum takes them to **15**. What the minimum costs
+  is a boundary case — a window lying across the edge of a spliced-in silence is almost all silence
+  and reads far below the real floor, so the estimate comes out high and reduces too little.
+  `ASplicedSilenceStillFoolsTheNoiseFloorEstimate` records it. **A constructed case lost to a
+  measured one.**
+- **Two defects came out of writing the non-corpus tests, both of the sentinel kind.** The estimator
+  returned **0 both for "no programme" and for "programme level with its own floor"**, and the rule
+  reads 0 as maximum noise — so an empty buffer asked for **full reduction**. It returns
+  `NoiseDepthCeilingDb` when there is nothing to measure. And the quietest-window search accepted a
+  **digitally silent** window as the floor, reporting an infinite ratio and switching the suppressor
+  off entirely on a gated or hard-trimmed file.
+- **`ReduceNoise` itself is untouched**, so `RestorationWolaGoldenTests` still pins what it always
+  pinned; the depth is chosen by the callers. The workbench **reports the depth it chose** rather
+  than applying it silently — a tool quietly ignoring most of a slider's travel is
+  indistinguishable from a broken one. A proper readout on the card is a UI change and wants a
+  mockup first.
 
 ## Gotchas
 

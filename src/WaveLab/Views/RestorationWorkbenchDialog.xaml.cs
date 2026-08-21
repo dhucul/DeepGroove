@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -663,9 +663,18 @@ public partial class RestorationWorkbenchDialog : Window
         if (!settings.Bypass && settings.ReduceNoise && settings.NoiseReductionDb > 0 &&
             _noiseProfile is { Length: > 0 } profile)
         {
-            progress.Report(new OperationProgress("Reducing broadband surface noise and hiss…", at));
-            Restoration.ReduceNoise(work, profile, settings.NoiseReductionDb,
-                settings.NoiseSensitivityDb, cancellationToken);
+            // Scaled by how far the programme sits above its own quietest passage, because a
+            // fixed depth is measurably worse than doing nothing where the hiss is already far
+            // down. The chosen depth is reported rather than applied silently - a tool quietly
+            // ignoring most of a slider's travel is indistinguishable from one that is broken.
+            double depth = Restoration.SuggestReductionDepthDb(work, _sampleRate,
+                settings.NoiseReductionDb);
+            progress.Report(new OperationProgress(depth <= 0
+                ? "Little hiss under the programme — leaving broadband noise alone…"
+                : $"Reducing broadband surface noise and hiss at {depth:0.0} dB…", at));
+            if (depth > 0)
+                Restoration.ReduceNoise(work, profile, depth,
+                    settings.NoiseSensitivityDb, cancellationToken);
         }
         at += step;
 
