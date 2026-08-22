@@ -793,16 +793,35 @@ shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
   nonsense *number* — an infinitely low floor still yields −55 — so nothing looks wrong. What it
   cannot do is stop that −55 being **permanent**, and −55 is the wrong answer for any transfer
   whose groove noise is louder than it.
-- **The needle-drop path never feeds the run-out detector its pre-roll, and the take-wide floor
-  makes that matter more than it did.** `RecordingEngine.OnData` promotes the pre-roll blocks into
-  `_blocks` and clears `session.RunOut`, so the detector's first audio is the moment the stylus
-  landed — it never hears the lead-in groove, which is the one place a floor is guaranteed to be
-  available. Measured by skipping the first 4 s of `One More Chance`: the floor is not learned
-  until **182 s, two seconds into the run-out**, so the first run-out blocks read as programme and
-  the hold restarts once. It self-corrects on this disc because enough of its run-out falls below
-  −55; it would not on one whose run-out never does. **Feeding the promoted pre-roll to the
-  detector would close it** and costs nothing — `SamplesSinceProgram` is a backward count from the
-  caller's own total, so it is indifferent to where the detector started.
+- **The needle-drop path now feeds the run-out detector its pre-roll, and measured, that buys
+  almost nothing — the pre-roll is a quarter of a second.** It is the right place for the audio to
+  go: the promoted pre-roll *is* the head of the take, so the detector should hear it, and
+  `PrimeWithPreRoll` is now on the promotion path with the trim arithmetic unaffected
+  (`SamplesSinceProgram` is a backward offset from the caller's own total). But
+  `EnqueueNeedleDropPreRoll` caps the queue at `sampleRate * channels * 0.25`, which at the 100 ms
+  capture buffer is **two blocks — two of the ten the floor is read from**. Measured by feeding the
+  detector only the last 0.25 s before the music: on `One More Chance` the floor arrives **0.7 s
+  earlier (185.1 s → 184.4 s), still deep inside the run-out**, and on `Dancin'` it does not move
+  at all (7.6 s → 7.7 s, which is noise). Against the full lead-in those two learn their floors at
+  **3.2 s and 1.3 s**. So the change is correct and cheap and the gap is still open.
+- **The gap is an arithmetic mismatch, not a wiring one: 0.25 s of pre-roll against the 1.0 s the
+  floor needs.** Two things would close it and both are decisions rather than fixes. Enlarging the
+  pre-roll past a second changes what is *recorded* — every needle-drop take would keep more lead-in
+  noise at its head. Learning the floor during the monitor phase and carrying it into the take costs
+  nothing recorded, since that audio is already being captured and thrown away, but it needs a way
+  to seed a detector's floor and a decision about whether a floor measured before the user pressed
+  record belongs to the take. **Lowering `FloorBlocks` is the wrong answer**: taking the tenth
+  lowest rather than the lowest is the entire outlier resistance, and the previous entry is what
+  happens when one bad block reaches the floor.
+- **Reasoning said feeding the pre-roll would close the gap; measurement said it does not, and the
+  correction is the point.** Before this the detector's first audio was the moment the stylus
+  landed, so it never heard the lead-in groove — the one place a floor is guaranteed. Measured by
+  skipping the first 4 s of `One More Chance`, the floor was not learned until **182 s, two seconds
+  into the run-out**, so the first run-out blocks read as programme and the hold restarted once. It
+  self-corrects on that disc because enough of its run-out falls below −55; it would not on one
+  whose run-out never does. The obvious inference was that the pre-roll would supply the lead-in.
+  It supplies a quarter of a second of it. **Check the size of the thing you are about to plumb in
+  before predicting what plumbing it in will do.**
 - **The floor cannot rise, so a run-out more than the separation noisier than the quietest second
   of the take will not be recognised.** Not reachable in this corpus — lead-in and run-out sit
   within a few dB of each other on all six transfers — but it is the price of the ratchet and the
