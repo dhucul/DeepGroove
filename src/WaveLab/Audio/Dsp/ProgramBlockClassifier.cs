@@ -59,6 +59,16 @@ internal static class ProgramBlockClassifier
     /// </summary>
     public static double ActivityThresholdDb(double quietPercentileDb, double programPercentileDb) =>
         HasSeparableFloor(quietPercentileDb, programPercentileDb)
-            ? Math.Max(MinimumProgramBlockDb, quietPercentileDb + QuietProgramSeparationDb)
+            ? ThresholdAboveFloor(quietPercentileDb)
             : MinimumProgramBlockDb;
+
+    /// <summary>
+    /// The same gate, for a caller that has already established that what it is
+    /// handing over is a floor rather than a low percentile of whatever played
+    /// recently. <see cref="Audio.RunOutDetector"/> establishes it by admitting
+    /// only blocks below <see cref="MinimumProgramBlockDb"/>, so the result can
+    /// never rise more than the separation above that.
+    /// </summary>
+    public static double ThresholdAboveFloor(double floorDb) =>
+        Math.Max(MinimumProgramBlockDb, floorDb + QuietProgramSeparationDb);
 }

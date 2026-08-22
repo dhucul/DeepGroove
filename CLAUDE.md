@@ -728,6 +728,62 @@ its own tab so the claim can be listened to.
   assert outside it, and mark documents saved in a `finally`.** At the shell's 1180 px minimum the
   bar is one 45 px row and the note fits in 469.5 px.
 
+## Run-out detection: the noise floor was being read off the music
+
+"Stop when the side runs out" cut a take short mid-fade, and the diagnosis is that the
+detector's *floor* was never a floor. Measured by replaying the real recordings through the
+shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
+
+- **The evidence is arithmetic before it is a mechanism.** `cut short.wav` is 140.250 s and its
+  last block classified as programme ends at 138.25 s — exactly `KeepAfterProgramSeconds` apart,
+  so that file *is* a run-out trim. The same song played again and stopped by hand runs
+  **154.49 s**, so about **13 s of fade-out was thrown away**, cut while the music was still only
+  6 dB down from full level.
+- **The floor was a low percentile of a 30 s sliding window, and half a minute into a track that
+  window holds nothing but music.** At the moment the fade began the "floor" read **−28 dB** and
+  the gate sat at **−18.2 dB** — while the transfer's actual groove noise, plainly visible in the
+  lead-in of the same file, is **−66 dB**. The gate was inside the music's own dynamic range: the
+  song's median block level is about −17.5 dB, so **27% of blocks during full-level music already
+  failed the programme test**, and the longest all-fail stretch mid-song was **6.6 s against a
+  12 s hold**. The take was about two of those from ending itself in the middle of the song.
+- **`HasSeparableFloor` is the guard that should have caught it and it cannot, because ordinary
+  music satisfies it.** Its test is `P90 − P10 >= 10 dB`, and this track measured **10.4 to
+  11.2 dB** — so the threshold **flickered between −55 (no honest floor) and −18 (floor + 10)
+  every few seconds** for the length of the song, decided by whether the last thirty seconds
+  happened to clear 10.0 dB of spread. That is the whole of "works perfectly except it got fooled
+  on one record": a compressed pop single sits on the boundary and the coin lands either way.
+- **The fix is where the floor is learned from, not how far above it the gate sits.**
+  `RunOutDetector` now keeps the take's ten quietest blocks — *admitting only blocks already below
+  `MinimumProgramBlockDb`*, so a block loud enough to be programme can never become the floor —
+  and gates at the loudest of them plus the same 10 dB. Non-circular, and it bounds the gate into
+  **[−55, −45] dB** by construction: a quiet transfer gets the absolute minimum, a noisy one earns
+  up to 10 dB more. The sliding window, its percentiles and `WindowHoldMultiple` are gone.
+- **Measured over the six transfers, the three takes that had stopped correctly do not move at
+  all**: last programme stays at 170.4 / 214.1 / 182.3 s, the same 100 ms block, so their trims are
+  unchanged. On the take that was cut, the last programme block moves **139.8 s → 151.5 s** and the
+  trim point **141.8 s → 153.5 s of a 154.49 s take** — the entire fade is kept, and the run-out at
+  −70 dB is still rejected against a learned floor of −67. `One More Chance` fades too and gains
+  1.7 s of it back.
+- **The learned floors are what make the relative design worth keeping**: −67 dB on the quiet
+  transfers and **−56 dB on `One More Chance`**, whose lead-in and run-out both sit near −55. A
+  fixed gate that worked for the first four would either cut that disc's fade or never stop on it.
+- **One behaviour change worth knowing: a loud enough thump in the run-out now restarts the hold.**
+  `One More Chance` has one 100 ms block at 188.5 s reaching −19 dBFS peak that clears the gate by
+  0.09 dB, so the stop is deferred by another hold. It costs seconds and keeps audio, which is the
+  safe direction, and it is the same bargain `GapBetweenTracksDoesNotEndTheTake` already makes.
+- **`RecordingLevelAnalyzer` still uses the percentile form and is deliberately not changed here.**
+  It shares `ProgramBlockClassifier` but works offline over its whole block history for a *gain
+  recommendation*, where the same weakness costs a slightly wrong `NoiseFloorDb` readout rather than
+  destroying audio. `ProgramBlockClassifier.ThresholdAboveFloor` is the shared gate; the percentile
+  entry point stays for that caller.
+- **Three tests pin it and all three fail against the old detector** (checked by stashing the fix,
+  not assumed): `AFadeOutIsNotARunOut`, `MusicsOwnDynamicsAreNotItsNoiseFloor`, and
+  `TheRunOutIsStillFoundAfterATrackLongerThanAnyWindow`. They need a `DynamicMusic` generator
+  rather than the existing steady one — **the old code passes every one of them on a steady tone**,
+  because a tone has no spread, `HasSeparableFloor` correctly refuses it, and the fallback gate is
+  the right answer by accident. The bug only exists for material with about 10 dB of its own
+  dynamics, which is to say for music.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

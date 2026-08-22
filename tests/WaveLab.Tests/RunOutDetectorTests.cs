@@ -118,6 +118,78 @@ public sealed class RunOutDetectorTests
         Assert.False(detector.IsTriggered);
     }
 
+    /// <summary>
+    /// The failure this detector was rebuilt for: a side whose last track fades
+    /// out. The fade is programme all the way down to the groove noise, and a
+    /// floor read from the last half minute of music puts the threshold inside
+    /// the music's own dynamic range, so the fade is trimmed off where it drops
+    /// below the song's average level.
+    /// </summary>
+    [Fact]
+    public void AFadeOutIsNotARunOut()
+    {
+        const double FadeSeconds = 15;
+        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var feed = new Feeder(detector);
+
+        feed.Play(RunOut, seconds: 5);
+        feed.Play(DynamicMusic, seconds: 60); // long enough that any window has lost the lead-in
+
+        long fadeStart = feed.Frames;
+        feed.Play(frame =>
+        {
+            double through = Math.Clamp((frame - fadeStart) / (FadeSeconds * SampleRate), 0, 1);
+            return DynamicMusic(frame) * Math.Pow(10, -30 * through / 20);
+        }, seconds: FadeSeconds);
+
+        feed.Play(RunOut, seconds: 40);
+
+        Assert.True(detector.IsTriggered);
+        long kept = feed.TotalSamples - detector.TrimBackoffSamples;
+        double keptPastFadeStart = SecondsBetween(fadeStart * Channels, kept);
+        Assert.True(
+            keptPastFadeStart >= FadeSeconds,
+            $"the fade was cut {FadeSeconds - keptPastFadeStart:0.0} s early");
+    }
+
+    /// <summary>
+    /// The mechanism behind that failure on its own: ordinary programme has
+    /// enough spread between its loud and quiet blocks to look like a floor and
+    /// a programme, so a quiet passage must not be measured against the loud
+    /// parts of the same music.
+    /// </summary>
+    [Fact]
+    public void MusicsOwnDynamicsAreNotItsNoiseFloor()
+    {
+        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var feed = new Feeder(detector);
+        feed.Play(RunOut, seconds: 5);
+        feed.Play(DynamicMusic, seconds: 60);
+
+        feed.Play(frame => DynamicMusic(frame) * 0.05, seconds: 25);
+
+        Assert.False(detector.IsTriggered);
+    }
+
+    /// <summary>
+    /// The floor is learned from the take rather than from a window, so it has
+    /// to survive a track longer than any window it was once read from.
+    /// </summary>
+    [Fact]
+    public void TheRunOutIsStillFoundAfterATrackLongerThanAnyWindow()
+    {
+        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var feed = new Feeder(detector);
+        feed.Play(RunOut, seconds: 5);
+        feed.Play(DynamicMusic, seconds: 90);
+        long musicEnd = feed.TotalSamples;
+
+        feed.Play(RunOut, seconds: 40);
+
+        Assert.True(detector.IsTriggered);
+        Assert.InRange(SecondsBetween(musicEnd, feed.TotalSamples), Hold - 1, Hold + 1.5);
+    }
+
     [Fact]
     public void CountdownReportsTheRemainingHold()
     {
@@ -194,6 +266,17 @@ public sealed class RunOutDetectorTests
                      + 0.4 * Math.Sin(2 * Math.PI * 1480 * t)) / 2.1;
     }
 
+    /// <summary>
+    /// The same programme with about 12 dB of block-to-block dynamics — enough
+    /// that a low percentile of it looks like a noise floor to anything that
+    /// only measures the spread between its quiet and loud blocks.
+    /// </summary>
+    private static double DynamicMusic(int frame)
+    {
+        double t = frame / (double)SampleRate;
+        return Music(frame) * (0.25 + 0.75 * (0.5 + 0.5 * Math.Sin(2 * Math.PI * t / 4)));
+    }
+
     /// <summary>Surface hiss, turntable rumble below the 150 Hz activity filter, and a rare click.</summary>
     private static double RunOut(int frame)
     {
@@ -222,6 +305,9 @@ public sealed class RunOutDetectorTests
         private int _frame;
 
         public long TotalSamples { get; private set; }
+
+        /// <summary>Frames played, which is where the next generator call starts.</summary>
+        public long Frames => TotalSamples / Channels;
 
         public void Play(Func<int, double> generator, double seconds)
         {

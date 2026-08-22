@@ -8,13 +8,22 @@ namespace WaveLab.Audio;
 ///
 /// The decision is deliberately relative rather than a fixed dBFS gate. Vinyl
 /// "silence" is never silent, so the detector learns this transfer's own noise
-/// floor from a sliding window and calls a block programme only when it rises
-/// clearly above that floor. The measurement mirrors
-/// <see cref="Dsp.RecordingLevelAnalyzer"/>: a 150 Hz high-passed RMS (so
-/// turntable rumble and mains hum cannot pass for music), a zero-crossing sanity
-/// range (so hiss cannot either), and the same 10 dB quiet-to-programme
-/// separation. The block level is the median of its ten sub-blocks, so a single
-/// click cannot lift a run-out block into looking like music.
+/// floor and calls a block programme only when it rises clearly above that
+/// floor. The measurement mirrors <see cref="Dsp.RecordingLevelAnalyzer"/>: a
+/// 150 Hz high-passed RMS (so turntable rumble and mains hum cannot pass for
+/// music), a zero-crossing sanity range (so hiss cannot either), and the same
+/// 10 dB quiet-to-programme separation. The block level is the median of its ten
+/// sub-blocks, so a single click cannot lift a run-out block into looking like
+/// music.
+///
+/// <para>The floor is learned over the <em>whole take</em>, from blocks quiet
+/// enough that no programme could be that quiet, and never from a sliding window
+/// of whatever has just played. A window that has scrolled past the lead-in
+/// holds nothing but music, and the low percentile of music is quiet music: on a
+/// real transfer that put the threshold at −18 dB when the groove noise was at
+/// −66, i.e. within a decibel of the median level of the song itself. A fade-out
+/// then reads as run-out from the moment it drops below its own average, and the
+/// take is trimmed back to there — which is what this replaced.</para>
 ///
 /// Nothing triggers until programme has been heard at least once, so arming the
 /// recorder before the stylus is down can never end the take on its own.
@@ -23,7 +32,6 @@ internal sealed class RunOutDetector
 {
     private const double SubBlockSeconds = 0.01;
     private const int SubBlocksPerBlock = 10;
-    private const double BlockSeconds = SubBlockSeconds * SubBlocksPerBlock;
     // Classification rules live in ProgramBlockClassifier, shared with the offline
     // RecordingLevelAnalyzer. Only the minimum peak is local: this detector merely
     // has to notice that the music stopped, so it accepts quieter programme than
@@ -32,13 +40,14 @@ internal sealed class RunOutDetector
     private const double MinimumProgramBlockDb = ProgramBlockClassifier.MinimumProgramBlockDb;
     private const double MinimumProgramPeakDb = -60;
 
-    /// <summary>The floor is read as a low percentile of the recent window, as the offline analyzer does.</summary>
-    private const double NoiseFloorPercentile = 0.10;
-    private const double ProgramPercentile = 0.90;
-    private const double MinimumWindowSeconds = 30;
-
-    /// <summary>The window must outlast the hold, or the run-out eventually becomes the whole window.</summary>
-    private const double WindowHoldMultiple = 2.5;
+    /// <summary>
+    /// How many of the take's quietest blocks the floor is read from. Taking the
+    /// loudest of them rather than the single quietest keeps one dropout, or the
+    /// silence before the stylus lands, from defining the floor on its own; one
+    /// second of it is enough, because any lead-in or inter-track gap is longer
+    /// than that.
+    /// </summary>
+    private const int FloorBlocks = 10;
 
     public const double MinimumHoldSeconds = 5;
     public const double MaximumHoldSeconds = 60;
@@ -57,11 +66,10 @@ internal sealed class RunOutDetector
     private readonly bool[] _hasPreviousActivitySample;
     private readonly long[] _blockZeroCrossings;
     private readonly double[] _subBlockLevelsDb = new double[SubBlocksPerBlock];
-    private readonly double[] _window;
-    private readonly double[] _windowScratch;
 
-    private int _windowCount;
-    private int _windowNext;
+    /// <summary>The take's quietest qualifying blocks so far, ascending.</summary>
+    private readonly double[] _quietestDb = new double[FloorBlocks];
+    private int _quietCount;
     private int _subBlockFill;
     private int _subBlockIndex;
     private double _subBlockActivityPower;
@@ -87,11 +95,6 @@ internal sealed class RunOutDetector
         _previousActivitySamples = new float[channels];
         _hasPreviousActivitySample = new bool[channels];
         _blockZeroCrossings = new long[channels];
-
-        int windowBlocks = (int)Math.Ceiling(
-            Math.Max(MinimumWindowSeconds, _holdSeconds * WindowHoldMultiple) / BlockSeconds);
-        _window = new double[windowBlocks];
-        _windowScratch = new double[windowBlocks];
     }
 
     /// <summary>True once programme content has been heard at least once.</summary>
@@ -231,8 +234,10 @@ internal sealed class RunOutDetector
         double peakDb = ToDb(_blockPeak);
         double crossingsPerSecond = _blockZeroCrossings.Max() / (_blockFill / (double)_sampleRate);
 
+        // Classified against the floor learned from earlier blocks, then offered
+        // to it: a block must not be allowed to lower its own threshold.
         bool program = IsProgram(activityDb, peakDb, crossingsPerSecond);
-        PushWindow(activityDb);
+        OfferToFloor(activityDb);
 
         _blockFill = 0;
         _blockPeak = 0;
@@ -250,41 +255,48 @@ internal sealed class RunOutDetector
             crossingsPerSecond, _sampleRate);
 
     /// <summary>
-    /// Mirrors the offline classifier: when the recent window separates into a
-    /// quiet floor and a loud programme, sit 10 dB above the floor. When it does
-    /// not — the window is all music, or all run-out — there is no honest floor
-    /// to measure, so fall back to the absolute programme minimum.
+    /// Sit 10 dB above the floor this take has shown, or at the absolute
+    /// programme minimum until it has shown one. Because only blocks below that
+    /// minimum are ever admitted to the floor, the threshold can never climb
+    /// more than the separation above it — a transfer whose groove noise is
+    /// loud earns a higher gate, and a take that never goes quiet gets the
+    /// fixed one rather than a gate built out of its own music.
     /// </summary>
-    private double ActivityThresholdDb()
-    {
-        if (_windowCount == 0) return MinimumProgramBlockDb;
+    private double ActivityThresholdDb() =>
+        _quietCount < FloorBlocks
+            ? MinimumProgramBlockDb
+            : ProgramBlockClassifier.ThresholdAboveFloor(_quietestDb[FloorBlocks - 1]);
 
-        Array.Copy(_window, _windowScratch, _windowCount);
-        Array.Sort(_windowScratch, 0, _windowCount);
-        double low = Percentile(_windowScratch, _windowCount, NoiseFloorPercentile);
-        double high = Percentile(_windowScratch, _windowCount, ProgramPercentile);
-        return ProgramBlockClassifier.ActivityThresholdDb(low, high);
-    }
-
-    private void PushWindow(double activityDb)
+    /// <summary>
+    /// Keeps the take's <see cref="FloorBlocks"/> quietest qualifying blocks, in
+    /// ascending order. A block only qualifies if it is too quiet to be
+    /// programme whatever the floor turns out to be; without that the lead-in
+    /// would eventually scroll out of reach and the quietest passage of the
+    /// music would become the floor.
+    /// </summary>
+    private void OfferToFloor(double activityDb)
     {
-        _window[_windowNext] = activityDb;
-        _windowNext = (_windowNext + 1) % _window.Length;
-        if (_windowCount < _window.Length) _windowCount++;
-    }
+        if (activityDb > MinimumProgramBlockDb) return;
+        if (double.IsNaN(activityDb)) return;
 
-    private static double Percentile(double[] sorted, int count, double fraction)
-    {
-        if (count == 1) return sorted[0];
-        double position = fraction * (count - 1);
-        int lower = (int)Math.Floor(position);
-        int upper = Math.Min(lower + 1, count - 1);
-        double weight = position - lower;
-        double a = sorted[lower];
-        double b = sorted[upper];
-        if (double.IsNegativeInfinity(a) && double.IsNegativeInfinity(b)) return double.NegativeInfinity;
-        if (double.IsNegativeInfinity(a)) return weight >= 1 ? b : double.NegativeInfinity;
-        return a + (b - a) * weight;
+        int count = _quietCount;
+        if (count == FloorBlocks)
+        {
+            if (activityDb >= _quietestDb[FloorBlocks - 1]) return;
+            count = FloorBlocks - 1;
+        }
+        else
+        {
+            _quietCount++;
+        }
+
+        int index = count;
+        while (index > 0 && _quietestDb[index - 1] > activityDb)
+        {
+            _quietestDb[index] = _quietestDb[index - 1];
+            index--;
+        }
+        _quietestDb[index] = activityDb;
     }
 
     private static double Median(double[] values, int count)
