@@ -190,6 +190,35 @@ public sealed class RunOutDetectorTests
         Assert.InRange(SecondsBetween(musicEnd, feed.TotalSamples), Hold - 1, Hold + 1.5);
     }
 
+    /// <summary>
+    /// Arming the recorder and then cueing the stylus by hand leaves dead input
+    /// at the head of the take. The floor only ratchets down, so admitting that
+    /// silence would latch it below anything a disc can produce and pin the gate
+    /// at the absolute minimum for the whole side — which a transfer whose
+    /// groove noise is louder than that minimum never stops against.
+    /// <para>The levels here are chosen so that only the learned floor can
+    /// separate them: the run-out clears the absolute minimum, so the fallback
+    /// gate would call it programme, and it carries a musical zero-crossing rate
+    /// and a peak well above the minimum, so neither of the other two tests
+    /// rejects it either.</para>
+    /// </summary>
+    [Fact]
+    public void SilenceBeforeTheStylusLandsIsNotTheFloor()
+    {
+        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var feed = new Feeder(detector);
+
+        feed.Play(_ => 0, seconds: 5);                            // armed, nothing playing yet
+        feed.Play(frame => Music(frame) * 0.01, seconds: 8);      // lead-in groove, about -60 dB
+        feed.Play(Music, seconds: 20);
+        long musicEnd = feed.TotalSamples;
+
+        feed.Play(frame => Music(frame) * 0.022, seconds: 40);    // groove floor, about -53 dB
+
+        Assert.True(detector.IsTriggered);
+        Assert.InRange(SecondsBetween(musicEnd, feed.TotalSamples), Hold - 1, Hold + 1.5);
+    }
+
     [Fact]
     public void CountdownReportsTheRemainingHold()
     {

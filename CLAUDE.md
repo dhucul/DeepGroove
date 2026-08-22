@@ -776,6 +776,37 @@ shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
   recommendation*, where the same weakness costs a slightly wrong `NoiseFloorDb` readout rather than
   destroying audio. `ProgramBlockClassifier.ThresholdAboveFloor` is the shared gate; the percentile
   entry point stays for that caller.
+- **Reviewing the fix found that it had introduced a worse failure than the one it removed, and the
+  mechanism is the ratchet.** The floor only ever moves down, so unlike the window it replaced it
+  cannot recover from one bad reading — and **arming the recorder and then cueing the stylus by hand
+  puts seconds of dead input at the head of the take**. Ten blocks of it fill the floor with values
+  no disc can beat, and the gate is pinned at the absolute minimum **for the whole side**. Measured
+  by prepending 3 s of digital silence to `One More Chance`, whose groove noise is −52 to −57: the
+  floor is never learned, the threshold never leaves −55, and **the run-out is classified as
+  programme, so the take never stops**. The old sliding window scrolled past the silence and did
+  not have this failure. `MinimumMediumFloorDb` (−80 dB) is the fix — below it a block is a dead
+  input rather than a groove. The separation is wide and measured: the quietest real lead-in in the
+  corpus reads **−73.8** and digital silence reads **−86 to −90**. With the guard the same padded
+  file learns its floor at 3.2 s and rejects every run-out block.
+- **The clamp is not a substitute for that guard, which is what made the hole easy to miss.**
+  `Math.Max(MinimumProgramBlockDb, floor + separation)` keeps a nonsense floor from producing a
+  nonsense *number* — an infinitely low floor still yields −55 — so nothing looks wrong. What it
+  cannot do is stop that −55 being **permanent**, and −55 is the wrong answer for any transfer
+  whose groove noise is louder than it.
+- **The needle-drop path never feeds the run-out detector its pre-roll, and the take-wide floor
+  makes that matter more than it did.** `RecordingEngine.OnData` promotes the pre-roll blocks into
+  `_blocks` and clears `session.RunOut`, so the detector's first audio is the moment the stylus
+  landed — it never hears the lead-in groove, which is the one place a floor is guaranteed to be
+  available. Measured by skipping the first 4 s of `One More Chance`: the floor is not learned
+  until **182 s, two seconds into the run-out**, so the first run-out blocks read as programme and
+  the hold restarts once. It self-corrects on this disc because enough of its run-out falls below
+  −55; it would not on one whose run-out never does. **Feeding the promoted pre-roll to the
+  detector would close it** and costs nothing — `SamplesSinceProgram` is a backward count from the
+  caller's own total, so it is indifferent to where the detector started.
+- **The floor cannot rise, so a run-out more than the separation noisier than the quietest second
+  of the take will not be recognised.** Not reachable in this corpus — lead-in and run-out sit
+  within a few dB of each other on all six transfers — but it is the price of the ratchet and the
+  first thing to look at if a dirty run-out ever fails to stop a take.
 - **Three tests pin it and all three fail against the old detector** (checked by stashing the fix,
   not assumed): `AFadeOutIsNotARunOut`, `MusicsOwnDynamicsAreNotItsNoiseFloor`, and
   `TheRunOutIsStillFoundAfterATrackLongerThanAnyWindow`. They need a `DynamicMusic` generator

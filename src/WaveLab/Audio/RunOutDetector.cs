@@ -49,6 +49,18 @@ internal sealed class RunOutDetector
     /// </summary>
     private const int FloorBlocks = 10;
 
+    /// <summary>
+    /// Below this a block is a dead input rather than a groove, and must not be
+    /// admitted to the floor. Nothing rises above it again — the floor only
+    /// ratchets down — so silence between arming the recorder and cueing the
+    /// stylus would otherwise latch the floor for the whole take and pin the
+    /// gate at <see cref="MinimumProgramBlockDb"/>, which a transfer whose
+    /// groove noise is louder than that never stops against. The measured
+    /// separation is wide: the quietest real lead-in in the corpus reads −73.8
+    /// and digital silence reads −86 to −90.
+    /// </summary>
+    private const double MinimumMediumFloorDb = -80;
+
     public const double MinimumHoldSeconds = 5;
     public const double MaximumHoldSeconds = 60;
     public const double DefaultHoldSeconds = 12;
@@ -269,15 +281,17 @@ internal sealed class RunOutDetector
 
     /// <summary>
     /// Keeps the take's <see cref="FloorBlocks"/> quietest qualifying blocks, in
-    /// ascending order. A block only qualifies if it is too quiet to be
-    /// programme whatever the floor turns out to be; without that the lead-in
-    /// would eventually scroll out of reach and the quietest passage of the
-    /// music would become the floor.
+    /// ascending order. A block qualifies only if it is quiet enough that no
+    /// programme could be that quiet — without that the lead-in would eventually
+    /// scroll out of reach and the quietest passage of the music would become
+    /// the floor — and loud enough to be a groove at all, so a dead input cannot
+    /// latch a floor no disc can ever beat.
     /// </summary>
     private void OfferToFloor(double activityDb)
     {
-        if (activityDb > MinimumProgramBlockDb) return;
         if (double.IsNaN(activityDb)) return;
+        if (activityDb > MinimumProgramBlockDb) return;
+        if (activityDb < MinimumMediumFloorDb) return;
 
         int count = _quietCount;
         if (count == FloorBlocks)
