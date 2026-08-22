@@ -775,15 +775,10 @@ public sealed class RecordingEngine : IDisposable
                         }
                         Interlocked.Exchange(ref _totalSamples, retainedSamples);
                         _levelAnalyzer.Reset();
-                        // The promoted pre-roll is the head of the take, so the
-                        // run-out detector hears it too rather than starting at
-                        // the first note: it is the only lead-in groove this
-                        // path ever offers its noise floor. Before the queue is
-                        // cleared, and before AutoStopTrimSamples is reset.
-                        session.RunOut = CreatePrimedRunOutDetector(session, channels);
                         session.NeedleDropPreRoll.Clear();
                         session.NeedleDropPreRollSamples = 0;
                         session.NeedleDropDetector = null;
+                        session.RunOut = null;
                         session.AutoStopTrimSamples = -1;
                         // This callback already owns the contact packet. Advance
                         // retention without discarding the following packet.
@@ -845,10 +840,8 @@ public sealed class RecordingEngine : IDisposable
 
         if (Volatile.Read(ref _autoStopOnRunOut))
         {
-            // Created no earlier than the needle drop — the pre-roll queue is
-            // cleared when the drop is armed — so it never sees calibration
-            // audio. On the auto-start path it already exists, primed with the
-            // pre-roll that became the head of the take.
+            // Created on the first retained packet, so it never sees calibration
+            // audio and its sample counts line up with the retained take.
             RunOutDetector detector = session.RunOut
                 ??= new RunOutDetector(sampleRate, channels, Volatile.Read(ref _autoStopHoldSeconds));
             if (detector.Process(block, samples, channels) && session.TryRequestAutoStop())
@@ -883,52 +876,6 @@ public sealed class RecordingEngine : IDisposable
             try { handler(info); }
             catch { /* A subscriber must not terminate NAudio's callback thread. */ }
         }
-    }
-
-    /// <summary>
-    /// Build the run-out detector for a take that has just been promoted out of
-    /// monitoring, primed with the pre-roll that became its opening samples.
-    /// Null when nothing is watching for a run-out, or before the format is
-    /// known; <see cref="EvaluateAutoStop"/> then builds one on the next packet
-    /// exactly as it did before, without the lead-in.
-    /// </summary>
-    /// <remarks>
-    /// The pre-roll is a quarter of a second, so this is two or three blocks of
-    /// the ten <see cref="RunOutDetector"/> reads its floor from: it brings the
-    /// floor forward and cannot establish one on its own.
-    /// </remarks>
-    private RunOutDetector? CreatePrimedRunOutDetector(CaptureSession session, int channels)
-    {
-        if (!Volatile.Read(ref _autoStopOnRunOut)) return null;
-        int sampleRate = Volatile.Read(ref _sampleRate);
-        if (sampleRate <= 0) return null;
-
-        var detector = new RunOutDetector(
-            sampleRate, channels, Volatile.Read(ref _autoStopHoldSeconds));
-        return PrimeWithPreRoll(detector, session.NeedleDropPreRoll, channels);
-    }
-
-    /// <summary>
-    /// Feed a detector the blocks promoted ahead of the needle drop. Returns it,
-    /// or null if it arrived already triggered.
-    /// </summary>
-    /// <remarks>
-    /// The pre-roll is far shorter than <see cref="RunOutDetector.MinimumHoldSeconds"/>
-    /// and cannot complete a hold, so the discard is unreachable today. It is
-    /// here because a detector handed over already triggered would end the take
-    /// on its first evaluation, and that invariant should not rest on two
-    /// constants declared hundreds of lines apart. Static and taking a sequence
-    /// so it is testable without a capture device, as
-    /// <see cref="CaptureDataBoundary"/> is.
-    /// </remarks>
-    internal static RunOutDetector? PrimeWithPreRoll(
-        RunOutDetector detector, IEnumerable<float[]> preRoll, int channels)
-    {
-        ArgumentNullException.ThrowIfNull(detector);
-        ArgumentNullException.ThrowIfNull(preRoll);
-
-        foreach (float[] block in preRoll) detector.Process(block, block.Length, channels);
-        return detector.IsTriggered ? null : detector;
     }
 
     private void EnqueueNeedleDropPreRoll(

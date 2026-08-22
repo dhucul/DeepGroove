@@ -793,35 +793,37 @@ shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
   nonsense *number* — an infinitely low floor still yields −55 — so nothing looks wrong. What it
   cannot do is stop that −55 being **permanent**, and −55 is the wrong answer for any transfer
   whose groove noise is louder than it.
-- **The needle-drop path now feeds the run-out detector its pre-roll, and measured, that buys
-  almost nothing — the pre-roll is a quarter of a second.** It is the right place for the audio to
-  go: the promoted pre-roll *is* the head of the take, so the detector should hear it, and
-  `PrimeWithPreRoll` is now on the promotion path with the trim arithmetic unaffected
-  (`SamplesSinceProgram` is a backward offset from the caller's own total). But
-  `EnqueueNeedleDropPreRoll` caps the queue at `sampleRate * channels * 0.25`, which at the 100 ms
-  capture buffer is **two blocks — two of the ten the floor is read from**. Measured by feeding the
-  detector only the last 0.25 s before the music: on `One More Chance` the floor arrives **0.7 s
-  earlier (185.1 s → 184.4 s), still deep inside the run-out**, and on `Dancin'` it does not move
-  at all (7.6 s → 7.7 s, which is noise). Against the full lead-in those two learn their floors at
-  **3.2 s and 1.3 s**. So the change is correct and cheap and the gap is still open.
-- **The gap is an arithmetic mismatch, not a wiring one: 0.25 s of pre-roll against the 1.0 s the
-  floor needs.** Two things would close it and both are decisions rather than fixes. Enlarging the
-  pre-roll past a second changes what is *recorded* — every needle-drop take would keep more lead-in
-  noise at its head. Learning the floor during the monitor phase and carrying it into the take costs
-  nothing recorded, since that audio is already being captured and thrown away, but it needs a way
-  to seed a detector's floor and a decision about whether a floor measured before the user pressed
-  record belongs to the take. **Lowering `FloorBlocks` is the wrong answer**: taking the tenth
-  lowest rather than the lowest is the entire outlier resistance, and the previous entry is what
-  happens when one bad block reaches the floor.
-- **Reasoning said feeding the pre-roll would close the gap; measurement said it does not, and the
-  correction is the point.** Before this the detector's first audio was the moment the stylus
-  landed, so it never heard the lead-in groove — the one place a floor is guaranteed. Measured by
-  skipping the first 4 s of `One More Chance`, the floor was not learned until **182 s, two seconds
-  into the run-out**, so the first run-out blocks read as programme and the hold restarted once. It
-  self-corrects on that disc because enough of its run-out falls below −55; it would not on one
-  whose run-out never does. The obvious inference was that the pre-roll would supply the lead-in.
-  It supplies a quarter of a second of it. **Check the size of the thing you are about to plumb in
-  before predicting what plumbing it in will do.**
+- **Feeding the run-out detector the needle-drop pre-roll was built, measured, reviewed and
+  withdrawn. It is not in the code; this is why.** It looked obviously right — the promoted pre-roll
+  *is* the head of the take, so the detector should hear it, and the trim arithmetic is indifferent
+  (`SamplesSinceProgram` is a backward offset from the caller's own total).
+- **What it bought, measured: nothing.** `EnqueueNeedleDropPreRoll` caps the queue at
+  `sampleRate * channels * 0.25`, which at the 100 ms capture buffer is **two blocks — two of the
+  ten the floor is read from**. Feeding the detector only the last 0.25 s before the music, the
+  floor arrives **0.7 s earlier on `One More Chance` (185.1 → 184.4 s, still deep inside the
+  run-out)** and **not at all on `Dancin'` (7.6 → 7.7 s, which is noise)**.
+- **What it cost: the one safety invariant this detector states about itself.** "Nothing triggers
+  until programme has been heard at least once" held *structurally* on the auto-start path, because
+  the detector was created after the contact packet and so began on lead-in groove.
+  `EnqueueNeedleDropPreRoll` runs **before** `NeedleDropDetector.Process`, so the packet carrying
+  the stylus contact is always in the pre-roll — and the drop can register as programme. Measured
+  over the six transfers, **three of six takes have their hold armed by the stylus contact rather
+  than by music**: `One More Chance` at 0.3 s (−48.9 dB), `Super Do Nothing Day` at 0.3 s (−44.2),
+  `Watching The World Go By` at 0.4 s (−53.2). The longest lead-in gap after arming is **2.6 s
+  against a 5 s minimum hold**. Not reachable on this corpus, but the margin becomes the length of
+  a lead-in groove, which varies by pressing, and if it is ever exceeded **the take stops in the
+  lead-in and is trimmed to about two seconds**. A structural guarantee traded for 0.7 s on one
+  disc is not a trade.
+- **The three takes where it did not arm are the median doing its job**, and worth reading next to
+  the three where it did: a contact transient short enough to sit inside one or two 10 ms
+  sub-blocks is killed by the block median, and a stylus that settles over a longer moment is not.
+  "A single click cannot lift a run-out block" is true of clicks and not of a stylus landing.
+- **The gap it was aimed at is an arithmetic mismatch: 0.25 s of pre-roll against the 1.0 s the
+  floor needs.** Enlarging the pre-roll past a second would close it and changes what is
+  *recorded* — every needle-drop take keeping more lead-in noise at its head — so it is a product
+  decision, not a fix. **Lowering `FloorBlocks` is the wrong answer**: taking the tenth lowest
+  rather than the lowest is the entire outlier resistance, and the entry above is what happens when
+  one bad block reaches the floor.
 - **Carrying the floor over from the monitor phase was the proposed fix for the auto-start gap. It
   is measured, it is wrong, and the gap it was aimed at does not exist.** `NeedleDropDetector`
   triggers on **stylus contact**, so on the auto-start path the monitor phase is by construction
@@ -847,12 +849,11 @@ shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
   pre-roll's size, then what the monitor phase contains, then whether the gap existed. Each was a
   sound inference from the code's shape and each took ten minutes to disprove with the corpus
   already sitting on disk. **Nothing about the capture path should be asserted from reading it.**
-- **The order statistic is what makes feeding the pre-roll safe on a rig this corpus does not
-  contain, and it is the same property that condemns the monitor phase.** On an interface whose
-  own noise sits between −80 and the groove, the pre-roll contributes two or three sub-groove blocks
-  — and the **tenth** lowest of ten is still a groove value, so the floor is unmoved. Fifty blocks
-  of monitor phase fill all ten. Two or three blocks cannot move an order statistic and fifty can,
-  which is the difference between the change that shipped and the one that did not.
+- **The order statistic is why the pre-roll would have been harmless to the floor, and it is the
+  same property that condemns the monitor phase.** On an interface whose own noise sits between −80
+  and the groove, two or three sub-groove blocks leave the **tenth** lowest of ten a groove value,
+  so the floor does not move; fifty blocks of monitor phase fill all ten. Two or three blocks cannot
+  move an order statistic and fifty can. The pre-roll was withdrawn over the hold, not the floor.
 - **The floor cannot rise, so a run-out more than the separation noisier than the quietest second
   of the take will not be recognised.** Not reachable in this corpus — lead-in and run-out sit
   within a few dB of each other on all six transfers — but it is the price of the ratchet and the

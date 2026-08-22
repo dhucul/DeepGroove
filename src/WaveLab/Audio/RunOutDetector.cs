@@ -120,10 +120,8 @@ internal sealed class RunOutDetector
     /// <summary>
     /// Interleaved samples processed since the end of the last programme block.
     /// The caller turns this into an absolute trim point by subtracting it from
-    /// its own retained-sample total. That is a backward offset, so it is right
-    /// whether or not the caller chose to feed this detector the pre-roll
-    /// promoted ahead of the take — which it does, so the floor can start from
-    /// the lead-in groove.
+    /// its own retained-sample total, so this detector needs no knowledge of any
+    /// pre-roll promoted ahead of it.
     /// </summary>
     public long SamplesSinceProgram => _samplesSinceProgram;
 
