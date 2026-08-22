@@ -822,6 +822,37 @@ shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
   whose run-out never does. The obvious inference was that the pre-roll would supply the lead-in.
   It supplies a quarter of a second of it. **Check the size of the thing you are about to plumb in
   before predicting what plumbing it in will do.**
+- **Carrying the floor over from the monitor phase was the proposed fix for the auto-start gap. It
+  is measured, it is wrong, and the gap it was aimed at does not exist.** `NeedleDropDetector`
+  triggers on **stylus contact**, so on the auto-start path the monitor phase is by construction
+  *before the stylus touches the record*: it holds the input chain's own noise and no groove noise
+  at all. What it would carry over is the quietest thing in the signal path, permanently, into a
+  gate that cannot rise again.
+- **Simulated on `One More Chance` by prepending five seconds of live input noise to the take, which
+  is what seeding its floor amounts to**: as recorded the floor is **−55.57**, the gate −45.57, and
+  **1 of 81 run-out blocks** reads as programme (the known thump) — it stops correctly. With a
+  monitor floor of −70 dB the floor becomes −69.94, the gate **clamps to −55**, and **59 of 81
+  run-out blocks read as programme** — the take never stops. Identical at −75 dB. The clamp is the
+  mechanism: `max(−55, floor + 10)` collapses every floor below −65 onto the same −55 gate, and a
+  disc whose run-out is louder than −55 needs a floor from **its own groove** or none at all.
+- **The lead-in groove is already inside the take, which is why there was nothing to fix.** All six
+  transfers show the same head: at most 0.3 s of pre-contact input, a loud contact transient at
+  0.1–0.3 s, then two to three seconds of lead-in groove, then music. The detector sees every bit of
+  that and learns its floor at **1.3 s on `Dancin'` and 3.2 s on `One More Chance`**.
+- **The experiment that produced the phantom gap was mislabelled: `skip=4` removes the lead-in from
+  the take, which models a manual start made *after the music began*, not the needle-drop path.**
+  That case is real but rare, self-corrects when the run-out supplies a floor, and cannot be told
+  apart at the decision point from the needle-drop case that carrying the floor would break.
+- **Three predictions about this path in a row were wrong, and all three failed the same way** — the
+  pre-roll's size, then what the monitor phase contains, then whether the gap existed. Each was a
+  sound inference from the code's shape and each took ten minutes to disprove with the corpus
+  already sitting on disk. **Nothing about the capture path should be asserted from reading it.**
+- **The order statistic is what makes feeding the pre-roll safe on a rig this corpus does not
+  contain, and it is the same property that condemns the monitor phase.** On an interface whose
+  own noise sits between −80 and the groove, the pre-roll contributes two or three sub-groove blocks
+  — and the **tenth** lowest of ten is still a groove value, so the floor is unmoved. Fifty blocks
+  of monitor phase fill all ten. Two or three blocks cannot move an order statistic and fifty can,
+  which is the difference between the change that shipped and the one that did not.
 - **The floor cannot rise, so a run-out more than the separation noisier than the quietest second
   of the take will not be recognised.** Not reachable in this corpus — lead-in and run-out sit
   within a few dB of each other on all six transfers — but it is the price of the ratchet and the
