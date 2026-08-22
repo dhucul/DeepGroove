@@ -450,8 +450,31 @@ public sealed class PlaybackEngine : IDisposable
 
     public void Dispose() => Stop();
 
+    /// <summary>
+    /// Apply a document's playback-only monitor gain to frames already written into the output
+    /// buffer, hard-limited to full scale.
+    /// </summary>
+    /// <param name="limit">
+    /// Clamp even at unity gain. Load-bearing for a residual, and measured rather than assumed:
+    /// what click repair removes is a click that stood above the local level, so it comes out
+    /// <b>louder than the record it came from</b> — one measured here peaks at +6.7 dBFS against a
+    /// programme peak of −7.8. That is exactly the case the lift rule correctly leaves at unity, so
+    /// gating the limit on "the gain is not one" would skip it precisely where it is needed, and
+    /// send a full-scale-and-then-some click to the speakers of somebody about to hear it for the
+    /// first time. Ordinary documents pass through untouched, as they always have.
+    /// </param>
+    internal static void ApplyMonitorGain(float[] buffer, int offset, int count, float gain, bool limit)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        if (count <= 0 || (gain == 1f && !limit)) return;
+        int end = offset + count;
+        for (int i = offset; i < end; i++)
+            buffer[i] = Math.Clamp(buffer[i] * gain, -1f, 1f);
+    }
+
     private sealed class DocumentProvider : ISampleProvider
     {
+        private readonly AudioDocument _document;
         private readonly float[][] _channels;
         private readonly int _start;
         private readonly int _end;
@@ -462,6 +485,7 @@ public sealed class PlaybackEngine : IDisposable
 
         public DocumentProvider(AudioDocument doc, int start, int? end, bool expandMonoToStereo)
         {
+            _document = doc;
             _channels = doc.Channels.ToArray();
             if (_channels.Length == 0)
                 throw new InvalidOperationException("Cannot play a document with no audio channels.");
@@ -493,6 +517,10 @@ public sealed class PlaybackEngine : IDisposable
             int channels = WaveFormat.Channels;
             int framesWanted = count / channels;
             int written = 0;
+            // Read once per callback so one buffer is never half at the old gain and half
+            // at the new one when the monitor slider moves under it.
+            float monitorGain = _document.MonitorGain;
+            bool limitToFullScale = _document.IsResidual;
 
             while (framesWanted > 0)
             {
@@ -528,6 +556,9 @@ public sealed class PlaybackEngine : IDisposable
                         buffer[destination + frame * 2 + 1] = sample;
                     }
                 }
+                // After the mono expansion, so both copies are lifted, and outside the
+                // pre-roll above, which stays silent.
+                ApplyMonitorGain(buffer, destination, n * channels, monitorGain, limitToFullScale);
                 // Published, to match the Volatile.Read in PositionSamples: the UI polls
                 // this while the render thread is inside Read.
                 Volatile.Write(ref _pos, _pos + n);

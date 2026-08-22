@@ -646,8 +646,87 @@ public partial class MainWindow : Window
     /// </summary>
     /// <summary>Tools that cannot report progress; they still get a cancellable indeterminate overlay.</summary>
     private Task<bool> RunRangeTool(string undoName, Func<float[][], int, float[][]?> transform,
-        DocumentViewModel? target = null) =>
-        RunRangeTool(undoName, null, (input, sampleRate, _, _) => transform(input, sampleRate), target);
+        DocumentViewModel? target = null, bool keepRemoved = false,
+        Action<bool>? residualOpened = null) =>
+        RunRangeTool(undoName, null, (input, sampleRate, _, _) => transform(input, sampleRate), target,
+            keepRemoved, residualOpened);
+
+    /// <summary>
+    /// Offer to keep what the tool removes. One place, so the five tools that can do it cannot
+    /// end up wording it — or costing it — differently, and so the choice is remembered once.
+    /// </summary>
+    private static void AddKeepRemoved(ParamDialog dialog, DocumentViewModel document, bool wholeFile = false)
+    {
+        long count = wholeFile ? document.Doc.Length : document.EditRange().Count;
+        int channels = document.Doc.ChannelCount;
+        // Offered and disabled rather than hidden past the ceiling: an option that vanishes on
+        // long files reads as a feature that does not exist, where a disabled one with the figure
+        // beside it says what to do about it.
+        dialog.AddCheck("Keep what was removed",
+            AppSettings.Instance.KeepRemovedMaterial && !ResidualSummary.ExceedsBudget(count, channels),
+            ResidualSummary.DescribeCost(count, channels),
+            enabled: !ResidualSummary.ExceedsBudget(count, channels));
+    }
+
+    /// <summary>
+    /// Build what a committed edit removed and open it, after the splice. Returns whether a tab
+    /// was opened, so a tool with its own count to report can say both things in one line rather
+    /// than overwriting this one.
+    /// </summary>
+    /// <remarks>
+    /// <b>Cancelling here cancels the residual and not the repair.</b> The splice has already
+    /// happened, so letting the cancellation reach the caller's handler would report "document
+    /// unchanged" about a document that was changed — and the window is not small, since building
+    /// a residual for a record side is half a gigabyte of writes with a cancellation check every
+    /// 65 k samples. Out of memory is caught for the same reason: the edit stands either way, and
+    /// the user has to be told which half of the operation they got.
+    /// </remarks>
+    private async Task<bool> CaptureRemovedAsync(DocumentViewModel target, IReadOnlyList<float[]> dry,
+        float[][] committed, int rangeStart, string undoName, CancellationToken token)
+    {
+        int count = committed.Length == 0 ? 0 : committed[0].Length;
+        if (ResidualSummary.ExceedsBudget(count, committed.Length))
+        {
+            _vm.ReportAction(ResidualSummary.DescribeTooLarge(undoName, count, committed.Length));
+            return false;
+        }
+
+        try
+        {
+            var built = await Task.Run(() =>
+            {
+                float[][] removed = RestorationPreview.Difference(dry, committed, rangeStart, token);
+                return (Removed: removed, Levels: RestorationPreview.MeasureLevels(removed, token));
+            }, token);
+            return _vm.AddResidualDocument(target.Doc, built.Removed, undoName, rangeStart, built.Levels);
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction($"{undoName} applied · collecting what it removed was cancelled.");
+            return false;
+        }
+        catch (OutOfMemoryException)
+        {
+            _vm.ReportAction(ResidualSummary.DescribeTooLarge(undoName, count, committed.Length));
+            return false;
+        }
+    }
+
+    /// <summary>Read that option back and remember it for the next record.</summary>
+    private static bool ReadKeepRemoved(ParamDialog dialog)
+    {
+        bool keep = dialog.Checks is [bool first, ..] && first;
+        // A box the range was too long to offer reads as unchecked, and remembering that would
+        // turn one long side into a preference the user never expressed.
+        if (dialog.ChecksEnabled is not [true, ..]) return false;
+        var settings = AppSettings.Instance;
+        if (settings.KeepRemovedMaterial != keep)
+        {
+            settings.KeepRemovedMaterial = keep;
+            settings.Save();
+        }
+        return keep;
+    }
 
     /// <summary>
     /// Dialog → background transform → one undoable splice, behind the progress overlay.
@@ -658,9 +737,19 @@ public partial class MainWindow : Window
     /// re-validated against the document length before the splice regardless — which was always the
     /// real safety net, since a background transform could never have been trusted to a UI flag.
     /// </remarks>
+    /// <param name="keepRemoved">
+    /// Open what the tool took out as its own tab. The dry reference costs nothing to keep: the
+    /// channel snapshot taken below is already the audio as it was, because a splice replaces
+    /// channel arrays rather than writing into them.
+    /// </param>
+    /// <param name="residualOpened">
+    /// Told whether a residual tab was opened, so a tool that reports its own count can compose one
+    /// line instead of overwriting the residual's.
+    /// </param>
     private async Task<bool> RunRangeTool(string undoName, string? detail,
         Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
-        DocumentViewModel? target = null)
+        DocumentViewModel? target = null, bool keepRemoved = false,
+        Action<bool>? residualOpened = null)
     {
         if (_longOperationRunning) return false;
         var d = target ?? Doc;
@@ -685,11 +774,19 @@ public partial class MainWindow : Window
                 _vm.PrepareForDocumentEdit(d);
                 d.Doc.ReplaceRange(start, count, output, undoName);
                 applied = true;
+                if (!keepRemoved) return;
+                // After the commit, so a tool that declines to edit leaves nothing behind either.
+                residualOpened?.Invoke(
+                    await CaptureRemovedAsync(d, channels, output, start, undoName, token));
             });
         }
         catch (OperationCanceledException)
         {
-            _vm.ReportAction($"{undoName} cancelled · document unchanged.");
+            // Only the transform is cancellable past this point; CaptureRemovedAsync swallows its
+            // own. Guarded anyway, because a message about a document is not worth being wrong.
+            _vm.ReportAction(applied
+                ? $"{undoName} applied · the rest of the operation was cancelled."
+                : $"{undoName} cancelled · document unchanged.");
         }
         catch (Exception ex)
         {
@@ -878,9 +975,16 @@ public partial class MainWindow : Window
         string drift = report.DriftHz < 0.02
             ? "It is steady, so a fixed notch would have suited it too."
             : $"It wanders by {report.DriftHz:0.00} Hz, which a fixed notch cannot follow.";
+        // This path asks with a message box rather than a parameter dialog, so it has nowhere to
+        // put the option: it follows the choice the other restoration tools remember, and says so
+        // rather than surprising anyone with a second tab.
+        bool keepRemoved = AppSettings.Instance.KeepRemovedMaterial;
+        string keepNote = keepRemoved
+            ? "\n\nWhat is subtracted will open in its own tab, as the other restoration tools are set to do."
+            : "";
         if (MessageBox.Show(
                 $"A hum was found at {report.MeanHz:0.00} Hz, {Math.Abs(report.LevelDb):0} dB below the " +
-                $"programme.\n\n{drift}\n\nFollow it and subtract it?",
+                $"programme.\n\n{drift}{keepNote}\n\nFollow it and subtract it?",
                 "Track and remove drifting hum", MessageBoxButton.YesNo, MessageBoxImage.Question)
             != MessageBoxResult.Yes)
         {
@@ -900,7 +1004,7 @@ public partial class MainWindow : Window
                         SubProgress.Slice(progress, c, working.Length));
                 }
                 return working;
-            }, d);
+            }, d, keepRemoved);
     }
 
     // ── surface crackle ──────────────────────────────────────────
@@ -921,7 +1025,9 @@ public partial class MainWindow : Window
         {
             Owner = this,
         };
+        AddKeepRemoved(dialog, d);
         if (dialog.ShowDialog() != true) return;
+        bool keepRemoved = ReadKeepRemoved(dialog);
 
         var options = DecrackleOptions.Default with
         {
@@ -930,6 +1036,7 @@ public partial class MainWindow : Window
         };
 
         var report = DecrackleReport.None;
+        bool residualOpened = false;
         _ = RunRangeTool("Remove Crackle", $"{options.Threshold:0.0}σ residual threshold",
             (data, sampleRate, progress, token) =>
             {
@@ -945,13 +1052,16 @@ public partial class MainWindow : Window
                 }
                 report = new DecrackleReport(events, replaced, fallbacks);
                 return data;
-            }, d).ContinueWith(task =>
+            }, d, keepRemoved, opened => residualOpened = opened).ContinueWith(task =>
             {
-                if (task.Result)
-                {
-                    _vm.ReportAction($"Crackle removed · {report.Events} defects, " +
-                                     $"{report.SamplesReplaced} samples replaced.");
-                }
+                if (!task.Result) return;
+                // One line carrying both facts. Reported after the residual's, which would
+                // otherwise be written and immediately overwritten by this.
+                string counts = $"Crackle removed · {report.Events} defects, " +
+                                $"{report.SamplesReplaced} samples replaced";
+                _vm.ReportAction(residualOpened
+                    ? $"{counts} · what it removed is in a new tab."
+                    : $"{counts}.");
             }, TaskScheduler.FromCurrentSynchronizationContext());
     }
 
@@ -1088,7 +1198,7 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task<bool> RunWholeFileTool(string undoName, string? detail,
         Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
-        DocumentViewModel target)
+        DocumentViewModel target, bool keepRemoved = false)
     {
         if (_longOperationRunning || target.Doc.Length == 0) return false;
 
@@ -1115,11 +1225,15 @@ public partial class MainWindow : Window
                 _vm.PrepareForDocumentEdit(target);
                 target.Doc.ReplaceRange(0, length, output, undoName);
                 applied = true;
+                if (!keepRemoved) return;
+                await CaptureRemovedAsync(target, channels, output, 0, undoName, token);
             });
         }
         catch (OperationCanceledException)
         {
-            _vm.ReportAction($"{undoName} cancelled · document unchanged.");
+            _vm.ReportAction(applied
+                ? $"{undoName} applied · the rest of the operation was cancelled."
+                : $"{undoName} cancelled · document unchanged.");
         }
         catch (Exception ex)
         {
@@ -1168,6 +1282,12 @@ public partial class MainWindow : Window
                 ? SpectralRepair.AttenuateToSurroundings(channel, 0, mask, reduction, options, token)
                 : SpectralRepair.Attenuate(channel, 0, mask, -reduction, options, token));
     }
+
+    /// <summary>
+    /// Drop the monitor lift so the removed material plays at the level it actually is. The bar
+    /// stays, because the file is still a residual and the lift has to be reachable again.
+    /// </summary>
+    private void OnResetMonitorGain(object sender, RoutedEventArgs e) => _vm.ResetMonitorGain();
 
     private void OnSpectralGain(object sender, RoutedEventArgs e)
     {
@@ -1435,7 +1555,9 @@ public partial class MainWindow : Window
         var dlg = new ParamDialog("Reduce Noise", "Apply", null, null, 0,
             new ParamDialog.SliderSpec("Reduction", 6, 40, 12, v => $"{v:0} dB"),
             new ParamDialog.SliderSpec("Sensitivity", 0, 12, 6, v => $"{v:0} dB")) { Owner = this };
+        AddKeepRemoved(dlg, d);
         if (dlg.ShowDialog() != true) return;
+        bool keepRemoved = ReadKeepRemoved(dlg);
         var profile = d.NoiseProfile;
         double reduction = dlg.Values[0], sensitivity = dlg.Values[1];
         int sampleRate = d.Doc.SampleRate;          // captured up front, like the profile above
@@ -1456,7 +1578,7 @@ public partial class MainWindow : Window
 
             Restoration.ReduceNoise(data, profile, depth, sensitivity);
             return data;
-        }, d);
+        }, d, keepRemoved);
 
         // Unlike the restoration workbench this path has no card to carry a readout, so the one
         // case that needs explaining gets a dialog: a tool that declines silently is
@@ -1473,7 +1595,9 @@ public partial class MainWindow : Window
         if (d == null || d.Doc.Length == 0) return;
         var dlg = new ParamDialog("Remove Clicks & Pops", "Apply", null, null, 0,
             new ParamDialog.SliderSpec("Sensitivity", 1, 10, 5, v => $"{v:0}", 1)) { Owner = this };
+        AddKeepRemoved(dlg, d);
         if (dlg.ShowDialog() != true) return;
+        bool keepRemoved = ReadKeepRemoved(dlg);
         double sensitivity = dlg.Values[0];
         int repaired = -1;
         bool completed = await RunRangeTool("Remove Clicks", (data, sampleRate) =>
@@ -1482,7 +1606,7 @@ public partial class MainWindow : Window
             // A no-op should not allocate an album-sized undo entry or mark the
             // document dirty merely so the UI can report that nothing was found.
             return repaired > 0 ? data : null;
-        }, d);
+        }, d, keepRemoved);
         if (repaired == 0)
         {
             InfoDialog.Show(this, "Remove Clicks & Pops",
@@ -1501,7 +1625,9 @@ public partial class MainWindow : Window
         var dlg = new ParamDialog("Remove Hum", "Apply", "Mains frequency", ["50 Hz (Europe)", "60 Hz (Americas)"], 1,
             new ParamDialog.SliderSpec("Harmonics", 1, 8, 4, v => $"{v:0}", 1),
             new ParamDialog.SliderSpec("Notch width (Q)", 10, 60, 30, v => $"Q {v:0}")) { Owner = this };
+        AddKeepRemoved(dlg, d);
         if (dlg.ShowDialog() != true) return;
+        bool keepRemoved = ReadKeepRemoved(dlg);
         double baseFreq = dlg.ComboIndex == 0 ? 50 : 60;
         int harmonics = (int)dlg.Values[0];
         double q = dlg.Values[1];
@@ -1509,7 +1635,7 @@ public partial class MainWindow : Window
         {
             Restoration.RemoveHum(data, sr, baseFreq, harmonics, q);
             return data;
-        }, d);
+        }, d, keepRemoved);
     }
 
     // silence

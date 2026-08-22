@@ -120,6 +120,68 @@ public sealed class DialogLoadTests
     }
 
     /// <summary>
+    /// The restoration tools ask "keep what was removed?" through this, so the box has to survive
+    /// being added after the constructor has already built the combo and the sliders — which is
+    /// the only way it can be added at all, the constructors ending in a params array.
+    /// </summary>
+    [Fact]
+    public void AnOptionAddedAfterConstructionIsShownAndHandedBack()
+    {
+        (bool[] checks, double[] values, IReadOnlyList<string> failures) = Wpf.Run(() =>
+        {
+            using var errors = new BindingErrors();
+            var dialog = (ParamDialog)Build("param");
+            dialog.AddCheck("Keep what was removed", initial: true,
+                "Opens what was removed in a second tab so you can hear it.");
+            (bool[] Checks, double[] Values) result = ([], []);
+            Wpf.Show(dialog, _ => result = (dialog.Checks, dialog.Values));
+            return (result.Checks, result.Values, (IReadOnlyList<string>)errors.Messages.ToArray());
+        });
+
+        Assert.Equal([true], checks);
+        // The sliders the constructor built are untouched by the late arrival.
+        Assert.Equal([0.4, 40], values);
+        Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
+    }
+
+    /// <summary>
+    /// Past the memory ceiling the option is offered and disabled rather than hidden, so it has to
+    /// report both its state and whether it could be reached — a disabled box reads as unchecked,
+    /// and remembering that answer would overwrite a preference the user was never offered.
+    /// </summary>
+    [Fact]
+    public void ADisabledOptionSaysThatItWasNotReachable()
+    {
+        (bool[] checks, bool[] enabled) = Wpf.Run(() =>
+        {
+            var dialog = (ParamDialog)Build("param");
+            dialog.AddCheck("Keep what was removed", initial: false,
+                "This range would need about 2.6 GB of memory, past the 512 MB limit.",
+                enabled: false);
+            (bool[] Checks, bool[] Enabled) result = ([], []);
+            Wpf.Show(dialog, _ => result = (dialog.Checks, dialog.ChecksEnabled));
+            return result;
+        });
+
+        Assert.Equal([false], checks);
+        Assert.Equal([false], enabled);
+    }
+
+    [Fact]
+    public void ADialogWithNoOptionHandsBackNoneRatherThanThrowing()
+    {
+        bool[] checks = Wpf.Run(() =>
+        {
+            var dialog = (ParamDialog)Build("param");
+            bool[] result = [];
+            Wpf.Show(dialog, _ => result = dialog.Checks);
+            return result;
+        });
+
+        Assert.Empty(checks);
+    }
+
+    /// <summary>
     /// The palette is a search box over every command in the app, so the one thing it must do is
     /// narrow.
     /// </summary>

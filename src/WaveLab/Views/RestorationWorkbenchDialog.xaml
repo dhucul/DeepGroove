@@ -269,6 +269,7 @@
                     <Border Style="{StaticResource Card}" Margin="0,10,0,0" Padding="15,12">
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="*"/><ColumnDefinition Width="270"/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                             <StackPanel>
                                 <TextBlock Text="OUTPUT MIX" Style="{StaticResource UpperLabel}"/>
                                 <TextBlock Text="Sample-aligned dry / restored" Margin="0,5,0,0" Foreground="{StaticResource Muted}" FontSize="10.5"/>
@@ -300,6 +301,16 @@
                                     <CheckBox x:Name="livePreviewCheck" Content="Live preview" IsChecked="True"
                                               Checked="OnLivePreviewChanged" Unchecked="OnLivePreviewChanged"/>
                                 </StackPanel>
+                            </StackPanel>
+
+                            <!-- Its own full-width row rather than a third checkbox beside the other
+                                 two: the caption carries a memory figure, and a figure nobody can
+                                 read before ticking the box is not worth printing. -->
+                            <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,14,0,0">
+                                <CheckBox x:Name="keepRemovedCheck" Content="Keep what was removed"
+                                          Checked="OnKeepRemovedChanged" Unchecked="OnKeepRemovedChanged"/>
+                                <TextBlock x:Name="keepRemovedCaption" Style="{StaticResource CardCaption}"
+                                           Text="Opens what was removed in a second tab so you can hear it."/>
                             </StackPanel>
                         </Grid>
                     </Border>

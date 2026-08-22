@@ -155,6 +155,13 @@ public partial class RestorationWorkbenchDialog : Window
         };
         formatText.Text = $"{TimeFormat.Compact((double)_rangeCount / Math.Max(1, _sampleRate))} · {_sampleRate / 1000.0:0.0} kHz · {channels}";
 
+        // Past the ceiling the option is shown and disabled rather than hidden, and the caption
+        // carries the figure and what to do about it.
+        bool tooLarge = ResidualSummary.ExceedsBudget(_rangeCount, document.Doc.ChannelCount);
+        keepRemovedCheck.IsEnabled = !tooLarge;
+        keepRemovedCheck.IsChecked = !tooLarge && AppSettings.Instance.KeepRemovedMaterial;
+        keepRemovedCaption.Text = ResidualSummary.DescribeCost(_rangeCount, document.Doc.ChannelCount);
+
         _initialized = true;
         UpdateReadouts();
         UpdateUiState();
@@ -409,6 +416,10 @@ public partial class RestorationWorkbenchDialog : Window
         if (_source == null || _busy || bypassCheck.IsChecked == true || _closed) return;
         _main.StopPreview();
         var settings = CaptureSettings() with { Bypass = false };
+        // Not part of RestorationSettings: it changes nothing about the audio, so folding it in
+        // would invalidate the wet preview cache and mark the preset custom for a choice about
+        // where the output goes.
+        bool keepRemoved = keepRemovedCheck.IsChecked == true;
         var operation = BeginOperation(applying: true, "Rendering the complete restoration…");
         var progress = CreateProgress(operation);
         bool committed = false;
@@ -421,7 +432,23 @@ public partial class RestorationWorkbenchDialog : Window
                 operation.Token.ThrowIfCancellationRequested();
                 progress.Report(new OperationProgress("Rendering the complete restoration range…", 0.31));
                 var audio = RenderFullRange(settings, analyses, operation.Token, progress);
-                return (Analyses: analyses, Audio: audio);
+                // Built here, before the commit: ReplaceRange and ReplaceAllOwned both take
+                // ownership of `audio`, so this is the last moment the pair is safely ours. The
+                // dry/wet blend needs no special case — dry minus the blend is exactly the part
+                // of the difference the blend let through.
+                float[][]? removed = null;
+                RestorationPreview.ResidualLevels levels = default;
+                if (keepRemoved)
+                {
+                    progress.Report(new OperationProgress("Collecting what the restoration removed…", 0.98));
+                    var dry = _source
+                        ?? throw new InvalidOperationException("The restoration source is not ready.");
+                    removed = RestorationPreview.Difference(dry, audio, 0, operation.Token);
+                    // Measured here rather than on the UI thread: it is a full pass over a buffer
+                    // the size of the range.
+                    levels = RestorationPreview.MeasureLevels(removed, operation.Token);
+                }
+                return (Analyses: analyses, Audio: audio, Removed: removed, Levels: levels);
             }, operation.Token);
 
             if (!IsCurrent(operation)) return;
@@ -445,6 +472,13 @@ public partial class RestorationWorkbenchDialog : Window
             committed = true;
             progressBar.Value = 1;
             statusText.Text = "Restoration applied as one undoable edit.";
+            if (result.Removed != null)
+            {
+                statusText.Text = _main.AddResidualDocument(_document.Doc, result.Removed,
+                    "The restoration", _rangeStart, result.Levels)
+                    ? "Restoration applied · what it removed is open in a second tab."
+                    : "Restoration applied · it removed nothing audible, so no second tab was made.";
+            }
         }
         catch (OperationCanceledException)
         {
@@ -1101,6 +1135,19 @@ public partial class RestorationWorkbenchDialog : Window
         if (!_initialized) return;
         UpdateUiState();
         if (_previewStarted) QueueParameterRefresh(shortDelay: true);
+    }
+
+    /// <summary>
+    /// Remembered across sessions, because the person who wants to hear what a repair took out
+    /// wants that for a stack of records rather than for one side. It touches no audio, so it
+    /// deliberately does not re-render the preview or mark the preset custom.
+    /// </summary>
+    private void OnKeepRemovedChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        var settings = AppSettings.Instance;
+        settings.KeepRemovedMaterial = keepRemovedCheck.IsChecked == true;
+        settings.Save();
     }
 
     private void OnLivePreviewChanged(object sender, RoutedEventArgs e)

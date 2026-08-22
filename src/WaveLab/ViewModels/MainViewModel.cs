@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using WaveLab.Audio;
+using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
 using WaveLab.Audio.Montage;
 using WaveLab.Util;
@@ -348,6 +349,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Raise(nameof(WindowTitle));
             Raise(nameof(StatusSamples));
             Raise(nameof(IsActiveDocumentPlaying));
+            Raise(nameof(ShowsMonitorGain));
+            Raise(nameof(MonitorGainDb));
+            Raise(nameof(MonitorGainText));
             // A time-frequency region belongs to the file it was drawn on; carrying it to another
             // tab would offer a repair at a position that means nothing there.
             SpectralSelection = SpectralSelection.None;
@@ -522,6 +526,41 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>Raised so the window can lay the editor rows out for the new mode.</summary>
     public event Action? EditorViewChanged;
+
+    // ── monitor gain ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Whether the monitor bar belongs on screen. Keyed on the document being a residual and
+    /// not on the gain being above unity, so pulling the lift back to 0 dB to hear the true
+    /// level is not a one-way door that takes the control away with it.
+    /// </summary>
+    public bool ShowsMonitorGain => _active?.Doc.IsResidual == true;
+
+    /// <summary>
+    /// The lift in decibels, live. Writing it changes what reaches the speakers on the next
+    /// audio callback and nothing else — the samples, the waveform, and every save and export
+    /// are untouched, which is the property that makes a residual worth keeping at all.
+    /// </summary>
+    public double MonitorGainDb
+    {
+        get => _active is { } document ? ResidualSummary.GainToDb(document.Doc.MonitorGain) : 0;
+        set
+        {
+            if (_active is not { } document) return;
+            double clamped = Math.Clamp(value, 0, ResidualSummary.MaximumMonitorGainDb);
+            float gain = (float)Math.Pow(10, clamped / 20.0);
+            if (Math.Abs(document.Doc.MonitorGain - gain) < 1e-6f) return;
+            document.Doc.MonitorGain = gain;
+            Raise(nameof(MonitorGainDb));
+            Raise(nameof(MonitorGainText));
+            Raise(nameof(ShowsMonitorGain));
+        }
+    }
+
+    public string MonitorGainText => $"+{MonitorGainDb:0.0} dB";
+
+    /// <summary>Return the active document to its true level; the bar disappears with it.</summary>
+    public void ResetMonitorGain() => MonitorGainDb = 0;
 
     public RelayCommand ShowWaveformCommand { get; }
     public RelayCommand ShowSplitCommand { get; }
@@ -771,11 +810,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (dlg.ShowDialog() == true) OpenFiles(dlg.FileNames);
     }
 
-    public void AddDocument(AudioDocument doc, PeakStore? prebuiltPeaks = null)
+    public void AddDocument(AudioDocument doc, PeakStore? prebuiltPeaks = null, bool activate = true)
     {
         var vm = new DocumentViewModel(doc, prebuiltPeaks);
         Documents.Add(vm);
-        ActiveTab = vm;
+        // A workspace with documents and no selection is not a state anything else here handles,
+        // so the first tab always activates whatever the caller asked for.
+        if (activate || ActiveTab == null) ActiveTab = vm;
     }
 
     /// <summary>Opens a montage in its own tab and makes it the active one.</summary>
@@ -788,13 +829,75 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return vm;
     }
 
-    public void AddGeneratedDocument(AudioDocument doc, string? completedAction = null)
+    public void AddGeneratedDocument(AudioDocument doc, string? completedAction = null,
+        bool activate = true)
     {
         doc.MarkUnsaved();
-        AddDocument(doc);
+        AddDocument(doc, activate: activate);
         ReportAction(completedAction ?? (doc.CaptureNote is { } note
             ? $"{doc.Title} created in a new tab. {note}"
             : $"{doc.Title} created in a new tab."));
+    }
+
+    /// <summary>
+    /// Open what a restoration pass removed as its own tab, so the claim the tool just made —
+    /// that this was damage and not music — can be listened to rather than taken on trust.
+    /// Returns false, and opens nothing, when the pass took nothing out.
+    /// </summary>
+    /// <remarks>
+    /// The tab does not steal focus. It arrives immediately after an Apply, and moving the user
+    /// off the file they just restored to a file of clicks is not what they asked for; the tab
+    /// strip and the status line are enough to find it.
+    /// <para>
+    /// The samples are the exact difference. What makes it audible is
+    /// <see cref="AudioDocument.MonitorGain"/>, which reaches the speakers and nothing else, so
+    /// saving or exporting this tab still writes the true residual.
+    /// </para>
+    /// </remarks>
+    /// <param name="rangeStart">
+    /// Where the pass started in the source. A residual is only as long as the range it came from,
+    /// so two selections restored in one session would otherwise arrive as two identically named
+    /// tabs with nothing to tell them apart or say where either belongs.
+    /// </param>
+    /// <param name="levels">
+    /// Peak and RMS, measured on the worker that built the residual. Omitting them costs a full
+    /// pass over an album-sized buffer on whatever thread calls this — which for every caller here
+    /// is the UI thread, where this repo does no O(file) work.
+    /// </param>
+    public bool AddResidualDocument(AudioDocument source, float[][] removed, string toolName,
+        int rangeStart = 0, RestorationPreview.ResidualLevels? levels = null)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(removed);
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+
+        RestorationPreview.ResidualLevels measured =
+            levels ?? RestorationPreview.MeasureLevels(removed);
+        if (measured.Peak <= ResidualSummary.SilenceThreshold)
+        {
+            ReportAction(ResidualSummary.DescribeNothingRemoved(toolName));
+            return false;
+        }
+
+        // 32-bit float because this is computed rather than captured, matching the channel
+        // tools; it also makes Save As offer float first, which is the only depth that can
+        // hold a residual without dithering the very thing being examined.
+        var doc = new AudioDocument(removed, source.SampleRate, 32)
+        {
+            Title = ResidualTitle(source, rangeStart),
+            IsResidual = true,
+            MonitorGain = ResidualSummary.MonitorGainFor(measured.Peak, measured.Rms),
+        };
+        AddGeneratedDocument(doc, ResidualSummary.Describe(doc.Title, measured.Peak, doc.MonitorGain),
+            activate: false);
+        return true;
+    }
+
+    private static string ResidualTitle(AudioDocument source, int rangeStart)
+    {
+        string name = Path.GetFileNameWithoutExtension(source.Title);
+        if (rangeStart <= 0 || source.SampleRate <= 0) return $"{name} (removed).wav";
+        return $"{name} (removed at {TimeFormat.Compact((double)rangeStart / source.SampleRate)}).wav";
     }
 
     /// <summary>Point-in-time copy sharing the current channel arrays (splices never mutate old arrays).</summary>

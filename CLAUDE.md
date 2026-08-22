@@ -623,6 +623,111 @@ releases the gate, and starting a new take during one has always worked — so a
 `_finalizeGateHolders` counter marks only the stop/snapshot phase, and `StartCore` fails fast on
 that alone.
 
+## Keep what was removed: the residual, and what measuring it said about the tools
+
+A restoration pass is a destructive claim — that what it took out was damage and not music — and
+until now the only evidence was an A/B. **Keep what was removed** collects the pass's residual into
+its own tab so the claim can be listened to.
+
+- **One subtraction covers every tool, and that is the design.** `RestorationPreview.Difference` is
+  the complement of `MixRange`, taken at the commit point from the dry snapshot and the audio that
+  was actually spliced. Three bespoke routes were available and all were declined: `HumTracker`
+  already builds its removed signal as a buffer and throws it away, and the declick and declip
+  deltas are confined to their event spans. **A tool reporting its own residual can disagree with
+  what ran** — the same reason `DescribeDeclipChoices` is the call the selection is made with — and
+  the dry/wet blend falls out for free, `dry − blend = wet·(dry − processed)`.
+- **The dry reference is free everywhere it is needed.** `RunRangeTool` and `RunWholeFileTool`
+  already snapshot `doc.Channels` before the transform, and splices replace channel arrays rather
+  than writing into them, so the difference is taken against that snapshot at an offset. No extra
+  copy of the range is made; the residual itself is the only allocation.
+- **The samples are the exact difference and are never touched.** `AudioDocument.MonitorGain` is
+  applied in `PlaybackEngine.DocumentProvider.Read` and nowhere else, so save, export, the peak
+  pyramid, statistics and loudness are unaffected by construction. It is hard-limited to full scale
+  in `ApplyMonitorGain`, which is not optional: the loudest thing in a declick residual is a click,
+  and it is going to the speakers. `MonitorGain` is read once per callback so one buffer is never
+  half at the old lift; `IsResidual` — not the gain — is what puts the bar on screen, so pulling the
+  lift to 0 dB to hear the true level is not a one-way door.
+- **The lift needs two anchors and either alone gets a real case wrong.** Peak alone under-lifts the
+  case the feature exists for; RMS alone clips the other one. `MonitorGainFor` takes the smaller of
+  "body to −24 dBFS" and "peak to −1 dBFS", clamped to [0, +60] dB. **Both halves are measured, not
+  supposed**, and the measurements are the next three bullets.
+- **A declick residual is louder than the record it came out of, which is the opposite of what the
+  word suggests.** Clicks planted 18 dB above the local level: the residual **peaks at +6.7 dBFS
+  while the programme peaks at −7.8**, rms −32.3. It is offered no lift, correctly. Anyone
+  designing around "residuals are quiet" is designing for the wrong tool.
+- **99.72% of what click repair removes sits on a planted click.** Measured with the hit mask
+  widened by 24 samples either side, because a repair reconstructs from a span a little wider than
+  the defect and charging that to the music would score a correct repair as damage. What lands
+  elsewhere is the detector's false alarms — and hearing them is the point.
+- **The spectral gate's residual is not a hiss bed, and that is the best argument the feature has.**
+  With hiss planted 18 dB down the residual sits **5.6 dB under the programme**; planted 30 dB down
+  it sits **5.8 dB under**. It barely moves, because the gate reduces by a fixed depth wherever it
+  is asked to, so what it removes tracks the programme rather than the noise. That is the same
+  finding the corpus records — a fixed reduction on hiss already far down costs more music than it
+  saves noise, which is why `SuggestReductionDepthDb` exists — except that it is now **audible**
+  rather than a number in this file.
+- **Hum removal is the case the lift was built for, and its residual is not only hum.** A −42 dBFS
+  mains line comes out as a **−33 dBFS residual** — about 9 dB more than there was hum to take,
+  which is the music in the notches' skirts, and exactly why `HumTracker` subtracts an estimate of
+  each partial rather than notching. It sits 15 dB under the programme and is offered **+9 dB**.
+- **Residual plus restored returns the original to 3.7e-9** over 88,200 samples of real repair.
+  Asserted as a bound rather than as bit equality: `(a−b)+b` is exactly `a` only where Sterbenz
+  applies, which a repair usually but not always satisfies.
+- **The option is off by default and the caption states its cost**, because keeping a residual is
+  one more copy of the range — about 505 MB for a 25-minute stereo side. It is remembered in
+  `AppSettings.KeepRemovedMaterial`, since the person who wants it wants it for a collection. It is
+  deliberately kept out of `RestorationSettings`: folding it in would invalidate the wet preview
+  cache and mark the preset custom for a choice about where the output goes.
+- **The residual tab does not steal focus.** It arrives immediately after an Apply, and moving the
+  user off the file they just restored onto a file of clicks is not what they asked for. A pass that
+  removed nothing opens no tab and says so — an empty tab is worse than no tab.
+- **Wow and flutter is deliberately excluded.** Correcting a time base integrates a rate, so a
+  whole-file waveform residual reads a good correction as total failure; this file already records
+  that trap twice. A residual there would be actively misleading.
+### Review fixes, and the two that were about telling the truth rather than about audio
+
+- **Cancelling while the residual was being built reported "document unchanged" about a document
+  that had been changed.** The splice commits, then `Difference` runs under the same token, and
+  `ProgressHost.RunAsync` only has a `finally` — so the cancellation reached the caller's handler,
+  which says the document is untouched. It is not a narrow window: building a residual for a record
+  side is half a gigabyte of writes with a cancellation check every 65 k samples. Both orchestrators
+  now go through `MainWindow.CaptureRemovedAsync`, where **cancelling cancels the residual and not
+  the repair** and the message says which half you got; the outer handler is guarded on `applied`
+  as a backstop. The workbench never had this — there the difference is taken inside the render's
+  own `Task.Run`, before the commit — and that asymmetry is now deliberate rather than accidental.
+- **The peak and RMS behind the monitor lift were two full passes on the UI thread**, which is the
+  rule this file states for itself and then broke. They are one pass (`MeasureLevels`) on the worker
+  that built the residual, handed to `AddResidualDocument`; measuring there is still supported and
+  documented as what it costs. It hid well because it ran under the blocking overlay, so it read as
+  the operation still going rather than as a freeze — worth remembering when judging whether a
+  progress overlay is covering for something.
+- **A residual is a whole extra copy of the range and had no ceiling, where the clipboard already
+  has one.** Stating the cost in the caption is not declining an impossible one: without a limit a
+  three-hour 96 kHz transfer throws `OutOfMemoryException` out of a background task *after* the
+  repair has committed. `ResidualSummary.MaximumResidualBytes` is the clipboard's 512 MB, the option
+  is **shown and disabled** past it rather than hidden — an option that vanishes on long files reads
+  as a feature that does not exist — and `ReadKeepRemoved` will not persist an answer from a box the
+  user was never able to reach.
+- **The limit on the monitor path was gated on the gain not being one, which skipped it exactly
+  where it was needed.** A declick residual is louder than the record it came from and is correctly
+  left at unity, so `if (gain == 1f) return` sent a +6.7 dBFS click straight to the speakers of
+  somebody about to hear it for the first time. `ApplyMonitorGain` now takes a `limit` flag set from
+  `IsResidual`; ordinary documents pass through untouched as they always have.
+- Three smaller ones. `AddDocument(activate: false)` could leave a workspace holding documents with
+  nothing selected, so the first tab activates regardless. The crackle tool's `ContinueWith` wrote
+  its defect count over the residual's status line, and now composes one line carrying both. And a
+  sub-range residual is titled **"(removed at 1:23)"**, because two selections restored in one
+  session otherwise arrive as two identically named tabs with nothing to say where either belongs.
+
+- **Rendering the monitor bar found the assertion wrong rather than the layout, and the failure mode
+  is worth knowing.** `DesiredSize.Width` includes an element's own margin and `ActualWidth` does
+  not, so a note given exactly the width it wanted read as trimmed by its 14 px margin. Worse, the
+  test **crashed the host rather than failing**: an assertion thrown inside `Wpf.Show`'s callback
+  skipped the cleanup, so `MainWindow`'s close path met two unsaved documents and put up a modal box
+  with nobody on that thread to answer it. **In a shell probe, measure inside the callback and
+  assert outside it, and mark documents saved in a `finally`.** At the shell's 1180 px minimum the
+  bar is one 45 px row and the note fits in 469.5 px.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

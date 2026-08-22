@@ -126,7 +126,7 @@ public static class HelpCatalog
 
         Topic("restoration", "RESTORATION", "Vinyl restoration and cleanup",
             "Repair clicks, clipped peaks, noise, and hum while protecting the source.",
-            "vinyl restore clicks pops declip noise profile denoise hum workbench preview",
+            "vinyl restore clicks pops declip noise profile denoise hum workbench preview residual removed monitor gain difference",
             Section("Vinyl Restoration & CD Transfer",
                 "The workbench first analyzes the selection or file. It estimates clicks, flat-topped peaks, a quiet noise passage, and hum. Gentle, Balanced, and Strong presets set a starting point. The source is untouched until Apply; Apply & Prepare CD continues directly into track preparation."),
             Section("Clicks and declipping",
@@ -135,6 +135,12 @@ public static class HelpCatalog
                 "Learn Noise Profile from Selection captures a representative noise-only passage for later reduction. Reduce Noise uses that profile or automatic analysis. Noise reduction amount controls attenuation and sensitivity controls detection. Hum Removal notches 50 or 60 Hz and selected harmonics; use the frequency matching local mains power."),
             Section("Preview and apply",
                 "A/B Preview compares dry and processed audio without editing the source. Wet/dry mix and Bypass help detect artifacts. Apply commits one undoable edit to the selection or file. Keep an untouched source recording until restoration choices are approved."),
+            Section("Keep what was removed",
+                "Every restoration tool claims that what it took out was damage rather than music, and Keep what was removed is how that claim is checked. Tick it in the workbench or in the Remove Clicks, Remove Surface Crackle, Remove Hum and Reduce Noise dialogs, and the pass opens a second tab holding exactly what it subtracted. The workbench keeps one combined file for the whole chain. A pass that removed nothing opens no tab and says so."),
+            Section("Listening to removed material",
+                "A residual tab arrives with a MONITOR bar under the transport that lifts it on the way to the speakers only. The samples themselves are the exact difference: mixed back onto the restored file they return the original, and saving or exporting the tab writes the true residual whatever the monitor is set to. True level returns the lift to 0 dB. Not every residual needs lifting — what click repair removes is often louder than the record it came from, while hum and hiss residuals sit far below it. If you hear music rather than clicks, hiss or hum, the settings took too much."),
+            Section("Keeping a residual",
+                "The monitor lift belongs to the tab, not to the file. Save the residual and reopen it and it is an ordinary audio document at its true level, with no MONITOR bar — the samples were always the honest difference, and nothing about the lift was ever written to disk. Keeping a residual also costs a second copy of the range in memory, so the option states the figure and turns itself off for a range too long to hold; restore a shorter selection if you want to hear what a long side gave up."),
             Section("Analyze & Tune",
                 "Analyze & Tune Vinyl Cleanup and Clean Transfer inspect representative quiet and active passages, explain recommendations, and build a custom rack preset. Apply to Rack changes the live rack only; it does not render the document. Preview is bounded and cancellable.")),
 

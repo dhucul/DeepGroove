@@ -89,4 +89,31 @@ public sealed class AppSettingsPersistenceTests : IDisposable
         Assert.Equal("{0.0.1.00000000}.{test}", reloaded.InputDeviceId);
         Assert.Equal(2, reloaded.InputCalibrations.Count);
     }
+
+    /// <summary>
+    /// Whether a restoration pass keeps what it removed. Remembered because the people who want
+    /// it want it for a whole collection, and off by default because it costs a second copy of
+    /// the range and nobody should pay that without asking.
+    /// </summary>
+    [Fact]
+    public void KeepingRemovedMaterialIsOffByDefaultAndSurvivesAReload()
+    {
+        AppSettings settings = AppSettings.Instance;
+        Assert.False(settings.KeepRemovedMaterial);
+
+        settings.KeepRemovedMaterial = true;
+        Assert.True(settings.Save(), settings.LastSaveError);
+
+        AppSettings.AppDataDir = _sandbox; // drops the cached instance
+        Assert.True(AppSettings.Instance.KeepRemovedMaterial);
+    }
+
+    [Fact]
+    public void RestoreDefaultsPutsThatOptionBack()
+    {
+        AppSettings settings = AppSettings.Instance;
+        settings.KeepRemovedMaterial = true;
+        settings.RestoreDefaults();
+        Assert.False(settings.KeepRemovedMaterial);
+    }
 }

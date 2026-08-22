@@ -8,6 +8,7 @@ namespace WaveLab.Audio;
 public sealed class AudioDocument
 {
     private float[][] _channels;
+    private float _monitorGain = 1f;
     private int _sampleRate;
     private int _sourceBitDepth;
     private readonly List<Edit> _undo = [];
@@ -99,6 +100,38 @@ public sealed class AudioDocument
     public RiffMetadata Riff { get; set; } = new();
     public string? FilePath { get; set; }
     public string Title { get; set; } = "Untitled";
+
+    /// <summary>
+    /// True when this document holds what a restoration pass removed rather than programme.
+    /// It is what puts the monitor control on screen: a residual is the one kind of file the
+    /// app makes that cannot be judged at its own level, and every other document should be
+    /// left alone by that control.
+    /// </summary>
+    public bool IsResidual { get; set; }
+
+    /// <summary>
+    /// Linear gain applied <b>only</b> on the way to the speakers, never to the samples.
+    /// A residual — what a restoration pass removed — sits tens of dB below programme, so it
+    /// has to be lifted to be audible at all; baking that lift into the audio would destroy
+    /// the one property that makes a residual worth keeping, which is that it is the exact
+    /// difference and mixes back to the original. Save, export, the peak pyramid, statistics
+    /// and loudness all read <see cref="Channels"/> and so are unaffected by construction.
+    /// </summary>
+    /// <remarks>
+    /// Read by the audio thread from inside <c>PlaybackEngine.DocumentProvider.Read</c> while
+    /// the UI thread may be moving a slider. A float write is atomic, so the volatile pair is
+    /// enough: the callback sees the old value or the new one, never a torn one.
+    /// </remarks>
+    public float MonitorGain
+    {
+        get => Volatile.Read(ref _monitorGain);
+        set
+        {
+            if (!float.IsFinite(value) || value < 0f)
+                throw new ArgumentOutOfRangeException(nameof(value), value, "Monitor gain must be finite and not negative.");
+            Volatile.Write(ref _monitorGain, value);
+        }
+    }
 
     /// <summary>
     /// For captured takes: the level-check outcome that preceded the recording,

@@ -67,6 +67,117 @@ public static class RestorationPreview
         return result;
     }
 
+    /// <summary>
+    /// Return what a restoration pass took out: the sample-aligned difference between the
+    /// audio that went in and the audio that was committed. This is the complement of
+    /// <see cref="MixRange"/> and is deliberately the only way the app derives removed
+    /// material — a tool reporting its own residual can disagree with what actually ran,
+    /// and a dry/wet blend is handled for free (dry − blend = wet · (dry − processed)).
+    /// </summary>
+    /// <param name="dry">The audio before processing. May be longer than <paramref name="processed"/>.</param>
+    /// <param name="processed">The committed result, whose length sets the result length.</param>
+    /// <param name="dryOffset">Where <paramref name="processed"/> starts inside <paramref name="dry"/>.</param>
+    public static float[][] Difference(IReadOnlyList<float[]> dry, IReadOnlyList<float[]> processed,
+        int dryOffset = 0, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(dry);
+        ArgumentNullException.ThrowIfNull(processed);
+        if (dry.Count != processed.Count)
+            throw new ArgumentException("Dry and processed audio must have the same channel count.");
+        ArgumentOutOfRangeException.ThrowIfNegative(dryOffset);
+
+        int count = processed.Count == 0 ? 0 : processed[0]?.Length
+            ?? throw new ArgumentException("Channel buffers cannot be null.", nameof(processed));
+        var result = new float[processed.Count][];
+        for (int c = 0; c < processed.Count; c++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (dry[c] is null || processed[c] is null)
+                throw new ArgumentException("Channel buffers cannot be null.");
+            if (processed[c].Length != count)
+                throw new ArgumentException("Processed channel lengths must match.", nameof(processed));
+            if (dry[c].Length < dryOffset + count)
+                throw new ArgumentException("The dry audio is shorter than the processed range.", nameof(dry));
+
+            float[] source = dry[c];
+            float[] wet = processed[c];
+            var removed = new float[count];
+            for (int i = 0; i < count; i++)
+            {
+                if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                removed[i] = source[dryOffset + i] - wet[i];
+            }
+            result[c] = removed;
+        }
+        return result;
+    }
+
+    /// <summary>How loud a residual is, in the two ways the monitor lift needs to know.</summary>
+    public readonly record struct ResidualLevels(float Peak, float Rms);
+
+    /// <summary>
+    /// Peak and RMS in one pass. Both are wanted together and only ever together, and the caller
+    /// is holding a buffer the size of the range — two passes over that is memory traffic the UI
+    /// thread must not be asked for.
+    /// </summary>
+    public static ResidualLevels MeasureLevels(IReadOnlyList<float[]> channels,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        float peak = 0f;
+        double sum = 0;
+        long count = 0;
+        for (int c = 0; c < channels.Count; c++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            float[] samples = channels[c]
+                ?? throw new ArgumentException("Channel buffers cannot be null.", nameof(channels));
+            for (int i = 0; i < samples.Length; i++)
+            {
+                float sample = samples[i];
+                float magnitude = Math.Abs(sample);
+                if (magnitude > peak) peak = magnitude;
+                sum += (double)sample * sample;
+            }
+            count += samples.Length;
+        }
+        return new ResidualLevels(peak, count == 0 ? 0f : (float)Math.Sqrt(sum / count));
+    }
+
+    /// <summary>Largest absolute sample across every channel; 0 for empty or silent audio.</summary>
+    public static float PeakOf(IReadOnlyList<float[]> channels)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        float peak = 0f;
+        for (int c = 0; c < channels.Count; c++)
+        {
+            float[] samples = channels[c]
+                ?? throw new ArgumentException("Channel buffers cannot be null.", nameof(channels));
+            for (int i = 0; i < samples.Length; i++)
+            {
+                float magnitude = Math.Abs(samples[i]);
+                if (magnitude > peak) peak = magnitude;
+            }
+        }
+        return peak;
+    }
+
+    /// <summary>Root-mean-square across every channel; 0 for empty or silent audio.</summary>
+    public static float RmsOf(IReadOnlyList<float[]> channels)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        double sum = 0;
+        long count = 0;
+        for (int c = 0; c < channels.Count; c++)
+        {
+            float[] samples = channels[c]
+                ?? throw new ArgumentException("Channel buffers cannot be null.", nameof(channels));
+            for (int i = 0; i < samples.Length; i++) sum += (double)samples[i] * samples[i];
+            count += samples.Length;
+        }
+        return count == 0 ? 0f : (float)Math.Sqrt(sum / count);
+    }
+
     /// <summary>Clone deinterleaved channel buffers without changing their sample values.</summary>
     public static float[][] Clone(IReadOnlyList<float[]> channels)
     {

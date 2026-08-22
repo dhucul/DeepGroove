@@ -144,6 +144,13 @@ public sealed class AppSettings
     public List<string> LastSessionFiles { get; set; } = [];
     public string? LastOpenFolder { get; set; }
 
+    /// <summary>
+    /// Whether a restoration pass keeps what it removed as its own tab. Off by default: it costs
+    /// a second copy of the range, and someone who has not asked for it should not pay that.
+    /// Remembered because the people who do want it want it for a whole collection.
+    /// </summary>
+    public bool KeepRemovedMaterial { get; set; }
+
     // Autosave
     public bool AutosaveEnabled { get; set; } = true;
     public int AutosaveMinutes { get; set; } = 3;
@@ -504,6 +511,7 @@ public sealed class AppSettings
         InputCalibrations = d.InputCalibrations;
         ReopenLastSession = d.ReopenLastSession;
         UndoLimitMb = d.UndoLimitMb;
+        KeepRemovedMaterial = d.KeepRemovedMaterial;
         AutosaveEnabled = d.AutosaveEnabled;
         AutosaveMinutes = d.AutosaveMinutes;
         ExportFormat = d.ExportFormat;

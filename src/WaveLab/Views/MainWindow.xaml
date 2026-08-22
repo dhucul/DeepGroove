@@ -603,6 +603,38 @@
                            Visibility="{Binding NeedsSpectralSelection, Converter={StaticResource BoolToVis}}"/>
             </DockPanel>
         </Border>
+
+        <!-- ═══ monitor ═══ -->
+        <!-- A residual sits tens of dB under programme, so it cannot be judged at its own level.
+             This lifts it on the way to the speakers and nowhere else: the samples stay the exact
+             difference, which is the only reason keeping them is worth anything. Its own bar for
+             the same reason the spectral actions got one — the transport row is full — and it
+             appears only on a residual, so every other file is untouched. -->
+        <Border x:Name="monitorBar" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"
+                Background="{StaticResource Panel}"
+                Visibility="{Binding ShowsMonitorGain, Converter={StaticResource BoolToVis}}">
+            <DockPanel Margin="14,7" LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left" Text="MONITOR" FontSize="9" FontWeight="SemiBold"
+                           VerticalAlignment="Center" Margin="0,0,14,0" Foreground="{StaticResource Faint}"/>
+                <Slider x:Name="monitorGainSlider" DockPanel.Dock="Left" Width="240" VerticalAlignment="Center"
+                        Minimum="0" Maximum="60" TickFrequency="6"
+                        Value="{Binding MonitorGainDb}"
+                        ToolTip="Lift this file on the way to the speakers only"
+                        AutomationProperties.Name="Monitor gain"/>
+                <TextBlock DockPanel.Dock="Left" Margin="12,0,0,0" VerticalAlignment="Center"
+                           FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                           Foreground="{StaticResource TextDim}"
+                           Text="{Binding MonitorGainText, FallbackValue=+0.0 dB}"/>
+                <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="True level"
+                        Width="Auto" MinWidth="92" Height="30" Margin="14,0,0,0"
+                        Click="OnResetMonitorGain"
+                        ToolTip="Back to 0 dB — hear the removed material at the level it really is"
+                        AutomationProperties.Name="Reset monitor gain"/>
+                <TextBlock x:Name="monitorNote" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="14,0,0,0"
+                           FontSize="10.5" Foreground="{StaticResource Faint}"
+                           Text="Playback only — this file holds the exact difference, and saves and exports write it unchanged."/>
+            </DockPanel>
+        </Border>
         </StackPanel>
 
         <!-- ═══ file tabs ═══ -->

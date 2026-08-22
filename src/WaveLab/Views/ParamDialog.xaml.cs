@@ -20,6 +20,7 @@ public partial class ParamDialog : Window
 
     private readonly List<(SliderSpec Spec, Slider Slider, TextBlock Value)> _sliders = [];
     private readonly List<ComboBox> _combos = [];
+    private readonly List<CheckBox> _checks = [];
 
     /// <summary>The first choice's index, for the many callers that only have one.</summary>
     public int ComboIndex => _combos.Count > 0 ? _combos[0].SelectedIndex : -1;
@@ -28,6 +29,45 @@ public partial class ParamDialog : Window
     public int[] ComboIndices => _combos.Select(c => c.SelectedIndex).ToArray();
 
     public double[] Values => _sliders.Select(s => s.Slider.Value).ToArray();
+
+    /// <summary>Every checkbox's state, in the order they were added.</summary>
+    public bool[] Checks => _checks.Select(c => c.IsChecked == true).ToArray();
+
+    /// <summary>
+    /// Whether each checkbox could be reached. A disabled box reads as unchecked, and a caller
+    /// remembering that answer would overwrite a preference the user was never offered.
+    /// </summary>
+    public bool[] ChecksEnabled => _checks.Select(c => c.IsEnabled).ToArray();
+
+    /// <summary>
+    /// Append a labelled option under whatever the constructor built. Added after construction
+    /// rather than as another spec parameter because the constructors end in
+    /// <c>params SliderSpec[]</c>, which nothing can follow.
+    /// </summary>
+    /// <param name="caption">A quieter second line under the box; null for none.</param>
+    public void AddCheck(string label, bool initial, string? caption = null, bool enabled = true)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(label);
+        var check = new CheckBox
+        {
+            Content = label,
+            IsChecked = initial,
+            IsEnabled = enabled,
+            Margin = new Thickness(0, _checks.Count == 0 ? 2 : 8, 0, 0),
+        };
+        AutomationProperties.SetName(check, label);
+        body.Children.Add(check);
+        _checks.Add(check);
+        if (caption == null) return;
+        body.Children.Add(new TextBlock
+        {
+            Text = caption,
+            FontSize = 10.5,
+            Foreground = (Brush)FindResource("Faint"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(24, 4, 0, 0),
+        });
+    }
 
     public ParamDialog(string title, string okLabel, string? comboLabel, string[]? comboItems, int comboDefault,
         params SliderSpec[] sliders)
