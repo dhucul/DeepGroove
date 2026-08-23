@@ -151,6 +151,48 @@ public sealed class AppSettings
     /// </summary>
     public bool KeepRemovedMaterial { get; set; }
 
+    /// <summary>
+    /// How far the programme may sit above its own noise floor before broadband reduction declines
+    /// entirely, in dB. Ten is the shipped default and the measured optimum.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is a setting rather than a raised default, and the difference is the whole point.</b>
+    /// The rule it feeds was measured over 108 cells: a fixed depth scores −0.85 dB segmental,
+    /// worse than leaving the audio alone, and scaling the depth takes cells that come out worse
+    /// than doing nothing from 46 of 108 to 15. Raising the ceiling gives that protection back, so
+    /// the default keeps its measurement and anyone who needs the reducer to fire on a quiet-floored
+    /// file can say so per installation.
+    /// </para>
+    /// <para>
+    /// <b>The case it exists for is a record rather than a tape.</b> Surface crackle is impulsive,
+    /// the estimate behind the rule is an RMS ratio, and a plainly audible crackle can measure 24 dB
+    /// under the programme — so the rule declines on exactly the material a user is most sure needs
+    /// help. Raising this is one answer; the de-crackle card is the better one, and the readouts say
+    /// so.
+    /// </para>
+    /// </remarks>
+    public double NoiseDepthCeilingDb { get; set; } = Audio.Dsp.Restoration.NoiseDepthCeilingDb;
+
+    /// <summary>Step the settings slider moves the ceiling in.</summary>
+    public const double NoiseDepthCeilingStepDb = 1.0;
+
+    /// <summary>
+    /// Clamps a ceiling into the range the rule enforces and snaps it to the slider's step, so a
+    /// hand-edited or out-of-range value is corrected rather than discarded. Only a non-finite value
+    /// falls back to the default.
+    /// </summary>
+    public static double NormalizeNoiseDepthCeilingDb(double ceilingDb)
+    {
+        if (!double.IsFinite(ceilingDb)) return Audio.Dsp.Restoration.NoiseDepthCeilingDb;
+        double clamped = Math.Clamp(
+            ceilingDb,
+            Audio.Dsp.Restoration.MinimumNoiseDepthCeilingDb,
+            Audio.Dsp.Restoration.MaximumNoiseDepthCeilingDb);
+        return Math.Round(clamped / NoiseDepthCeilingStepDb, MidpointRounding.AwayFromZero)
+            * NoiseDepthCeilingStepDb;
+    }
+
     // Autosave
     public bool AutosaveEnabled { get; set; } = true;
     public int AutosaveMinutes { get; set; } = 3;
@@ -421,6 +463,8 @@ public sealed class AppSettings
         settings.LastSessionFiles = NormalizePaths(settings.LastSessionFiles, int.MaxValue);
         settings.RecordingTargetCeilingDb =
             NormalizeTargetCeilingDb(settings.RecordingTargetCeilingDb);
+        settings.NoiseDepthCeilingDb =
+            NormalizeNoiseDepthCeilingDb(settings.NoiseDepthCeilingDb);
         // Entries expire and are capped: a calibration is a statement about a
         // physical setup, and neither a six-month-old one nor an unbounded pile of
         // long-unplugged devices is worth offering back to the user. The optional
@@ -512,6 +556,7 @@ public sealed class AppSettings
         ReopenLastSession = d.ReopenLastSession;
         UndoLimitMb = d.UndoLimitMb;
         KeepRemovedMaterial = d.KeepRemovedMaterial;
+        NoiseDepthCeilingDb = d.NoiseDepthCeilingDb;
         AutosaveEnabled = d.AutosaveEnabled;
         AutosaveMinutes = d.AutosaveMinutes;
         ExportFormat = d.ExportFormat;

@@ -88,20 +88,50 @@ public static partial class Restoration
     /// ask for maximum reduction.
     /// </para>
     /// </remarks>
-    public static double EstimateNoiseToProgrammeDb(float[][] data, int sampleRate)
+    /// <remarks>
+    /// <b><paramref name="ceilingDb"/> is here because this method's "no reading" answer is
+    /// expressed in it, not because a measurement depends on a policy.</b> Returning the ceiling is
+    /// how it says "nothing to remove", and once the ceiling is a setting the two have to move
+    /// together: a fixed 10 handed to a rule running at 30 no longer means "nothing", it means
+    /// two thirds of the requested depth — so an empty buffer would ask for heavy reduction, which
+    /// is the exact defect the remarks above record being fixed once already.
+    /// </remarks>
+    public static double EstimateNoiseToProgrammeDb(float[][] data, int sampleRate,
+        double ceilingDb = NoiseDepthCeilingDb)
     {
         ArgumentNullException.ThrowIfNull(data);
-        if (data.Length == 0 || sampleRate <= 0) return NoiseDepthCeilingDb;
+        double noReading = EffectiveCeilingDb(ceilingDb);
+        if (data.Length == 0 || sampleRate <= 0) return noReading;
 
         double best = double.MaxValue;
         foreach (float[] channel in data)
         {
             if (channel is not { Length: > 0 }) continue;
-            double estimate = EstimateChannelNoiseToProgrammeDb(channel, sampleRate);
+            double estimate = EstimateChannelNoiseToProgrammeDb(channel, sampleRate, noReading);
             if (estimate < best) best = estimate;      // the noisiest channel decides
         }
-        return best == double.MaxValue ? NoiseDepthCeilingDb : best;
+        return best == double.MaxValue ? noReading : best;
     }
+
+    /// <summary>Lowest ceiling the rule will run at — the shipped default and its measured optimum.</summary>
+    /// <remarks>
+    /// Measured, every ceiling between 8 and 10 dB scores within 0.01 dB of the best over the 108
+    /// cells, so there is nothing below 10 to offer: going lower only protects material that did not
+    /// need protecting.
+    /// </remarks>
+    public const double MinimumNoiseDepthCeilingDb = 10.0;
+
+    /// <summary>Highest ceiling the rule will run at.</summary>
+    /// <remarks>
+    /// Past about 40 the scaling is doing nothing a fixed depth would not do, and a fixed depth is
+    /// what this rule was measured against and beat.
+    /// </remarks>
+    public const double MaximumNoiseDepthCeilingDb = 40.0;
+
+    private static double EffectiveCeilingDb(double ceilingDb) =>
+        double.IsFinite(ceilingDb)
+            ? Math.Clamp(ceilingDb, MinimumNoiseDepthCeilingDb, MaximumNoiseDepthCeilingDb)
+            : NoiseDepthCeilingDb;
 
     /// <summary>Below this a window is digital silence rather than a noise floor.</summary>
     /// <remarks>
@@ -109,16 +139,17 @@ public static partial class Restoration
     /// </remarks>
     private const double SilentWindowRms = 1e-10;
 
-    private static double EstimateChannelNoiseToProgrammeDb(float[] channel, int sampleRate)
+    private static double EstimateChannelNoiseToProgrammeDb(float[] channel, int sampleRate,
+        double noReading)
     {
         int window = Math.Min(channel.Length, Math.Max(NrFftSize, sampleRate * 2));
         int hop = Math.Min(window, 4096);
-        if (window <= 0) return NoiseDepthCeilingDb;
+        if (window <= 0) return noReading;
 
         double total = 0;
         foreach (float sample in channel) total += (double)sample * sample;
         double programme = Math.Sqrt(total / Math.Max(1, channel.Length));
-        if (!(programme > 0)) return NoiseDepthCeilingDb;
+        if (!(programme > 0)) return noReading;
 
         // The quietest window that is not digital silence.
         //
@@ -154,10 +185,10 @@ public static partial class Restoration
             if (rolling > silenceEnergy && rolling < floorEnergy) floorEnergy = rolling;
             previous = start;
         }
-        if (floorEnergy == double.MaxValue) return NoiseDepthCeilingDb;
+        if (floorEnergy == double.MaxValue) return noReading;
 
         double floor = Math.Sqrt(Math.Max(floorEnergy, 0) / window);
-        return floor > 0 ? 20 * Math.Log10(programme / floor) : NoiseDepthCeilingDb;
+        return floor > 0 ? 20 * Math.Log10(programme / floor) : noReading;
     }
     public const double NoiseDepthCeilingDb = 10.0;
 
@@ -195,11 +226,13 @@ public static partial class Restoration
     /// gap and not a substitute for estimating the mask better.
     /// </para>
     /// </remarks>
-    public static double SuggestReductionDepthDb(float[][] data, int sampleRate, double requestedDb)
+    public static double SuggestReductionDepthDb(float[][] data, int sampleRate, double requestedDb,
+        double ceilingDb = NoiseDepthCeilingDb)
     {
         // Nothing asked for, so the measurement is not worth taking - it walks every sample.
         if (Math.Abs(requestedDb) <= 0) return 0;
-        return SuggestReductionDepthDb(EstimateNoiseToProgrammeDb(data, sampleRate), requestedDb);
+        return SuggestReductionDepthDb(
+            EstimateNoiseToProgrammeDb(data, sampleRate, ceilingDb), requestedDb, ceilingDb);
     }
 
     /// <summary>
@@ -214,14 +247,15 @@ public static partial class Restoration
     /// restoration workbench did exactly that for one commit, which put a third of a second of
     /// whole-file scanning on the dispatcher per tick of any of its ten sliders.
     /// </remarks>
-    public static double SuggestReductionDepthDb(double estimateDb, double requestedDb)
+    public static double SuggestReductionDepthDb(double estimateDb, double requestedDb,
+        double ceilingDb = NoiseDepthCeilingDb)
     {
         double requested = Math.Abs(requestedDb);
         if (requested <= 0) return 0;
-        if (double.IsNaN(estimateDb) || estimateDb >= NoiseDepthCeilingDb) return 0;
+        double ceiling = EffectiveCeilingDb(ceilingDb);
+        if (double.IsNaN(estimateDb) || estimateDb >= ceiling) return 0;
         if (estimateDb <= NoiseDepthFloorDb) return requested;
-        return requested * (NoiseDepthCeilingDb - estimateDb)
-            / (NoiseDepthCeilingDb - NoiseDepthFloorDb);
+        return requested * (ceiling - estimateDb) / (ceiling - NoiseDepthFloorDb);
     }
 
     /// <summary>

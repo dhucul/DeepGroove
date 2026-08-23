@@ -956,6 +956,47 @@ whole result.
   boundary-error comparison above — measuring the plan against the filter rather than against the
   formula that produced it, which would only check one arithmetic against itself.
 
+### The depth ceiling is a setting now, and the default is untouched
+
+`SuggestReductionDepthDb` declines on a record whose crackle is plainly audible, because the
+estimate behind it is an RMS ratio and crackle is impulsive — `One More Chance` measures 24.2 dB
+against a ceiling of 10 and gets nothing. The rule is right and the user is not wrong, so the
+ceiling moved from a constant to `AppSettings.NoiseDepthCeilingDb`, **defaulting to the same 10 dB
+and clamped to 10–40**.
+
+- **Raising the default was the obvious change and it is the one not made.** The rule is measured
+  over 108 cells: a fixed depth scores −0.85 dB segmental, worse than leaving the audio alone, and
+  scaling takes cells-worse-than-doing-nothing from 46 to 15. Raising the ceiling hands that back.
+  At 30, a file whose hiss is already 15.9 dB down goes from 0 dB applied to 5.6 — and that is the
+  severity where a fixed depth measured −8.13. The setting lets one installation take that trade
+  without every installation taking it, and the Settings line states the trade in those terms rather
+  than warning about the control.
+- **The floor of the range is 10 and not lower, because there is nothing below it to offer.** Every
+  ceiling between 8 and 10 dB scores within 0.01 dB of the best over those cells, so going under the
+  default only protects material that did not need protecting. The top is 40, past which the scaling
+  does nothing a fixed depth would not do.
+- **Making it adjustable reintroduced a defect the estimator had already been fixed for, by another
+  route, and the mechanism is worth stating.** `EstimateNoiseToProgrammeDb` says *no reading* by
+  returning the ceiling — that is how "nothing to measure" is distinguished from a measured zero,
+  which means "the programme is no louder than its own floor" and asks for full depth. Hand a fixed
+  10 to a rule running at 30 and "no reading" stops meaning nothing to remove and starts meaning
+  **two thirds of the requested depth**: an empty buffer asks for 6.7 dB of reduction. So the
+  estimator takes the ceiling too, and its sentinel is expressed in whatever ceiling is in force.
+  `NothingToMeasureAsksForNothingAtEveryCeiling` pins it, and was checked by mutation — pinning the
+  sentinel back to the constant fails it at 20, 30 and 40 and passes at 10, which is exactly the
+  signature of the bug.
+- **One ceiling per decision, read once.** The workbench caches it beside `_noiseToProgrammeDb` at
+  analysis time rather than reading `AppSettings` at each use, and `OnReduceNoise` takes it once for
+  both calls. An estimate and a rule evaluated under two different ceilings are not a pair, and the
+  readout would then describe a depth the render did not apply — the disagreement every readout in
+  that dialog is arranged to prevent.
+- **Rendering the General settings page found nothing, but the check was worth having and the first
+  version of it was worthless.** That page is a bare `StackPanel` where the Audio page is a
+  `ScrollViewer`, so content added past the bottom is clipped rather than scrolled. Asserting on its
+  `ActualHeight` proves nothing — a stretched panel reports its host's height whatever the content
+  does — and it read 471 px inside 471 px. `DesiredSize.Height` is the number that answers the
+  question: 263 px of content in 471 px of room.
+
 ### Wiring notes for the next stage added here
 
 - **`RestorationSettings` is positional and `CaptureSettings` fills it positionally**, so a field

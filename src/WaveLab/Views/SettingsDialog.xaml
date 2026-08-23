@@ -1,4 +1,4 @@
-<Window x:Class="WaveLab.Views.SettingsDialog"
+﻿<Window x:Class="WaveLab.Views.SettingsDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Settings" Width="920" Height="720" ResizeMode="NoResize"
@@ -74,6 +74,20 @@
                         </StackPanel>
                         <TextBlock Margin="0,6,0,0" Style="{StaticResource SettingsHint}"
                                    Text="Oldest edits are discarded once history exceeds this memory budget."/>
+
+                        <TextBlock Text="NOISE REDUCTION DEPTH CEILING" Style="{StaticResource SettingsCaption}" Margin="0,20,0,0"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Slider x:Name="sldNoiseCeiling" Width="300" Minimum="10" Maximum="40"
+                                    TickFrequency="1" IsSnapToTickEnabled="True"
+                                    AutomationProperties.Name="Noise reduction depth ceiling"
+                                    ValueChanged="OnNoiseCeilingSliderChanged"/>
+                            <TextBlock x:Name="lblNoiseCeiling" Margin="12,0,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Margin="0,6,0,0" Style="{StaticResource SettingsHint}" TextWrapping="Wrap"
+                                   Text="Broadband noise reduction declines when the programme sits further than this above its own quietest passage, because a fixed depth applied to hiss already far down costs more music than it saves noise. Raise it to make the reducer fire on a file with a quiet floor — a record's surface crackle is impulsive, so it can measure far down and still be plainly audible."/>
+                        <TextBlock x:Name="lblNoiseCeilingWarning" Margin="0,6,0,0" FontSize="10.5" TextWrapping="Wrap"
+                                   Foreground="{StaticResource Amber}"/>
                     </StackPanel>
 
                     <!-- Audio Hardware -->

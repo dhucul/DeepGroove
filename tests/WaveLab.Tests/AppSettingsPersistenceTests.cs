@@ -1,4 +1,4 @@
-using WaveLab.Util;
+﻿using WaveLab.Util;
 using Xunit;
 
 namespace WaveLab.Tests;
@@ -29,6 +29,30 @@ public sealed class AppSettingsPersistenceTests : IDisposable
         {
             // A locked temp directory must not fail the run.
         }
+    }
+
+    /// <summary>
+    /// The depth ceiling survives a real write and reload, and an out-of-range one is corrected on
+    /// the way back in rather than failing the whole file.
+    /// </summary>
+    [Fact]
+    public void TheNoiseDepthCeilingRoundTripsAndIsCorrectedOnReload()
+    {
+        AppSettings settings = AppSettings.Instance;
+        settings.NoiseDepthCeilingDb = 30;
+        Assert.True(settings.Save(), settings.LastSaveError);
+
+        AppSettings.AppDataDir = _sandbox;                 // drops the cached instance
+        Assert.Equal(30, AppSettings.Instance.NoiseDepthCeilingDb);
+
+        // A value no slider can produce, as a hand-edited file would carry. It is corrected on the
+        // way back in rather than failing the write of the whole file.
+        AppSettings.Instance.NoiseDepthCeilingDb = 4_000;
+        Assert.True(AppSettings.Instance.Save(), AppSettings.Instance.LastSaveError);
+
+        AppSettings.AppDataDir = _sandbox;
+        Assert.Equal(WaveLab.Audio.Dsp.Restoration.MaximumNoiseDepthCeilingDb,
+            AppSettings.Instance.NoiseDepthCeilingDb);
     }
 
     [Fact]
