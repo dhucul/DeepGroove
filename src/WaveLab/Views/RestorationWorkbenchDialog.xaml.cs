@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -34,6 +34,11 @@ public partial class RestorationWorkbenchDialog : Window
         double HumFrequency,
         int HumHarmonics,
         double HumQ,
+        bool RemoveSubsonic,
+        double SubsonicCutoffHz,
+        double SideLevel,
+        bool Decrackle,
+        double DecrackleThreshold,
         double WetAmount,
         bool Bypass);
 
@@ -248,13 +253,22 @@ public partial class RestorationWorkbenchDialog : Window
                 }
                 operation.Token.ThrowIfCancellationRequested();
                 return (Source: source, Noise: noise, Clicks: clicks, Clipping: clipping,
-                    Recommendations: recommendations);
+                    Recommendations: recommendations, Cleanup: cleanup);
             }, operation.Token);
 
             if (!IsCurrent(operation)) return;
             _source = prepared.Source;
             _noiseProfile = prepared.Noise.Profile;
             _noiseToProgrammeDb = Restoration.EstimateNoiseToProgrammeDb(prepared.Source, _sampleRate);
+            // Both measurements come from the analysis that already ran; neither is taken again
+            // when a slider moves. The rumble sentence is the analyzer's own, so the card cannot
+            // describe the subsonic band differently from the chain that filters it.
+            _sideToMidDb = prepared.Cleanup.SideToMidDb;
+            CleanupRecommendation? rumble = prepared.Cleanup.Recommendations
+                .FirstOrDefault(item => item.TypeId == "filter");
+            _rumbleEvidence = rumble?.Evidence;
+            _rumbleConfidence = rumble?.Confidence ?? 0;
+            _impulsesFound = prepared.Clicks.Events.Count;
             _clickAnalysis = prepared.Clicks;
             _clippingAnalysis = prepared.Clipping;
             _analyzedClickSensitivity = prepared.Recommendations.ClickSensitivity;
@@ -568,15 +582,27 @@ public partial class RestorationWorkbenchDialog : Window
         var source = _source ?? throw new InvalidOperationException("The restoration source is not ready.");
         analyses = AnalysisForApplyRange(analyses);
         int padding = Math.Max(Restoration.NrFftSize * 2, _sampleRate / 10);
+        // The high-pass is an IIR and the de-crackler fits its models on a block grid anchored at
+        // sample zero, so both need the lead-in for the same reason hum and the gate do: started
+        // cold at a preview boundary one thumps and the other disagrees with the full render about
+        // what is crackle. Neither was covered by the flat fallback pad.
+        bool usesSubsonicState = !settings.Bypass && settings.WetAmount > 0 && settings.RemoveSubsonic;
+        bool usesCrackleGrid = !settings.Bypass && settings.WetAmount > 0 && settings.Decrackle;
         bool needsContinuousState = !settings.Bypass && settings.WetAmount > 0 &&
             ((settings.RemoveHum && settings.HumAmount > 0) ||
-             (settings.ReduceNoise && settings.NoiseReductionDb > 0 && _noiseProfile is { Length: > 0 }));
+             (settings.ReduceNoise && settings.NoiseReductionDb > 0 && _noiseProfile is { Length: > 0 }) ||
+             usesSubsonicState || usesCrackleGrid);
         bool usesNoiseState = needsContinuousState && settings.ReduceNoise &&
                               settings.NoiseReductionDb > 0 && _noiseProfile is { Length: > 0 };
         bool usesHumState = needsContinuousState && settings.RemoveHum && settings.HumAmount > 0;
         var plan = needsContinuousState
             ? RestorationPreviewPlanning.Create(_previewStart, _sampleRate,
-                usesHumState, settings.HumFrequency, settings.HumQ, usesNoiseState)
+                usesHumState, settings.HumFrequency, settings.HumQ, usesNoiseState,
+                usesSubsonicState, settings.SubsonicCutoffHz,
+                usesCrackleGrid
+                    ? Decrackle.BlockLengthFor(DecrackleOptions.Default with
+                        { Threshold = settings.DecrackleThreshold })
+                    : 0)
             : default;
         int bufferStart = needsContinuousState
             ? plan.StartSample
@@ -659,8 +685,37 @@ public partial class RestorationWorkbenchDialog : Window
         double progressStart, double progressSpan)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        double step = progressSpan / 5.0;
+        // Eight slots, seven increments: the last is consumed by the dry/wet blend, which reports
+        // and does not advance. Adding a stage without adding its `at += step` silently compresses
+        // every bar after it.
+        double step = progressSpan / 8.0;
         double at = progressStart;
+
+        // The subsonic filter runs first so that everything measured downstream - the robust
+        // scales inside the two autoregressive passes, and the levels on the cards - is measured
+        // on the audible band rather than on rumble that can hold half the file's energy.
+        // Measured, the placement does not change the repair itself; see Restoration.RemoveSubsonic.
+        if (!settings.Bypass && settings.RemoveSubsonic)
+        {
+            progress.Report(new OperationProgress(
+                $"Removing subsonic rumble below {settings.SubsonicCutoffHz:0} Hz…", at));
+            Restoration.RemoveSubsonic(work, _sampleRate, settings.SubsonicCutoffHz, 1.0,
+                cancellationToken);
+        }
+        at += step;
+
+        // Then the vertical noise, and before the repairers rather than after them. Collapsing the
+        // side is what turns one anti-phase tick into a single coherent event that one interpolator
+        // can remove - left in place, each channel's model sees a different realisation of it and
+        // summing the repaired channels back reconstitutes what the other one still holds.
+        if (!settings.Bypass && settings.SideLevel < 1.0)
+        {
+            progress.Report(new OperationProgress(settings.SideLevel <= 0
+                ? "Discarding the side signal and its vertical surface noise…"
+                : $"Reducing the side signal to {settings.SideLevel:P0}…", at));
+            Restoration.ScaleSide(work, settings.SideLevel, cancellationToken);
+        }
+        at += step;
 
         if (!settings.Bypass && settings.Declip && settings.DeclipStrength > 0)
         {
@@ -684,6 +739,24 @@ public partial class RestorationWorkbenchDialog : Window
                     Strength = settings.ClickStrength,
                     MaximumOvershoot = 1.2,
                 }, cancellationToken);
+        }
+        at += step;
+
+        // After click repair, and after the side collapse above, which is the ordering the
+        // measurement is about: on the un-collapsed stereo file this stage moves almost nothing.
+        if (!settings.Bypass && settings.Decrackle)
+        {
+            progress.Report(new OperationProgress(
+                $"Removing surface crackle at {settings.DecrackleThreshold:0.0} deviations…", at));
+            var crackleOptions = DecrackleOptions.Default with
+            {
+                Threshold = settings.DecrackleThreshold,
+            };
+            for (int channel = 0; channel < work.Length; channel++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Decrackle.Process(work[channel], crackleOptions, cancellationToken);
+            }
         }
         at += step;
 
@@ -712,8 +785,12 @@ public partial class RestorationWorkbenchDialog : Window
             double depth = Restoration.SuggestReductionDepthDb(
                 _noiseToProgrammeDb ?? Restoration.EstimateNoiseToProgrammeDb(work, _sampleRate),
                 settings.NoiseReductionDb);
+            // Naming the other tool matters here rather than being a courtesy. The rule is an RMS
+            // ratio, and crackle is impulsive - a surface can be plainly audible while its floor
+            // sits 24 dB under the programme, which is exactly the reading that switches this stage
+            // off. The rule is right and the user is not wrong; they are looking at the wrong card.
             progress.Report(new OperationProgress(depth <= 0
-                ? "Little hiss under the programme — leaving broadband noise alone…"
+                ? "Little hiss under the programme — leaving broadband noise alone; surface crackle is the other card…"
                 : $"Reducing broadband surface noise and hiss at {depth:0.0} dB…", at));
             if (depth > 0)
                 Restoration.ReduceNoise(work, profile, depth,
@@ -836,6 +913,15 @@ public partial class RestorationWorkbenchDialog : Window
             humFrequency.SelectedIndex = recommendations.HumFrequency == 50 ? 0 : 1;
             humHarmonics.Value = recommendations.HumHarmonics;
             humQ.Value = recommendations.HumQ;
+            subsonicEnabled.IsChecked = recommendations.HighPass;
+            subsonicCutoff.Value = recommendations.HighPassCutoffHz;
+            // The side control is enabled only where there is something to do. Recommending
+            // "on at 100%" would be a stage that runs and changes nothing, and recommending
+            // "off at 0%" would hide a collapse behind a switch.
+            verticalEnabled.IsChecked = recommendations.SideLevel < 1.0;
+            sideLevel.Value = recommendations.SideLevel * 100;
+            decrackleEnabled.IsChecked = recommendations.Decrackle;
+            decrackleThreshold.Value = recommendations.DecrackleThreshold;
             if (presetCombo.Items.Count >= 5)
                 presetCombo.SelectedIndex = 4;
         }
@@ -983,6 +1069,99 @@ public partial class RestorationWorkbenchDialog : Window
             : new NoiseDepthLine($"Applying {appliedDb:0.0} dB", measured, false);
     }
 
+    // ── the vertical-noise and rumble readouts ────────────────
+
+    /// <summary>Side-to-mid over the programme, cached from the analysed audio.</summary>
+    /// <remarks>Cached for the same reason as <see cref="_noiseToProgrammeDb"/>: it is a property
+    /// of the audio, not of any control, and it walks the whole side.</remarks>
+    private double? _sideToMidDb;
+
+    /// <summary>The rumble sentence the cleanup analyzer already wrote, and its confidence.</summary>
+    private string? _rumbleEvidence;
+    private double _rumbleConfidence;
+
+    /// <summary>Whether the click analysis found impulses — the evidence de-crackle rides on.</summary>
+    private int _impulsesFound;
+
+    /// <summary>
+    /// Says what the side control will do and the measurement that decided how far it may go.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Two different facts, and reporting only one of them would be misleading either way.</b>
+    /// That the surface noise is vertical is true of every record measured here; that the side may
+    /// be discarded is true only where the disc was cut mono. A line saying "the noise is in the
+    /// side" invites collapsing a stereo record, and a line saying only "mono pressing" hides why
+    /// the control exists at all.
+    /// </para>
+    /// <para>Pure, so the wording is unit-tested without a window.</para>
+    /// </remarks>
+    internal static string DescribeSideLevel(bool enabled, bool analysed, bool stereo,
+        double sideToMidDb, double level)
+    {
+        if (!stereo) return "This document is mono; there is no side signal to reduce.";
+        if (!analysed) return "Run analysis to measure the side signal.";
+        if (!enabled) return "This card is switched off; the side signal is untouched.";
+
+        string pressing = sideToMidDb <= RestorationRecommendations.MonoPressingSideToMidDb
+            ? $"The side sits {-sideToMidDb:0.0} dB under the mid over the programme, so this was cut mono and its side carries surface noise rather than music."
+            : sideToMidDb >= RestorationRecommendations.StereoSideToMidDb
+                ? $"The side sits {-sideToMidDb:0.0} dB under the mid over the programme, which is real stereo content — reducing it narrows the image as well as the noise."
+                : $"The side sits {-sideToMidDb:0.0} dB under the mid over the programme, between a mono pressing and a stereo one, so some of what goes is music.";
+
+        return level >= 1.0
+            ? $"Leaving the side at full. {pressing}"
+            : level <= 0
+                ? $"Discarding the side entirely. {pressing}"
+                : $"Reducing the side by {-20 * Math.Log10(Math.Max(level, 1e-6)):0.0} dB. {pressing}";
+    }
+
+    /// <summary>
+    /// Says what the de-crackle recommendation was made from, because it is weaker evidence than
+    /// the other stages have.
+    /// </summary>
+    /// <remarks>
+    /// Every other card on this dialog is switched on by a measurement of the thing it removes.
+    /// This one is not: crackle sits below the click detector's reach by definition, so nothing
+    /// here counts it, and the recommendation rides on impulses having been found at all. <b>Saying
+    /// so is the point of the line</b> — a control that turns itself on for a reason the user
+    /// cannot see is one they cannot judge.
+    /// </remarks>
+    internal static string DescribeCrackle(bool enabled, bool analysed, int impulsesFound,
+        double threshold)
+    {
+        if (!analysed) return "Run analysis to see what this went on.";
+        if (!enabled) return "This card is switched off.";
+
+        string basis = impulsesFound > 0
+            ? $"Recommended because the click analysis found {impulsesFound:N0} impulses, so the surface sheds them; the crackle below that is not counted."
+            : "No impulses were found, so there is no evidence of a shedding surface here.";
+        string caution = threshold < 3.0
+            ? " Below 3.0σ this repairs twice as many samples for a worse result — measured, 2.5σ left more audible ticks than 3.5σ did."
+            : "";
+        return $"{basis}{caution}";
+    }
+
+    private void UpdateVerticalNoiseReadouts()
+    {
+        if (sideEvidenceText == null) return;
+
+        bool analysed = _source != null;
+        bool stereo = _source is { Length: >= 2 };
+        sideEvidenceText.Text = DescribeSideLevel(verticalEnabled.IsChecked == true, analysed,
+            stereo, _sideToMidDb ?? 0, sideLevel.Value / 100.0);
+        decrackleEvidenceText.Text = DescribeCrackle(decrackleEnabled.IsChecked == true, analysed,
+            _impulsesFound, decrackleThreshold.Value);
+        subsonicEvidenceText.Text = !analysed
+            ? "Run analysis to measure the subsonic band."
+            : subsonicEnabled.IsChecked != true
+                ? "This card is switched off."
+                : _rumbleEvidence ?? "No persistent subsonic rumble was separated from musical bass.";
+        subsonicEvidenceText.ToolTip = analysed && _rumbleConfidence > 0
+            ? $"Rumble confidence {_rumbleConfidence:P0}."
+            : null;
+    }
+
     private void UpdateNoiseDepthReadout()
     {
         if (noiseDepthText == null) return;
@@ -1093,6 +1272,11 @@ public partial class RestorationWorkbenchDialog : Window
         humFrequency.SelectedIndex == 0 ? 50.0 : 60.0,
         (int)Math.Round(humHarmonics.Value),
         humQ.Value,
+        subsonicEnabled.IsChecked == true,
+        subsonicCutoff.Value,
+        sideLevel.Value / 100.0,
+        decrackleEnabled.IsChecked == true,
+        decrackleThreshold.Value,
         globalMix.Value / 100.0,
         bypassCheck.IsChecked == true);
 
@@ -1195,10 +1379,21 @@ public partial class RestorationWorkbenchDialog : Window
         {
             clickEnabled.IsChecked = declipEnabled.IsChecked = true;
             noiseEnabled.IsChecked = _noiseProfile != null;
+            // The three stages added after these presets were written must be set here too. A
+            // control the preset does not touch keeps whatever the Analyzed pass left, so "Gentle"
+            // would quietly carry a Strong-analysis high-pass and a discarded side channel.
+            //
+            // The side stays where the analysis put it and the presets do not reach for it: how
+            // far it may go is a fact about the pressing, which a strength preset knows nothing
+            // about, and collapsing a stereo record is not a thing "Strong" should mean.
+            subsonicEnabled.IsChecked = true;
+            subsonicCutoff.Value = 30;
+            decrackleEnabled.IsChecked = true;
             switch (presetCombo.SelectedIndex)
             {
                 case 0: // Gentle
                     humEnabled.IsChecked = false;
+                    decrackleThreshold.Value = 4.5;
                     clickSensitivity.Value = 4;
                     clickStrength.Value = 55;
                     declipStrength.Value = 50;
@@ -1212,6 +1407,7 @@ public partial class RestorationWorkbenchDialog : Window
                     break;
                 case 1: // Balanced
                     humEnabled.IsChecked = false;
+                    decrackleThreshold.Value = 3.5;
                     clickSensitivity.Value = 6;
                     clickStrength.Value = 75;
                     declipStrength.Value = 70;
@@ -1224,6 +1420,9 @@ public partial class RestorationWorkbenchDialog : Window
                     globalMix.Value = 90;
                     break;
                 case 2: // Strong
+                    // Not below 3.0: measured, 2.5 deviations repairs twice as many samples and
+                    // leaves more audible ticks than 3.5 does. "Strong" stops where the tool does.
+                    decrackleThreshold.Value = 3.0;
                     humEnabled.IsChecked = true;
                     clickSensitivity.Value = 8;
                     clickStrength.Value = 92;
@@ -1266,7 +1465,11 @@ public partial class RestorationWorkbenchDialog : Window
         humHarmonicsText.Text = $"{humHarmonics.Value:0}";
         humQText.Text = $"Q {humQ.Value:0}";
         mixText.Text = $"{globalMix.Value:0}% restored";
+        subsonicCutoffText.Text = $"{subsonicCutoff.Value:0} Hz";
+        sideLevelText.Text = $"{sideLevel.Value:0}%";
+        decrackleThresholdText.Text = $"{decrackleThreshold.Value:0.0}σ";
         UpdateNoiseDepthReadout();
+        UpdateVerticalNoiseReadouts();
     }
 
     private void QueueParameterRefresh(bool shortDelay = false)

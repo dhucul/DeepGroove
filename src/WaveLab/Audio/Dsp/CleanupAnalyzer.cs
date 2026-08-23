@@ -17,7 +17,8 @@ public static class CleanupAnalyzer
         double DynamicRangeDb,
         double IntegratedLufs,
         double TruePeakDb,
-        double StereoCorrelation);
+        double StereoCorrelation,
+        double SideToMidDb);
 
     private sealed record SpectralWindow(double[] Power, double RmsDb, double ZeroRatio);
 
@@ -111,6 +112,7 @@ public static class CleanupAnalyzer
             BaselinePreset = CleanupAnalysisResult.ClonePreset(baseline),
             RecommendedPreset = recommended,
             WindowsAnalyzed = spectral.WindowsAnalyzed,
+            SideToMidDb = global.SideToMidDb,
         };
     }
 
@@ -380,11 +382,18 @@ public static class CleanupAnalyzer
         }
         meter.FlushTruePeak();
 
+        // Mid and side energy is accumulated alongside the block level, per block, so that the
+        // side-to-mid ratio can be taken over the programme rather than over the whole file. Over
+        // the whole file it is dominated by whichever is longer, the music or the run-out, and on a
+        // record those two answer opposite questions.
+        var blockMidSide = new List<(double Level, double Mid, double Side)>();
+
         for (int start = 0; start < frames; start += blockFrames)
         {
             cancellationToken.ThrowIfCancellationRequested();
             int end = Math.Min(frames, start + blockFrames);
             double power = 0;
+            double midPower = 0, sidePower = 0;
             int zeros = 0;
             int values = Math.Max(1, (end - start) * channelCount);
             for (int frame = start; frame < end; frame++)
@@ -395,9 +404,20 @@ public static class CleanupAnalyzer
                     power += value * value;
                     if (value == 0) zeros++;
                 }
+                if (channelCount >= 2)
+                {
+                    double mid = (Finite(channels[0][frame]) + Finite(channels[1][frame])) * 0.5;
+                    double side = (Finite(channels[0][frame]) - Finite(channels[1][frame])) * 0.5;
+                    midPower += mid * mid;
+                    sidePower += side * side;
+                }
             }
             double rmsDb = 10 * Math.Log10(Math.Max(1e-12, power / values));
-            if (rmsDb > -100 && zeros < values * 0.95) blockLevels.Add(rmsDb);
+            if (rmsDb > -100 && zeros < values * 0.95)
+            {
+                blockLevels.Add(rmsDb);
+                if (channelCount >= 2) blockMidSide.Add((rmsDb, midPower, sidePower));
+            }
         }
 
         blockLevels.Sort();
@@ -411,7 +431,45 @@ public static class CleanupAnalyzer
             ? cross / Math.Max(1e-12, Math.Sqrt(sumSquares[0] * sumSquares[1]))
             : 1;
         return new GlobalStats(frames, rms, peak, noiseFloor, activeMedian, dynamic,
-            meter.IntegratedLufs, meter.TruePeakDb, Math.Clamp(correlation, -1, 1));
+            meter.IntegratedLufs, meter.TruePeakDb, Math.Clamp(correlation, -1, 1),
+            SideToMidDb(blockMidSide, activeMedian));
+    }
+
+    /// <summary>
+    /// How far the side signal sits under the mid over the programme, in dB. Positive means the
+    /// difference signal is the louder of the two.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This measures the pressing, not the noise, and the distinction is the whole point.</b> A
+    /// record's surface noise is vertical whatever was cut into it — measured across five transfers,
+    /// side-to-mid rose from the programme to the quietest window by 11.0, 13.1, 16.0, 19.1 and 24.1
+    /// dB, every one of them, including the widest stereo record in the set. So that rise says the
+    /// noise is in the side signal and says nothing about whether music is in there with it. Only
+    /// the programme ratio answers that, and it split the same five cleanly: −16.5, −15.2 and −12.3
+    /// dB where the disc was cut mono, −9.8 and −6.0 where it was not.
+    /// </para>
+    /// <para>
+    /// The gate is <see cref="GlobalStats.ActiveMedianDb"/>, the 60th percentile of block level that
+    /// the dynamic-range figure is already built on, so the ratio is taken over the louder two fifths
+    /// of the file. Taken over the whole file instead it is dominated by whichever is longer, the
+    /// music or the run-out, which on a record are the two answers being told apart.
+    /// </para>
+    /// </remarks>
+    private static double SideToMidDb(
+        IReadOnlyList<(double Level, double Mid, double Side)> blocks, double activeMedianDb)
+    {
+        double mid = 0, side = 0;
+        foreach (var block in blocks)
+        {
+            if (block.Level < activeMedianDb) continue;
+            mid += block.Mid;
+            side += block.Side;
+        }
+        // Nothing cleared the gate, or the file is silent: no reading rather than a wrong one.
+        // Zero is the neutral answer, and it recommends leaving the side alone.
+        if (mid <= 0) return 0;
+        return 10 * Math.Log10(Math.Max(1e-20, side) / mid);
     }
 
     private static SpectralStats MeasureSpectra(

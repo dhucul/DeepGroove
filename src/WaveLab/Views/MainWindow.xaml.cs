@@ -1586,7 +1586,11 @@ public partial class MainWindow : Window
         if (chosen is <= 0 && floor is { } measured)
             InfoDialog.Show(this, "Reduce Noise",
                 $"The hiss already sits {measured:0.0} dB under the programme, where a fixed "
-                + "reduction costs more music than it saves noise. Nothing was changed.");
+                + "reduction costs more music than it saves noise. Nothing was changed." + "\n\n"
+                + "That measurement is an RMS ratio, so it cannot see impulsive noise. If what you "
+                + "can hear is surface crackle rather than hiss, Restore ▸ Remove Surface "
+                + "Crackle is the tool for it — and on a record cut mono, mixing down to mono "
+                + "first removes most of it, because groove noise is vertical.");
     }
 
     private async void OnRemoveClicks(object sender, RoutedEventArgs e)

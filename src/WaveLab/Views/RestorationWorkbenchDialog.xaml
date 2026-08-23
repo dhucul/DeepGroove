@@ -1,4 +1,4 @@
-<Window x:Class="WaveLab.Views.RestorationWorkbenchDialog"
+﻿<Window x:Class="WaveLab.Views.RestorationWorkbenchDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Vinyl Restoration" Width="960" Height="760" MinWidth="860" MinHeight="680"
@@ -116,7 +116,7 @@
 
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
 
                         <!-- click / pop repair -->
                         <Border Style="{StaticResource Card}">
@@ -261,6 +261,72 @@
                                 </Grid>
                                 <Slider x:Name="humQ" Minimum="8" Maximum="60" Value="35"
                                         ValueChanged="OnParameterChanged"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- subsonic rumble -->
+                        <Border Grid.Row="4" Style="{StaticResource Card}">
+                            <StackPanel>
+                                <Grid>
+                                    <TextBlock Text="Subsonic Rumble" FontSize="14" FontWeight="SemiBold"/>
+                                    <CheckBox x:Name="subsonicEnabled" HorizontalAlignment="Right" IsChecked="False"
+                                              Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
+                                </Grid>
+                                <TextBlock Text="A Butterworth high-pass removes warp and arm resonance below the music."
+                                           Style="{StaticResource CardCaption}"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
+                                    <TextBlock Text="Cutoff" Foreground="{StaticResource Muted}"/>
+                                    <TextBlock x:Name="subsonicCutoffText" Grid.Column="1" Style="{StaticResource ValueReadout}"/>
+                                </Grid>
+                                <Slider x:Name="subsonicCutoff" Minimum="20" Maximum="60" Value="30"
+                                        ValueChanged="OnParameterChanged"/>
+                                <TextBlock x:Name="subsonicEvidenceText" Margin="0,8,0,0" FontSize="10.5"
+                                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- vertical surface noise -->
+                        <Border Grid.Row="4" Grid.Column="2" Style="{StaticResource Card}">
+                            <StackPanel>
+                                <Grid>
+                                    <TextBlock Text="Vertical Surface Noise" FontSize="14" FontWeight="SemiBold"/>
+                                    <CheckBox x:Name="verticalEnabled" HorizontalAlignment="Right" IsChecked="False"
+                                              Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
+                                </Grid>
+                                <TextBlock Text="Groove noise is mostly out of phase, so it lives in the side signal. Turning the side down reaches it; how far is safe depends on the pressing."
+                                           Style="{StaticResource CardCaption}"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
+                                    <TextBlock Text="Side level" Foreground="{StaticResource Muted}"/>
+                                    <TextBlock x:Name="sideLevelText" Grid.Column="1" Style="{StaticResource ValueReadout}"/>
+                                </Grid>
+                                <Slider x:Name="sideLevel" Minimum="0" Maximum="100" Value="100"
+                                        ValueChanged="OnParameterChanged"/>
+                                <TextBlock x:Name="sideEvidenceText" Margin="0,8,0,0" FontSize="10.5"
+                                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- surface crackle -->
+                        <Border Grid.Row="6" Style="{StaticResource Card}">
+                            <StackPanel>
+                                <Grid>
+                                    <TextBlock Text="Surface Crackle" FontSize="14" FontWeight="SemiBold"/>
+                                    <CheckBox x:Name="decrackleEnabled" HorizontalAlignment="Right" IsChecked="False"
+                                              Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
+                                </Grid>
+                                <TextBlock Text="The dense population of tiny defects below the click detector's reach, found on the prediction residual because music is predictable and dirt is not."
+                                           Style="{StaticResource CardCaption}"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
+                                    <TextBlock Text="Detection threshold" Foreground="{StaticResource Muted}"/>
+                                    <TextBlock x:Name="decrackleThresholdText" Grid.Column="1" Style="{StaticResource ValueReadout}"/>
+                                </Grid>
+                                <Slider x:Name="decrackleThreshold" Minimum="2" Maximum="8" Value="3.5"
+                                        ValueChanged="OnParameterChanged"/>
+                                <TextBlock x:Name="decrackleEvidenceText" Margin="0,8,0,0" FontSize="10.5"
+                                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                     </Grid>

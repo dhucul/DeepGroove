@@ -1,4 +1,4 @@
-using WaveLab.Audio.Effects;
+﻿using WaveLab.Audio.Effects;
 
 namespace WaveLab.Audio.Dsp;
 
@@ -34,6 +34,18 @@ public sealed class CleanupAnalysisResult
     public required EffectFactory.ChainPreset BaselinePreset { get; init; }
     public required EffectFactory.ChainPreset RecommendedPreset { get; init; }
     public required int WindowsAnalyzed { get; init; }
+
+    /// <summary>
+    /// How far the side (L-R) signal sits under the mid over the programme, in dB. Zero on a mono
+    /// document, and zero where nothing cleared the programme gate - both of which read as "leave
+    /// the side alone".
+    /// </summary>
+    /// <remarks>
+    /// Not <c>required</c>, unlike every other member here, because it arrived after the four
+    /// object initialisers in the tests were written and a mono or synthetic file has no meaningful
+    /// reading to give it.
+    /// </remarks>
+    public double SideToMidDb { get; init; }
 
     public EffectFactory.ChainPreset BuildSelectedPreset(IEnumerable<string> selectedTypeIds)
     {

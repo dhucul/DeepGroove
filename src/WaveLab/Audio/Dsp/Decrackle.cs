@@ -63,6 +63,20 @@ public readonly record struct DecrackleReport(int Events, long SamplesReplaced, 
 /// </remarks>
 public static class Decrackle
 {
+    /// <summary>
+    /// The block one autoregressive model is fitted to, for the options given.
+    /// </summary>
+    /// <remarks>
+    /// Exposed because the block is a <em>grid</em>, anchored at index zero of whatever array is
+    /// handed in, so anything running this over a window of a longer file has to align that window
+    /// to it or fit its predictors to different audio than a whole-file pass would.
+    /// </remarks>
+    internal static int BlockLengthFor(DecrackleOptions options)
+    {
+        if (options.Order == 0) options = DecrackleOptions.Default;
+        return Math.Max(Math.Clamp(options.Order, 4, 256) * 8, options.BlockLength);
+    }
+
     /// <summary>Finds and repairs crackle in place, returning what it did.</summary>
     public static DecrackleReport Process(float[] samples, DecrackleOptions options = default,
         CancellationToken cancellationToken = default, IProgress<double>? progress = null)

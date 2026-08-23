@@ -866,6 +866,117 @@ shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
   the right answer by accident. The bug only exists for material with about 10 dB of its own
   dynamics, which is to say for music.
 
+## Vertical surface noise: the de-crackler was working on the wrong signal
+
+A record whose crackle would not come off. Measured, the shipped de-crackler barely moved it — and
+the same de-crackler, unchanged, removes most of it once one thing runs before it. Nothing here
+changes `Decrackle`; three stages were added to the workbench and the ordering between them is the
+whole result.
+
+- **Surface noise on a record is vertical, which means it is the side signal, which means a
+  per-channel repairer is fighting it twice with two different guesses.** On the run-out of a real
+  transfer **78% of crackle events are anti-phase** (L·R below zero across the event) and 77% appear
+  in both channels: one defect in the difference signal, not two defects in two channels. Each
+  channel's autoregressive model therefore sees a *different realisation* of the same tick, repairs
+  that, and summing the channels back reconstitutes what the other one still holds.
+- **Measured on the run-out of `One More Chance`, ticks above −45 dBFS: 318 untouched, 263 after the
+  shipped de-crackler, 54 after collapsing the side first.** The de-crackler alone removes 17% and
+  the chain removes 83%, from the same detector at the same threshold. `VerticalNoiseCorpusTests`
+  asserts **both** halves — the success and the near-failure — because reordering the stages loses
+  the effect entirely while still looking like a chain.
+- **The rise is a property of records and the programme ratio is a property of the pressing, and
+  conflating them is the trap.** Across five transfers, side-to-mid rises from the programme to the
+  quiet end by **23.9, 21.3, 26.1, 20.7 and 20.2 dB** — every one, including the widest stereo record
+  in the set. That says the noise is vertical and says nothing about whether music is there with it.
+  Only the **programme** ratio answers that. Through the shipped `CleanupAnalyzer` gate the same five
+  read **−15.9, −15.0, −11.5, −9.2 and −7.6 dB**, and the recommendation ramps between
+  **−14 dB (discard the side) and −8 dB (leave it alone)** — so two are collapsed, one is left
+  alone, and **two land in between and get a partial reduction** at 40% and 80%.
+- **That middle pair is the honest result and the exploration did not have it.** A first pass with a
+  hand-written programme gate read a clean gap between −12.3 and −9.8 and made the anchors look
+  like a classification; the analyzer's own 60th-percentile gate reads −11.5 and −9.2, which is
+  no gap at all. The ramp is what makes that survivable — a threshold would have decided those two
+  records by itself — and the card says “some of what goes is music” rather than claiming a pressing.
+  **Five files from one collection is not a corpus**: it recommends on a control the user can see and
+  move, and never applies silently. The declip calibrations were fitted this confidently five times
+  and held out four.
+- **Half the energy was below 40 Hz and nothing in the workbench was filtering it.**
+  `CleanupAnalyzer.EstimateRumble` has always measured it; its result reached the *rack* chain and
+  never `RenderOwnedWork`. On that transfer's run-out **48% of the total energy sits under 40 Hz**,
+  peaking at 10.8 and 16.1 Hz — tonearm resonance excited by warp. `Restoration.RemoveSubsonic` is a
+  24 dB/octave Butterworth pair; at a 30 Hz corner it measures **30.9 / 21.7 / 7.3 dB down at 12 /
+  16 / 25 Hz** and moves 120 Hz and above by less than 0.5.
+- **Its placement is measured and it does *not* do what it looks like it does.** High-pass then
+  collapse then de-crackle gives 15 ticks and 4.2% of samples repaired; collapse then de-crackle then
+  high-pass gives 14 and 4.4% — the same answer either way round. Nor does it rescue
+  `AnalyzeClipping` from inflated plateaus: removing the rumble moved that transfer's peak by
+  **0.09 dB**. It runs first so that every downstream *measurement* — the automatic noise profile,
+  the per-block robust scales, the levels on the cards — is taken on the audible band rather than on
+  the rumble. That is a reason about the readouts and not about the audio, and it is written up as
+  such rather than as more.
+- **The cost on music is small, and it is the shipped Janssen repair that makes it so.** Over the
+  five transfers, de-crackling after the chain costs **0.19 to 0.64 dB** of high-frequency energy. An
+  exploration with a cubic bridge in place of Janssen predicted 1.4 dB, which is a measure of how
+  much of this tool is its interpolator rather than its detector.
+- **De-crackle is not recommended below 3.0σ and the card says why.** At 2.5σ it repairs roughly
+  twice as many samples and leaves *more* audible ticks than 3.5σ does — worse on both axes at once,
+  which is the "an aggressive de-crackler sounds dull" failure `Decrackle.cs` already warns about,
+  reproduced on real material.
+- **Broadband noise reduction is switched off on this file and it is right to be.**
+  `EstimateNoiseToProgrammeDb` reads **24.2 dB** here against a `NoiseDepthCeilingDb` of 10, so
+  `SuggestReductionDepthDb` returns 0 and both the workbench and the standalone tool decline.
+  **The rule is not loosened**: it is validated over 108 cells and takes cells-worse-than-doing-
+  nothing from 46 to 15. It is an RMS ratio and crackle is impulsive, so a surface can be plainly
+  audible while its floor sits 24 dB under the programme. That is a limit of the rule's scope rather
+  than a fault in it, and the fix is that de-crackle is now in the chain — so both messages name the
+  card that does apply instead of only declining.
+- **Linking de-crackle across mid/side inside `Decrackle` was measured and rejected.** Detecting on
+  M and S and repairing the union in both reaches 0.5 audible events a second against 1.6 for
+  per-channel — but on music it repairs **12–14% of samples against 6–8%** and costs **2.09 dB of
+  high frequencies against 1.10**. Collapsing the vertical noise is strictly better than trying to
+  repair it in place, wherever the pressing allows it.
+
+### The preview boundary, where both new stages had a hole
+
+- **The high-pass needed a warm-up term and the flat fallback pad was nowhere near covering it.**
+  With hum and noise both off, `needsContinuousState` was false and the preview fell back to
+  `max(NrFftSize * 2, rate / 10)` — 4,410 samples. A 30 Hz corner at 44.1 kHz needs **12,670**.
+  Measured end to end against a whole-file pass rather than against the pole arithmetic that chose
+  the number: the planned lead-in leaves **−189.0 dB** of startup error at the boundary and the flat
+  pad leaves **−84.8 dB**. That is an audible thump, and it would have appeared only when the other
+  two stages happened to be switched off.
+- **De-crackle needed the same fix for a reason that has nothing to do with state, which is why it
+  is easy to miss.** It carries no filter memory at all — but it fits one autoregressive model per
+  block on a grid anchored at index zero of whatever array it is handed, so a preview buffer
+  starting anywhere else fits its predictors to *different audio* than the render does, and the two
+  disagree about what is crackle. Same class as the STFT hop alignment already there, same fix.
+  The alignment is a **least common multiple** rather than a maximum: the default block is a whole
+  number of hops, but the block is `max(order * 8, BlockLength)` and neither is required to be one.
+- **`RestorationPreviewPlanning` had no test at all before this.** It does now, including the
+  boundary-error comparison above — measuring the plan against the filter rather than against the
+  formula that produced it, which would only check one arithmetic against itself.
+
+### Wiring notes for the next stage added here
+
+- **`RestorationSettings` is positional and `CaptureSettings` fills it positionally**, so a field
+  added at the wrong index compiles and is silently wrong. It is not
+  `RestorationRecommendations.Settings`; nothing copies one into the other.
+- **`progressSpan / 5.0` is now `/ 8.0`** — eight slots, seven `at += step` increments, the last
+  consumed by the blend. A stage added without its increment silently compresses every bar after it.
+- **`OnPresetChanged` sets every control for Gentle/Balanced/Strong**, so a new control omitted there
+  keeps whatever the Analyzed pass left — "Gentle" would carry a Strong-analysis high-pass. The side
+  level is deliberately **not** set by the presets: how far it may go is a fact about the pressing,
+  which a strength preset knows nothing about, and collapsing a stereo record is not a thing
+  "Strong" should mean.
+- **De-crackle is the first card here whose recommendation is not a measurement of the thing it
+  removes.** Crackle sits below the click detector's reach by definition, so nothing counts it; it
+  rides on impulses having been found at all. `DescribeCrackle` says so on the card, because a
+  control that turns itself on for a reason the user cannot see is one they cannot overrule.
+- **Rendering the three new cards at the 860 px minimum found nothing this time**, which is worth
+  recording as the exception: all three get 370 px and their evidence lines wrap to 13, 38 and 51 px.
+  `CardCaption` and an explicit `TextWrapping` on the evidence lines are why — the fault they would
+  otherwise have is the one already on record, a caption cut to "without shifting stereo alignm".
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).
