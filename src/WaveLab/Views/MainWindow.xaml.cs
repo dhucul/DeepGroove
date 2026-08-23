@@ -22,7 +22,35 @@ public partial class MainWindow : Window
     private bool _allowClose;
     private bool _closing;
     private bool _longOperationRunning;
+
+    /// <summary>
+    /// True while a tool owns a document. Setting it tells the view model too, because the progress
+    /// overlay only covers this window and the Edit History panel is a window of its own.
+    /// </summary>
+    /// <remarks>
+    /// The tools commit against a <i>length</i> check — <c>start + count &gt; Doc.Length</c> — which
+    /// a same-length history jump would slip straight past, splicing a result computed from audio
+    /// that is no longer there. That was safe for as long as every path to a document went through
+    /// this window; it is not any more.
+    /// </remarks>
+    private bool LongOperationRunning
+    {
+        get => _longOperationRunning;
+        set
+        {
+            if (_longOperationRunning == value) return;
+            _longOperationRunning = value;
+            _vm.SetDocumentOperationRunning(value);
+        }
+    }
     private bool _skipNextAutomaticSpectrogramRender;
+
+    /// <summary>
+    /// The open Edit History panels, one per tab. Keyed so a second invocation raises the panel that
+    /// is already showing that document instead of stacking another one on top of it — this panel is
+    /// meant to stay open while work carries on, which the markers manager is not.
+    /// </summary>
+    private readonly Dictionary<Guid, HistoryDialog> _historyPanels = [];
     private Task _startupTask = Task.CompletedTask;
 
     public MainWindow()
@@ -40,6 +68,10 @@ public partial class MainWindow : Window
         _vm.RequestExportDialog += ShowExportDialog;
         _vm.RequestStatisticsDialog += ShowStatisticsDialog;
         _vm.RequestCommandPalette += ShowCommandPalette;
+        _vm.RequestHistoryPanel += ShowHistoryPanel;
+        // The overlay does not reach a window of its own, so the panel is told directly.
+        _vm.DocumentOperationRunningChanged += RefreshHistoryPanels;
+        _vm.RequestMatchLoudnessDialog += ShowMatchLoudnessDialog;
         _vm.Master.RequestSavePreset += PromptSavePreset;
 
         // Both fire while the effect is still whole. A plugin's editor is a native window holding
@@ -143,7 +175,7 @@ public partial class MainWindow : Window
                 "Operation in progress", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        if (_longOperationRunning || !IsEnabled)
+        if (LongOperationRunning || !IsEnabled)
         {
             MessageBox.Show(
                 "An audio operation is still running. Wait for it to finish, then close Deep Groove again.",
@@ -343,7 +375,7 @@ public partial class MainWindow : Window
     private void OnFileInformation(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (_longOperationRunning || d == null) return;
+        if (LongOperationRunning || d == null) return;
 
         if (new FileInfoDialog(d) { Owner = this }.ShowDialog() == true)
             _vm.ReportAction($"File information updated for {d.Doc.Title}. Save to write it.");
@@ -751,14 +783,14 @@ public partial class MainWindow : Window
         DocumentViewModel? target = null, bool keepRemoved = false,
         Action<bool>? residualOpened = null)
     {
-        if (_longOperationRunning) return false;
+        if (LongOperationRunning) return false;
         var d = target ?? Doc;
         if (d == null || d.Doc.Length == 0 || !_vm.Documents.Contains(d)) return false;
         var (start, count) = d.EditRange();
         if (count <= 0) return false;
         var channels = d.Doc.Channels.ToArray();
         int sr = d.Doc.SampleRate;
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         bool applied = false;
         try
@@ -795,7 +827,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
         return applied;
     }
@@ -809,7 +841,7 @@ public partial class MainWindow : Window
     private async void OnLoudnessCompliance(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (_longOperationRunning || d is not { Doc.Length: > 0 }) return;
+        if (LongOperationRunning || d is not { Doc.Length: > 0 }) return;
 
         var dialog = new ParamDialog("Loudness compliance", "Measure",
             "Target", [.. LoudnessTarget.All.Select(t => $"{t.Name} — {t.IntegratedLufs:0.0} LUFS, " +
@@ -825,7 +857,7 @@ public partial class MainWindow : Window
         int rate = d.Doc.SampleRate;
         var report = default(LoudnessReport);
 
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         try
         {
             await _vm.Progress.RunBlockingAsync("Measuring loudness", target.Name,
@@ -841,7 +873,7 @@ public partial class MainWindow : Window
             MessageBox.Show(ex.Message, "Loudness compliance", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        finally { _longOperationRunning = false; }
+        finally { LongOperationRunning = false; }
 
         string text = LoudnessCompliance.Format(report);
         _vm.ReportAction($"{target.Name}: {(report.Passed ? "compliant" : "not compliant")} · " +
@@ -862,13 +894,13 @@ public partial class MainWindow : Window
     private async void OnCorrectWowFlutter(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (_longOperationRunning || d is not { Doc.Length: > 0 }) return;
+        if (LongOperationRunning || d is not { Doc.Length: > 0 }) return;
 
         float[][] channels = d.Doc.Channels.ToArray();
         int rate = d.Doc.SampleRate;
         var report = WowFlutterReport.None;
 
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         try
         {
             await _vm.Progress.RunBlockingAsync("Measuring wow and flutter",
@@ -886,7 +918,7 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        finally { _longOperationRunning = false; }
+        finally { LongOperationRunning = false; }
 
         if (!report.Found)
         {
@@ -940,13 +972,13 @@ public partial class MainWindow : Window
     private async void OnTrackHum(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (_longOperationRunning || d is not { Doc.Length: > 0 }) return;
+        if (LongOperationRunning || d is not { Doc.Length: > 0 }) return;
 
         float[][] channels = d.Doc.Channels.ToArray();
         int rate = d.Doc.SampleRate;
         var report = HumReport.None;
 
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         try
         {
             await _vm.Progress.RunBlockingAsync("Measuring hum", "Looking for a mains fundamental",
@@ -962,7 +994,7 @@ public partial class MainWindow : Window
             MessageBox.Show(ex.Message, "Measuring hum", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        finally { _longOperationRunning = false; }
+        finally { LongOperationRunning = false; }
 
         if (!report.Found)
         {
@@ -1012,7 +1044,7 @@ public partial class MainWindow : Window
     private void OnRemoveCrackle(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (_longOperationRunning || d is not { Doc.Length: > 0 }) return;
+        if (LongOperationRunning || d is not { Doc.Length: > 0 }) return;
 
         var dialog = new ParamDialog("Remove surface crackle", "Remove", null, null, 0,
             // Expressed in robust deviations of the prediction residual, which is what the detector
@@ -1074,7 +1106,7 @@ public partial class MainWindow : Window
     private void OnRecordingCurve(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (_longOperationRunning || d == null || d.Doc.Length == 0) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
 
         var names = RecordingCurves.All
             .Select(spec => spec.TrebleHz > 0
@@ -1122,13 +1154,13 @@ public partial class MainWindow : Window
     private async void OnCorrectAzimuth(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (_longOperationRunning || d is not { Doc.Length: > 0 } || d.Doc.Channels.Count < 2) return;
+        if (LongOperationRunning || d is not { Doc.Length: > 0 } || d.Doc.Channels.Count < 2) return;
 
         float[][] channels = d.Doc.Channels.ToArray();
         int rate = d.Doc.SampleRate;
         AzimuthEstimate estimate = AzimuthEstimate.None;
 
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         try
         {
             await _vm.Progress.RunBlockingAsync("Measuring azimuth",
@@ -1151,7 +1183,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
 
         if (estimate.Windows == 0)
@@ -1200,12 +1232,12 @@ public partial class MainWindow : Window
         Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
         DocumentViewModel target, bool keepRemoved = false)
     {
-        if (_longOperationRunning || target.Doc.Length == 0) return false;
+        if (LongOperationRunning || target.Doc.Length == 0) return false;
 
         float[][] channels = target.Doc.Channels.ToArray();
         int rate = target.Doc.SampleRate;
         int length = target.Doc.Length;
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         bool applied = false;
         try
@@ -1242,7 +1274,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
         return applied;
     }
@@ -1321,7 +1353,7 @@ public partial class MainWindow : Window
     {
         var d = Doc;
         SpectralSelection selection = _vm.SpectralSelection;
-        if (_longOperationRunning || d == null || d.Doc.Length == 0 || selection.IsEmpty) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0 || selection.IsEmpty) return;
 
         var dialog = new ParamDialog("Learn pattern from selection", "Remove",
             "Remove it from", ["The whole file", "The selection only"], 0,
@@ -1354,7 +1386,7 @@ public partial class MainWindow : Window
     {
         float[][] channels = d.Doc.Channels.ToArray();
         int rate = d.Doc.SampleRate;
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -1408,7 +1440,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
     }
 
@@ -1422,7 +1454,7 @@ public partial class MainWindow : Window
         Func<float[], SpectralMask, SpectralRepairOptions, IProgress<double>, CancellationToken,
             SpectralRepairResult> repair)
     {
-        if (_longOperationRunning) return;
+        if (LongOperationRunning) return;
         var d = Doc;
         SpectralSelection selection = _vm.SpectralSelection;
         if (d == null || d.Doc.Length == 0 || selection.IsEmpty) return;
@@ -1435,7 +1467,7 @@ public partial class MainWindow : Window
         if (mask.IsEmpty || selection.SampleRate != d.Doc.SampleRate) return;
 
         float[][] channels = d.Doc.Channels.ToArray();
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -1472,7 +1504,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
     }
 
@@ -1500,12 +1532,79 @@ public partial class MainWindow : Window
         dialog.Show();
     }
 
+    /// <summary>
+    /// Shows the Edit History panel for the active document, or raises the one already showing it.
+    /// </summary>
+    /// <remarks>
+    /// Modeless, and closed when its tab goes away — the markers manager's arrangement. The panel
+    /// calls back into the view model rather than the document so playback is released and the
+    /// status line written once for a whole multi-step jump.
+    /// </remarks>
+    private void ShowHistoryPanel()
+    {
+        if (LongOperationRunning) return;
+        var doc = Doc;
+        if (doc == null) return;
+
+        if (_historyPanels.TryGetValue(doc.TabId, out var open))
+        {
+            open.Activate();
+            return;
+        }
+
+        var dialog = new HistoryDialog(
+            doc,
+            _vm.JumpToHistoryPosition,
+            _vm.TruncateHistoryFrom,
+            () => _vm.CanMoveHistory(doc))
+        {
+            Owner = this,
+        };
+        _historyPanels[doc.TabId] = dialog;
+        System.Collections.Specialized.NotifyCollectionChangedEventHandler onDocsChanged = (_, _) =>
+        {
+            if (!_vm.Documents.Contains(doc)) dialog.Close();
+        };
+        _vm.Documents.CollectionChanged += onDocsChanged;
+        dialog.Closed += (_, _) =>
+        {
+            _vm.Documents.CollectionChanged -= onDocsChanged;
+            _historyPanels.Remove(doc.TabId);
+        };
+        dialog.Show();
+    }
+
+    /// <summary>
+    /// Levels the open tabs against each other, and reports what was applied.
+    /// </summary>
+    /// <remarks>
+    /// Modal: it edits several documents at once, and letting the tab set move underneath it would
+    /// mean the plan and the tabs disagreeing. The dialog checks each document's edit version before
+    /// committing anyway, because a background render can finish while it is open.
+    /// </remarks>
+    private void ShowMatchLoudnessDialog()
+    {
+        if (LongOperationRunning) return;
+        var documents = _vm.AudioDocuments.ToList();
+        if (documents.Count == 0) return;
+
+        var dialog = new MatchLoudnessDialog(documents, _vm.PrepareForDocumentEdit) { Owner = this };
+        if (dialog.ShowDialog() == true && dialog.ResultSummary is { } summary)
+            _vm.ReportAction(summary);
+    }
+
+    /// <summary>Re-reads the guard on every open history panel when a long operation starts or ends.</summary>
+    private void RefreshHistoryPanels()
+    {
+        foreach (HistoryDialog panel in _historyPanels.Values.ToList()) panel.RefreshActions();
+    }
+
     // restoration
 
     private async void OnLearnNoise(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (_longOperationRunning || d == null) return;
+        if (LongOperationRunning || d == null) return;
         if (!d.HasSelection)
         {
             InfoDialog.Show(this, "Learn Noise Profile",
@@ -1514,7 +1613,7 @@ public partial class MainWindow : Window
         }
         var channels = d.Doc.Channels.ToArray();
         int start = d.SelStart, count = d.SelEnd - d.SelStart;
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -1536,7 +1635,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
         InfoDialog.Show(this, "Noise Profile Learned",
             "Profile captured from the selection. Now choose Restore → Reduce Noise to apply it to the whole file or another selection.");
@@ -1725,10 +1824,10 @@ public partial class MainWindow : Window
     private async Task<List<(int Start, int End)>?> DetectSilencesAsync(
         DocumentViewModel document, double threshold, double minimumLength)
     {
-        if (_longOperationRunning) return null;
+        if (LongOperationRunning) return null;
         var channels = document.Doc.Channels.ToArray();
         int sampleRate = document.Doc.SampleRate;
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -1751,7 +1850,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
     }
 
@@ -1790,7 +1889,7 @@ public partial class MainWindow : Window
     private async Task EditDocumentAsync(
         string title, Func<float[][], CancellationToken, float[][]?> transform)
     {
-        if (_longOperationRunning || Doc is not { } document) return;
+        if (LongOperationRunning || Doc is not { } document) return;
         _vm.PrepareForDocumentEdit(document);
 
         // Array references only. A splice replaces them rather than mutating them, so this
@@ -1798,7 +1897,7 @@ public partial class MainWindow : Window
         float[][] source = [.. document.Doc.Channels];
         int version = document.Doc.EditVersion;
 
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         try
         {
             await _vm.Progress.RunBlockingAsync(title, "Applying to the whole file",
@@ -1828,7 +1927,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
     }
     private async void OnMonoMixdown(object sender, RoutedEventArgs e) =>
@@ -1850,8 +1949,8 @@ public partial class MainWindow : Window
 
     private async Task RunGeneratedDocumentTool(string title, Func<AudioDocument, AudioDocument> transform)
     {
-        if (_longOperationRunning || Doc is not { } document) return;
-        _longOperationRunning = true;
+        if (LongOperationRunning || Doc is not { } document) return;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -1874,7 +1973,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
     }
 
@@ -1929,7 +2028,7 @@ public partial class MainWindow : Window
 
     private async void OnConvertRate(object sender, RoutedEventArgs e)
     {
-        if (_longOperationRunning) return;
+        if (LongOperationRunning) return;
         var d = Doc;
         if (d == null || d.Doc.Length == 0) return;
         int[] rates = [44100, 48000, 88200, 96000, 192000];
@@ -1944,7 +2043,7 @@ public partial class MainWindow : Window
             return;
         }
         var doc = d.Doc;
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -1969,7 +2068,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
     }
 
@@ -1977,7 +2076,7 @@ public partial class MainWindow : Window
 
     private async void OnTuner(object sender, RoutedEventArgs e)
     {
-        if (_longOperationRunning) return;
+        if (LongOperationRunning) return;
         var d = Doc;
         if (d == null || d.Doc.Length == 0) return;
         var (start, count) = d.HasSelection
@@ -1993,7 +2092,7 @@ public partial class MainWindow : Window
         var chans = doc.Channels.ToArray(); // stable refs — splices never mutate old arrays
         int chCount = chans.Length;
         int sampleRate = doc.SampleRate;
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -2021,18 +2120,18 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
     }
 
     private async void OnBpm(object sender, RoutedEventArgs e)
     {
-        if (_longOperationRunning) return;
+        if (LongOperationRunning) return;
         var d = Doc;
         if (d == null || d.Doc.Length < d.Doc.SampleRate * 5) return;
         var chans = d.Doc.Channels.ToArray(); // stable refs captured on the UI thread
         int sampleRate = d.Doc.SampleRate;
-        _longOperationRunning = true;
+        LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
         {
@@ -2050,7 +2149,7 @@ public partial class MainWindow : Window
         finally
         {
             Mouse.OverrideCursor = null;
-            _longOperationRunning = false;
+            LongOperationRunning = false;
         }
     }
 
@@ -2086,10 +2185,12 @@ public partial class MainWindow : Window
             VmCommand("Zoom to Selection", null, _vm.ZoomSelectionCommand),
             VmCommand("Add Marker", "Ctrl+M", _vm.AddMarkerCommand),
             VmCommand("Add Region from Selection", "Ctrl+Shift+M", _vm.AddRegionCommand),
+            VmCommand("Edit History…", "Ctrl+Shift+H", _vm.HistoryCommand),
             new("Manage Markers & Regions…", null, () => OnManageMarkers(this, new RoutedEventArgs()), () => _vm.HasDocument),
             VmCommand("Gain +3 dB", null, _vm.GainUpCommand),
             VmCommand("Gain −3 dB", null, _vm.GainDownCommand),
             VmCommand("Normalize to −0.3 dBFS", null, _vm.NormalizeCommand),
+            VmCommand("Match Loudness Across Tabs…", null, _vm.MatchLoudnessCommand),
             VmCommand("Fade In", null, _vm.FadeInCommand),
             VmCommand("Fade Out", null, _vm.FadeOutCommand),
             VmCommand("Reverse", null, _vm.ReverseCommand),

@@ -69,6 +69,11 @@ public sealed class DialogLoadTests
         "file-info" => new FileInfoDialog(ViewModel()),
         "command-palette" => new CommandPalette([.. Commands()]),
         "markers" => new MarkersDialog(ViewModel()),
+        "history" => new HistoryDialog(
+            ViewModel(),
+            (document, position) => document.Doc.JumpToHistoryPosition(position),
+            (document, index) => document.Doc.TruncateHistoryFrom(index)),
+        "match-loudness" => new MatchLoudnessDialog([ViewModel()]),
         "help" => new HelpDialog(HelpCatalog.RecordingTopicId),
         _ => throw new ArgumentOutOfRangeException(nameof(name), name, "No such dialog."),
     };
@@ -76,7 +81,7 @@ public sealed class DialogLoadTests
     public static TheoryData<string> DialogNames() =>
     [
         "info", "text-prompt", "param", "export", "statistics",
-        "file-info", "command-palette", "markers", "help",
+        "file-info", "command-palette", "markers", "history", "match-loudness", "help",
     ];
 
     [Theory]
@@ -248,6 +253,14 @@ public sealed class DialogLoadTests
                 "export" => new ExportDialog(viewModel),
                 "file-info" => new FileInfoDialog(viewModel),
                 "markers" => new MarkersDialog(viewModel),
+                "history" => new HistoryDialog(
+                    viewModel,
+                    (document, position) => document.Doc.JumpToHistoryPosition(position),
+                    (document, index) => document.Doc.TruncateHistoryFrom(index)),
+                // Match Loudness must not measure on Loaded: a dialog that scanned every open file
+                // the moment it appeared would be unusable on an album, and the dirty check here is
+                // what holds it to a button press.
+                "match-loudness" => new MatchLoudnessDialog([viewModel]),
                 "statistics" => new StatisticsDialog(viewModel.Doc),
                 _ => throw new ArgumentOutOfRangeException(nameof(name), name, "No such dialog."),
             };
@@ -260,5 +273,5 @@ public sealed class DialogLoadTests
     }
 
     public static TheoryData<string> DocumentDialogNames() =>
-        ["export", "file-info", "markers", "statistics"];
+        ["export", "file-info", "markers", "history", "match-loudness", "statistics"];
 }

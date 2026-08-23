@@ -110,6 +110,68 @@ public sealed class DocumentViewModelTests
         Assert.Equal(zoomedViewStart, vm.ViewStart, precision: 10);
     }
 
+    /// <summary>
+    /// The Edit History panel is modeless and re-reads on this, exactly as the markers panel
+    /// re-reads on MarkersVersion. A jump is one change, so it must be one notification — not one
+    /// per step crossed.
+    /// </summary>
+    [Fact]
+    public void AHistoryJumpRaisesHistoryVersionExactlyOnce()
+    {
+        var vm = CreateDocument(length: 10_000);
+        for (int i = 0; i < 4; i++)
+            vm.Doc.ReplaceRange(0, 100, [new float[100]], $"edit {i}");
+
+        int notifications = 0;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(DocumentViewModel.HistoryVersion)) notifications++;
+        };
+
+        vm.Doc.JumpToHistoryPosition(0);
+
+        Assert.Equal(1, notifications);
+    }
+
+    /// <summary>
+    /// Saving moves no samples, but it does move the mark the history draws beside the saved step.
+    /// </summary>
+    [Fact]
+    public void SavingMovesTheHistorySavepointMark()
+    {
+        var vm = CreateDocument(length: 10_000);
+        vm.Doc.ReplaceRange(0, 100, [new float[100]], "edit");
+
+        int notifications = 0;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(DocumentViewModel.HistoryVersion)) notifications++;
+        };
+
+        vm.Doc.MarkSaved();
+        vm.NotifySaved();
+
+        Assert.Equal(1, notifications);
+        Assert.True(vm.Doc.GetHistory().Entries[0].IsSavepoint);
+    }
+
+    /// <summary>
+    /// The coalesced change a jump raises is what re-anchors everything on the timeline. A cursor
+    /// past the end of the restored document is the cheapest way to see it arrive.
+    /// </summary>
+    [Fact]
+    public void AHistoryJumpReAnchorsTheCursorThroughTheCoalescedChange()
+    {
+        var vm = CreateDocument(length: 1_000);
+        vm.Doc.ReplaceRange(200, 0, [new float[4_000]], "Insert Silence");
+        vm.SetCursor(4_500, clearSelection: true);
+
+        vm.Doc.JumpToHistoryPosition(0);
+
+        Assert.Equal(1_000, vm.Doc.Length);
+        Assert.True(vm.Cursor < vm.Doc.Length, $"the cursor was left at {vm.Cursor} in a 1000 sample document.");
+    }
+
     private static DocumentViewModel CreateDocument(int length) =>
         new(new AudioDocument([new float[length]], 48_000, 32));
 }

@@ -1201,13 +1201,155 @@ recovered by division.
   full effect is a slider they can now see the reason to move. **Amber is on `Bypassed` and on a
   fully dry mix only** — a ceiling is a fact about a setting, and colouring a fact like a fault is
   already on record here as teaching users to distrust the colour.
-- **The widest wording is the fully dry line at 57 characters, not any ceiling**, because the deepest
-  ceilings carry the shortest detail — a mix near full has almost no dry share left to describe. The
-  character count is the cheap bound; `OutputMixRenderProbe` is the measurement, at the dialog's
-  860 px minimum. The mockup's 339 px came from the XAML column arithmetic and **is a calculation
-  rather than a measurement**, which this file's own rule says is not the built control. The probe
-  also checks the audition combo beside it, because this is the one readout in the dialog added to a
-  row that has other columns to take room from.
+- **The widest wording is the fully dry line, not any ceiling**, because the deepest ceilings carry
+  the shortest detail — a mix near full has almost no dry share left to describe. `OutputMixRenderProbe`
+  measures that line in the built control at the dialog's 860 px minimum: **330 px of room, 282 px
+  wanted, one line 13 px tall**. The character count in `OutputMixReadoutTests` is only the cheap
+  bound that catches a wording change growing without limit. **The mockup said 339 px and it was
+  wrong by the width of a scroll bar**, because it came from the XAML column arithmetic rather than
+  from a control — the same correction the noise-depth readout needed, where 365 px of estimate
+  measured 370. The probe also checks the audition combo beside it, because this is the one readout
+  in the dialog added to a row that has other columns to take room from.
+
+## The edit history was already there; nothing could see it
+
+`AudioDocument` has always kept a full linear history — two `List<Edit>` stacks, a byte budget, and a
+name on every entry that reads well enough to put on screen (`Gain +3.0 dB`, `De-emphasis · RIAA`,
+`Fade In (Equal Power)`). The only thing missing was a way to look at it. `Edit` is private, the
+stacks are private, and the entire public surface was `CanUndo`/`CanRedo`/`NextUndoName`. So the
+panel is a read model and two primitives, not a new engine.
+
+- **The timeline is `_undo` in order followed by `_redo` reversed.** `_redo` is used as a stack, so
+  `_redo[^1]` is the *next* redo and `_redo[0]` the *furthest future*: `T[i] = i < n ? _undo[i] :
+  _redo[E-1-i]`. Concatenating the two lists the obvious way produces a list that looks entirely
+  plausible and jumps to the wrong state, which is why `TheTimelineListsUndoneStepsAfterTheCurrent
+  PositionInTheOrderRedoWouldReapplyThem` exists. The same reversal is what makes
+  `TruncateHistoryFrom` drop from the *front* of `_redo`.
+- **A jump raises one `Changed` and bumps `EditVersion` once**, and that is not an optimisation.
+  `DocumentViewModel.OnDocChanged` re-anchors markers and regions, schedules a peak rebuild and
+  queues a `.wlmeta.json` sidecar write; `MainViewModel.OnActiveDocumentEdited` requeries 35 commands
+  and writes the status line. Per step, a ten-step jump pays all of that ten times and settles on the
+  right answer only at the end.
+- **The composed span has to be tight.** The single event carries `(start, removed, inserted)` for
+  the whole run, and `OnDocChanged` puts any marker inside `[start, start+removed)` *at* `start` — so
+  a lazy whole-document triple would collapse every marker to sample 0. The composition keeps the
+  hull of the accumulated span and the step's span in current coordinates, growing the removed count
+  by the samples on each side the step reached beyond it (`extra` and `deficit` count identically in
+  both frames because everything outside the span maps one to one). Two properties fall out and both
+  matter: a run of same-length edits composes to `removed == inserted`, so the marker loop is skipped
+  exactly as it is when stepping; and a run containing a `ReplaceAllOwned` composes to the whole
+  document, which is what that step raises on its own anyway. `TheSingleChangeEventSpansEveryRegion
+  TheRunTouched` asserts the *definition* — prefix equal, suffix equal — rather than a magic triple,
+  because a wrong composition produces a span that reads as reasonable.
+- **The budget is enforced once, at the end of a jump.** Enforcing mid-run could release entries
+  while the loop is still counting against `_undo.Count`. Retained bytes are invariant under a
+  stack-to-stack move, so deferring costs nothing. `Redo()` still does not enforce and `Undo()` still
+  does — unchanged, and for the reason already recorded: `EnforceUndoBudget` refuses to drop below
+  `_undo.Count > 1`, so an over-budget document only becomes reclaimable once entries migrate to
+  `_redo`.
+- **The savepoint is now dropped explicitly when it becomes unreachable**, from `TruncateHistoryFrom`,
+  from `EnforceUndoBudget`, and from `DiscardRedo` — the last of which was missed on the first pass
+  and is the commonest of the three. **Save, undo, edit** throws the forward chain away and the saved
+  state can be on it, so without that call the invariant "the savepoint is reachable or absent" was
+  merely nearly true and only `SavepointReachable` knew the difference. None of this changes an
+  observable `Dirty` value: `_nextStateId` never reuses an id, so an unreachable savepoint already
+  compared unequal to every state forever. What it buys is that the state says what is true, and that
+  a future change which did recycle ids cannot resurrect a savepoint that no longer exists.
+- **Markers and regions are warned about, not snapshotted.** `OnDocChanged` removes a region that
+  collapses during a length-changing splice and undo does not bring it back — true of a single Ctrl+Z
+  today; the panel only makes it easy to cross several at once. A per-step marker snapshot was
+  rejected because markers are added, renamed and deleted with no `AudioDocument` edit at all, so
+  restoring one would silently delete work no step on the list is responsible for — a worse failure
+  than the one being fixed. Keying a stash is not stable either: the budget renumbers every combined
+  index whenever it releases an entry. **The deferred alternative**, if it is ever wanted: stash only
+  the regions the engine itself destroyed, keyed by a monotonic timeline index on `Edit` that does
+  not exist yet, and re-add them when that position returns. Until then it is the `↕` badge, the live
+  caution line, and a sentence in the help topic.
+- The panel holds no state but the selected *position*, and re-reads the whole snapshot on
+  `DocumentViewModel.HistoryVersion` — the arrangement `MarkersDialog` already uses with
+  `MarkersVersion`, and for the same reason. `HistorySnapshot.Generation` is what separates "the list
+  grew" (clamp the selection) from "the list renumbered" (go back to where the document is).
+  `AudioDocument.JumpToHistoryPosition` **throws rather than clamps** on a stale index, because a
+  silently wrong jump is much harder to notice than a thrown one; `MainViewModel.JumpToHistoryPosition`
+  **absorbs and reports it**, because the panel is modeless and a stale click is not worth taking the
+  session down. The asymmetry is deliberate: the engine states the rule, the shell survives it.
+- **The rows are a view model behind a `DataTemplate`, not `ListBoxItem`s built in code.** That is a
+  departure from `MarkersDialog`, and the reason is scale: a file has a handful of markers and a long
+  restoration session can leave *thousands* of steps, so items built in code would construct every
+  row's visual tree on every refresh — and a refresh is every edit, with `Trim Silence` alone
+  committing one step per silence. With an `ItemsSource` the list builds only the rows it shows. The
+  theme brushes are resolved once into fields for the same reason; `FindResource` per row per brush
+  was seven resource-tree walks a row.
+
+- **The panel is the first thing in the app that can reach a document from outside the progress
+  overlay, and that is the dangerous thing about it.** The overlay covers the shell's rows and the
+  shell is deliberately never `IsEnabled = false`; a modeless window of its own is covered by
+  neither. And the tools do not commit against an identity: `RunRangeTool` guards on
+  `start + count > Doc.Length` and `RunWholeFileTool` on `length != Doc.Length`, which was sound for
+  as long as every route to a document went through the shell — but a **same-length** jump (`Gain`,
+  `Reverse`, `Remove DC Offset`, most spectral edits) slips straight past a length check, and the
+  tool then splices a result computed from audio that is no longer there. Silently.
+  `MainWindow.LongOperationRunning` is a property rather than a field now, and setting it tells
+  `MainViewModel.SetDocumentOperationRunning`; `CanMoveHistory` gates both history primitives on it
+  *and* on the clipboard flag, and the panel asks again on every refresh rather than sampling once.
+  `GuiActionStatusTests.TheHistoryCannotBeMovedWhileAnOperationOwnsTheDocument` fails if either flag
+  is dropped. **`ProgressHost.IsBlockingVisible` is not a substitute**: `Blocking` is only assigned by
+  `Tick()` after the 400 ms show delay, so it reads false for the first 400 ms of every operation.
+- **Discarding a step is an edit to the samples, so it releases playback too.** `TruncateHistoryFrom`
+  steps the document back before dropping anything — what is being thrown away must not still be in
+  the audio — which makes it as much a splice as an undo. It was the one history path that did not
+  call `PrepareForDocumentEdit`.
+
+## Match Loudness: gain only, and say what it could not do
+
+`LoudnessCompliance` already owned the rule — the suggested gain is the smaller of what loudness asks
+for and what the true-peak ceiling allows, and the difference is *reported* because it is the amount
+of limiting the master would need, which is a decision rather than an adjustment. `LoudnessMatch`
+applies that rule across a set of tabs; it measures through `LoudnessCompliance.Measure` and adds
+nothing but arithmetic, which is what makes every case testable without a window.
+
+- **The counter-example is in this repo.** `BatchConvertDialog`'s LUFS branch applies
+  `10^((target-current)/20)` with no true-peak protection at all and returns `void`, so it will push
+  a track past 0 dBTP and say nothing about it. Every ceiling assertion in `LoudnessMatchTests` is
+  there so that cannot happen on this path.
+- **"Average" is the arithmetic mean of the LUFS figures, not of their power.** LUFS is already a
+  perceptual scale; a power mean is dominated by the loudest track and lands several LU above where a
+  listener puts the average of a record.
+- **The relative modes use −1 dBTP**, because they are not delivering to a specification and so have
+  no stated ceiling to take. A preset target uses its own — which matters, since `CompactDisc` allows
+  only −0.3 and a hardcoded −1 would disagree with it.
+- **Two notes that had to be separated.** "true-peak limited" alone reads as "left alone", so a track
+  whose loudness asks for a boost while its true peak is already over the ceiling says *"already
+  0.4 dB over the ceiling — brought down instead"*. It is the one case where the sign of the applied
+  gain is the opposite of the sign of the request.
+- Measuring is sequential, never parallel: each meter carries its own ring buffers, `SubProgress.
+  Slice` assumes one item at a time, and a cancelled parallel run leaves a table half from this
+  measurement and half from the last. Apply is all or nothing, checked against each document's
+  `EditVersion` first — half a record moved with no record of which half is a worse state to be left
+  holding than nothing applied.
+- The gain commits under the name `Match Loudness −14.0 LUFS (+2.3 dB)` rather than `Gain +2.3 dB`.
+  That is the durable half of "show what has been applied": the dialog closes, the status line
+  scrolls away, and the history row is still there. `Processing.NormalizeLoudness` is untouched but is
+  now the inferior path — a 2-tap inter-sample estimate, a hardcoded −1 dBTP, and no report;
+  `LoudnessMatch` is the maintained implementation.
+- **It costs one copy of the document, not three, and it does not run on the dispatcher.** The first
+  version went through `Processing.Apply`, which copies the range, scales the copy, copies it again
+  for the undo entry and allocates a third array in the splice: about **1.4 GB moved per side of
+  vinyl, on the UI thread, uncancellable, over every open tab in turn** — precisely the defect the
+  audit had already fixed for the channel menu, reintroduced. `Processing.MatchLoudnessData` scales on
+  the way into one new buffer on a worker, and `ReplaceAllOwned` commits it by taking ownership,
+  retaining the outgoing arrays by reference rather than copying them.
+  `CommittingAMatchRetainsTheOutgoingSamplesRatherThanCopyingThem` pins both halves with
+  `Assert.Same`.
+- **All or nothing is enforced by rolling back, not by hoping.** The version check happens up front,
+  but the dispatcher pumps across every `await`, so it is checked again immediately before each
+  commit; a failure or a cancel undoes the documents already committed. Each commit is exactly one
+  undo entry, so putting one back is exact. Holding every scaled buffer and committing them in one
+  synchronous pass would also be atomic and is the wrong trade — it is N copies of the album resident
+  at once.
+- **The reference track is held by row, not by title.** Two tabs can carry the same name — the same
+  file opened twice, or two untitled recordings — and matching the combo selection by text pointed
+  the reference at a different track, silently moving the level everything else was matched to.
 
 ## Gotchas
 

@@ -5,10 +5,62 @@ namespace WaveLab.Audio;
 /// <summary>Destructive processing operations. Each op runs on a copied range and commits via ReplaceRange (undoable).</summary>
 public static class Processing
 {
-    public static void Gain(AudioDocument doc, int start, int count, double db)
+    public static void Gain(AudioDocument doc, int start, int count, double db) =>
+        ApplyGain(doc, start, count, db, $"Gain {db:+0.0;-0.0} dB");
+
+    /// <summary>
+    /// The name a matched-loudness edit commits under.
+    /// </summary>
+    /// <remarks>
+    /// "Gain +2.3 dB" is true and cannot be read back a month later as a loudness decision, whereas
+    /// the level matched to can. One place, so the dialog and the edit cannot describe the same
+    /// change differently.
+    /// </remarks>
+    public static string MatchLoudnessName(double gainDb, double targetLufs) =>
+        $"Match Loudness {targetLufs:0.0} LUFS ({gainDb:+0.0;-0.0} dB)";
+
+    /// <summary>
+    /// Scales a whole document by a decided gain, returning the result rather than committing it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The gain arrives already decided and already true-peak limited — see
+    /// <see cref="Dsp.LoudnessMatch"/>, which is where the measuring and the arithmetic live.
+    /// </para>
+    /// <para>
+    /// Pure and off-thread by design, and it allocates <b>once</b>: the scale is applied on the way
+    /// into the new buffer rather than copying and then multiplying. Committed with
+    /// <see cref="AudioDocument.ReplaceAllOwned"/>, which retains the outgoing arrays by reference,
+    /// the whole edit costs one copy of the document instead of the three
+    /// <see cref="Apply"/> would — the same correction the channel tools already had to make, for
+    /// the same reason: a side of vinyl is a few hundred megabytes a copy, and this runs over every
+    /// open tab at once.
+    /// </para>
+    /// </remarks>
+    public static float[][] MatchLoudnessData(
+        IReadOnlyList<float[]> channels, double gainDb, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        float g = (float)Math.Pow(10, gainDb / 20.0);
+        var result = new float[channels.Count][];
+        for (int c = 0; c < channels.Count; c++)
+        {
+            var source = channels[c];
+            var scaled = new float[source.Length];
+            for (int i = 0; i < source.Length; i++)
+            {
+                if ((i & 0xffff) == 0) cancellationToken.ThrowIfCancellationRequested();
+                scaled[i] = source[i] * g;
+            }
+            result[c] = scaled;
+        }
+        return result;
+    }
+
+    private static void ApplyGain(AudioDocument doc, int start, int count, double db, string name)
     {
         float g = (float)Math.Pow(10, db / 20.0);
-        Apply(doc, start, count, $"Gain {db:+0.0;-0.0} dB", data =>
+        Apply(doc, start, count, name, data =>
         {
             foreach (var ch in data)
                 for (int i = 0; i < ch.Length; i++) ch[i] *= g;

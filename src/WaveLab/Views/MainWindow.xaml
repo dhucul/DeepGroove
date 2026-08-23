@@ -50,6 +50,7 @@
         <KeyBinding Key="M" Modifiers="Control+Shift" Command="{Binding AddRegionCommand}"/>
         <KeyBinding Key="Left" Modifiers="Alt" Command="{Binding PrevMarkerCommand}"/>
         <KeyBinding Key="Right" Modifiers="Alt" Command="{Binding NextMarkerCommand}"/>
+        <KeyBinding Key="H" Modifiers="Control+Shift" Command="{Binding HistoryCommand}"/>
         <KeyBinding Key="P" Modifiers="Control+Shift" Command="{Binding CommandPaletteCommand}"/>
         <KeyBinding Key="F1" Command="{x:Static ApplicationCommands.Help}"/>
         <KeyBinding Key="I" Modifiers="Control" Command="{x:Static ApplicationCommands.Properties}"/>
@@ -144,8 +145,9 @@
                     <MenuItem Header="Exit" Command="{Binding ExitCommand}"/>
                 </MenuItem>
                 <MenuItem Header="_Edit">
-                    <MenuItem Header="Undo" InputGestureText="Ctrl+Z" Command="{Binding UndoCommand}"/>
-                    <MenuItem Header="Redo" InputGestureText="Ctrl+Y" Command="{Binding RedoCommand}"/>
+                    <MenuItem Header="{Binding UndoMenuHeader}" InputGestureText="Ctrl+Z" Command="{Binding UndoCommand}"/>
+                    <MenuItem Header="{Binding RedoMenuHeader}" InputGestureText="Ctrl+Y" Command="{Binding RedoCommand}"/>
+                    <MenuItem Header="Edit History…" InputGestureText="Ctrl+Shift+H" Command="{Binding HistoryCommand}"/>
                     <Separator/>
                     <MenuItem Header="Cut" InputGestureText="Ctrl+X" Command="{Binding CutCommand}"/>
                     <MenuItem Header="Copy" InputGestureText="Ctrl+C" Command="{Binding CopyCommand}"/>
@@ -187,6 +189,7 @@
                     <MenuItem Header="Gain +3 dB" Command="{Binding GainUpCommand}"/>
                     <MenuItem Header="Gain −3 dB" Command="{Binding GainDownCommand}"/>
                     <MenuItem Header="Normalize to −0.3 dBFS" Command="{Binding NormalizeCommand}"/>
+                    <MenuItem Header="Match Loudness Across Tabs…" Command="{Binding MatchLoudnessCommand}"/>
                     <Separator/>
                     <MenuItem Header="Fade In" Command="{Binding FadeInCommand}"/>
                     <MenuItem Header="Fade Out" Command="{Binding FadeOutCommand}"/>

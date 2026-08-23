@@ -43,7 +43,7 @@
     }
     /* the readout: 10.5 px Muted, one line, ellipsis - same as the declip and noise-depth lines */
     #wavelab-mix-ceiling .wl-readout {
-      font-size: 10.5px; color: #9AA1A9; margin: 9px 0 0; width: 339px;
+      font-size: 10.5px; color: #9AA1A9; margin: 9px 0 0; width: 330px;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     #wavelab-mix-ceiling .wl-readout .dim { color: #5D646D; }
@@ -86,10 +86,10 @@
       hard ceiling on what any stage can achieve: at the shipped 90&nbsp;% default nothing can be
       reduced by more than <b>20&nbsp;dB</b>, however well it works. A 30&nbsp;Hz high-pass that
       measures 40&nbsp;dB at 10&nbsp;Hz lands at 19.7. One line under the slider states it.<br>
-      Card drawn at the dialog's <b>860&nbsp;px minimum</b>; the middle column is
-      <b>367&nbsp;px</b> less its 14&nbsp;px margins, so the line has <b>339&nbsp;px</b>.
-      Those come from the XAML column arithmetic, <b>not</b> from a built control &mdash; a render
-      probe still has to confirm them.
+      Card drawn at the dialog's <b>860&nbsp;px minimum</b>. Widths below are <b>measured from the
+      built control</b> &mdash; <code>OutputMixRenderProbe</code> reports <b>330&nbsp;px</b> of room
+      for the line and <b>282&nbsp;px</b> wanted by the widest wording, on one 13&nbsp;px row. The
+      column arithmetic had said 339, out by the width of a scroll bar.
     </p>
 
     <!-- reference -->
@@ -197,22 +197,22 @@
     </div>
 
     <div class="wl-rule"></div>
-    <div class="wl-tag">wording &mdash; the longest each option ever gets, against 339&nbsp;px of room</div>
+    <div class="wl-tag">wording &mdash; the longest each option ever gets. The widest line the readout can produce is neither of these: it is the fully dry one, 57 characters, measured at 282&nbsp;px of 330.</div>
 
     <div class="wl-word">
       <div class="k">A &mdash; shown</div>
       <div class="s">Ceiling <span class="num">6.0 dB</span> <span class="dim">&middot;</span> 50% dry returns over every stage</div>
-      <div class="p"><b>~281 px</b></div>
+      <div class="p">50 chars</div>
     </div>
     <div class="wl-word">
       <div class="k">B &mdash; longer</div>
       <div class="s">Ceiling <span class="num">6.0 dB</span> <span class="dim">&middot;</span> 50% dry returns, so no stage can go deeper</div>
-      <div class="p"><b>~308 px</b></div>
+      <div class="p">54 chars</div>
     </div>
     <div class="wl-word">
       <div class="k">C &mdash; terse</div>
       <div class="s"><span class="num">6.0 dB</span> ceiling <span class="dim">&middot;</span> 50% dry returns</div>
-      <div class="p"><b>~194 px</b></div>
+      <div class="p">33 chars</div>
     </div>
 
     <div class="wl-foot">

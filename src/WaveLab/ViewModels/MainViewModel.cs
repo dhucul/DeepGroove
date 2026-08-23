@@ -68,6 +68,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _startupLoaded;
     private bool _shuttingDown;
     private bool _editOperationRunning;
+    private bool _documentOperationRunning;
     private readonly Process _process = Process.GetCurrentProcess();
     private TimeSpan _cpuPrev;
     private DateTime _cpuPrevAt = DateTime.UtcNow;
@@ -187,6 +188,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         StatisticsCommand = new RelayCommand(() => RequestStatisticsDialog?.Invoke(), () => HasAudioDocument);
         OpenRecentCommand = new RelayCommand<string>(path => { if (path != null) OpenFiles([path]); });
         CommandPaletteCommand = new RelayCommand(() => RequestCommandPalette?.Invoke());
+        HistoryCommand = new RelayCommand(() => RequestHistoryPanel?.Invoke(), () => HasAudioDocument);
+        MatchLoudnessCommand = new RelayCommand(
+            () => RequestMatchLoudnessDialog?.Invoke(), () => AudioDocuments.Any());
         AboutCommand = new RelayCommand(() => MessageBox.Show(
             "Deep Groove 2.0\n\nAudio editor and mastering suite.\nWAV/AIFF · MP3/FLAC/AAC import & export\nEffects rack · restoration · EBU R128 metering\nWASAPI playback and recording",
             "About Deep Groove", MessageBoxButton.OK, MessageBoxImage.Information));
@@ -222,6 +226,41 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand ExitCommand { get; }
     public RelayCommand UndoCommand { get; }
     public RelayCommand RedoCommand { get; }
+    public RelayCommand HistoryCommand { get; }
+    public RelayCommand MatchLoudnessCommand { get; }
+
+    /// <summary>
+    /// What the Edit menu says Undo will do. The engine has always known the name of the next step;
+    /// the menu simply never said it.
+    /// </summary>
+    public string UndoMenuHeader =>
+        _active?.Doc.NextUndoName is { } name ? $"Undo {name}" : "Undo";
+
+    public string RedoMenuHeader =>
+        _active?.Doc.NextRedoName is { } name ? $"Redo {name}" : "Redo";
+
+    /// <summary>
+    /// True while a long operation owns a document — a restoration pass, a render, a stretch.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Distinct from the clipboard flag beside it, and the distinction is load-bearing. The progress
+    /// overlay covers the shell but the Edit History panel is a window of its own, so it is the one
+    /// surface in the app that can reach a document from outside that overlay — and the tools commit
+    /// with a <i>length</i> check rather than an identity one, so a jump that leaves the length
+    /// alone would let a result computed from the old audio be spliced into the new. Nothing may
+    /// move a document's samples while this is set.
+    /// </para>
+    /// </remarks>
+    public bool IsDocumentOperationRunning => _documentOperationRunning;
+
+    /// <summary>Told by the shell as a long document operation starts and finishes.</summary>
+    public void SetDocumentOperationRunning(bool value)
+    {
+        if (!Set(ref _documentOperationRunning, value, nameof(IsDocumentOperationRunning))) return;
+        RefreshEditCommandStates();
+        DocumentOperationRunningChanged?.Invoke();
+    }
     public RelayCommand CutCommand { get; }
     public RelayCommand CopyCommand { get; }
     public RelayCommand PasteCommand { get; }
@@ -272,6 +311,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public event Action? RequestExportDialog;
     public event Action? RequestStatisticsDialog;
     public event Action? RequestCommandPalette;
+    /// <summary>The window shows the Edit History panel for the active document when this fires.</summary>
+    public event Action? RequestHistoryPanel;
+    public event Action? RequestMatchLoudnessDialog;
+
+    /// <summary>Raised when <see cref="IsDocumentOperationRunning"/> moves, in either direction.</summary>
+    public event Action? DocumentOperationRunningChanged;
 
     /// <summary>
     /// The selected tab, whatever kind it is. This is what the tab strip binds to.
@@ -1236,6 +1281,72 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ReportAction($"{operation} reapplied · Undo available.");
     }
 
+    /// <summary>
+    /// Takes a document to any point on its edit history in one action, for the Edit History panel.
+    /// </summary>
+    /// <remarks>
+    /// Playback is released once for the whole run rather than once per step: the jump raises a
+    /// single change, so there is a single moment at which the audio under the stream moves.
+    /// </remarks>
+    public void JumpToHistoryPosition(DocumentViewModel document, int position)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        if (!CanMoveHistory(document)) return;
+        if (position < 0 || position > document.Doc.HistoryCount)
+        {
+            // The document refuses an out-of-range position rather than clamping it, and that is
+            // right there: a silently wrong jump is much harder to notice than a thrown one. Here it
+            // is absorbed and reported instead, because the panel is modeless and its indices can go
+            // stale under a budget eviction — a stale click is not worth taking the session down.
+            ReportAction("That step is no longer in the history.");
+            return;
+        }
+
+        PrepareForDocumentEdit(document);
+        int moved = document.Doc.JumpToHistoryPosition(position);
+        if (moved == 0) return;
+
+        string landed = document.Doc.NextUndoName ?? "the opened state";
+        int steps = Math.Abs(moved);
+        string plural = steps == 1 ? "step" : "steps";
+        ReportAction(moved < 0
+            ? $"Stepped back {steps} {plural} · now at {landed}."
+            : $"Stepped forward {steps} {plural} · now at {landed}.");
+    }
+
+    /// <summary>
+    /// Discards one step of a document's history and everything after it, permanently.
+    /// </summary>
+    /// <remarks>
+    /// The document raises nothing for a discard — no samples move — so the refresh that an ordinary
+    /// edit gets for free has to be asked for here. Redo has just become unavailable.
+    /// </remarks>
+    public void TruncateHistoryFrom(DocumentViewModel document, int index)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        if (!CanMoveHistory(document)) return;
+
+        var history = document.Doc.GetHistory();
+        if (index < 0 || index >= history.Entries.Count)
+        {
+            ReportAction("That step is no longer in the history.");
+            return;
+        }
+        string name = history.Entries[index].Name;
+        int discarded = history.Entries.Count - index;
+
+        // Discarding a step that is still applied takes it out of the audio first, so this moves
+        // samples as surely as an undo does and has to let go of the stream the same way.
+        if (document.Doc.HistoryPosition > index) PrepareForDocumentEdit(document);
+
+        if (!document.Doc.TruncateHistoryFrom(index)) return;
+        document.NotifyHistoryChanged();
+        RefreshEditCommandStates();
+        ReportAction(discarded == 1
+            ? $"Discarded {name}."
+            : $"Discarded {name} and the {discarded - 1} step(s) after it.");
+    }
+
     private async void Copy()
     {
         if (_active is not { HasSelection: true } d) return;
@@ -1840,10 +1951,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             RefreshEditCommandStates();
     }
 
+    /// <summary>
+    /// Whether the history may be moved right now. Both flags matter: the clipboard one because a
+    /// copy is reading the samples, and the operation one because a tool has already taken its
+    /// snapshot and will commit against a length check that a same-length jump would slip past.
+    /// </summary>
+    public bool CanMoveHistory(DocumentViewModel? document) =>
+        document != null
+        && !_editOperationRunning
+        && !_documentOperationRunning
+        && Documents.Contains(document);
+
     private void RefreshEditCommandStates()
     {
         UndoCommand.RaiseCanExecuteChanged();
         RedoCommand.RaiseCanExecuteChanged();
+        HistoryCommand.RaiseCanExecuteChanged();
+        MatchLoudnessCommand.RaiseCanExecuteChanged();
+        Raise(nameof(UndoMenuHeader));
+        Raise(nameof(RedoMenuHeader));
         CutCommand.RaiseCanExecuteChanged();
         CopyCommand.RaiseCanExecuteChanged();
         PasteCommand.RaiseCanExecuteChanged();

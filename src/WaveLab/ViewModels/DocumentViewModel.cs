@@ -15,6 +15,7 @@ public sealed class DocumentViewModel : TabViewModel
     private int _cursor;
     private int _playhead;
     private int _markersVersion;
+    private int _historyVersion;
 
     private bool _rebuildRunning;
     private bool _rebuildQueued;
@@ -182,6 +183,20 @@ public sealed class DocumentViewModel : TabViewModel
     public ObservableCollection<Marker> Markers { get; } = [];
     public ObservableCollection<NamedRegion> Regions { get; } = [];
     public int MarkersVersion => _markersVersion;
+
+    /// <summary>
+    /// Bumps whenever the edit history moved — a new step, a jump, a discard, an eviction, or the
+    /// savepoint mark moving. The Edit History panel is modeless and re-reads on this, exactly as
+    /// the markers panel re-reads on <see cref="MarkersVersion"/>.
+    /// </summary>
+    public int HistoryVersion => _historyVersion;
+
+    /// <summary>Announces that the edit history moved. Cheap: the panel does the reading.</summary>
+    public void NotifyHistoryChanged()
+    {
+        _historyVersion++;
+        Raise(nameof(HistoryVersion));
+    }
 
     /// <summary>Noise print learned for spectral noise reduction (magnitude spectrum), or null.</summary>
     public float[]? NoiseProfile { get; set; }
@@ -532,6 +547,7 @@ public sealed class DocumentViewModel : TabViewModel
         Raise(nameof(IsDirty));
         Raise(nameof(FormatText));
         RaiseSelection();
+        NotifyHistoryChanged();
     }
 
     public void NotifySaved()
@@ -539,6 +555,8 @@ public sealed class DocumentViewModel : TabViewModel
         Raise(nameof(Title));
         Raise(nameof(IsDirty));
         Raise(nameof(FormatText));
+        // Saving moves no samples, but it does move the savepoint mark the history draws.
+        NotifyHistoryChanged();
     }
 
     /// <summary>

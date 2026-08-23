@@ -16,6 +16,9 @@ public sealed class AudioDocument
     private long _currentStateId;
     private long? _savedStateId = 0;
     private long _nextStateId = 1;
+    private int _historyGeneration;
+    private int _discardedOlder;
+    private int _discardedNewer;
 
     /// <summary>Stable identity for autosave/crash-recovery bookkeeping.</summary>
     public Guid SessionId { get; } = Guid.NewGuid();
@@ -173,6 +176,83 @@ public sealed class AudioDocument
     public string? NextUndoName => _undo.Count > 0 ? _undo[^1].Name : null;
     public string? NextRedoName => _redo.Count > 0 ? _redo[^1].Name : null;
 
+    /// <summary>How many steps the retained history holds, applied and undone together.</summary>
+    public int HistoryCount => _undo.Count + _redo.Count;
+
+    /// <summary>How many of them are applied. Also the timeline index the document sits at.</summary>
+    public int HistoryPosition => _undo.Count;
+
+    /// <summary>What the retained history costs, against <see cref="UndoBudgetBytes"/>.</summary>
+    public long RetainedHistoryBytes
+    {
+        get
+        {
+            long total = 0;
+            for (int i = 0; i < _undo.Count; i++) total += EditBytes(_undo[i]);
+            for (int i = 0; i < _redo.Count; i++) total += EditBytes(_redo[i]);
+            return total;
+        }
+    }
+
+    /// <summary>
+    /// The retained history as one linear timeline: the applied steps in the order they were
+    /// applied, followed by the undone ones in the order redo would reapply them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>_redo</c> is used as a stack, so it is stored back to front — <c>_redo[^1]</c> is the next
+    /// redo and <c>_redo[0]</c> the furthest future. The timeline is therefore <c>_undo</c> in order
+    /// followed by <c>_redo</c> <b>reversed</b>, which is what the indexing below does. Getting that
+    /// the wrong way round produces a list that looks entirely plausible and jumps to the wrong
+    /// state, so it is pinned by a test rather than left to reading.
+    /// </para>
+    /// <para>
+    /// Build it fresh whenever it may have moved instead of caching entries. The byte budget can
+    /// release steps from either end at any time, so an index captured earlier may name a different
+    /// step; <see cref="HistorySnapshot.Generation"/> is what says so.
+    /// </para>
+    /// </remarks>
+    public HistorySnapshot GetHistory()
+    {
+        int applied = _undo.Count;
+        int total = applied + _redo.Count;
+        var entries = new HistoryEntry[total];
+        long retained = 0;
+        bool savepointOnAStep = false;
+        for (int i = 0; i < total; i++)
+        {
+            var edit = i < applied ? _undo[i] : _redo[total - 1 - i];
+            long bytes = EditBytes(edit);
+            retained += bytes;
+            bool isSavepoint = _savedStateId is { } saved && saved == edit.AfterStateId;
+            savepointOnAStep |= isSavepoint;
+            entries[i] = new HistoryEntry(
+                i,
+                edit.Name,
+                i < applied,
+                i == applied - 1,
+                isSavepoint,
+                Frames(edit.Old) != Frames(edit.New),
+                edit.OwnsFullDocument,
+                bytes);
+        }
+
+        long baselineStateId = applied > 0 ? _undo[0].BeforeStateId : _currentStateId;
+        bool baselineIsSavepoint = _savedStateId is { } id && id == baselineStateId;
+        return new HistorySnapshot(
+            entries,
+            applied,
+            baselineIsSavepoint,
+            baselineIsSavepoint || savepointOnAStep,
+            _discardedOlder,
+            _discardedNewer,
+            _historyGeneration,
+            retained,
+            UndoBudgetBytes);
+    }
+
+    private static int Frames(float[][] data) => data.Length == 0 ? 0 : data[0].Length;
+
     public float[][] CopyRange(int start, int count)
     {
         var channels = Volatile.Read(ref _channels);
@@ -211,7 +291,7 @@ public sealed class AudioDocument
             beforeStateId, afterStateId);
         Splice(channels, start, removeCount, newData);
         _undo.Add(edit);
-        _redo.Clear();
+        DiscardRedo();
         EnforceUndoBudget();
         _currentStateId = afterStateId;
         UpdateDirtyFromSavepoint();
@@ -241,7 +321,7 @@ public sealed class AudioDocument
         long afterStateId = _nextStateId++;
         Volatile.Write(ref _channels, newData);
         _undo.Add(new Edit(opName, 0, oldData, newData, true, beforeStateId, afterStateId));
-        _redo.Clear();
+        DiscardRedo();
         EnforceUndoBudget();
         _currentStateId = afterStateId;
         UpdateDirtyFromSavepoint();
@@ -252,37 +332,179 @@ public sealed class AudioDocument
     public void Undo()
     {
         if (_undo.Count == 0) return;
-        var e = _undo[^1];
-        _undo.RemoveAt(_undo.Count - 1);
-        int insertedLen = e.New.Length == 0 ? 0 : e.New[0].Length;
-        if (e.OwnsFullDocument)
-            Volatile.Write(ref _channels, e.Old);
-        else
-            Splice(e.Start, insertedLen, e.Old);
-        _redo.Add(e);
+        var (start, removed, inserted) = UndoCore();
         // Undo moved an edit rather than releasing it, so the budget has to be re-checked here too.
         EnforceUndoBudget();
-        _currentStateId = e.BeforeStateId;
         UpdateDirtyFromSavepoint();
         EditVersion++;
-        Changed?.Invoke(e.Start, insertedLen, e.Old.Length == 0 ? 0 : e.Old[0].Length);
+        Changed?.Invoke(start, removed, inserted);
     }
 
     public void Redo()
     {
         if (_redo.Count == 0) return;
+        var (start, removed, inserted) = RedoCore();
+        UpdateDirtyFromSavepoint();
+        EditVersion++;
+        Changed?.Invoke(start, removed, inserted);
+    }
+
+    /// <summary>
+    /// Takes the document back to any point on the timeline in one action, and returns how many
+    /// steps that moved (negative backwards, zero when it was already there).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A jump is a run of ordinary undo/redo steps that raises <b>one</b> <see cref="Changed"/> and
+    /// bumps <see cref="EditVersion"/> <b>once</b>. That is not an optimisation. Every step of a
+    /// per-step run would re-enter the peak rebuild, queue its own marker sidecar write, requery
+    /// three dozen commands and push a different operation name onto the status line — so a
+    /// ten-step jump would cost ten of each and settle on the right answer only at the end.
+    /// </para>
+    /// <para>
+    /// The single event carries the composition of the run: the first offset that differs, the
+    /// length of the changed span before the jump, and its length after. Anything anchored to the
+    /// timeline is remapped through that triple, so it has to be tight — a lazy whole-document
+    /// triple would collapse every marker to sample 0. A run of same-length edits composes to
+    /// <c>removed == inserted</c> and moves no markers at all, and a run containing a whole-document
+    /// render composes to the whole document, which is exactly what that step raises on its own.
+    /// </para>
+    /// <para>
+    /// The budget is enforced once, at the end. Enforcing it mid-run could release entries while the
+    /// loop is still counting against <c>_undo.Count</c>, and the retained total is invariant under a
+    /// stack-to-stack move anyway, so deferring it costs nothing and removes the hazard.
+    /// </para>
+    /// </remarks>
+    public int JumpToHistoryPosition(int position)
+    {
+        if (position < 0 || position > HistoryCount)
+        {
+            // Refused rather than clamped: the panel is modeless and its indices can go stale under
+            // a budget eviction, and a silently wrong jump is far worse than a loud one.
+            throw new ArgumentOutOfRangeException(
+                nameof(position), position, "Position is outside the retained history.");
+        }
+
+        int moved = position - _undo.Count;
+        if (moved == 0) return 0;
+
+        int start = 0, removed = 0, inserted = 0;
+        bool first = true;
+
+        void Compose((int Start, int Removed, int Inserted) step)
+        {
+            if (first)
+            {
+                (start, removed, inserted) = step;
+                first = false;
+                return;
+            }
+
+            // The hull of the span already accumulated and the span this step touches, measured in
+            // the document as it stands. Everything outside it maps one to one onto the document as
+            // it was before the jump, which is why `extra` and `deficit` count the same in both.
+            int end = Math.Max(start + inserted, step.Start + step.Removed);
+            int extra = Math.Max(0, end - (start + inserted));
+            int deficit = Math.Max(0, start - step.Start);
+            start = Math.Min(start, step.Start);
+            removed += extra + deficit;
+            inserted = end - start + (step.Inserted - step.Removed);
+        }
+
+        while (_undo.Count > position) Compose(UndoCore());
+        while (_undo.Count < position) Compose(RedoCore());
+
+        EnforceUndoBudget();
+        UpdateDirtyFromSavepoint();
+        EditVersion++;
+        Changed?.Invoke(start, removed, inserted);
+        return moved;
+    }
+
+    /// <summary>
+    /// Discards the step at <paramref name="index"/> and every step after it, permanently. Returns
+    /// false when the index names nothing.
+    /// </summary>
+    /// <remarks>
+    /// The document is first taken back to the state that step was applied to — what is being thrown
+    /// away must not still be in the audio. No <see cref="Changed"/> is raised for the discard
+    /// itself, because no samples move; the caller has to refresh whatever reads
+    /// <see cref="CanRedo"/>.
+    /// </remarks>
+    public bool TruncateHistoryFrom(int index)
+    {
+        if (index < 0 || index >= HistoryCount) return false;
+
+        if (_undo.Count > index)
+        {
+            JumpToHistoryPosition(index);
+            // Everything unapplied is now exactly the run that was asked for. Recomputing a count
+            // from `index` would be wrong here: the jump's budget check can release older steps and
+            // renumber the timeline underneath us, but it cannot change which steps are undone.
+            _redo.Clear();
+        }
+        else
+        {
+            // _redo is stored back to front, so the far-future end — combined indices `index`
+            // upwards — sits at the front of the list.
+            _redo.RemoveRange(0, HistoryCount - index);
+        }
+
+        _historyGeneration++;
+        DropSavepointIfUnreachable();
+        return true;
+    }
+
+    /// <summary>
+    /// Moves one step back, splicing the samples and nothing else: no budget check, no version bump,
+    /// no notification. <see cref="Undo"/> adds those for one step; a jump adds them once for a run.
+    /// Returns the splice as (start, removed from the document, inserted into it).
+    /// </summary>
+    private (int Start, int Removed, int Inserted) UndoCore()
+    {
+        var e = _undo[^1];
+        _undo.RemoveAt(_undo.Count - 1);
+        int insertedLen = Frames(e.New);
+        if (e.OwnsFullDocument)
+            Volatile.Write(ref _channels, e.Old);
+        else
+            Splice(e.Start, insertedLen, e.Old);
+        _redo.Add(e);
+        _currentStateId = e.BeforeStateId;
+        return (e.Start, insertedLen, Frames(e.Old));
+    }
+
+    /// <summary>The mirror of <see cref="UndoCore"/>, one step forward.</summary>
+    private (int Start, int Removed, int Inserted) RedoCore()
+    {
         var e = _redo[^1];
         _redo.RemoveAt(_redo.Count - 1);
-        int oldLen = e.Old.Length == 0 ? 0 : e.Old[0].Length;
+        int oldLen = Frames(e.Old);
         if (e.OwnsFullDocument)
             Volatile.Write(ref _channels, e.New);
         else
             Splice(e.Start, oldLen, e.New);
         _undo.Add(e);
         _currentStateId = e.AfterStateId;
-        UpdateDirtyFromSavepoint();
-        EditVersion++;
-        Changed?.Invoke(e.Start, oldLen, e.New.Length == 0 ? 0 : e.New[0].Length);
+        return (e.Start, oldLen, Frames(e.New));
+    }
+
+    /// <summary>
+    /// Drops the forward chain, as any new edit does, and gives up the savepoint if it went with it.
+    /// </summary>
+    /// <remarks>
+    /// Editing after an undo discards the steps that were undone, and the last saved state can be one
+    /// of them — save, undo, edit, and the bytes on disk are no longer anywhere on the timeline.
+    /// Without this the id would linger: harmless for <see cref="Dirty"/>, which was already true,
+    /// but it would leave <see cref="HistorySnapshot.SavepointReachable"/> as the only thing that
+    /// knew, and the invariant "the savepoint is reachable or absent" merely nearly true.
+    /// </remarks>
+    private void DiscardRedo()
+    {
+        if (_redo.Count == 0) return;
+        _redo.Clear();
+        _historyGeneration++;
+        DropSavepointIfUnreachable();
     }
 
     private static long EditBytes(Edit edit)
@@ -318,11 +540,42 @@ public sealed class AudioDocument
             total -= EditBytes(_redo[dropped++]);
         if (dropped > 0) _redo.RemoveRange(0, dropped);
 
+        int droppedOlder = 0;
         while (_undo.Count > 1 && total > UndoBudgetBytes)
         {
             total -= EditBytes(_undo[0]);
             _undo.RemoveAt(0);
+            droppedOlder++;
         }
+
+        if (dropped == 0 && droppedOlder == 0) return;
+        // The Edit History panel shows what was released and renumbers when it happens, so the
+        // counts are kept rather than the eviction being silent.
+        _discardedNewer += dropped;
+        _discardedOlder += droppedOlder;
+        _historyGeneration++;
+        DropSavepointIfUnreachable();
+    }
+
+    /// <summary>
+    /// Gives up the savepoint once no step on the timeline can return the document to it.
+    /// </summary>
+    /// <remarks>
+    /// This changes no observable <see cref="Dirty"/> value today: state ids are never reused, so an
+    /// unreachable savepoint already compared unequal to every current state and the document
+    /// already read as dirty forever. What it buys is that the state now says what is true rather
+    /// than leaving a dangling id behind, which is what lets the history report whether the last
+    /// saved state can still be reached — and it closes the same gap on the path that was already
+    /// there, where the budget releases the oldest edit and takes the savepoint with it.
+    /// </remarks>
+    private void DropSavepointIfUnreachable()
+    {
+        if (_savedStateId is not { } saved) return;
+        if (saved == _currentStateId) return;
+        if (_undo.Count > 0 && saved == _undo[0].BeforeStateId) return;
+        foreach (var edit in _undo) if (saved == edit.AfterStateId) return;
+        foreach (var edit in _redo) if (saved == edit.AfterStateId) return;
+        MarkUnsaved();
     }
 
     public void MarkSaved()
