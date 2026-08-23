@@ -259,7 +259,10 @@ public partial class RestorationWorkbenchDialog : Window
             if (!IsCurrent(operation)) return;
             _source = prepared.Source;
             _noiseProfile = prepared.Noise.Profile;
-            _noiseToProgrammeDb = Restoration.EstimateNoiseToProgrammeDb(prepared.Source, _sampleRate);
+            _noiseDepthCeilingDb = AppSettings.NormalizeNoiseDepthCeilingDb(
+                AppSettings.Instance.NoiseDepthCeilingDb);
+            _noiseToProgrammeDb = Restoration.EstimateNoiseToProgrammeDb(
+                prepared.Source, _sampleRate, _noiseDepthCeilingDb);
             // Both measurements come from the analysis that already ran; neither is taken again
             // when a slider moves. The rumble sentence is the analyzer's own, so the card cannot
             // describe the subsonic band differently from the chain that filters it.
@@ -783,8 +786,9 @@ public partial class RestorationWorkbenchDialog : Window
             // already been through click repair, declip and hum removal by this point, so its floor
             // is no longer the one the user was shown a figure for.
             double depth = Restoration.SuggestReductionDepthDb(
-                _noiseToProgrammeDb ?? Restoration.EstimateNoiseToProgrammeDb(work, _sampleRate),
-                settings.NoiseReductionDb);
+                _noiseToProgrammeDb ?? Restoration.EstimateNoiseToProgrammeDb(
+                    work, _sampleRate, _noiseDepthCeilingDb),
+                settings.NoiseReductionDb, _noiseDepthCeilingDb);
             // Naming the other tool matters here rather than being a courtesy. The rule is an RMS
             // ratio, and crackle is impulsive - a surface can be plainly audible while its floor
             // sits 24 dB under the programme, which is exactly the reading that switches this stage
@@ -1025,6 +1029,15 @@ public partial class RestorationWorkbenchDialog : Window
     /// </remarks>
     private double? _noiseToProgrammeDb;
 
+    /// <summary>The ceiling the cached estimate was taken under, and the render will run at.</summary>
+    /// <remarks>
+    /// Read once, with the estimate, rather than from <see cref="AppSettings"/> at each use. The
+    /// estimate expresses "no reading" <em>in</em> the ceiling, so a pair taken under different
+    /// ceilings is not a pair — and the readout would then be describing a depth the render did not
+    /// apply, which is the disagreement every readout in this dialog is arranged to prevent.
+    /// </remarks>
+    private double _noiseDepthCeilingDb = Restoration.NoiseDepthCeilingDb;
+
     /// <summary>The two halves of the readout line, so the verb can be coloured on its own.</summary>
     /// <param name="Lead">Applied depth, or the reason nothing is being applied.</param>
     /// <param name="Detail">The measured number the decision was made from.</param>
@@ -1174,7 +1187,7 @@ public partial class RestorationWorkbenchDialog : Window
         // The cached estimate, never a fresh measurement: this runs on the dispatcher on every
         // movement of every slider in the dialog, and measuring costs 388 ms on a 22-minute side.
         double applied = analysed && hasProfile
-            ? Restoration.SuggestReductionDepthDb(estimate, requested)
+            ? Restoration.SuggestReductionDepthDb(estimate, requested, _noiseDepthCeilingDb)
             : 0;
 
         NoiseDepthLine line = DescribeNoiseDepth(noiseEnabled.IsChecked == true,

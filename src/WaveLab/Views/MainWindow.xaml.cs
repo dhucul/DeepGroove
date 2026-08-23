@@ -1568,8 +1568,12 @@ public partial class MainWindow : Window
             // The depth follows how much noise there is to remove rather than the slider alone.
             // Measured, a fixed depth comes out worse than leaving the audio alone on 46 of 108
             // corpus cells; this takes that to 15. See Restoration.SuggestReductionDepthDb.
-            floor = Restoration.EstimateNoiseToProgrammeDb(data, sampleRate);
-            double depth = Restoration.SuggestReductionDepthDb(floor.Value, reduction);
+            // One ceiling for both calls: the estimate says "no reading" in the ceiling's own
+            // units, so a pair taken under two of them is not a pair.
+            double ceiling = AppSettings.NormalizeNoiseDepthCeilingDb(
+                AppSettings.Instance.NoiseDepthCeilingDb);
+            floor = Restoration.EstimateNoiseToProgrammeDb(data, sampleRate, ceiling);
+            double depth = Restoration.SuggestReductionDepthDb(floor.Value, reduction, ceiling);
             chosen = depth;
 
             // Null, not the untouched buffer. Returning it splices the range over itself, which

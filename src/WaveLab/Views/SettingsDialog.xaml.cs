@@ -1,10 +1,11 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using NAudio.CoreAudioApi;
 using WaveLab.Audio;
+using WaveLab.Audio.Dsp;
 using WaveLab.Util;
 using WaveLab.Views.Controls;
 
@@ -57,6 +58,7 @@ public partial class SettingsDialog : Window
 
         chkReopen.IsChecked = settings.ReopenLastSession;
         sldUndo.Value = Math.Clamp(settings.UndoLimitMb, 64, 4096);
+        sldNoiseCeiling.Value = AppSettings.NormalizeNoiseDepthCeilingDb(settings.NoiseDepthCeilingDb);
         chkAutosave.IsChecked = settings.AutosaveEnabled;
 
         PopulateOption(cmbOutputRole, DefaultRoles, settings.OutputDefaultRole);
@@ -217,11 +219,50 @@ public partial class SettingsDialog : Window
     private void UpdateLabels()
     {
         if (lblUndo != null) lblUndo.Text = $"{(int)sldUndo.Value} MB";
+        UpdateNoiseCeilingReadout();
         if (lblBuffer != null) lblBuffer.Text = $"{(int)sldBuffer.Value} ms";
         if (lblCaptureBuffer != null) lblCaptureBuffer.Text = $"{(int)sldCaptureBuffer.Value} ms";
     }
 
     private void OnUndoSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => UpdateLabels();
+
+    private void OnNoiseCeilingSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e) =>
+        UpdateNoiseCeilingReadout();
+
+    /// <summary>
+    /// The value, and what moving it off the default gives up.
+    /// </summary>
+    /// <remarks>
+    /// <b>Amber on the departure, not on the setting.</b> Ten is the measured optimum and anything
+    /// above it is a deliberate trade, so the line states the trade rather than warning about the
+    /// control - the same rule the noise depth readout follows, and the same reason: colouring a
+    /// choice like a fault teaches users to distrust the colour.
+    /// </remarks>
+    private void UpdateNoiseCeilingReadout()
+    {
+        if (lblNoiseCeiling == null) return;
+        double ceiling = AppSettings.NormalizeNoiseDepthCeilingDb(sldNoiseCeiling.Value);
+        lblNoiseCeiling.Text = $"{ceiling:0} dB";
+        if (lblNoiseCeilingWarning == null) return;
+
+        if (ceiling <= Restoration.NoiseDepthCeilingDb)
+        {
+            lblNoiseCeilingWarning.Text = "";
+            lblNoiseCeilingWarning.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        // What a file that the default protects now gets. Worked from the rule itself so the two
+        // cannot drift: a 12 dB request on programme sitting 15.9 dB above its floor, which is the
+        // corpus severity where a fixed depth measured -8.13 dB segmental.
+        double applied = Restoration.SuggestReductionDepthDb(15.9, 12.0, ceiling);
+        lblNoiseCeilingWarning.Visibility = Visibility.Visible;
+        lblNoiseCeilingWarning.Text =
+            $"Above the measured optimum of {Restoration.NoiseDepthCeilingDb:0} dB. Measured over 108 cells, "
+            + "scaling the depth takes files that come out worse than doing nothing from 46 to 15; raising "
+            + "this gives that protection back. At this setting a file whose hiss is already 15.9 dB down "
+            + $"would be reduced by {applied:0.0} dB where the default reduces it by none.";
+    }
     private void OnBufferSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => UpdateLabels();
 
     private void OnExportFormatChanged(object sender, SelectionChangedEventArgs e) => UpdateExportFormatUi();
@@ -493,6 +534,7 @@ public partial class SettingsDialog : Window
         {
             chkReopen.IsChecked = true;
             sldUndo.Value = 512;
+            sldNoiseCeiling.Value = Restoration.NoiseDepthCeilingDb;
             cmbOutput.SelectedIndex = 0;
             cmbInput.SelectedIndex = 0;
             SelectOption(cmbOutputRole, "multimedia");
@@ -523,6 +565,7 @@ public partial class SettingsDialog : Window
 
         settings.ReopenLastSession = chkReopen.IsChecked == true;
         settings.UndoLimitMb = (int)sldUndo.Value;
+        settings.NoiseDepthCeilingDb = AppSettings.NormalizeNoiseDepthCeilingDb(sldNoiseCeiling.Value);
         settings.OutputDeviceId = (cmbOutput.SelectedItem as DeviceItem)?.Id;
         settings.InputDeviceId = (cmbInput.SelectedItem as DeviceItem)?.Id;
         settings.BufferMs = (int)sldBuffer.Value;
