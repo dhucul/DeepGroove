@@ -1,4 +1,4 @@
-using WaveLab.Audio.Dsp;
+﻿using WaveLab.Audio.Dsp;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -179,6 +179,45 @@ public sealed class VerticalNoiseTests(ITestOutputHelper output)
 
         Assert.Equal(left, signal[0]);
         Assert.Equal(right, signal[1]);
+    }
+
+    /// <summary>
+    /// Running the channels at once must give the same audio as running them one after another.
+    /// </summary>
+    /// <remarks>
+    /// The workbench de-crackles its channels in parallel, because that stage runs at 0.19 to 0.36x
+    /// realtime and dominates the chain. The claim underneath is that each channel is independent —
+    /// one task owns one array and reads no other — so this asserts the only thing that could
+    /// falsify it: identical output, bit for bit, however the work is scheduled.
+    /// </remarks>
+    [Fact]
+    public void DeCracklingChannelsInParallelMatchesDoingThemInTurn()
+    {
+        var random = new Random(23);
+        var sequential = new float[2][];
+        for (int c = 0; c < 2; c++)
+        {
+            sequential[c] = new float[Rate * 3];
+            for (int i = 0; i < sequential[c].Length; i++)
+            {
+                double t = i / (double)Rate;
+                double music = 0.28 * Math.Sin(2 * Math.PI * (196 + c * 7) * t)
+                             + 0.15 * Math.Sin(2 * Math.PI * 587 * t);
+                double grain = random.NextDouble() < 0.004 ? (random.NextDouble() - 0.5) * 0.4 : 0;
+                sequential[c][i] = (float)(music + grain + (random.NextDouble() - 0.5) * 0.002);
+            }
+        }
+        var parallel = sequential.Select(c => (float[])c.Clone()).ToArray();
+
+        foreach (float[] channel in sequential) Decrackle.Process(channel, DecrackleOptions.Default);
+        Parallel.For(0, parallel.Length,
+            channel => Decrackle.Process(parallel[channel], DecrackleOptions.Default));
+
+        for (int c = 0; c < 2; c++)
+        {
+            Assert.Equal(sequential[c], parallel[c]);
+            output.WriteLine($"channel {c}: {sequential[c].Length} samples identical");
+        }
     }
 
     /// <summary>Anything that is not a stereo pair has no side signal, so it is left alone.</summary>

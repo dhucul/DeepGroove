@@ -1,4 +1,4 @@
-using WaveLab.Views;
+﻿using WaveLab.Views;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -115,6 +115,33 @@ public sealed class VerticalNoiseReadoutTests(ITestOutputHelper output)
         string line = Side(-11.0, level);
         output.WriteLine(line);
         Assert.Contains($"Reducing the side by {expected}", line);
+    }
+
+    /// <summary>
+    /// Restoring a selection changes the stereo image inside it and not outside it, and the image
+    /// snapping at the boundary is far more audible than a notch or a gate doing the same thing.
+    /// </summary>
+    [Fact]
+    public void ARangeRestorationWarnsAboutTheSeamItLeaves()
+    {
+        string partial = RestorationWorkbenchDialog.DescribeSideLevel(
+            true, analysed: true, stereo: true, sideToMidDb: -16.5, level: 0, wholeFile: false);
+        string whole = RestorationWorkbenchDialog.DescribeSideLevel(
+            true, analysed: true, stereo: true, sideToMidDb: -16.5, level: 0, wholeFile: true);
+        output.WriteLine(partial);
+
+        Assert.Contains("change at its edges", partial);
+        Assert.DoesNotContain("change at its edges", whole);
+    }
+
+    /// <summary>No reduction, no seam — the warning must not cry wolf on a stage that will not run.</summary>
+    [Fact]
+    public void LeavingTheSideAloneOverARangeWarnsAboutNothing()
+    {
+        string line = RestorationWorkbenchDialog.DescribeSideLevel(
+            true, analysed: true, stereo: true, sideToMidDb: -6.0, level: 1.0, wholeFile: false);
+        output.WriteLine(line);
+        Assert.DoesNotContain("change at its edges", line);
     }
 
     // ── the crackle card ─────────────────────────────────────────
