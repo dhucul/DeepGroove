@@ -187,6 +187,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         StatisticsCommand = new RelayCommand(() => RequestStatisticsDialog?.Invoke(), () => HasAudioDocument);
         OpenRecentCommand = new RelayCommand<string>(path => { if (path != null) OpenFiles([path]); });
         ClearRecentFilesCommand = new RelayCommand(ClearRecentFiles, () => RecentFiles.Count > 0);
+        RecentFileActions = [new MenuEntry("Clear Recent Files", ClearRecentFilesCommand)];
         CommandPaletteCommand = new RelayCommand(() => RequestCommandPalette?.Invoke());
         HistoryCommand = new RelayCommand(() => RequestHistoryPanel?.Invoke(), () => HasAudioDocument);
         MatchLoudnessCommand = new RelayCommand(
@@ -306,7 +307,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand CommandPaletteCommand { get; }
     public RelayCommand AboutCommand { get; }
 
-    public ObservableCollection<string> RecentFiles { get; } = [];
+    /// <summary>The recent paths, as the submenu's own entries.</summary>
+    public ObservableCollection<MenuEntry> RecentFiles { get; } = [];
+
+    /// <summary>
+    /// What sits below the separator at the foot of the submenu. A collection rather than a
+    /// declared menu item so that the menu generates it: see <see cref="MenuEntry"/>.
+    /// </summary>
+    public IReadOnlyList<MenuEntry> RecentFileActions { get; }
 
     /// <summary>
     /// Whether the Recent Files submenu has any paths above its separator. Bound rather than
@@ -849,7 +857,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void SyncRecentFiles()
     {
         RecentFiles.Clear();
-        foreach (var f in AppSettings.Instance.RecentFilesSnapshot()) RecentFiles.Add(f);
+        foreach (string path in AppSettings.Instance.RecentFilesSnapshot())
+            RecentFiles.Add(new MenuEntry(path, OpenRecentCommand, path));
         Raise(nameof(HasRecentFiles));
         ClearRecentFilesCommand.RaiseCanExecuteChanged();
     }

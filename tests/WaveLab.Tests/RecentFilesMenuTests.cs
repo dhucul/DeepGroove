@@ -6,6 +6,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using WaveLab.Util;
+using WaveLab.ViewModels;
 using WaveLab.Views;
 using Xunit;
 using Xunit.Abstractions;
@@ -65,16 +66,16 @@ public sealed class RecentFilesMenuTests : IDisposable
 
                 // Escaped where it is read, raw where it is acted on. One binding, two jobs, and
                 // a converter on the wrong one would open a path that was never stored.
-                Assert.IsType<AccessKeyEscapeConverter>(
-                    BindingFor(recent.ItemContainerStyle, MenuItem.HeaderProperty).Converter);
-                Assert.Null(BindingFor(recent.ItemContainerStyle, MenuItem.CommandParameterProperty).Converter);
+                Binding header = BindingFor(recent.ItemContainerStyle, MenuItem.HeaderProperty);
+                Binding parameter = BindingFor(recent.ItemContainerStyle, MenuItem.CommandParameterProperty);
+                Assert.IsType<AccessKeyEscapeConverter>(header.Converter);
+                Assert.Null(parameter.Converter);
 
                 Separator separator = recent.Items.OfType<Separator>().Single();
                 Assert.Equal(Visibility.Visible, separator.Visibility);
 
-                MenuItem clear = ClearEntry(recent);
-                ICommand command = clear.Command
-                    ?? throw new InvalidOperationException("Clear has no command; its binding did not resolve.");
+                MenuEntry clear = ClearEntry(recent);
+                ICommand command = clear.Command;
                 Assert.True(command.CanExecute(null), "Clear was disabled with two paths listed.");
 
                 command.Execute(null);
@@ -89,6 +90,7 @@ public sealed class RecentFilesMenuTests : IDisposable
 
                 // The entry itself survives the collection it sits beside going empty.
                 Assert.Same(clear, ClearEntry(recent));
+                Assert.Equal("Clear Recent Files", clear.Text);
             });
             return errors.Messages.ToArray();
         });
@@ -126,10 +128,21 @@ public sealed class RecentFilesMenuTests : IDisposable
         return file.Items.OfType<MenuItem>().Single(item => item.Header as string == "Recent Files");
     }
 
-    private static string[] Paths(MenuItem recent) => [.. recent.Items.OfType<string>()];
+    /// <summary>Everything above the rule, which is where the paths live.</summary>
+    private static string[] Paths(MenuItem recent) =>
+    [
+        .. recent.Items.Cast<object>()
+            .TakeWhile(item => item is not Separator)
+            .OfType<MenuEntry>()
+            .Select(entry => entry.Text),
+    ];
 
-    private static MenuItem ClearEntry(MenuItem recent) =>
-        recent.Items.OfType<MenuItem>().Single(item => item.Header as string == "Clear Recent Files");
+    /// <summary>The one entry below the rule.</summary>
+    private static MenuEntry ClearEntry(MenuItem recent) =>
+        recent.Items.Cast<object>()
+            .SkipWhile(item => item is not Separator)
+            .OfType<MenuEntry>()
+            .Single();
 
     private static T? FindVisual<T>(DependencyObject root) where T : DependencyObject
     {
