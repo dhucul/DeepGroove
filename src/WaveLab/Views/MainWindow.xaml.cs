@@ -1561,6 +1561,11 @@ public partial class MainWindow : Window
         var profile = d.NoiseProfile;
         double reduction = dlg.Values[0], sensitivity = dlg.Values[1];
         int sampleRate = d.Doc.SampleRate;          // captured up front, like the profile above
+        // And so is this. RunRangeTool runs the transform on a worker, and AppSettings is a
+        // UI-thread object by convention - the class's own remarks say the next reader added will
+        // not know that. This is that reader; it reads here instead.
+        double ceiling = AppSettings.NormalizeNoiseDepthCeilingDb(
+            AppSettings.Instance.NoiseDepthCeilingDb);
 
         double? chosen = null, floor = null;
         await RunRangeTool("Reduce Noise", (data, _) =>
@@ -1570,8 +1575,6 @@ public partial class MainWindow : Window
             // corpus cells; this takes that to 15. See Restoration.SuggestReductionDepthDb.
             // One ceiling for both calls: the estimate says "no reading" in the ceiling's own
             // units, so a pair taken under two of them is not a pair.
-            double ceiling = AppSettings.NormalizeNoiseDepthCeilingDb(
-                AppSettings.Instance.NoiseDepthCeilingDb);
             floor = Restoration.EstimateNoiseToProgrammeDb(data, sampleRate, ceiling);
             double depth = Restoration.SuggestReductionDepthDb(floor.Value, reduction, ceiling);
             chosen = depth;

@@ -1018,6 +1018,67 @@ and clamped to 10–40**.
   `CardCaption` and an explicit `TextWrapping` on the evidence lines are why — the fault they would
   otherwise have is the one already on record, a caption cut to "without shifting stereo alignm".
 
+### Review fixes: what wiring de-crackle into the chain actually cost
+
+A review of the three stages above found six things. The largest was not a bug at all — it was that
+nobody had asked what the new stage costs.
+
+- **De-crackle is 400× the other two new stages put together, and it was switched on by default.**
+  Measured on five real transfers: the high-pass runs in 140–193 ms and the side scale in 19–24 ms
+  on a three-minute side, and de-crackle runs in **34.3 to 68.3 seconds** — 0.19 to 0.36× realtime.
+  It repairs about 4% of *every* sample rather than a bounded list of events, and Janssen is ~35× a
+  linear bridge. On a 22-minute LP side that is four to seven minutes per Apply.
+- **`RenderOwnedWork` is also the preview path, so the same cost lands on every parameter change.**
+  Over the 12 s preview window the rest of the chain costs **428–920 ms** and this stage costs
+  **2.6–5.7 s**: a **7.2× to 10.7×** slowdown. The guess that A-SPADE already made previews this
+  expensive was wrong and checking it is what made the finding solid — these transfers carry **no
+  clipping at all**, so declip costs 1–2 ms and there was nothing already paying that bill.
+- **What saved it from being unusable is that `BeginOperation` cancels the superseded render.**
+  Dragging a slider cancels and restarts rather than queueing, and `Decrackle` checks its token
+  every 64 events, so the cost is *latency after you stop moving* rather than a backlog. Worth
+  knowing before treating a slow stage in this dialog as a hang.
+- **The fix is the parallelism this repo had already reasoned about and never claimed.**
+  `Janssen`'s note records that per-channel parallelism "would halve it and is safe — each channel's
+  samples are independent — but has not been done". Measured, it is **exactly 2.0× on all five
+  files**, taking the stage to 0.09–0.18× realtime. `DeCracklingChannelsInParallelMatchesDoingThemInTurn`
+  asserts the claim underneath it: identical output, bit for bit, however the work is scheduled.
+- **The longest stage in the chain reported no progress at all.** `Decrackle.Process` takes an
+  `IProgress<double>` and it was being passed `null`, so seven of eight progress slots filled
+  quickly and the bar then sat still for the stage that dominates the wall clock.
+  `ChannelFractionProgress` combines the channels' independent fractions; the read of the array
+  races the other channels' writes **on purpose**, because the value is a number a 10 Hz timer
+  samples and a lock between two workers would cost more than the exactness is worth.
+
+Three smaller ones, all of a kind this file already warns about:
+
+- **`AppSettings` was being read on a worker thread.** `OnReduceNoise` reads the depth ceiling
+  inside the transform lambda, which `RunRangeTool` runs inside `Task.Run` — two lines under a
+  comment reading *"captured up front, like the profile above"*. This is exactly the reader
+  `AppSettings`' own remarks predicted: *"it is read from forty-odd places across the audio layer
+  and the next one added will not know that."* Hoisted.
+- **`_impulsesFound` did not follow the analysis that ran.** It was set in `OnLoaded` only, so after
+  a click-sensitivity change re-ran `AnalyzeClicks`, the crackle card kept quoting the first pass
+  while the header showed the second. `RefreshAnalysisAsync` updates it now — the same rule
+  `DescribeDeclipChoices` exists to enforce.
+- **Reducing the side over a *selection* leaves a seam, and only that stage needed to say so.** A
+  notch or a gate at a range boundary is subtle; a stereo image snapping to mono and back is not.
+  The card says so when the workbench is scoped to a selection and the side is actually being moved.
+
+And one finding was against the tests rather than the code:
+
+- **A test was asserting that today's tool stays bad.** `CollapsingTheSideFirstIsWhatMakesTheDeCracklerWork`
+  had `afterCrackleOnly >= before * 0.6` — pinning the de-crackler's weakness on un-collapsed stereo
+  as a *requirement*, so anyone who later improved the detector would fail the test with an
+  improvement. The ordering claim is carried by the two assertions that survive: the chain works, and
+  it beats crackle-only by a wide margin. The crackle-only figure is reported instead. Same
+  over-specification the two declip chooser tests were rewritten for.
+
+**One finding was raised and deliberately not acted on.** `_noiseDepthCeilingDb` is written on the UI
+thread and read on the worker without a barrier. It is safe as arranged — `_source` is assigned first
+in the same continuation with no `await` between, and `QueueParameterRefresh` returns early while
+`_source` is null, so no render can observe it unset — and it is the same shape as the pre-existing
+`_noiseToProgrammeDb`. Adding a barrier for one field and not the other would be worse than either.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

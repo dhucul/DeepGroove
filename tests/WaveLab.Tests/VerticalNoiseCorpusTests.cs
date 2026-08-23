@@ -194,15 +194,18 @@ public sealed class VerticalNoiseCorpusTests(ITestOutputHelper output)
                              $"({Rms(runOut[0]):0.0} -> {Rms(chain[0]):0.0} dBFS)");
 
             // Bounds set from what the shipped code measures, with room, rather than from the
-            // exploration that led here: 318 -> 263 -> 54 on `One More Chance`. The de-crackler
-            // alone removes 17% of the ticks and the chain removes 83%, and the second assertion
-            // is the ordering claim - it fails if someone moves the side collapse after the
-            // repairers, which loses the effect entirely while still looking like a chain.
+            // exploration that led here: 318 -> 263 -> 54 on `One More Chance`.
+            //
+            // <b>The crackle-only figure is reported and not bounded below</b>, which an earlier
+            // version of this test got wrong. Asserting that de-crackle alone stays bad
+            // (`afterCrackleOnly >= before * 0.6`) pins today's weakness as a requirement: someone
+            // who later makes the detector work on un-collapsed stereo would fail this test with an
+            // improvement. What is worth asserting is that the chain works and that collapsing the
+            // side first is what makes it work - both of which fail if the stages are reordered,
+            // and neither of which punishes a better detector. Same over-specification the two
+            // declip chooser tests were rewritten for.
             Assert.True(afterChain <= before * 0.25,
                 $"{transfer.Name}: the chain left {afterChain} of {before} ticks");
-            Assert.True(afterCrackleOnly >= before * 0.6,
-                $"{transfer.Name}: de-crackle alone removed more than expected " +
-                $"({afterCrackleOnly} of {before}) - the ordering claim may no longer hold");
             Assert.True(afterChain < afterCrackleOnly * 0.5,
                 $"{transfer.Name}: collapsing the side first bought little " +
                 $"({afterChain} against {afterCrackleOnly})");
@@ -293,6 +296,107 @@ public sealed class VerticalNoiseCorpusTests(ITestOutputHelper output)
     private static string RestorationWorkbenchDialogSideLine(double sideToMidDb, double level) =>
         WaveLab.Views.RestorationWorkbenchDialog.DescribeSideLevel(
             level < 1.0, analysed: true, stereo: true, sideToMidDb, level);
+
+    /// <summary>
+    /// What the three new stages cost on a whole side, which is the number that decides whether
+    /// de-crackle can be on by default in a chain that also runs on every preview.
+    /// </summary>
+    [Fact]
+    public void WhatTheNewStagesCostOnAWholeSide()
+    {
+        if (!Enabled) return;
+        var transfers = Transfers();
+        if (transfers.Count == 0) return;
+
+        foreach (Transfer transfer in transfers)
+        {
+            double seconds = transfer.Channels[0].Length / (double)Rate;
+
+            float[][] work = Slice(transfer.Channels, 0, transfer.Channels[0].Length);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            Restoration.RemoveSubsonic(work, Rate, 30);
+            double highPass = watch.Elapsed.TotalMilliseconds;
+
+            watch.Restart();
+            Restoration.ScaleSide(work, 0);
+            double side = watch.Elapsed.TotalMilliseconds;
+
+            float[][] forSequential = Slice(work, 0, work[0].Length);
+            watch.Restart();
+            Decrackle(forSequential);
+            double crackle = watch.Elapsed.TotalMilliseconds;
+
+            // The shipped path runs the channels at once, which is what this stage's cost has to be
+            // read as. Timed rather than claimed, because "channels are independent so it halves"
+            // is an argument and not a measurement.
+            float[][] forParallel = Slice(work, 0, work[0].Length);
+            watch.Restart();
+            Parallel.For(0, forParallel.Length,
+                channel => WaveLab.Audio.Dsp.Decrackle.Process(
+                    forParallel[channel], DecrackleOptions.Default));
+            double parallel = watch.Elapsed.TotalMilliseconds;
+
+            output.WriteLine($"{transfer.Name,-34} {seconds,6:0.0} s of audio: " +
+                             $"high-pass {highPass,7:0} ms, side {side,5:0} ms, " +
+                             $"de-crackle {crackle,8:0} ms sequential / {parallel,8:0} ms parallel " +
+                             $"({crackle / Math.Max(1, parallel),4:0.0}x, " +
+                             $"{parallel / (seconds * 1000),5:0.00}x realtime)");
+        }
+    }
+
+    /// <summary>
+    /// Every stage of the render chain over a preview-sized window, so the cost of adding
+    /// de-crackle is read against what the preview already pays rather than against zero.
+    /// </summary>
+    [Fact]
+    public void WhatOnePreviewRenderCosts()
+    {
+        if (!Enabled) return;
+        var transfers = Transfers();
+        if (transfers.Count == 0) return;
+
+        const int window = Rate * 12;                 // the workbench's preview length
+        foreach (Transfer transfer in transfers)
+        {
+            int start = transfer.Channels[0].Length / 3;
+            if (start + window > transfer.Channels[0].Length) continue;
+            float[][] source = Slice(transfer.Channels, start, window);
+
+            ClickAnalysisResult clicks = Restoration.AnalyzeClicks(source, Rate,
+                new ClickAnalysisOptions { Sensitivity = 7.0, PreserveTransients = true });
+            ClippingAnalysisResult clipping = Restoration.AnalyzeClipping(source, Rate,
+                new ClippingAnalysisOptions());
+            float[] profile = Restoration.LearnNoiseProfile(source, 0, Rate * 2);
+
+            double Time(string name, Action work)
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                work();
+                return watch.Elapsed.TotalMilliseconds;
+            }
+
+            float[][] work1 = Slice(source, 0, window);
+            double subsonic = Time("hp", () => Restoration.RemoveSubsonic(work1, Rate, 30));
+            double side = Time("side", () => Restoration.ScaleSide(work1, 0));
+            double declip = Time("declip", () => Restoration.RepairClippingInPlace(
+                Slice(source, 0, window), clipping.Events, new DeclippingOptions()));
+            double declick = Time("declick", () => Restoration.RepairClicksInPlace(
+                Slice(source, 0, window), clicks.Events, new ClickRepairOptions()));
+            double crackle = Time("crackle", () => Decrackle(Slice(source, 0, window)));
+            double hum = Time("hum", () => Restoration.RemoveHum(
+                Slice(source, 0, window), Rate, 60, 4, 35, 0.65));
+            double noise = Time("noise", () => Restoration.ReduceNoise(
+                Slice(source, 0, window), profile, 10, 5));
+
+            double without = subsonic + side + declip + declick + hum + noise;
+            output.WriteLine($"{transfer.Name}  ({clicks.Events.Count} clicks, {clipping.Events.Count} clipped)");
+            output.WriteLine($"   hp {subsonic,6:0} | side {side,4:0} | declip {declip,7:0} | " +
+                             $"declick {declick,7:0} | hum {hum,5:0} | noise {noise,6:0} ms");
+            output.WriteLine($"   chain without de-crackle {without,8:0} ms;  de-crackle alone " +
+                             $"{crackle,8:0} ms;  total {without + crackle,8:0} ms " +
+                             $"({(without + crackle) / without,4:0.0}x)");
+        }
+    }
 
     /// <summary>The harness must not run by accident; the corpora are not redistributable.</summary>
     [Fact]
