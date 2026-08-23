@@ -132,21 +132,21 @@
                     <MenuItem Header="Open Montage…" Click="OnOpenMontage"/>
                     <MenuItem Header="Save Montage" Click="OnSaveMontage" IsEnabled="{Binding HasMontage}"/>
                     <Separator/>
-                    <MenuItem Header="Recent Files">
+                    <MenuItem x:Name="recentFilesMenu" Header="Recent Files">
                         <!-- A bound list plus a fixed entry is a CompositeCollection. The container
                              holding the paths is in no tree and cannot see the window's DataContext,
-                             so every binding here goes through the proxy resource above. The two
-                             declared entries carry their own Style, which keeps the item-container
-                             style — the one that turns a string into an Open command — off them, and
-                             the rule hides itself when there is nothing left above it. -->
+                             so its binding goes through the proxy resource above, as does the
+                             separator's — which hides itself when there is nothing left above it.
+                             Clear Recent Files is appended in the constructor rather than declared
+                             here: a MenuItem parsed inside this collection is styled while it belongs
+                             to no ItemsControl, and the content-alignment bindings its theme style
+                             carries then have no ancestor to find — two binding errors every launch,
+                             which neither a local Style nor local alignment values suppress. -->
                         <MenuItem.ItemsSource>
                             <CompositeCollection>
                                 <CollectionContainer Collection="{Binding Data.RecentFiles, Source={StaticResource ShellContext}}"/>
                                 <Separator Style="{StaticResource {x:Static MenuItem.SeparatorStyleKey}}"
                                            Visibility="{Binding Data.HasRecentFiles, Source={StaticResource ShellContext}, Converter={StaticResource BoolToVis}}"/>
-                                <MenuItem Header="Clear Recent Files"
-                                          Style="{StaticResource {x:Type MenuItem}}"
-                                          Command="{Binding Data.ClearRecentFilesCommand, Source={StaticResource ShellContext}}"/>
                             </CompositeCollection>
                         </MenuItem.ItemsSource>
                         <MenuItem.ItemContainerStyle>

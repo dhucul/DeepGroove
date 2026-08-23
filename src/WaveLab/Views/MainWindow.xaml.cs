@@ -2,6 +2,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -58,6 +59,16 @@ public partial class MainWindow : Window
         InitializeComponent();
         _vm = new MainViewModel();
         DataContext = _vm;
+
+        // The fixed foot of the Recent Files submenu. It is built here rather than declared in the
+        // CompositeCollection because a MenuItem parsed inside one is styled while it belongs to no
+        // ItemsControl, and the content-alignment bindings in the theme style then fail with nothing
+        // to find. Built here it is styled when the submenu takes it, like every generated entry.
+        ((CompositeCollection)recentFilesMenu.ItemsSource).Add(new MenuItem
+        {
+            Header = "Clear Recent Files",
+            Command = _vm.ClearRecentFilesCommand,
+        });
 
         spectrumView.Tap = _vm.Engine.Master;
         loudnessView.Source = _vm.Master;

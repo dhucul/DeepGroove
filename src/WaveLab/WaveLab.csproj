@@ -11,7 +11,7 @@
     <AssemblyName>WaveLab</AssemblyName>
     <!-- Program.Main runs ahead of WPF so a plugin scan never starts an application. -->
     <StartupObject>WaveLab.Program</StartupObject>
-    <Version>2.0.24</Version>
+    <Version>2.0.25</Version>
     <!-- Display name only. AssemblyName stays WaveLab: pack:// resource URIs, the VST3 scanner's
          re-run of its own exe, and the %AppData%\WaveLab data folder all resolve on that name. -->
     <Product>Deep Groove</Product>
