@@ -1,0 +1,232 @@
+<div id="wavelab-mix-ceiling">
+  <style>
+    #wavelab-mix-ceiling {
+      font-family: "Segoe UI", Inter, sans-serif;
+      color: #E7EAEE; background: #0D0F12; width: 100%; padding: 16px; box-sizing: border-box;
+    }
+    #wavelab-mix-ceiling * { box-sizing: border-box; }
+    #wavelab-mix-ceiling .wl-sheet { width: min(1000px, 100%); margin: 0 auto; }
+    #wavelab-mix-ceiling h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; letter-spacing: .01em; }
+    #wavelab-mix-ceiling .wl-sub { color: #5D646D; font-size: 11px; margin: 0 0 18px; line-height: 1.6; }
+    #wavelab-mix-ceiling .wl-sub b { color: #9AA1A9; font-weight: 600; }
+    #wavelab-mix-ceiling .wl-tag {
+      font-size: 10px; letter-spacing: .10em; text-transform: uppercase; color: #5D646D; margin: 0 0 6px;
+    }
+    #wavelab-mix-ceiling .wl-tag b { color: #3FD6C2; font-weight: 600; }
+    #wavelab-mix-ceiling .wl-tag i { color: #FFB454; font-style: normal; font-weight: 600; }
+
+    /* the audition / output card, Themes/Theme.xaml Card, Padding 15,12 */
+    #wavelab-mix-ceiling .wl-card {
+      background: #14171B; border: 1px solid #272E36; border-radius: 10px;
+      padding: 12px 15px; width: 817px;      /* dialog content width at the 860 px MinWidth */
+      display: grid; grid-template-columns: 150px 367px 270px; margin: 0 0 14px;
+    }
+    #wavelab-mix-ceiling .wl-upper {
+      font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: #9AA1A9; font-weight: 600;
+    }
+    #wavelab-mix-ceiling .wl-cap { font-size: 10.5px; color: #5D646D; margin-top: 5px; line-height: 1.45; }
+    #wavelab-mix-ceiling .wl-mid { padding: 0 14px; }
+    #wavelab-mix-ceiling .wl-mid .hdr { display: flex; align-items: baseline; }
+    #wavelab-mix-ceiling .wl-mid .hdr .l { font-size: 11px; color: #5D646D; flex: 1; }
+    #wavelab-mix-ceiling .wl-mid .hdr .v {
+      font-family: Consolas, "JetBrains Mono", monospace; font-size: 10.5px; color: #3FD6C2;
+      font-variant-numeric: tabular-nums;
+    }
+    #wavelab-mix-ceiling .wl-track { height: 3px; border-radius: 2px; background: #262C33; margin: 9px 0 0; position: relative; }
+    #wavelab-mix-ceiling .wl-track i {
+      position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px;
+      background: linear-gradient(90deg, #2BA393, #3FD6C2);
+    }
+    #wavelab-mix-ceiling .wl-track b {
+      position: absolute; top: -5px; width: 13px; height: 13px; border-radius: 50%;
+      background: #E7EAEE; transform: translateX(-50%);
+    }
+    /* the readout: 10.5 px Muted, one line, ellipsis - same as the declip and noise-depth lines */
+    #wavelab-mix-ceiling .wl-readout {
+      font-size: 10.5px; color: #9AA1A9; margin: 9px 0 0; width: 339px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #wavelab-mix-ceiling .wl-readout .dim { color: #5D646D; }
+    #wavelab-mix-ceiling .wl-readout .num { color: #3FD6C2; }
+    #wavelab-mix-ceiling .wl-readout .amber { color: #FFB454; }
+    #wavelab-mix-ceiling .wl-right { display: flex; flex-direction: column; justify-content: center; }
+    #wavelab-mix-ceiling .wl-right .r1 { display: flex; align-items: center; }
+    #wavelab-mix-ceiling .wl-right .r1 span { font-size: 10px; letter-spacing: .12em; color: #9AA1A9; font-weight: 600; flex: 1; }
+    #wavelab-mix-ceiling .wl-combo {
+      width: 128px; height: 28px; border: 1px solid #2A313A; border-radius: 6px; background: #191D22;
+      font-size: 11px; color: #E7EAEE; display: flex; align-items: center; padding: 0 9px;
+    }
+    #wavelab-mix-ceiling .wl-combo::after { content: "\25BE"; margin-left: auto; color: #5D646D; font-size: 9px; }
+    #wavelab-mix-ceiling .wl-checks { display: flex; justify-content: flex-end; margin-top: 8px; gap: 16px; }
+    #wavelab-mix-ceiling .wl-chk { font-size: 11px; color: #9AA1A9; display: flex; align-items: center; }
+    #wavelab-mix-ceiling .wl-chk u {
+      width: 11px; height: 11px; border-radius: 3px; border: 1px solid #2E5A54;
+      background: #0F1317; margin-right: 6px; text-decoration: none;
+    }
+    #wavelab-mix-ceiling .wl-chk.on u { background: #173A36; }
+    #wavelab-mix-ceiling .wl-rule { border-top: 1px solid #1D2228; margin: 22px 0 14px; }
+    #wavelab-mix-ceiling .wl-word { display: grid; grid-template-columns: 96px 1fr 78px; gap: 10px; align-items: baseline; margin-bottom: 9px; }
+    #wavelab-mix-ceiling .wl-word .k { font-size: 10px; letter-spacing: .10em; text-transform: uppercase; color: #5D646D; }
+    #wavelab-mix-ceiling .wl-word .s { font-size: 10.5px; color: #9AA1A9; }
+    #wavelab-mix-ceiling .wl-word .s .num { color: #3FD6C2; }
+    #wavelab-mix-ceiling .wl-word .s .dim { color: #5D646D; }
+    #wavelab-mix-ceiling .wl-word .p { font-size: 10px; color: #5D646D; text-align: right; font-variant-numeric: tabular-nums; }
+    #wavelab-mix-ceiling .wl-word .p b { color: #3FD07A; font-weight: 600; }
+    #wavelab-mix-ceiling .wl-foot { margin-top: 8px; font-size: 11px; color: #9AA1A9; line-height: 1.7; }
+    #wavelab-mix-ceiling .wl-foot b { color: #E7EAEE; font-weight: 600; }
+    #wavelab-mix-ceiling .wl-foot .num { color: #3FD6C2; font-weight: 600; }
+    #wavelab-mix-ceiling .wl-foot p { margin: 0 0 9px; }
+    #wavelab-mix-ceiling code { font-family: Consolas, monospace; font-size: 10.5px; color: #b8c0c8; }
+  </style>
+
+  <div class="wl-sheet">
+    <h1>Output mix &mdash; saying what the blend costs every stage</h1>
+    <p class="wl-sub">
+      The mix is applied <b>once, to the whole chain output</b>, so the dry share it returns is a
+      hard ceiling on what any stage can achieve: at the shipped 90&nbsp;% default nothing can be
+      reduced by more than <b>20&nbsp;dB</b>, however well it works. A 30&nbsp;Hz high-pass that
+      measures 40&nbsp;dB at 10&nbsp;Hz lands at 19.7. One line under the slider states it.<br>
+      Card drawn at the dialog's <b>860&nbsp;px minimum</b>; the middle column is
+      <b>367&nbsp;px</b> less its 14&nbsp;px margins, so the line has <b>339&nbsp;px</b>.
+      Those come from the XAML column arithmetic, <b>not</b> from a built control &mdash; a render
+      probe still has to confirm them.
+    </p>
+
+    <!-- reference -->
+    <div class="wl-tag"><i>reference</i> &mdash; today: the ceiling is real and invisible</div>
+    <div class="wl-card">
+      <div>
+        <div class="wl-upper">Output mix</div>
+        <div class="wl-cap">Sample-aligned dry / restored</div>
+      </div>
+      <div class="wl-mid">
+        <div class="hdr"><span class="l">Dry</span><span class="v">90% restored</span></div>
+        <div class="wl-track"><i style="width:90%"></i><b style="left:90%"></b></div>
+      </div>
+      <div class="wl-right">
+        <div class="r1"><span>Audition channel</span><div class="wl-combo">Stereo</div></div>
+        <div class="wl-checks">
+          <div class="wl-chk"><u></u>Bypass (dry)</div>
+          <div class="wl-chk on"><u></u>Live preview</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- proposed, default -->
+    <div class="wl-tag"><b>proposed</b> &mdash; at the 90&nbsp;% default</div>
+    <div class="wl-card">
+      <div>
+        <div class="wl-upper">Output mix</div>
+        <div class="wl-cap">Sample-aligned dry / restored</div>
+      </div>
+      <div class="wl-mid">
+        <div class="hdr"><span class="l">Dry</span><span class="v">90% restored</span></div>
+        <div class="wl-track"><i style="width:90%"></i><b style="left:90%"></b></div>
+        <div class="wl-readout">Ceiling <span class="num">20.0 dB</span> <span class="dim">&middot;</span> 10% dry returns over every stage</div>
+      </div>
+      <div class="wl-right">
+        <div class="r1"><span>Audition channel</span><div class="wl-combo">Stereo</div></div>
+        <div class="wl-checks">
+          <div class="wl-chk"><u></u>Bypass (dry)</div>
+          <div class="wl-chk on"><u></u>Live preview</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- proposed, full -->
+    <div class="wl-tag"><b>proposed</b> &mdash; at 100&nbsp;%, where there is nothing to warn about</div>
+    <div class="wl-card">
+      <div>
+        <div class="wl-upper">Output mix</div>
+        <div class="wl-cap">Sample-aligned dry / restored</div>
+      </div>
+      <div class="wl-mid">
+        <div class="hdr"><span class="l">Dry</span><span class="v">100% restored</span></div>
+        <div class="wl-track"><i style="width:100%"></i><b style="left:100%"></b></div>
+        <div class="wl-readout"><span class="dim">No ceiling &middot; every stage applies in full</span></div>
+      </div>
+      <div class="wl-right">
+        <div class="r1"><span>Audition channel</span><div class="wl-combo">Stereo</div></div>
+        <div class="wl-checks">
+          <div class="wl-chk"><u></u>Bypass (dry)</div>
+          <div class="wl-chk on"><u></u>Live preview</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- proposed, low -->
+    <div class="wl-tag"><b>proposed</b> &mdash; pulled down, where the ceiling is the whole story</div>
+    <div class="wl-card">
+      <div>
+        <div class="wl-upper">Output mix</div>
+        <div class="wl-cap">Sample-aligned dry / restored</div>
+      </div>
+      <div class="wl-mid">
+        <div class="hdr"><span class="l">Dry</span><span class="v">50% restored</span></div>
+        <div class="wl-track"><i style="width:50%"></i><b style="left:50%"></b></div>
+        <div class="wl-readout">Ceiling <span class="num">6.0 dB</span> <span class="dim">&middot;</span> 50% dry returns over every stage</div>
+      </div>
+      <div class="wl-right">
+        <div class="r1"><span>Audition channel</span><div class="wl-combo">Stereo</div></div>
+        <div class="wl-checks">
+          <div class="wl-chk"><u></u>Bypass (dry)</div>
+          <div class="wl-chk on"><u></u>Live preview</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- bypass -->
+    <div class="wl-tag"><b>proposed</b> &mdash; bypassed, where the mix means nothing at all</div>
+    <div class="wl-card">
+      <div>
+        <div class="wl-upper">Output mix</div>
+        <div class="wl-cap">Sample-aligned dry / restored</div>
+      </div>
+      <div class="wl-mid">
+        <div class="hdr"><span class="l">Dry</span><span class="v">90% restored</span></div>
+        <div class="wl-track"><i style="width:90%"></i><b style="left:90%"></b></div>
+        <div class="wl-readout"><span class="amber">Bypassed</span> <span class="dim">&middot; the mix does nothing while the chain is off</span></div>
+      </div>
+      <div class="wl-right">
+        <div class="r1"><span>Audition channel</span><div class="wl-combo">Stereo</div></div>
+        <div class="wl-checks">
+          <div class="wl-chk on"><u></u>Bypass (dry)</div>
+          <div class="wl-chk on"><u></u>Live preview</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="wl-rule"></div>
+    <div class="wl-tag">wording &mdash; the longest each option ever gets, against 339&nbsp;px of room</div>
+
+    <div class="wl-word">
+      <div class="k">A &mdash; shown</div>
+      <div class="s">Ceiling <span class="num">6.0 dB</span> <span class="dim">&middot;</span> 50% dry returns over every stage</div>
+      <div class="p"><b>~281 px</b></div>
+    </div>
+    <div class="wl-word">
+      <div class="k">B &mdash; longer</div>
+      <div class="s">Ceiling <span class="num">6.0 dB</span> <span class="dim">&middot;</span> 50% dry returns, so no stage can go deeper</div>
+      <div class="p"><b>~308 px</b></div>
+    </div>
+    <div class="wl-word">
+      <div class="k">C &mdash; terse</div>
+      <div class="s"><span class="num">6.0 dB</span> ceiling <span class="dim">&middot;</span> 50% dry returns</div>
+      <div class="p"><b>~194 px</b></div>
+    </div>
+
+    <div class="wl-foot">
+      <p><b>No colour on the figure being a fact.</b> The ceiling is not a fault, so it is drawn
+      <span class="num">Muted</span> like the declip and noise-depth readouts, with the number in
+      accent. Amber appears only on <b>Bypassed</b>, which is a state where the control genuinely
+      does nothing &mdash; the repo's own rule that colouring a fact like a fault teaches users to
+      distrust the colour.</p>
+      <p><b>The line is bounded.</b> The mix is 0&ndash;100, so the ceiling runs 0.0 dB to
+      <code>&infin;</code> and the widest wording is the one drawn. Nothing a user can set pushes
+      the sentence off the card.</p>
+      <p><b>The default is untouched.</b> 90&nbsp;% stays the shipped value; this proposal only
+      says out loud what it costs. Changing the default to 100 is a separate decision and a
+      separate one-line change.</p>
+    </div>
+  </div>
+</div>

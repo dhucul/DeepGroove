@@ -14,6 +14,9 @@ namespace WaveLab.Tests;
 /// music, and that the side scale is a <em>bit-exact</em> no-op at one — because the whole point of
 /// it being a slider is that a user who leaves it alone gets their file back untouched, and
 /// <c>mid + side</c> reconstructs a float sample to a rounding error rather than to the sample.
+/// A third claim came later and is about the residual rather than about the audio: what a
+/// <b>Keep what was removed</b> pass captures from the high-pass is the phase it rotates the
+/// midrange through, not level it took away.
 /// </remarks>
 public sealed class VerticalNoiseTests(ITestOutputHelper output)
 {
@@ -36,6 +39,54 @@ public sealed class VerticalNoiseTests(ITestOutputHelper output)
         double sum = 0;
         foreach (float v in x) sum += (double)v * v;
         return 20 * Math.Log10(Math.Sqrt(sum / x.Length) + 1e-12);
+    }
+
+
+    /// <summary>One second past the 30 Hz filter's warm-up, which needs about 12,700 samples.</summary>
+    private const int AnalysisStart = Rate;
+
+    /// <summary>
+    /// One frequency's complex amplitude over the settled second. The window is a whole number of
+    /// cycles for every tone used here, so there is no leakage and no window function is needed.
+    /// </summary>
+    private static (double Re, double Im) Bin(float[] x, double freq)
+    {
+        double re = 0, im = 0, w = 2 * Math.PI * freq / Rate;
+        for (int i = AnalysisStart; i < x.Length; i++)
+        {
+            re += x[i] * Math.Cos(w * i);
+            im -= x[i] * Math.Sin(w * i);
+        }
+        return (re, im);
+    }
+
+    /// <summary>The level of one buffer's tone against another's, in dB.</summary>
+    private static double RelativeDb(float[] x, float[] reference, double freq)
+    {
+        var (xr, xi) = Bin(x, freq);
+        var (rr, ri) = Bin(reference, freq);
+        return 10 * Math.Log10((xr * xr + xi * xi) / (rr * rr + ri * ri));
+    }
+
+    /// <summary>Gain and phase of the filter that turned <paramref name="input"/> into <paramref name="result"/>.</summary>
+    private static (double GainDb, double Phase) Response(float[] input, float[] result, double freq)
+    {
+        var (xr, xi) = Bin(input, freq);
+        var (yr, yi) = Bin(result, freq);
+        double d = xr * xr + xi * xi;
+        double hr = (yr * xr + yi * xi) / d, hi = (yi * xr - yr * xi) / d;
+        return (20 * Math.Log10(Math.Sqrt(hr * hr + hi * hi)), Math.Atan2(hi, hr));
+    }
+
+    /// <summary>What a <b>Keep what was removed</b> pass would capture from the high-pass alone.</summary>
+    private static float[] Residual(double toneHz)
+    {
+        float[][] music = Stereo((t, _) => 0.3 * Math.Sin(2 * Math.PI * toneHz * t));
+        float[] original = (float[])music[0].Clone();
+        Restoration.RemoveSubsonic(music, Rate, 30);
+        var residual = new float[Length];
+        for (int i = 0; i < Length; i++) residual[i] = original[i] - music[0][i];
+        return residual;
     }
 
     // ── subsonic high-pass ───────────────────────────────────────
@@ -107,6 +158,89 @@ public sealed class VerticalNoiseTests(ITestOutputHelper output)
 
         for (int i = 0; i < Length; i++)
             Assert.Equal(-antiPhase[1][i], antiPhase[0][i], 6);
+    }
+
+    // ── what the residual is made of ─────────────────────────────
+
+    /// <summary>
+    /// <b>Keep what was removed</b> on a subsonic-only pass produces a file with the vocals plainly
+    /// audible in it, and the obvious reading — that a 30 Hz high-pass is reaching into the midrange
+    /// — is wrong. Above the corner this filter takes <em>no level at all</em>; everything the
+    /// residual holds up there is the phase it rotates the music through.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Subtracting two signals of equal magnitude that differ by an angle θ leaves
+    /// <c>2·sin(θ/2)</c>, so the residual's level follows from the filter's phase and from nothing
+    /// else. Measured on a real transfer the two agree over four decades to within 0.4 dB; here,
+    /// against a pure tone, they agree to three decimals. The expectations are the fourth-order
+    /// Butterworth response at a 30 Hz corner and nothing more — analytically −2.230 / −8.164 /
+    /// −16.102 / −22.130 / −28.194 / −34.395 dB at these six tones.
+    /// </para>
+    /// <para>
+    /// This is worth pinning rather than commenting because the residual is the one artefact of this
+    /// stage anybody listens to, it will always sound like the filter ate their music, and the
+    /// tempting fixes — narrowing the filter, or smoothing what comes out — would be changes to a
+    /// filter that is already correct. A failure here means the high-pass has stopped being minimum
+    /// phase, or has started taking level where it should take none.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(100, -2.23)]
+    [InlineData(200, -8.16)]
+    [InlineData(500, -16.10)]
+    [InlineData(1_000, -22.13)]
+    [InlineData(2_000, -28.19)]
+    [InlineData(4_000, -34.40)]
+    public void TheHighPassResidualIsPhaseRatherThanLevel(double toneHz, double expectedResidualDb)
+    {
+        float[][] music = Stereo((t, _) => 0.3 * Math.Sin(2 * Math.PI * toneHz * t));
+        float[] original = (float[])music[0].Clone();
+        Restoration.RemoveSubsonic(music, Rate, 30);
+
+        var (gainDb, phase) = Response(original, music[0], toneHz);
+        double residualDb = RelativeDb(Residual(toneHz), original, toneHz);
+        double fromPhaseDb = 20 * Math.Log10(Math.Abs(2 * Math.Sin(phase / 2)));
+
+        output.WriteLine($"{toneHz:0} Hz: level lost {gainDb:0.00000} dB, phase {phase * 180 / Math.PI:0.000}°, " +
+                         $"residual {residualDb:0.00} dB, phase alone predicts {fromPhaseDb:0.00} dB");
+
+        Assert.True(Math.Abs(gainDb) < 0.001,
+            $"{toneHz:0} Hz lost {gainDb:0.00000} dB of level, and the claim is that it loses none");
+        Assert.True(Math.Abs(residualDb - fromPhaseDb) < 0.05,
+            $"{toneHz:0} Hz residual is {residualDb:0.00} dB where its own phase accounts for {fromPhaseDb:0.00} dB");
+        Assert.True(Math.Abs(residualDb - expectedResidualDb) < 0.2,
+            $"{toneHz:0} Hz residual is {residualDb:0.00} dB, expected {expectedResidualDb:0.00} dB");
+    }
+
+    /// <summary>
+    /// The residual cannot be quiet in the midrange however steep the filter is, and that is
+    /// arithmetic rather than a calibration: the complement of an Nth-order high-pass has a
+    /// numerator of order N−1, so <c>1 − H</c> falls at 6 dB an octave whatever N is. Expect the
+    /// same of the residual of any other minimum-phase filter in this app.
+    /// </summary>
+    /// <remarks>
+    /// Only to 2 kHz. Past there the digital filter carries phase the analog prototype does not and
+    /// the step opens up — 6.20 dB into 4 kHz and 6.80 into 8 — so a wider range would be pinning
+    /// the bilinear transform rather than the claim.
+    /// </remarks>
+    [Fact]
+    public void TheResidualFallsAtSixDecibelsAnOctaveHoweverSteepTheFilterIs()
+    {
+        double previous = double.NaN;
+        foreach (double toneHz in new double[] { 125, 250, 500, 1_000, 2_000 })
+        {
+            float[][] music = Stereo((t, _) => 0.3 * Math.Sin(2 * Math.PI * toneHz * t));
+            double level = RelativeDb(Residual(toneHz), music[0], toneHz);
+            if (!double.IsNaN(previous))
+            {
+                double step = previous - level;
+                output.WriteLine($"{toneHz / 2:0} -> {toneHz:0} Hz: residual fell {step:0.000} dB");
+                Assert.True(Math.Abs(step - 6.02) < 0.15,
+                    $"the octave to {toneHz:0} Hz fell {step:0.000} dB, which is not 6 dB an octave");
+            }
+            previous = level;
+        }
     }
 
     // ── side scale ───────────────────────────────────────────────

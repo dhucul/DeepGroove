@@ -1128,6 +1128,74 @@ public partial class RestorationWorkbenchDialog : Window
             : new NoiseDepthLine($"Applying {appliedDb:0.0} dB", measured, false);
     }
 
+
+    // ── the output-mix ceiling readout ────────────────────────
+
+    /// <summary>The two halves of the output-mix line, so the verb can be coloured on its own.</summary>
+    /// <param name="Lead">The ceiling, or the reason there is not one.</param>
+    /// <param name="Detail">What the mix returns, and over what.</param>
+    /// <param name="Inert">Whether the chain's work is not reaching the output at all.</param>
+    internal readonly record struct OutputMixLine(string Lead, string Detail, bool Inert)
+    {
+        public override string ToString() =>
+            Detail.Length == 0 ? Lead : Lead.Length == 0 ? Detail : $"{Lead} · {Detail}";
+    }
+
+    /// <summary>
+    /// Says what the output mix costs every stage in the chain.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The blend is applied once, to the whole chain output</b>, so the dry share it returns is a
+    /// hard ceiling on what any stage can achieve: at the shipped 90% default nothing can be reduced
+    /// by more than <b>20 dB</b> however well it works. Measured on a real transfer, a 30 Hz
+    /// high-pass that takes <b>40 dB</b> off 10 Hz on its own lands at <b>19.7</b> through the
+    /// dialog, and the notch bank's measured 42 dB of hum is capped at the same 20. The stage that
+    /// looks weak is not weak, and nothing on screen said so.
+    /// </para>
+    /// <para>
+    /// <b>The ceiling is a fact rather than a fault, so it is not coloured.</b> Amber is kept for
+    /// the two states where the chain's work does not reach the output at all — bypassed, and a
+    /// fully dry mix — which is the rule the VST3 scanner note records as the reason not to colour
+    /// an ordinary reading like a warning.
+    /// </para>
+    /// <para>
+    /// Pure, so the wording is unit-tested without a window, exactly as
+    /// <see cref="DescribeNoiseDepth"/> and <c>DescribeChoices</c> are.
+    /// </para>
+    /// </remarks>
+    internal static OutputMixLine DescribeOutputMix(double wetAmount, bool bypass)
+    {
+        // Bypass comes first, or the line quotes a ceiling for a chain that is not running - the
+        // same disagreement between what is shown and what happens the noise readout guards against.
+        if (bypass) return new OutputMixLine("Bypassed", "the mix does nothing while the chain is off.", true);
+
+        double wet = double.IsFinite(wetAmount) ? Math.Clamp(wetAmount, 0, 1) : 1;
+        if (wet >= 1) return new OutputMixLine("No ceiling", "every stage applies in full.", false);
+        if (wet <= 0) return new OutputMixLine("Fully dry", "nothing the chain removes reaches the output.", true);
+
+        double dryPercent = (1 - wet) * 100;
+        // Under one percent the rounded figure would read "0% dry returns", which says the opposite
+        // of the ceiling beside it. The slider is continuous, so that value is reachable.
+        string returns = dryPercent >= 1 ? $"{dryPercent:0}% dry returns" : "under 1% dry returns";
+        return new OutputMixLine($"Ceiling {-20 * Math.Log10(1 - wet):0.0} dB",
+            $"{returns} over every stage.", false);
+    }
+
+    private void UpdateOutputMixReadout()
+    {
+        OutputMixLine line = DescribeOutputMix(globalMix.Value / 100.0, bypassCheck.IsChecked == true);
+        mixCeilingLead.Text = line.Lead;
+        mixCeilingDetail.Text = line.Detail.Length == 0 ? "" : $" · {line.Detail}";
+        mixCeilingLead.Foreground = line.Inert
+            ? (Brush)FindResource("Amber")
+            : (Brush)FindResource("Muted");
+        mixCeilingText.ToolTip =
+            "The mix is applied once, to the whole chain output, so whatever share of the original "
+            + "it returns is a floor under everything the chain removed. A stage that measures 40 dB "
+            + "on its own reaches 20 through a 90% mix.";
+    }
+
     // ── the vertical-noise and rumble readouts ────────────────
 
     /// <summary>Side-to-mid over the programme, cached from the analysed audio.</summary>
@@ -1386,6 +1454,8 @@ public partial class RestorationWorkbenchDialog : Window
     {
         if (!_initialized) return;
         UpdateUiState();
+        // The line reports bypass, and nothing else here recomputes it.
+        UpdateOutputMixReadout();
         if (_previewStarted) QueueParameterRefresh(shortDelay: true);
     }
 
@@ -1533,6 +1603,7 @@ public partial class RestorationWorkbenchDialog : Window
         humHarmonicsText.Text = $"{humHarmonics.Value:0}";
         humQText.Text = $"Q {humQ.Value:0}";
         mixText.Text = $"{globalMix.Value:0}% restored";
+        UpdateOutputMixReadout();
         subsonicCutoffText.Text = $"{subsonicCutoff.Value:0} Hz";
         sideLevelText.Text = $"{sideLevel.Value:0}%";
         decrackleThresholdText.Text = $"{decrackleThreshold.Value:0.0}σ";

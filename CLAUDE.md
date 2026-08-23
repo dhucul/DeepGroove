@@ -1144,6 +1144,71 @@ The keyboard half of the same gesture, and it reuses the same anchor.
 - **`APlainClickThatNeverMovesSelectsNothing` is the other half** and is the reason the travel
   threshold exists — shift-click is the deliberate exception to it, so both sides are pinned.
 
+## The subsonic residual sounds like it took the vocals, and all of it is phase
+
+**Keep what was removed** on a subsonic-only pass produces a file with the vocals plainly audible
+in it, and the obvious reading — that a 30 Hz high-pass is reaching into the midrange — is wrong.
+Measured against the pair on disk: a 184 s 44.1 kHz stereo transfer and the residual that pass
+produced, which sum back to the original by construction, so the filter's own response can be
+recovered by division.
+
+- **The filter is exactly the filter it claims to be.** Recovered that way it is a 4th-order
+  Butterworth high-pass at **30 Hz, matching the analytic curve to 0.002 rms over 8–400 Hz**. What
+  it takes out of the vocal band: **−0.25 dB at 100 Hz, −0.066 at 200, −0.026 at 315, −0.010 at
+  500, −0.002 at 1 kHz and 0.000 above 2 kHz.** There is no level to lose there and none is lost.
+- **Everything audible in the residual above the corner is phase, and it is accounted for to within
+  half a decibel with nothing fitted.** `RemoveSubsonic` is minimum phase, so it still rotates far
+  above its corner — **+45.5° at 100 Hz, +22.5° at 200, +4.5° at 1 kHz**. Subtracting two signals of
+  equal magnitude differing by θ leaves `2·sin(θ/2)`, so the residual's level follows from the phase
+  alone: predicted **−9.11 / −17.05 / −23.07 / −29.09 / −35.11 dB** at 200 / 500 / 1 k / 2 k / 4 k
+  against **−8.72 / −17.01 / −22.89 / −28.80 / −34.86** measured. Four decades, every band inside
+  0.4 dB.
+- **A residual like this cannot be quiet in the midrange, and that is arithmetic rather than a
+  calibration.** The complement of an Nth-order high-pass is not an Nth-order low-pass: `1 − H` has
+  a numerator of order **N−1**, so it rolls off at **6 dB/octave** however steep the filter is. The
+  file measures about **2 dB per third-octave from 200 Hz to 16 kHz**, which is that slope exactly.
+  Expect the same of the residual of any minimum-phase filter in this app.
+- **Near the corner the residual is *louder* than the original, and that is the same fact.**
+  `|1 − H|` overshoots unity around a Butterworth's cutoff: **+1.6 dB at 25 Hz, +3.9 at 31.5, +3.8
+  at 40** against the original's own level in those bands. Nothing is added — the two signals are
+  close to antiphase there.
+- **The one thing the file said about the render rather than about the maths is the wet mix.** About
+  **10% dry is blended back** (wet ≈ 0.896, read off the bottom of the band where `H` is zero), so
+  10 Hz comes out **19.7 dB down overall where the filter's own response is 40 dB**. A subsonic pass
+  that looks weak is worth checking against the mix control before the cutoff is touched.
+- **The consequence is the one this file already records for wow and flutter: a residual guaranteed
+  to be misread is worse than no residual.** Wow is excluded from capture because a whole-file
+  waveform residual reads a good time-base correction as total failure; this is the same shape of
+  trap, in that anyone who listens to a high-pass residual will conclude the filter ate their music.
+  Excluding the stage, or saying on the residual tab that a high-pass residual is mostly phase, is
+  the choice; leaving it to be discovered is not.
+
+### The mix was the binding constraint, and nothing on screen said so
+
+- **The workbench's output mix ships at 90% restored, and that is a 20 dB ceiling on every stage in
+  the chain.** The blend is applied once, to the whole chain output — `out = dry·(1−wet) +
+  processed·wet` — so whatever share of the original it returns is a floor under everything the
+  chain removed. On the transfer above, the high-pass's own **40 dB at 10 Hz came out as 19.7**. It
+  is not specific to this stage: the notch bank's measured **42 dB of hum is capped at the same 20**,
+  and so is anything else that works deeper than that. The ceiling was found by measuring a residual
+  rather than by reading the code, which is the whole argument for saying it out loud — a stage
+  underperforming its own recorded figures reads as a broken stage.
+- **The readout says it; the default does not move** (design: `docs/design/output_mix_ceiling.png`).
+  “Ceiling 20.0 dB · 10% dry returns over every stage”, from
+  `RestorationWorkbenchDialog.DescribeOutputMix`, pure and unit-tested without a window exactly as
+  the declip and noise-depth lines are. 90% stays the shipped value: it is a defensible safety
+  margin for a chain doing five destructive things at once, and the answer for someone who wants the
+  full effect is a slider they can now see the reason to move. **Amber is on `Bypassed` and on a
+  fully dry mix only** — a ceiling is a fact about a setting, and colouring a fact like a fault is
+  already on record here as teaching users to distrust the colour.
+- **The widest wording is the fully dry line at 57 characters, not any ceiling**, because the deepest
+  ceilings carry the shortest detail — a mix near full has almost no dry share left to describe. The
+  character count is the cheap bound; `OutputMixRenderProbe` is the measurement, at the dialog's
+  860 px minimum. The mockup's 339 px came from the XAML column arithmetic and **is a calculation
+  rather than a measurement**, which this file's own rule says is not the built control. The probe
+  also checks the audition combo beside it, because this is the one readout in the dialog added to a
+  row that has other columns to take room from.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

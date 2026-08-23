@@ -341,13 +341,21 @@
                                 <TextBlock Text="Sample-aligned dry / restored" Margin="0,5,0,0" Foreground="{StaticResource Muted}" FontSize="10.5"/>
                             </StackPanel>
                             <Grid Grid.Column="1" Margin="14,0">
-                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <Grid>
                                     <TextBlock Text="Dry" Foreground="{StaticResource Faint}"/>
                                     <TextBlock x:Name="mixText" Text="90% restored" Style="{StaticResource ValueReadout}"/>
                                 </Grid>
                                 <Slider x:Name="globalMix" Grid.Row="1" Minimum="0" Maximum="100" Value="90"
                                         ValueChanged="OnParameterChanged"/>
+                                <!-- The blend is applied once to the whole chain output, so the dry
+                                     share it returns is a ceiling on every stage below. Saying so is
+                                     the only way a stage that measures 40 dB on its own and lands at
+                                     19.7 reads as the mix rather than as a broken tool. -->
+                                <TextBlock x:Name="mixCeilingText" Grid.Row="2" Margin="0,9,0,0" FontSize="10.5"
+                                           Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis">
+                                    <Run x:Name="mixCeilingLead"/><Run x:Name="mixCeilingDetail"/>
+                                </TextBlock>
                             </Grid>
                             <StackPanel Grid.Column="2" VerticalAlignment="Center">
                                 <Grid>
