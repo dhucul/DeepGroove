@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:c="clr-namespace:WaveLab.Views.Controls"
+        xmlns:u="clr-namespace:WaveLab.Util"
         Title="{Binding WindowTitle}"
         Icon="pack://application:,,,/WaveLab;component/Assets/wavelab.ico"
         Width="1680" Height="1010" MinWidth="1180" MinHeight="720"
@@ -12,6 +13,9 @@
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- The one handle on the view model that a CollectionContainer can see. -->
+        <u:BindingProxy x:Key="ShellContext" Data="{Binding}"/>
+        <u:AccessKeyEscapeConverter x:Key="EscapeAccessKeys"/>
     </Window.Resources>
 
     <Window.CommandBindings>
@@ -128,10 +132,28 @@
                     <MenuItem Header="Open Montage…" Click="OnOpenMontage"/>
                     <MenuItem Header="Save Montage" Click="OnSaveMontage" IsEnabled="{Binding HasMontage}"/>
                     <Separator/>
-                    <MenuItem Header="Recent Files" ItemsSource="{Binding RecentFiles}">
+                    <MenuItem Header="Recent Files">
+                        <!-- A bound list plus a fixed entry is a CompositeCollection. The container
+                             holding the paths is in no tree and cannot see the window's DataContext,
+                             so every binding here goes through the proxy resource above. The two
+                             declared entries carry their own Style, which keeps the item-container
+                             style — the one that turns a string into an Open command — off them, and
+                             the rule hides itself when there is nothing left above it. -->
+                        <MenuItem.ItemsSource>
+                            <CompositeCollection>
+                                <CollectionContainer Collection="{Binding Data.RecentFiles, Source={StaticResource ShellContext}}"/>
+                                <Separator Style="{StaticResource {x:Static MenuItem.SeparatorStyleKey}}"
+                                           Visibility="{Binding Data.HasRecentFiles, Source={StaticResource ShellContext}, Converter={StaticResource BoolToVis}}"/>
+                                <MenuItem Header="Clear Recent Files"
+                                          Style="{StaticResource {x:Type MenuItem}}"
+                                          Command="{Binding Data.ClearRecentFilesCommand, Source={StaticResource ShellContext}}"/>
+                            </CompositeCollection>
+                        </MenuItem.ItemsSource>
                         <MenuItem.ItemContainerStyle>
                             <Style TargetType="MenuItem" BasedOn="{StaticResource {x:Type MenuItem}}">
-                                <Setter Property="Header" Value="{Binding}"/>
+                                <!-- Escaped for display only. CommandParameter stays the raw path,
+                                     which is what actually gets opened. -->
+                                <Setter Property="Header" Value="{Binding Converter={StaticResource EscapeAccessKeys}}"/>
                                 <Setter Property="Command" Value="{Binding DataContext.OpenRecentCommand, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                 <Setter Property="CommandParameter" Value="{Binding}"/>
                             </Style>

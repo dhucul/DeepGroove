@@ -2164,6 +2164,7 @@ public partial class MainWindow : Window
         var commands = new List<CommandPalette.Command>
         {
             VmCommand("Open File…", "Ctrl+O", _vm.OpenCommand),
+            VmCommand("Clear Recent Files", null, _vm.ClearRecentFilesCommand),
             new("Extract Audio CD…", null, () => OnExtractAudioCd(this, new RoutedEventArgs())),
             VmCommand("Save", "Ctrl+S", _vm.SaveCommand),
             VmCommand("Save As…", "Ctrl+Shift+S", _vm.SaveAsCommand),

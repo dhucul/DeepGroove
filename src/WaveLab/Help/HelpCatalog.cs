@@ -46,7 +46,7 @@ public static class HelpCatalog
             Section("Export",
                 "Export creates a separate delivery file without changing the open document. Choose WAV or AIFF at the offered bit depths, FLAC when available, MP3, AAC/M4A, or WMA. Lossy formats expose a bitrate. You can keep the current sample rate or convert to 44.1, 48, 88.2, or 96 kHz, and export the whole file or the current selection."),
             Section("Tabs and recent files",
-                "Each tab is an independent document. Click a tab to make it active, or its close button to close it. Deep Groove asks before discarding unsaved work. File > Recent Files reopens a previously used path. Session reopening is controlled in Settings > General."),
+                "Each tab is an independent document. Click a tab to make it active, or its close button to close it. Deep Groove asks before discarding unsaved work. File > Recent Files reopens a previously used path, and Clear Recent Files at the foot of that submenu empties the list. Session reopening is controlled in Settings > General."),
             Section("Bit-depth guidance",
                 "Use 32-bit float WAV for an intermediate master that may be processed again, 24-bit PCM WAV or AIFF for high-resolution delivery, and dithered 16-bit PCM for CD-compatible output. MP3, AAC, and WMA are smaller lossy listening copies. FLAC is lossless.")),
 

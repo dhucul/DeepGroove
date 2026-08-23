@@ -140,4 +140,27 @@ public sealed class AppSettingsPersistenceTests : IDisposable
         settings.RestoreDefaults();
         Assert.False(settings.KeepRemovedMaterial);
     }
+
+    /// <summary>
+    /// Clearing the recent list has to reach the file. A clear that only emptied the list in memory
+    /// would look right until the next launch put every path back, which is the failure a user
+    /// clearing the list is specifically trying to avoid.
+    /// </summary>
+    [Fact]
+    public void ClearingTheRecentListSurvivesAReload()
+    {
+        AppSettings settings = AppSettings.Instance;
+        Assert.True(settings.AddRecentFile(@"C:\audio\one.wav"), settings.LastSaveError);
+        Assert.True(settings.AddRecentFile(@"C:\audio\two.wav"), settings.LastSaveError);
+        Assert.Equal(2, settings.RecentFilesSnapshot().Count);
+
+        Assert.True(settings.ClearRecentFiles(), settings.LastSaveError);
+        Assert.Empty(settings.RecentFilesSnapshot());
+
+        AppSettings.AppDataDir = _sandbox;                 // drops the cached instance
+        Assert.Empty(AppSettings.Instance.RecentFilesSnapshot());
+
+        // Clearing an already-empty list is a no-op rather than a failed write.
+        Assert.True(AppSettings.Instance.ClearRecentFiles());
+    }
 }

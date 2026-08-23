@@ -91,7 +91,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Engine.PlaybackFailed += OnPlaybackFailed;
         _transportRecorder.CaptureStopped += OnTransportCaptureStopped;
 
-        foreach (var f in AppSettings.Instance.RecentFilesSnapshot()) RecentFiles.Add(f);
         UpdateRecordInputName();
 
         _timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
@@ -187,6 +186,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ExportCommand = new RelayCommand(() => RequestExportDialog?.Invoke(), () => HasAudioDocument);
         StatisticsCommand = new RelayCommand(() => RequestStatisticsDialog?.Invoke(), () => HasAudioDocument);
         OpenRecentCommand = new RelayCommand<string>(path => { if (path != null) OpenFiles([path]); });
+        ClearRecentFilesCommand = new RelayCommand(ClearRecentFiles, () => RecentFiles.Count > 0);
         CommandPaletteCommand = new RelayCommand(() => RequestCommandPalette?.Invoke());
         HistoryCommand = new RelayCommand(() => RequestHistoryPanel?.Invoke(), () => HasAudioDocument);
         MatchLoudnessCommand = new RelayCommand(
@@ -194,6 +194,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AboutCommand = new RelayCommand(() => MessageBox.Show(
             "Deep Groove 2.0\n\nAudio editor and mastering suite.\nWAV/AIFF · MP3/FLAC/AAC import & export\nEffects rack · restoration · EBU R128 metering\nWASAPI playback and recording",
             "About Deep Groove", MessageBoxButton.OK, MessageBoxImage.Information));
+
+        // Last, because it refreshes the command it has just been given: the recent list has
+        // exactly one way in, so nothing can add a path and leave Clear looking at a stale count.
+        SyncRecentFiles();
     }
 
     public PlaybackEngine Engine { get; }
@@ -298,10 +302,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand ExportCommand { get; }
     public RelayCommand StatisticsCommand { get; }
     public RelayCommand<string> OpenRecentCommand { get; }
+    public RelayCommand ClearRecentFilesCommand { get; }
     public RelayCommand CommandPaletteCommand { get; }
     public RelayCommand AboutCommand { get; }
 
     public ObservableCollection<string> RecentFiles { get; } = [];
+
+    /// <summary>
+    /// Whether the Recent Files submenu has any paths above its separator. Bound rather than
+    /// derived in the menu because an empty list would otherwise open on a rule with nothing
+    /// above it.
+    /// </summary>
+    public bool HasRecentFiles => RecentFiles.Count > 0;
 
     /// <summary>The window shows the record dialog when this fires.</summary>
     public event Action? RequestRecordDialog;
@@ -838,6 +850,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         RecentFiles.Clear();
         foreach (var f in AppSettings.Instance.RecentFilesSnapshot()) RecentFiles.Add(f);
+        Raise(nameof(HasRecentFiles));
+        ClearRecentFilesCommand.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// Empties the recent-file list. The settings write can fail, and the list is rolled back
+    /// when it does, so the status line is only claimed after the write is known to have landed.
+    /// </summary>
+    private void ClearRecentFiles()
+    {
+        if (AppSettings.Instance.ClearRecentFiles()) ReportAction("Recent file list cleared.");
+        else ReportSettingsSaveFailure();
+        SyncRecentFiles();
     }
 
     private static void ReportSettingsSaveFailure() => MessageBox.Show(

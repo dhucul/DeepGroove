@@ -338,6 +338,24 @@ public sealed class AppSettings
         }
     }
 
+    /// <summary>
+    /// Empties the recent-file list, on the same save-or-roll-back contract as
+    /// <see cref="AddRecentFile"/>: the list only stays cleared in memory if the file took it,
+    /// so a failed write leaves the menu showing what the next launch will still show.
+    /// </summary>
+    public bool ClearRecentFiles()
+    {
+        lock (SaveLock)
+        {
+            if (RecentFiles.Count == 0) return true;
+            var previous = RecentFiles.ToList();
+            RecentFiles.Clear();
+            if (Save()) return true;
+            RecentFiles = previous;
+            return false;
+        }
+    }
+
     /// <summary>A stable copy of the recent-file list, safe to enumerate.</summary>
     public List<string> RecentFilesSnapshot()
     {
