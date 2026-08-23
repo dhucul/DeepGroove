@@ -10,6 +10,16 @@ using WaveLab.ViewModels;
 
 namespace WaveLab.Views.Controls;
 
+/// <summary>What a press on the waveform takes hold of.</summary>
+public enum WaveformGrab
+{
+    /// <summary>Nothing is under the pointer, so the press starts a new selection.</summary>
+    NewSelection,
+    Playhead,
+    SelectionStart,
+    SelectionEnd,
+}
+
 /// <summary>
 /// The main waveform editor surface.
 ///
@@ -69,6 +79,7 @@ public sealed class WaveformView : FrameworkElement
     public static bool ShowDiagnostics { get; set; }
 
     private bool _dragging;
+    private bool _draggingEdge;
     private bool _draggingPlayhead;
     private int _dragAnchor;
 
@@ -470,12 +481,78 @@ public sealed class WaveformView : FrameworkElement
         return (int)Math.Clamp(vm.ViewStart + p.X * vm.SamplesPerPixel, 0, Math.Max(0, vm.Doc.Length - 1));
     }
 
-    private bool IsNearPlayhead(Point p)
+    private double XOf(double sample)
+    {
+        var vm = Document!;
+        return (sample - vm.ViewStart) / vm.SamplesPerPixel;
+    }
+
+    /// <summary>How near the pointer has to be, in pixels, to take hold of the playhead.</summary>
+    internal const double PlayheadGrabPixels = 8;
+
+    /// <summary>
+    /// The same for a selection edge, and deliberately tighter. The playhead is one line the user
+    /// went looking for; a selection has two edges the pointer crosses on the way to anywhere else.
+    /// </summary>
+    internal const double SelectionEdgeGrabPixels = 6;
+
+    /// <summary>
+    /// The band at the top where the playhead keeps precedence over a selection edge sitting on the
+    /// same column — which is exactly where every fresh selection leaves it, because building one
+    /// sets the cursor and the playhead at the drag anchor. Without the band the edge the user just
+    /// finished drawing would be the one edge that could not be grabbed again. The triangle drawn
+    /// there is 7 px tall and is the grip this band describes.
+    /// </summary>
+    internal const double PlayheadGripHeight = 12;
+
+    /// <summary>
+    /// Decide what a press at <paramref name="pointer"/> takes hold of. Pure, because the precedence
+    /// between an edge and the playhead is the one part of this that is a judgement rather than a
+    /// distance, and it is the part worth pinning without a mouse.
+    /// </summary>
+    internal static WaveformGrab GrabAt(Point pointer, double width, double playheadX,
+        bool hasSelection, double selStartX, double selEndX)
+    {
+        bool onPlayhead = playheadX >= 0 && playheadX <= width
+                          && Math.Abs(pointer.X - playheadX) <= PlayheadGrabPixels;
+        if (onPlayhead && pointer.Y <= PlayheadGripHeight) return WaveformGrab.Playhead;
+
+        if (hasSelection)
+        {
+            double toStart = DistanceTo(pointer.X, selStartX);
+            double toEnd = DistanceTo(pointer.X, selEndX);
+            if (Math.Min(toStart, toEnd) <= SelectionEdgeGrabPixels)
+                return toStart <= toEnd ? WaveformGrab.SelectionStart : WaveformGrab.SelectionEnd;
+        }
+
+        return onPlayhead ? WaveformGrab.Playhead : WaveformGrab.NewSelection;
+
+        // An edge scrolled off the view is not something the pointer can be near.
+        double DistanceTo(double x, double edgeX) =>
+            edgeX >= 0 && edgeX <= width ? Math.Abs(x - edgeX) : double.PositiveInfinity;
+    }
+
+    private WaveformGrab GrabAt(Point pointer)
     {
         var vm = Document;
-        if (vm == null || vm.Doc.Length == 0) return false;
-        double x = (vm.PlayheadSample - vm.ViewStart) / vm.SamplesPerPixel;
-        return x >= 0 && x <= ActualWidth && Math.Abs(p.X - x) <= 8;
+        if (vm == null || vm.Doc.Length == 0) return WaveformGrab.NewSelection;
+        return GrabAt(pointer, ActualWidth, XOf(vm.PlayheadSample),
+            vm.HasSelection, XOf(vm.SelStart), XOf(vm.SelEnd));
+    }
+
+    /// <summary>
+    /// What a shift-click at <paramref name="sample"/> anchors against, which is the far side of
+    /// whatever is already selected: the nearer edge is the one that moves. The split is the
+    /// selection's midpoint rather than a distance comparison, which gives the same answer inside
+    /// the selection and the right one outside it — a click past either end is nearer the end it is
+    /// past, so shift-clicking beyond the selection lengthens it instead of collapsing it.
+    /// With nothing selected there is no far edge and the cursor is the anchor, so shift-clicking
+    /// after an ordinary click selects between the two.
+    /// </summary>
+    internal static int ExtendAnchor(int sample, bool hasSelection, int selStart, int selEnd, int cursor)
+    {
+        if (!hasSelection) return cursor;
+        return sample < selStart + (selEnd - selStart) / 2 ? selEnd : selStart;
     }
 
     private void RequestSeek(int sample, PlayheadSeekPhase phase)
@@ -485,6 +562,115 @@ public sealed class WaveformView : FrameworkElement
         var request = new PlayheadSeekRequest(vm, sample, phase);
         if (SeekCommand?.CanExecute(request) == true)
             SeekCommand.Execute(request);
+    }
+
+    private void BeginDrag(Point point, bool extend)
+    {
+        var vm = Document;
+        if (vm == null) return;
+
+        // Shift is checked ahead of what is under the pointer, so it means the same thing wherever
+        // the click lands. It leaves the drag in exactly the state an edge grab does, which is what
+        // makes a shift-click something you can keep dragging rather than a one-shot.
+        if (extend)
+        {
+            int sample = SampleAt(point);
+            _dragging = _draggingEdge = true;
+            _dragAnchor = ExtendAnchor(sample, vm.HasSelection, vm.SelStart, vm.SelEnd, vm.Cursor);
+            SelectBetweenAnchorAnd(sample);
+            return;
+        }
+
+        switch (GrabAt(point))
+        {
+            case WaveformGrab.Playhead:
+                _draggingPlayhead = true;
+                RequestSeek(SampleAt(point), PlayheadSeekPhase.Begin);
+                return;
+
+            // Lengthening or shortening a selection is an ordinary selection drag anchored on the
+            // edge that is staying put, rather than a mode of its own. Everything below then comes
+            // for free and comes out identical to building one: the min/max, the clamping, the flip
+            // when the dragged edge passes the anchor, and the live update with no edit behind it.
+            case WaveformGrab.SelectionStart:
+                _dragging = _draggingEdge = true;
+                _dragAnchor = vm.SelEnd;
+                return;
+            case WaveformGrab.SelectionEnd:
+                _dragging = _draggingEdge = true;
+                _dragAnchor = vm.SelStart;
+                return;
+
+            default:
+                _dragging = true;
+                _draggingEdge = false;
+                _dragAnchor = SampleAt(point);
+                vm.SetCursor(_dragAnchor, clearSelection: true);
+                return;
+        }
+    }
+
+    private void ContinueDrag(Point point)
+    {
+        var vm = Document;
+        if (vm == null) return;
+        if (_draggingPlayhead)
+        {
+            RequestSeek(SampleAt(point), PlayheadSeekPhase.Update);
+            return;
+        }
+
+        Cursor = _dragging
+            ? _draggingEdge ? Cursors.SizeWE : null
+            : GrabAt(point) == WaveformGrab.NewSelection ? null : Cursors.SizeWE;
+        if (!_dragging) return;
+
+        // A new selection needs a pixel of travel before it becomes one, so a click does not select
+        // a sample. An edge drag is already past that threshold on its first move — the anchor is
+        // the far edge — and following the hand exactly is what lets one edge be dragged onto the
+        // other to clear the selection, which a threshold would leave stuck at its last width.
+        int s = SampleAt(point);
+        if (_draggingEdge || Math.Abs(s - _dragAnchor) > (int)vm.SamplesPerPixel)
+            SelectBetweenAnchorAnd(s);
+    }
+
+    private void SelectBetweenAnchorAnd(int sample) =>
+        Document?.SetSelection(Math.Min(_dragAnchor, sample), Math.Max(_dragAnchor, sample));
+
+    private void EndDrag(Point point)
+    {
+        if (_draggingPlayhead && Document != null)
+            RequestSeek(SampleAt(point), PlayheadSeekPhase.End);
+        _draggingPlayhead = false;
+        _dragging = false;
+        _draggingEdge = false;
+    }
+
+    /// <summary>
+    /// Runs one complete press-drag-release against the bound document. The mouse handlers are thin
+    /// wrappers over the same three calls, so driving this exercises the path a real drag takes
+    /// rather than a parallel copy of it — which is the only way to cover it without a live mouse.
+    /// <paramref name="extend"/> stands for the shift key, which the handler reads and this does not:
+    /// <see cref="Keyboard.Modifiers"/> is process-wide state and would make the seam depend on what
+    /// the machine running the test happens to be holding down.
+    /// </summary>
+    internal void PerformDrag(Point from, Point to, bool extend = false)
+    {
+        BeginDrag(from, extend);
+        ContinueDrag(to);
+        EndDrag(to);
+    }
+
+    /// <summary>
+    /// Press and release with no movement in between, which is a different gesture from a drag whose
+    /// two points happen to coincide: a real click raises no <c>MouseMove</c> at all, so anything
+    /// that only takes effect in <see cref="ContinueDrag"/> never runs. Shift-click depends on that
+    /// difference, so the seam has to be able to express it.
+    /// </summary>
+    internal void PerformClick(Point point, bool extend = false)
+    {
+        BeginDrag(point, extend);
+        EndDrag(point);
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -497,50 +683,25 @@ public sealed class WaveformView : FrameworkElement
             e.Handled = true;
             return;
         }
-        var point = e.GetPosition(this);
-        if (IsNearPlayhead(point))
-        {
-            CaptureMouse();
-            _draggingPlayhead = true;
-            RequestSeek(SampleAt(point), PlayheadSeekPhase.Begin);
-            e.Handled = true;
-            return;
-        }
         CaptureMouse();
-        _dragging = true;
-        _dragAnchor = SampleAt(point);
-        Document.SetCursor(_dragAnchor, clearSelection: true);
+        BeginDrag(e.GetPosition(this), Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));
         e.Handled = true;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        var point = e.GetPosition(this);
-        if (_draggingPlayhead && Document != null)
-        {
-            RequestSeek(SampleAt(point), PlayheadSeekPhase.Update);
-            e.Handled = true;
-            return;
-        }
-        Cursor = IsNearPlayhead(point) ? Cursors.SizeWE : null;
-        if (!_dragging || Document == null) return;
-        int s = SampleAt(point);
-        if (Math.Abs(s - _dragAnchor) > (int)Document.SamplesPerPixel)
-            Document.SetSelection(Math.Min(_dragAnchor, s), Math.Max(_dragAnchor, s));
+        ContinueDrag(e.GetPosition(this));
+        if (_draggingPlayhead) e.Handled = true;
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
-        if (_draggingPlayhead && Document != null)
-        {
-            RequestSeek(SampleAt(e.GetPosition(this)), PlayheadSeekPhase.End);
-            _draggingPlayhead = false;
-            ReleaseMouseCapture();
-            e.Handled = true;
-            return;
-        }
-        _dragging = false;
+        bool wasPlayhead = _draggingPlayhead;
+        // Flags are cleared before the release, because releasing raises OnLostMouseCapture and a
+        // playhead seek would otherwise be ended twice.
+        EndDrag(e.GetPosition(this));
         ReleaseMouseCapture();
+        if (wasPlayhead) e.Handled = true;
     }
 
     protected override void OnLostMouseCapture(MouseEventArgs e)
@@ -549,6 +710,7 @@ public sealed class WaveformView : FrameworkElement
             RequestSeek(Document.PlayheadSample, PlayheadSeekPhase.End);
         _draggingPlayhead = false;
         _dragging = false;
+        _draggingEdge = false;
         base.OnLostMouseCapture(e);
     }
 

@@ -1079,6 +1079,71 @@ in the same continuation with no `await` between, and `QueueParameterRefresh` re
 `_source` is null, so no render can observe it unset — and it is the same shape as the pre-existing
 `_noiseToProgrammeDb`. Adding a barrier for one field and not the other would be worse than either.
 
+## Resizing a selection by its edges
+
+A selection could be drawn and not adjusted: getting the out point a hundred samples further along
+meant drawing the whole thing again. Both edges are now draggable, and none of it is a new mode.
+
+- **A resize is an ordinary selection drag anchored on the edge that is staying put**, which is the
+  whole implementation. `BeginDrag` sets `_dragAnchor` to `SelEnd` for a press on the start edge and
+  to `SelStart` for a press on the end edge, and `ContinueDrag` is the code that already existed.
+  The min/max, the clamping, the flip when the dragged edge passes the anchor and the live update
+  with no undo step behind it all come out identical to building one, because they *are* building
+  one — a second code path would be a second set of those behaviours to keep in step.
+- **The one thing an edge drag does differently is skip the travel threshold**, and it has to.
+  Building a selection needs a pixel of movement before it becomes one, so a click does not select a
+  sample; an edge drag is already past that on its first move, and following the hand exactly is
+  what lets one edge be dragged onto the other to clear the selection. With the threshold it stuck
+  at its last width instead.
+- **The playhead sits on a selection edge every time, so precedence had to be decided rather than
+  left to distance.** Building a selection sets the cursor *and the playhead* at the drag anchor
+  (`SetCursor(_dragAnchor, clearSelection: true)`), so the edge the user just drew always has the
+  playhead underneath it — and the playhead's 8 px grab is wider than the edge's 6. Nearest-wins
+  would make that edge the one edge that could never be grabbed again.
+- **The split is vertical: the edge wins in the body of the wave, the playhead keeps the top 12 px.**
+  That band is not arbitrary — it is the triangle `OnRender` already draws at the top of the
+  playhead, so it is the grip the user can see. Nothing new is drawn for any of this; the resize
+  cursor on hover is the only feedback, which is why there is no mockup for it.
+- **`WaveformView.GrabAt` is pure and is where that judgement lives.** Distances are arithmetic;
+  what beats what is a decision, and it is the part worth pinning without a mouse. An edge scrolled
+  off the view returns infinite distance rather than clamping — a selection whose start is off to
+  the left is not something the pointer at x=2 is near.
+- **The drags themselves go through `PerformDrag`, the same seam `SpectralEditorView.PerformGesture`
+  uses**, with the mouse handlers as thin wrappers over `BeginDrag`/`ContinueDrag`/`EndDrag`. Both
+  halves were checked by mutation rather than assumed: disabling the edge branch in `GrabAt` fails
+  **10 of the 26** tests in `WaveformViewTests`, and setting `PlayheadGripHeight` to zero fails
+  exactly the two that pin the band.
+- **`EndDrag` clears the flags before `ReleaseMouseCapture`**, because releasing raises
+  `OnLostMouseCapture`, which ends a playhead seek of its own. That ordering was in the old handler
+  and is easy to lose when the branches are pulled out into a state machine.
+
+### Shift+click to extend
+
+The keyboard half of the same gesture, and it reuses the same anchor.
+
+- **Shift is read before what is under the pointer**, so it means one thing wherever the click lands
+  — including on the playhead, which would otherwise take the press as a seek. It leaves the drag in
+  exactly the state an edge grab does, so a shift-click can be kept dragging rather than being a
+  one-shot.
+- **`WaveformView.ExtendAnchor` splits on the selection's midpoint rather than comparing distances**,
+  which is the same answer inside the selection and the right one outside it: a click past either end
+  is nearer the end it is past, so shift-clicking beyond the selection lengthens it instead of
+  collapsing it onto the nearer edge. With nothing selected there is no far edge and the cursor is
+  the anchor, so an ordinary click followed by a shift-click selects between the two.
+- **A shift-click applies on the *press*, which no other press here does**, because a click is a
+  complete gesture and every other press only arms a drag. That one line in `BeginDrag` is the whole
+  difference and it is the part a test seam has to be able to see.
+- **The seam could not see it, and a mutation is what said so.** `PerformDrag(p, p)` looks like a
+  click and is not one: a real click raises no `MouseMove`, so anything reached only from
+  `ContinueDrag` never runs — but a zero-length drag runs it anyway, and `_draggingEdge` skips the
+  travel threshold, so the selection landed from the move handler. Deleting the press's own
+  `SelectBetweenAnchorAnd` left all 38 tests passing. `PerformClick` is press-and-release with
+  nothing between; the five shift-click tests go through it and now fail against that deletion.
+  **The general form: a seam that models a click as a degenerate drag cannot test what a press does
+  on its own.**
+- **`APlainClickThatNeverMovesSelectsNothing` is the other half** and is the reason the travel
+  threshold exists — shift-click is the deliberate exception to it, so both sides are pinned.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).
