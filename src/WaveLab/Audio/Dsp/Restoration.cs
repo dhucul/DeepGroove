@@ -348,6 +348,131 @@ public static partial class Restoration
         }
     }
 
+    /// <summary>
+    /// Butterworth section Qs for a 24 dB/octave high-pass pair. These are pole positions, not a
+    /// tuning choice — the same two numbers <see cref="WaveLab.Audio.Effects.FilterEffect"/> cascades.
+    /// </summary>
+    internal static readonly double[] SubsonicSectionQs = [0.5412, 1.3066];
+
+    /// <summary>
+    /// Removes subsonic rumble: a 24 dB/octave Butterworth high-pass. A strength of zero is a
+    /// bit-exact no-op; one applies the complete filter.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>On a record transfer this is not a trim, it is most of the noise.</b> Measured on the
+    /// run-out of a real transfer, <b>48% of the total energy sits below 40 Hz</b>, peaking at 10.8
+    /// and 16.1 Hz — a tonearm/cartridge resonance excited by warp, not anything the disc was cut
+    /// with. Its ⅓-octave level is −48.6 dBFS at 25 Hz against −65 dBFS across the midrange, and a
+    /// 25 Hz filter of this shape takes <b>8.1 dB</b> off the total while leaving the ⅓-octave bands
+    /// from 100 Hz up unmoved.
+    /// </para>
+    /// <para>
+    /// <b>What it does not do is worth stating, because the obvious claims are both false here.</b>
+    /// It does not help the de-crackler: measured on the same material, high-pass then collapse then
+    /// de-crackle leaves 15 ticks above −45 dBFS having repaired 4.2% of samples, and collapse then
+    /// de-crackle then high-pass leaves 14 having repaired 4.4% — the same answer either way round.
+    /// Nor does it rescue <c>AnalyzeClipping</c> from rumble-inflated plateaus: removing it moved
+    /// that transfer's peak by 0.09 dB, −1.09 to −1.18 dBFS. It runs first so that every downstream
+    /// <em>measurement</em> — the automatic noise profile, the per-block robust scales, the levels
+    /// on the cards — is taken on the audible band rather than on the rumble. That is a reason about
+    /// the readouts and not about the audio.
+    /// </para>
+    /// <para>
+    /// The cascade is blended <b>once</b> rather than per section. Blending each section against its
+    /// own input is a different filter at any strength below one, and not the one the cutoff names.
+    /// The cutoff is passed to <see cref="Biquad"/> unclamped on purpose: <c>Biquad.Corner</c>
+    /// already bounds it, and clamping a second time at the call site is what made
+    /// <c>MonoToStereoEffect</c> diverge from the rest of the app.
+    /// </para>
+    /// </remarks>
+    public static void RemoveSubsonic(float[][] data, int sampleRate, double cutoffHz,
+        double strength = 1.0, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        cancellationToken.ThrowIfCancellationRequested();
+        float amount = (float)Math.Clamp(strength, 0.0, 1.0);
+        if (amount <= 0f) return;
+
+        foreach (var channel in data)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (channel is not { Length: > 0 }) continue;
+
+            // One pair per channel, declared here so no state ever crosses a channel boundary.
+            var first = Biquad.HighPass(sampleRate, cutoffHz, SubsonicSectionQs[0]);
+            var second = Biquad.HighPass(sampleRate, cutoffHz, SubsonicSectionQs[1]);
+            for (int i = 0; i < channel.Length; i++)
+            {
+                if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                float dry = channel[i];
+                float filtered = second.Process(first.Process(dry));
+                channel[i] = amount >= 1f
+                    ? filtered
+                    : dry + (filtered - dry) * amount;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Scales the side (L−R) signal of a stereo pair. A level of one is a bit-exact no-op; zero
+    /// collapses the pair to mono.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Surface noise on a record is vertical, and vertical is the side signal.</b> Measured on a
+    /// real transfer's run-out, <b>78% of crackle events are anti-phase</b> — L·R below zero across
+    /// the event — and 77% of them appear in both channels, so they are one defect in the difference
+    /// signal rather than two defects in two channels. Across five transfers from one collection,
+    /// side-to-mid rises from the programme to the quietest window by <b>11.0, 13.1, 16.0, 19.1 and
+    /// 24.1 dB</b>: every one of them, so this is a property of records rather than of one record.
+    /// </para>
+    /// <para>
+    /// <b>This is what makes the de-crackler work, and it is not a subtlety.</b> Run on the stereo
+    /// file, the shipped de-crackler takes that run-out from 462 ticks above −45 dBFS to 408 — a 12%
+    /// improvement for 5.2% of samples repaired, which is close to nothing. Collapse the side first
+    /// and the same detector, unchanged, takes 88 to <b>15</b>. Each channel otherwise gets its own
+    /// autoregressive model and its own robust threshold, so it sees a <em>different</em> realisation
+    /// of the same vertical tick, repairs that, and summing the channels back reconstitutes what the
+    /// other channel still holds.
+    /// </para>
+    /// <para>
+    /// <b>How far the side may be pulled down is a property of the pressing, not of the noise</b>,
+    /// and the two must not be confused. The rise above is present on stereo pressings too — the
+    /// widest record in that set of five still showed +11.0 dB — so it says the noise is vertical and
+    /// says nothing about whether music is there with it. That is the programme side-to-mid ratio's
+    /// job, and it split the same five into −16.5/−15.2/−12.3 dB and −9.8/−6.0.
+    /// </para>
+    /// <para>
+    /// The no-op at one is an early return rather than the arithmetic, because
+    /// <c>mid + side</c> reconstructs a float sample to within a rounding error and not to the
+    /// sample. Only the first two channels of a stereo pair mean anything here, so anything that is
+    /// not a pair is left alone rather than guessed at.
+    /// </para>
+    /// </remarks>
+    public static void ScaleSide(float[][] data, double sideLevel,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (data.Length != 2) return;
+
+        float level = (float)Math.Clamp(sideLevel, 0.0, 1.0);
+        if (level >= 1f) return;
+
+        float[] left = data[0], right = data[1];
+        if (left is null || right is null) return;
+        int n = Math.Min(left.Length, right.Length);
+        for (int i = 0; i < n; i++)
+        {
+            if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+            float mid = (left[i] + right[i]) * 0.5f;
+            float side = (left[i] - right[i]) * 0.5f * level;
+            left[i] = mid + side;
+            right[i] = mid - side;
+        }
+    }
+
     /// <summary>Find silent stretches: returns (start, end) sample ranges below threshold lasting at least minLength.</summary>
     public static List<(int Start, int End)> DetectSilences(IReadOnlyList<float[]> channels, int sampleRate,
         double thresholdDb, double minLengthMs, CancellationToken cancellationToken = default)
