@@ -216,7 +216,8 @@ public static partial class Restoration
     /// <summary>
     /// Repair analysed events in place. Prefer <see cref="RepairClicks"/> unless the caller
     /// already owns a disposable working copy. Channels are repaired concurrently, so
-    /// <paramref name="progress"/> reports may arrive from worker threads.
+    /// <paramref name="progress"/> reports may arrive from worker threads and out of order —
+    /// consumers should sample the latest value, not accumulate.
     /// </summary>
     public static int RepairClicksInPlace(float[][] data, IReadOnlyList<ClickEvent> events,
         ClickRepairOptions? options = null,
@@ -268,6 +269,17 @@ public static partial class Restoration
             index = limit;
         }
 
+        // The exclusivity argument for the parallel dispatch below is one run per channel, and it
+        // rests on the plan being channel-major — a sort enforced in CreateClickRepairPlan, not
+        // here. If that ever stops being true, two runs would race on one channel's array, and the
+        // failure would be corrupted repair audio under scheduling rather than an exception. Fail
+        // loud where the invariant is relied on.
+        var ownedChannels = new HashSet<int>();
+        foreach (var run in runs)
+            if (!ownedChannels.Add(ordered[run.First].Channel))
+                throw new InvalidOperationException(
+                    "The click repair plan is no longer channel-major; parallel repair would race.");
+
         int repaired = 0;
         int processed = 0;
         void RepairRun((int First, int Limit) run)
@@ -306,11 +318,23 @@ public static partial class Restoration
         }
         else
         {
-            Parallel.ForEach(runs, new ParallelOptions
+            try
             {
-                CancellationToken = cancellationToken,
-                MaxDegreeOfParallelism = maxDegreeOfParallelism,
-            }, RepairRun);
+                Parallel.ForEach(runs, new ParallelOptions
+                {
+                    CancellationToken = cancellationToken,
+                    MaxDegreeOfParallelism = maxDegreeOfParallelism,
+                }, RepairRun);
+            }
+            catch (AggregateException aggregate) when (aggregate.InnerExceptions.Count == 1)
+            {
+                // Parallel.ForEach wraps a worker's fault, so a caller showing ex.Message would
+                // report "One or more errors occurred" instead of the fault. Cancellation is not
+                // affected — an OCE matching the options' token is already rethrown unwrapped.
+                // Capture preserves the original stack, so serial and parallel report identically.
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                    .Capture(aggregate.InnerException!).Throw();
+            }
         }
         return repaired;
     }
