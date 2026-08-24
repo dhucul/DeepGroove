@@ -1079,6 +1079,67 @@ in the same continuation with no `await` between, and `QueueParameterRefresh` re
 `_source` is null, so no render can observe it unset — and it is the same shape as the pre-existing
 `_noiseToProgrammeDb`. Adding a barrier for one field and not the other would be worse than either.
 
+## The noise-mask headroom is not reachable from the profile, and that is now measured
+
+The +7.15 dB the oracle Wiener mask showed over the shipped gate invited one more family of cheap
+candidates before conceding the roadmap's "needs a model": estimate the Wiener gain from the same
+learned profile the gate already uses. Built as an exact copy of `ReduceNoise` with only the per-bin
+target changed — same STFT policies, same temporal smoothing, same median-of-three — and measured
+over **120 cells** (54 from `C:\Windows\Media`, 66 from the eleven WAV vinyl transfers now in
+`Music\mymusic`; the harness's corpus-1 AIFFs no longer exist on disk, see below). **All variants
+were deleted, and this entry is the record.**
+
+- **Plain Wiener (`1 − N²/|X|²` clamped to the depth floor), noise power swept from −3 to +4 dB
+  around the profile's own level.** Over-subtraction loses everywhere — at +4 dB it wins 0 of 120
+  cells. At the neutral scale it beats the gate in 91–96 of 120 at fixed depth, but the wins live at
+  the quiet severities **where the shipped depth rule already declines to fire**: under the shipping
+  config (depth rule + dialog defaults) it is **+0.47 against the gate's +0.36 mean, wins only 30 of
+  65 decided cells, and moves the below-do-nothing count from 15 to 16**. Its one real property is
+  the tail — worst cell −15.06 against −16.86.
+- **Decision-directed Wiener (Ephraim & Malah's ξ estimator with a Wiener gain — the temporal half
+  of the MMSE-STSA that lost here by 136 dB, without the STSA amplitude rule that lost it).** The
+  strongest candidate measured: at fixed depth α=0.90 beats the gate in **117 of 120 cells and at
+  every severity, on both populations**. And under the shipping config it collects **+0.10 dB of
+  mean** (+0.46 against +0.36), wins 42 of 65 decided, improves the worst cell −16.86 → −15.78 —
+  and still nudges the below-do-nothing count 15 → 16 (`Ring04.wav` @18 dB, +0.02 → −0.26), rescuing
+  no cell in return.
+- **The fixed-depth aggregates flatter every candidate, which is the reading to guard against.**
+  dd90's 117-of-120 headline shrinks to +0.10 dB because the severities where it wins big are the
+  ones the depth rule already routes to doing nothing. Any future candidate must be judged on the
+  composed shipping config, not on the fixed-depth table.
+- **Why the headroom does not move: the profile is stationary and so is the information in it.**
+  The oracle knows the per-frame signal/noise split; every candidate here reshapes the same
+  time-invariant noise estimate the gate already thresholds on, and the harness's hiss is stationary
+  by design, so even a minimum-statistics tracker could only re-derive the profile. Three estimator
+  families have now been measured against these cells — MMSE-STSA, subtraction-scaled Wiener,
+  decision-directed Wiener — and none collects more than a tenth of a decibel where it ships. **That
+  is the brief for a model, sharpened: it has to estimate the per-frame split, and nothing cheaper
+  than that will move the number.**
+- **The harness's corpus-1 AIFFs no longer exist on disk, and corpus 1 is now the WAV transfers, by
+  David's decision.** `Music\mymusic` carries his newer WAV vinyl transfers of the same records —
+  the run-out detection corpus — and `DeclipCorpus.Recordings` accepts them as `1-record` now. The
+  old aiff-only guard existed to exclude a different population (the deleted internet WAVs), and
+  keeping it once the folder held only genuine transfers excluded the exact material the corpora
+  exist for. **Corpus-1 figures recorded before 2026-08-24 are from different audio and must not be
+  compared against fresh runs** — the record already holds that corpus-1 numbers stopped reproducing
+  once before for exactly this reason.
+- **How the hole was found: the wow corpus test failed rather than shrank.**
+  `CorrectingPlantedWowRemovesTimingErrorRatherThanAddingIt` ran with **0 cells and 38 recordings
+  excluded** under `WAVELAB_CORPUS=1`: corpus 2's longest file is 12.8 s against the 20 s a 0.7 Hz
+  wow needs, so the wow harness stood entirely on corpus 1, and `Assert.NotEmpty` failed. The wow
+  figures committed on 2026-08-24 were taken while the transfers were still reachable; the corpus
+  change re-measures them.
+- **Re-baselined the same day, and the whole corpus battery passes on the blessed corpus.** Declip:
+  corpus 1 gives **44 of 44 cells over do-nothing, mean +6.37 dB, worst +0.81** — remarkably close
+  to the AIFF corpus's +6.40, being the same records — with corpus 2 reproducing to the decimal.
+  The wow tests reproduce this morning's committed figures **exactly** (237 → 197 at 2.4%, the
+  128-against-133 wash at 1.2%, reads 1.070/0.798/0.716/0.733), which settles that they were
+  measured on these WAV transfers. The oracle noise headroom re-reads **+7.17 dB** on the new
+  120-cell population against the recorded +7.15. Hum, spectral heal, silence, crackle and the
+  click corpus all pass; the click harness rightly **excludes all eleven transfers from planted-
+  click cells as already clicky** (1.5–4.1 events/s — they are real records), so its planted
+  recall figures stand on corpus 2.
+
 ## Resizing a selection by its edges
 
 A selection could be drawn and not adjusted: getting the out point a hundred samples further along

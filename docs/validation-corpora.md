@@ -34,32 +34,34 @@ was in the signal path, or before `DeclipCorpus.StableHash` replaced .NET's rand
 hashing, differ by more than the changes being measured. Where one is still quoted it is marked as
 superseded.
 
-## Corpus 1 — a private collection of record transfers (9 recordings, 36 cells)
+## Corpus 1 — a private collection of record transfers (11 recordings, 44 cells)
 
-Soul and R&B transferred from records, AIFF, 44.1 kHz, 110-322 s. Not redistributable; named for
-the record only. One track carries genuine clipping and is detected as such; the other eight
-report none.
+Soul and R&B transferred from records — David's own vinyl transfers, WAV, 44.1 kHz stereo float.
+Not redistributable; named for the record only.
 
-Measured against the shipped chain: **36 of 36 cells beat leaving the damage alone, mean
-+6.40 dB, worst +0.23**. The higher figures once recorded here (+6.84 mean, +2.31 worst) were taken
-with the shoulder cap on the sparse reconstruction still in the signal path; a fifth corpus withdrew
-it, so these are the post-withdrawal numbers. The chooser sends every cell to A-SPADE; the arch
-would have won 9 of 36 outright, which costs the chooser 14.0 dB of regret against per-cell oracle
-choice, where always choosing the arch would cost 62.7.
+Measured against the shipped chain on 2026-08-24: **44 of 44 cells beat leaving the damage alone,
+mean +6.37 dB, worst +0.81, none below do-nothing**. Corpus 2 reproduced its recorded figures to
+the decimal in the same run, which is the check that the harness itself did not move.
 
-### The WAV files are gone and are excluded from every figure
+### The corpus's membership has changed twice, and figures do not carry across either change
 
-This corpus used to hold ten WAV files as well, and they were a different population entirely:
-**recorded and streamed off the internet, badly**, rather than transferred from records. They
-arrive already degraded, they are not what this workbench is for, and they have been **deleted**.
-Every number above is AIFF-only and they must not be folded back into any average.
+**First change:** the folder once held ten WAV files that were a different population entirely —
+recorded and streamed off the internet, badly — and they were deleted; the corpus was then AIFF-only,
+and every figure taken between the two changes is from those AIFFs (9 recordings, 36 cells, mean
++6.40 dB, worst +0.23, with one track carrying genuine clipping on channel 1).
 
-An earlier split table recorded here (record transfers at +7.16 dB, one cell below do-nothing at
--1.15, arch winning 14% of cells) **does not reproduce** and has been removed. A fresh run
-disagrees on `raw` - the SNR of the damaged file before any repair runs, which no change to the
-repair code can move - while corpus 2 reproduces to the decimal, so the difference is in the data
-rather than the method. Prefer a fresh measurement over any corpus-1 figure quoted from before
-this note.
+**Second change (2026-08-24):** the AIFF transfers were replaced by newer WAV transfers of the same
+records, and the AIFFs are gone. The harness now accepts the WAVs as corpus 1, by David's decision —
+the aiff-only guard was aimed at the deleted internet WAVs, and keeping it once the folder held only
+genuine transfers left every corpus-1 harness empty (the wow harness, which stands entirely on this
+corpus, ran with zero cells). The old guard's lesson still stands as a rule about *populations*, not
+extensions: nothing recorded off the internet goes into this corpus.
+
+Corpus-1 figures from before either change **do not reproduce against the current audio and must
+not be compared with fresh runs** — an earlier split table already failed to reproduce on `raw`, the
+SNR of the damaged file before any repair runs, which no change to the repair code can move. This
+note is the second time that has been true; prefer a fresh measurement over any quoted corpus-1
+number whose date is unclear.
 
 ## Corpus 2 — `C:\Windows\Media` (38 files, 152 cells)
 

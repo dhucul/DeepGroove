@@ -60,10 +60,14 @@ listed as a nice-to-have. Both are done.
   **Still declined, but the ceiling is now measured rather than assumed**: an oracle Wiener mask,
   which is what a perfect estimator of this kind produces, beats the shipped spectral gate by
   **+9.63 dB over 108 cells and wins 108 of 108** — **+7.15 dB** against the better of the gate and
-  doing nothing. So there is real room. What comes before a model is the cheap half of it: the gate
-  scores *below do-nothing* on quiet hiss, and a rule that declined to fire there would collect
-  8.13 dB of the 13.21 dB gap at 30 dB down for nothing. See `NoiseReductionCeilingTests` and the
-  CLAUDE.md section.
+  doing nothing. So there is real room. The cheap half shipped as the adaptive depth rule; **the
+  rest is now measured to be model-shaped**: plain Wiener and decision-directed Wiener gains driven
+  by the learned profile were built and measured over 120 cells, and the best of them collects
+  **+0.10 dB** under the shipping configuration while moving one cell below do-nothing. Three
+  estimator families (MMSE-STSA, subtraction-scaled Wiener, DD-Wiener) have now failed to close the
+  gap, because the profile is stationary and the oracle's advantage is the per-frame signal/noise
+  split. A model that estimates that split is the only untried thing left. See the CLAUDE.md
+  section "The noise-mask headroom is not reachable from the profile".
 - **OGG Vorbis / Opus** — no Windows system codec, so it would add a native dependency.
 - **AU / LV2** — not applicable on Windows.
 - **Customizable shortcut editor, workspace layouts** — never started, and nothing has asked for

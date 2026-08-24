@@ -112,6 +112,14 @@ public static class DeclipCorpus
     {
         var found = new List<CorpusRecording>();
 
+        // Corpus 1 is David's own vinyl transfers, and its membership has changed once: the AIFF
+        // transfers every pre-2026-08-24 corpus-1 figure was measured on were replaced by newer
+        // WAV transfers of the same records, and the AIFFs are gone. WAVs are accepted now, by
+        // David's decision. The old aiff-only guard existed to exclude a different population -
+        // internet-recorded WAVs that shared the folder and were deleted - and keeping it once the
+        // folder held only genuine transfers excluded the exact material the corpus exists for,
+        // which is how the wow harness came to run with zero cells. Corpus-1 figures recorded
+        // before this line are from different audio: prefer a fresh measurement.
         string one = Root("WAVELAB_CORPUS1", @"C:\Users\dhucu\Music\mymusic");
         if (Directory.Exists(one))
             foreach (var file in Directory.GetFiles(one).OrderBy(f => f, StringComparer.Ordinal))
@@ -119,7 +127,8 @@ public static class DeclipCorpus
                 // AppleDouble resource forks carry the same name as the audio beside them.
                 if (Path.GetFileName(file).StartsWith("._", StringComparison.Ordinal)) continue;
                 string extension = Path.GetExtension(file).ToLowerInvariant();
-                if (extension is ".aiff" or ".aif") found.Add(new CorpusRecording("1-record", file, false));
+                if (extension is ".aiff" or ".aif" or ".wav")
+                    found.Add(new CorpusRecording("1-record", file, false));
             }
 
         string two = Root("WAVELAB_CORPUS2", @"C:\Windows\Media");
