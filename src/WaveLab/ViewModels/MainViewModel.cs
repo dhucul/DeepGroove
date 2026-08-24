@@ -1500,9 +1500,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         int released = doc.DiscardedOlderSteps;
         if (released == 0) return null;
+        // The count is cumulative and the limit may have moved since, so the limit is quoted as
+        // what it is *now* rather than as the one those steps went under — which is also the only
+        // figure the reader can act on.
         long megabytes = AudioDocument.UndoBudgetBytes / (1024 * 1024);
-        return $"{released} earlier step(s) were released to stay inside the {megabytes} MB undo "
-             + "limit, so the file cannot be taken back further. Raise it in Settings ▸ General.";
+        return $"{released} earlier step(s) have been released to stay inside the undo memory "
+             + $"limit, so the file cannot be taken back further. It is {megabytes} MB now — raise "
+             + "it in Settings ▸ General.";
     }
 
     private void Redo()

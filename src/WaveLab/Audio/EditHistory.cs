@@ -13,7 +13,12 @@ namespace WaveLab.Audio;
 /// markers and can collapse a region, which is why the panel marks them.
 /// </param>
 /// <param name="OwnsFullDocument">A whole-document render, which may also change the channel count.</param>
-/// <param name="RetainedBytes">What this step costs against the undo memory budget.</param>
+/// <param name="RetainedBytes">
+/// What this step is the first on the timeline to retain. Steps share buffers — consecutive
+/// whole-document renders hold the same arrays — so this is not what the step holds but what it
+/// adds, which is what makes the entries sum to <see cref="HistorySnapshot.RetainedBytes"/> rather
+/// than over-stating it.
+/// </param>
 public readonly record struct HistoryEntry(
     int Index,
     string Name,

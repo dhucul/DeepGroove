@@ -1538,6 +1538,38 @@ came back empty returned in silence after the user had pressed Remove. Both are 
 second says so — a tool that declines without a word is indistinguishable from one that failed, which
 is already on record here twice.
 
+### The rest of the review, including the one that was over-cautious
+
+- **The full-band ceiling was flagged as understating what a repair holds, and it does not.** The
+  arithmetic behind it — mask plus real, imaginary and weight planes, four arrays of four bytes a
+  cell — is right for the continuation, and **the continuation is the only method anything reaches**:
+  nothing outside the tests ever sets `SparseInpainting`, which is the case that would allocate a
+  block and a window sum on top. The constant is correct as it stands; what it lacked was a note
+  saying which method it was sized for, so that wiring the solver to a control brings the number
+  down with it.
+- **`FullBandFrames` counted in `int`, and the wrap is the wrong way.** At the hop spectral edits use
+  it cannot overflow; at a hop of one it can, and the wrapped count is *negative* — which reads as
+  "no frames", so `FullBandFits` answers yes to a span `FullBand` then refuses to build, leaving the
+  four actions lit and doing nothing when pressed. Counted in `long` now, and
+  `AFrameCountTooLargeForAnIntIsRefusedRatherThanWrappingNegative` fails against the int version at a
+  hop of one and passes at 2 and 512, which is the signature of exactly that bug.
+- **`HistoryEntry.RetainedBytes` changed meaning and its own documentation did not.** It is no longer
+  what a step holds; it is what the step is first on the timeline to retain, which is the property
+  that makes the panel's rows sum to its header rather than over-state it. The parameter doc says so.
+- **Four silent declines in the spectral repair path now say what happened.** They are reachable the
+  way this repo's other silent-decline findings were — a selection that goes between the click and
+  the read, a repair that produces nothing, a file that moves under the operation — and the rule is
+  already on record twice: a tool that stops without a word is indistinguishable from one that
+  failed.
+- **The exhausted-undo line quoted the current limit as the one those steps went under.** The count
+  is cumulative and the limit can have moved since. It reads "have been released to stay inside the
+  undo memory limit … it is N MB now", which is true whenever it is shown and is also the only figure
+  the reader can act on.
+- **The menu test asserted from inside the render callback**, which is the one thing this repo's
+  shell probes are arranged not to do — an assertion thrown before the cleanup meets a modal
+  unsaved-work box with nobody on the thread to answer it. Its readings are collected and judged
+  outside the callback like the probe beside it.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

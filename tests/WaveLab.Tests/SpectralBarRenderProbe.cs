@@ -245,6 +245,10 @@ public sealed class SpectralBarRenderProbe : IDisposable
     /// bindings are what is being checked and a broken one does not throw — it leaves the property
     /// at its default, which for <c>IsEnabled</c> is the answer this test wants either way.
     /// </para>
+    /// <para>
+    /// Nothing is asserted inside the callback here either: every reading is collected into the
+    /// strings below and judged outside it, for the reason the class remarks give.
+    /// </para>
     /// </remarks>
     [Fact]
     public void TheFrequencyScaleStaysReachableWhicheverWayTheSwitchIsLost()
@@ -267,19 +271,16 @@ public sealed class SpectralBarRenderProbe : IDisposable
 
                     // Waveform mode: no picture, so no switch on the bar. Choosing from the
                     // menu still has to work, which is the whole reason the gate came off.
-                    Assert.False(main.ShowsSpectralScale);
                     MenuItem scale = FrequencyScaleMenu(shell);
                     var constantQ = (MenuItem)scale.Items[2];
                     constantQ.Command.Execute(null);
                     Wpf.Pump();
-                    Assert.True(main.IsConstantQScale);
                     seen.Add(Report(shell, main, "waveform"));
 
                     // Spectrogram at a width the bar cannot hold: the switch goes, the menu stays.
                     main.ShowSpectrogramCommand.Execute(null);
                     shell.UpdateLayout();
                     Wpf.Pump();
-                    Assert.False(main.ShowsSpectralScale);
                     seen.Add(Report(shell, main, "spectrogram, too narrow"));
                 }
                 finally
@@ -293,6 +294,10 @@ public sealed class SpectralBarRenderProbe : IDisposable
         foreach (string state in states) _output.WriteLine(state);
         foreach (string failure in failures) _output.WriteLine(failure);
         Assert.Empty(failures);
+        // Both ways of losing the switch, and in both the menu is live and carries the choice the
+        // waveform-mode click made through it.
+        Assert.Equal(2, states.Length);
+        Assert.All(states, state => Assert.Contains("switch shown=False", state));
         Assert.All(states, state => Assert.Contains("enabled=True", state));
         Assert.All(states, state => Assert.Contains("checked=Constant-Q", state));
     }

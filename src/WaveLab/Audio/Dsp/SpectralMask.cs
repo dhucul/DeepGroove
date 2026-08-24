@@ -128,6 +128,11 @@ public sealed class SpectralMask
     /// residual already hold themselves to, per channel. At 2048/512 that is a little over six
     /// minutes of 44.1 kHz audio, which is far more than a spectral repair is for; a whole-file
     /// change of level is the ordinary Gain command, not this.
+    ///
+    /// Sized for the continuation, which is the only method anything reaches: nothing outside the
+    /// tests ever sets <see cref="SpectralHealMethod.SparseInpainting"/>, and the solver allocates a
+    /// block and a window sum on top of those four planes — about a fifth again. Wire that method to
+    /// a control and this constant has to come down with it.
     /// </remarks>
     public const long MaximumFullBandCells = 512L * 1024 * 1024 / (4 * sizeof(float));
 
@@ -139,7 +144,7 @@ public sealed class SpectralMask
         if (fftSize <= 0 || hop <= 0) return false;
         (startSample, endSample) = Order(startSample, endSample);
         if (endSample <= startSample) return false;
-        return (long)FullBandFrames(startSample, endSample, hop) * (fftSize / 2 + 1)
+        return FullBandFrames(startSample, endSample, hop) * (fftSize / 2 + 1)
                <= MaximumFullBandCells;
     }
 
@@ -173,24 +178,30 @@ public sealed class SpectralMask
         if (endSample <= startSample) return Empty;
 
         int bins = fftSize / 2 + 1;
-        int frames = FullBandFrames(startSample, endSample, hop);
+        long frames = FullBandFrames(startSample, endSample, hop);
         if (frames <= 0) return Empty;
-        if ((long)frames * bins > MaximumFullBandCells)
+        if (frames * bins > MaximumFullBandCells)
         {
             throw new ArgumentOutOfRangeException(nameof(endSample), endSample,
                 "The span is too long for a full-band spectral mask.");
         }
 
-        var weight = new float[frames * bins];
+        var weight = new float[(int)frames * bins];
         Array.Fill(weight, 1f);
-        TaperFrames(weight, frames, bins, Math.Max(0, feather));
-        return new SpectralMask(Math.Max(0, startSample / hop), 0, frames, bins, weight,
+        TaperFrames(weight, (int)frames, bins, Math.Max(0, feather));
+        return new SpectralMask(Math.Max(0, startSample / hop), 0, (int)frames, bins, weight,
             SpectralSelectionKind.Rectangle);
     }
 
     /// <summary>Frames a span covers, rounded outward exactly as <see cref="ForRegion"/> does.</summary>
-    private static int FullBandFrames(int startSample, int endSample, int hop) =>
-        (int)Math.Ceiling(endSample / (double)hop) + 1 - Math.Max(0, startSample / hop);
+    /// <remarks>
+    /// Counted in <see langword="long"/>. At the hop spectral edits use this cannot overflow an int,
+    /// but at a hop of one it can — and the wrap is negative, which reads as "no frames" and would
+    /// have <see cref="FullBandFits"/> answer yes to a span <see cref="FullBand"/> then declines to
+    /// build, leaving the actions lit and doing nothing.
+    /// </remarks>
+    private static long FullBandFrames(int startSample, int endSample, int hop) =>
+        (long)Math.Ceiling(endSample / (double)hop) + 1 - Math.Max(0, startSample / hop);
 
     /// <summary>
     /// A rectangle given in the units the user sees — samples and hertz — converted onto the

@@ -1479,14 +1479,26 @@ public partial class MainWindow : Window
         // band. Built here rather than in the property the buttons bind to, because a full band over
         // a long selection is millions of cells and that binding is re-read on every pixel of a drag.
         SpectralSelection selection = _vm.ResolveSpectralSelection();
-        if (d == null || d.Doc.Length == 0 || selection.IsEmpty) return;
+        if (d == null || d.Doc.Length == 0) return;
+        // Declining is said rather than done quietly, here and below. The buttons are only live
+        // with something selected, so arriving here means the selection went between the click and
+        // the read — and a tool that stops without a word is indistinguishable from one that failed.
+        if (selection.IsEmpty)
+        {
+            _vm.ReportAction($"{undoName} needs a selection · document unchanged.");
+            return;
+        }
 
         // The mask carries the grid it was built in, so a lasso or a wand is repaired through exactly
         // what the user drew rather than through a rectangle reconstructed from its bounds.
         var options = new SpectralRepairOptions(selection.FftSize, selection.Hop,
             SpectralRepairOptions.Default.PartialDriftRadians);
         SpectralMask mask = selection.Mask;
-        if (mask.IsEmpty || selection.SampleRate != d.Doc.SampleRate) return;
+        if (mask.IsEmpty || selection.SampleRate != d.Doc.SampleRate)
+        {
+            _vm.ReportAction($"{undoName} needs a selection on this file · document unchanged.");
+            return;
+        }
 
         float[][] channels = d.Doc.Channels.ToArray();
         LongOperationRunning = true;
@@ -1506,9 +1518,19 @@ public partial class MainWindow : Window
                     return repaired;
                 }, token);
 
-                if (results.Length == 0 || results[0].IsEmpty) return;
+                if (results.Length == 0 || results[0].IsEmpty)
+                {
+                    _vm.ReportAction($"{undoName} found nothing to change there · document unchanged.");
+                    return;
+                }
                 int start = results[0].Start, count = results[0].Samples.Length;
-                if (start + count > d.Doc.Length) return;
+                if (start + count > d.Doc.Length)
+                {
+                    // The file moved under the operation, so the span the repair was computed for
+                    // is no longer there to splice into.
+                    _vm.ReportAction($"{undoName} cancelled · the file changed while it ran.");
+                    return;
+                }
 
                 _vm.PrepareForDocumentEdit(d);
                 d.Doc.ReplaceRange(start, count, Array.ConvertAll(results, r => r.Samples), undoName);

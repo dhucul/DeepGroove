@@ -366,6 +366,29 @@ public sealed class SpectralMaskTests(ITestOutputHelper output)
         Assert.True(SpectralMask.FullBandFits(0, within, Fft, Hop));
     }
 
+    /// <summary>
+    /// The fit test and the builder have to agree, and an int frame count is what could part them.
+    /// </summary>
+    /// <remarks>
+    /// At the hop spectral edits use, a frame count cannot overflow an int. At a hop of one it can,
+    /// and the wrap is <em>negative</em> — which reads as "no frames", so the fit test would answer
+    /// yes to a span the builder then declines to build, leaving the actions lit and doing nothing.
+    /// Counted in long, both refuse it.
+    /// </remarks>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(Hop)]
+    public void AFrameCountTooLargeForAnIntIsRefusedRatherThanWrappingNegative(int hop)
+    {
+        bool fits = SpectralMask.FullBandFits(0, int.MaxValue, Fft, hop);
+        output.WriteLine($"hop {hop}: fits={fits}");
+
+        Assert.False(fits);
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => SpectralMask.FullBand(0, int.MaxValue, Fft, hop));
+    }
+
     [Fact]
     public void ReversedEndsOfAFullBandSpanAreOrderedRatherThanRejected()
     {
