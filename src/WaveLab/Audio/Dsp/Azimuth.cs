@@ -105,7 +105,9 @@ public static class Azimuth
                 rightRe[i] = r; rightIm[i] = 0;
                 energy += l * l + r * r;
             }
-            if (Math.Sqrt(energy / size) < options.MinimumLevel) continue;
+            // Both channels contributed to the sum, so both are divided out of it: without the two
+            // the gate sits a factor of root two above the level it documents.
+            if (Math.Sqrt(energy / (2.0 * size)) < options.MinimumLevel) continue;
 
             double? lag = PhaseTransformPeak(leftRe, leftIm, rightRe, rightIm,
                 scratchRe, scratchIm, size, maximumLag);
@@ -247,11 +249,18 @@ public static class Azimuth
     /// where it was in time rather than sliding by the whole correction — which matters when a
     /// transfer has already been cut to length or has markers on it.
     /// </remarks>
+    /// <remarks>
+    /// <b>Stereo only.</b> A stylus reads two groove walls and there is no third one to be late, so
+    /// beyond a pair the correction is undefined. Shifting the first two channels of a multichannel
+    /// file would leave every other channel where it was and offset it from the pair by half the
+    /// delay — introducing exactly the inter-channel misalignment this exists to remove, in the
+    /// channels it never measured. Anything that is not a pair is left alone.
+    /// </remarks>
     public static void Align(float[][] channels, double delaySamples,
         int halfTaps = Interpolation.DefaultHalfTaps)
     {
         ArgumentNullException.ThrowIfNull(channels);
-        if (channels.Length < 2 || Math.Abs(delaySamples) < 1e-9) return;
+        if (channels.Length != 2 || Math.Abs(delaySamples) < 1e-9) return;
 
         // The right channel lags by delaySamples, so it moves earlier and the left moves later by
         // half each. Getting this the wrong way round doubles the error instead of removing it,

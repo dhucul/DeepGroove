@@ -903,7 +903,10 @@ public partial class MainWindow : Window
 
         float[][] channels = d.Doc.Channels.ToArray();
         int rate = d.Doc.SampleRate;
-        var report = WowFlutterReport.None;
+        int measuredAt = d.Doc.EditVersion;
+        // The whole map, not just its summary: correcting re-measures otherwise, which pays for the
+        // expensive half twice and lets the curve that is applied differ from the figure approved.
+        (double[] Ratio, int Hop, WowFlutterReport Report) measured = ([], 0, WowFlutterReport.None);
 
         LongOperationRunning = true;
         try
@@ -911,8 +914,8 @@ public partial class MainWindow : Window
             await _vm.Progress.RunBlockingAsync("Measuring wow and flutter",
                 "Following the spectrum along a log-frequency axis", async (progress, token) =>
                 {
-                    report = await Task.Run(
-                        () => WowFlutter.Analyze(channels[0], rate, WowFlutterOptions.Default,
+                    measured = await Task.Run(
+                        () => WowFlutter.Measure(channels[0], rate, WowFlutterOptions.Default,
                             token, progress), token);
                 });
         }
@@ -925,6 +928,7 @@ public partial class MainWindow : Window
         }
         finally { LongOperationRunning = false; }
 
+        WowFlutterReport report = measured.Report;
         if (!report.Found)
         {
             MessageBox.Show("There was not enough sustained material above 1 kHz to follow the " +
@@ -956,11 +960,11 @@ public partial class MainWindow : Window
 
         _ = RunWholeFileTool("Correct Wow & Flutter",
             $"{report.RmsPercent:0.000}% rms · one time base for every channel",
-            (working, sampleRate, progress, token) =>
+            (working, _, progress, token) =>
             {
-                WowFlutter.Correct(working, sampleRate, WowFlutterOptions.Default, token, progress);
+                WowFlutter.Correct(working, measured, token, progress);
                 return working;
-            }, d);
+            }, d, measuredAtVersion: measuredAt);
     }
 
     // ── drifting hum ─────────────────────────────────────────────
@@ -1159,10 +1163,13 @@ public partial class MainWindow : Window
     private async void OnCorrectAzimuth(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (LongOperationRunning || d is not { Doc.Length: > 0 } || d.Doc.Channels.Count < 2) return;
+        // Exactly two: a stylus reads two groove walls, and Azimuth.Align leaves anything else
+        // alone rather than shifting a pair out of step with channels it never measured.
+        if (LongOperationRunning || d is not { Doc.Length: > 0 } || d.Doc.Channels.Count != 2) return;
 
         float[][] channels = d.Doc.Channels.ToArray();
         int rate = d.Doc.SampleRate;
+        int measuredAt = d.Doc.EditVersion;
         AzimuthEstimate estimate = AzimuthEstimate.None;
 
         LongOperationRunning = true;
@@ -1227,15 +1234,24 @@ public partial class MainWindow : Window
             {
                 Azimuth.Align(working, delay);
                 return working;
-            }, d);
+            }, d, measuredAtVersion: measuredAt);
     }
 
     /// <summary>
     /// A transform over the whole file rather than the selection, committed as one undoable edit.
     /// </summary>
+    /// <param name="measuredAtVersion">
+    /// <see cref="AudioDocument.EditVersion"/> as it stood when whatever drives this transform was
+    /// measured, for the tools that measure, ask, and only then act. <b>The length check below
+    /// cannot stand in for it.</b> Those tools release the operation guard before their
+    /// confirmation dialog, and the history panel is a separate window that re-enables the moment
+    /// it does, so a jump to a different state of the same length lands between the measurement and
+    /// the commit and slips straight past. What would be spliced in is a correction computed from
+    /// audio the document no longer holds, as one undoable edit and without a word.
+    /// </param>
     private async Task<bool> RunWholeFileTool(string undoName, string? detail,
         Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
-        DocumentViewModel target, bool keepRemoved = false)
+        DocumentViewModel target, bool keepRemoved = false, int? measuredAtVersion = null)
     {
         if (LongOperationRunning || target.Doc.Length == 0) return false;
 
@@ -1259,6 +1275,11 @@ public partial class MainWindow : Window
                 }, token);
 
                 if (output == null || length != target.Doc.Length) return;
+                if (measuredAtVersion is { } expected && target.Doc.EditVersion != expected)
+                {
+                    _vm.ReportAction($"{undoName} abandoned · the document changed after it was measured.");
+                    return;
+                }
                 _vm.PrepareForDocumentEdit(target);
                 target.Doc.ReplaceRange(0, length, output, undoName);
                 applied = true;

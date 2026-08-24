@@ -155,24 +155,12 @@ public static class WowFlutter
         double perOctave = points / Math.Log2(highest / lowest);
 
         int blocks = (samples.Length - block) / hop + 1;
-        var spectra = new double[blocks][];
         double[] window = Hann(block);
         int bins = block / 2 + 1;
 
         var frame = new float[block];
         var re = new float[bins];
         var im = new float[bins];
-
-        for (int b = 0; b < blocks; b++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report(0.5 * b / blocks);
-
-            int start = b * hop;
-            for (int i = 0; i < block; i++) frame[i] = (float)(samples[start + i] * window[i]);
-            Fft.RealForward(frame, re, im);
-            spectra[b] = LogSpectrum(re, im, bins, sampleRate, block, lowest, highest, points);
-        }
 
         int reach = Math.Max(2, (int)Math.Ceiling(options.MaximumDeviation * perOctave / Math.Log(2) * 1.5));
         var shift = new double[blocks];
@@ -181,6 +169,33 @@ public static class WowFlutter
         int referenceRadius = options.ReferenceSeconds > 0
             ? Math.Max(1, (int)Math.Round(options.ReferenceSeconds * sampleRate / hop / 2))
             : 0;
+
+        // The spectra are only ever read across the reference window, and both of its ends advance
+        // monotonically, so they live in a ring that wide rather than in an array as long as the
+        // side. Holding all of them costs eight bytes per input sample - measured at 8.2, which is
+        // 0.4 GB for a twenty-minute transfer, on top of the audio and the working copy the caller
+        // has already cloned - and nothing ever looks back at one the window has gone past.
+        // At iteration b the indices in play run from b - radius - 1 up to b + radius, so a ring one
+        // wider than that span can never evict an entry still wanted, and each block is still
+        // transformed exactly once.
+        int capacity = referenceRadius > 0 ? referenceRadius * 2 + 3 : 3;
+        var ring = new double[capacity][];
+        var ringHolds = new int[capacity];
+        Array.Fill(ringHolds, -1);
+
+        double[] SpectrumAt(int index)
+        {
+            int slot = index % capacity;
+            double[] spectrum = ring[slot] ??= new double[points];
+            if (ringHolds[slot] == index) return spectrum;
+
+            int start = index * hop;
+            for (int i = 0; i < block; i++) frame[i] = (float)(samples[start + i] * window[i]);
+            Fft.RealForward(frame, re, im);
+            LogSpectrum(re, im, bins, sampleRate, block, lowest, highest, points, spectrum);
+            ringHolds[slot] = index;
+            return spectrum;
+        }
 
         if (referenceRadius > 0)
         {
@@ -193,18 +208,18 @@ public static class WowFlutter
             for (int b = 0; b < blocks; b++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                progress?.Report(0.5 + 0.3 * b / blocks);
+                progress?.Report(0.8 * b / blocks);
 
                 int wantFrom = Math.Max(0, b - referenceRadius);
                 int wantTo = Math.Min(blocks, b + referenceRadius + 1);
-                while (windowTo < wantTo) { Add(running, spectra[windowTo], points, 1); windowTo++; }
-                while (windowFrom < wantFrom) { Add(running, spectra[windowFrom], points, -1); windowFrom++; }
+                while (windowTo < wantTo) { Add(running, SpectrumAt(windowTo), points, 1); windowTo++; }
+                while (windowFrom < wantFrom) { Add(running, SpectrumAt(windowFrom), points, -1); windowFrom++; }
 
                 int width = windowTo - windowFrom;
                 if (width < 2) continue;
                 for (int p = 0; p < points; p++) reference[p] = running[p] / width;
 
-                (double offset, double quality) = BestShift(reference, spectra[b], points, reach);
+                (double offset, double quality) = BestShift(reference, SpectrumAt(b), points, reach);
                 if (quality >= options.MinimumCorrelation)
                 {
                     shift[b] = offset;
@@ -219,9 +234,11 @@ public static class WowFlutter
             for (int b = 1; b < blocks; b++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                progress?.Report(0.5 + 0.3 * b / blocks);
+                progress?.Report(0.8 * b / blocks);
 
-                (double offset, double quality) = BestShift(spectra[b - 1], spectra[b], points, reach);
+                // Arguments evaluate left to right and consecutive indices never share a ring slot,
+                // so the previous spectrum is still the previous one once the current is built.
+                (double offset, double quality) = BestShift(SpectrumAt(b - 1), SpectrumAt(b), points, reach);
                 if (quality >= options.MinimumCorrelation)
                 {
                     shift[b] = offset;
@@ -292,8 +309,13 @@ public static class WowFlutter
         }
 
         progress?.Report(1);
+        // Divided by the number of blocks that were candidates, which is not the same in the two
+        // branches: the local reference measures every block, the frame-to-frame path starts at the
+        // second one. Using blocks - 1 for both let a run where everything was believed report a
+        // confidence just over 1, which the figure is documented as never being.
+        int candidates = Math.Max(1, referenceRadius > 0 ? blocks : blocks - 1);
         var report = new WowFlutterReport(peak * 100, Math.Sqrt(sumSquares / blocks) * 100, blocks,
-            trusted / (double)Math.Max(1, blocks - 1));
+            trusted / (double)candidates);
         return (ratio, hop, report);
     }
 
@@ -319,15 +341,37 @@ public static class WowFlutter
         ArgumentNullException.ThrowIfNull(channels);
         if (channels.Length == 0 || channels[0].Length == 0) return WowFlutterReport.None;
 
-        var (ratio, hop, report) = Measure(channels[0], sampleRate, options, cancellationToken,
+        var measured = Measure(channels[0], sampleRate, options, cancellationToken,
             new SubProgress(progress, 0, 0.4));
+        return Correct(channels, measured, cancellationToken, new SubProgress(progress, 0.4, 0.6));
+    }
+
+    /// <summary>
+    /// Resamples every channel along a map that has already been measured.
+    /// </summary>
+    /// <remarks>
+    /// <b>For callers that showed the measurement to someone before acting on it.</b> Measuring is
+    /// the expensive half — a transform and a correlation for every block of the side — and the
+    /// overload above repeats it, so a tool that analyses, reports and then corrects pays for it
+    /// twice. Worse than the cost: the second measurement is its own, so the curve that reaches the
+    /// resampler need not be the one whose figure was approved. Measure once, show that, correct
+    /// with that.
+    /// </remarks>
+    public static WowFlutterReport Correct(float[][] channels,
+        (double[] Ratio, int Hop, WowFlutterReport Report) measured,
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        if (channels.Length == 0 || channels[0].Length == 0) return WowFlutterReport.None;
+
+        var (ratio, hop, report) = measured;
         if (!report.Found || ratio.Length == 0) return report;
 
         for (int c = 0; c < channels.Length; c++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             channels[c] = Resample(channels[c], ratio, hop, cancellationToken,
-                new SubProgress(progress, 0.4 + 0.6 * c / channels.Length, 0.6 / channels.Length));
+                new SubProgress(progress, c / (double)channels.Length, 1.0 / channels.Length));
         }
 
         progress?.Report(1);
@@ -388,10 +432,12 @@ public static class WowFlutter
     /// Decibels and mean-removed so that the correlation measures <em>shape</em>: a passage getting
     /// louder must not read as the spectrum sliding sideways.
     /// </remarks>
-    private static double[] LogSpectrum(float[] re, float[] im, int bins, int sampleRate,
-        int size, double lowest, double highest, int points)
+    private static void LogSpectrum(float[] re, float[] im, int bins, int sampleRate,
+        int size, double lowest, double highest, int points, double[] spectrum)
     {
-        var spectrum = new double[points];
+        // Filled rather than returned: the caller owns one buffer per ring slot and reuses it, so a
+        // side no longer allocates a spectrum per block.
+        Array.Clear(spectrum, 0, points);
         double step = Math.Log(highest / lowest) / points;
         double resolution = (double)sampleRate / size;
 
@@ -411,10 +457,9 @@ public static class WowFlutter
         }
 
         double mean = 0;
-        foreach (double value in spectrum) mean += value;
+        for (int p = 0; p < points; p++) mean += spectrum[p];
         mean /= points;
         for (int p = 0; p < points; p++) spectrum[p] -= mean;
-        return spectrum;
 
         static double Magnitude(float real, float imaginary) =>
             Math.Sqrt((double)real * real + (double)imaginary * imaginary);
@@ -428,7 +473,13 @@ public static class WowFlutter
     {
         double best = double.NegativeInfinity;
         int bestLag = 0;
-        Span<double> scores = stackalloc double[reach * 2 + 1];
+
+        // reach follows MaximumDeviation and Points, which callers set, so this span is not bounded
+        // by anything this method controls: about ninety values at the defaults, but thousands at a
+        // wide band and a loose deviation, and a stack overflow cannot be caught.
+        int span = reach * 2 + 1;
+        double[]? heap = span > StackScores ? new double[span] : null;
+        Span<double> scores = (heap ?? stackalloc double[StackScores])[..span];
 
         for (int lag = -reach; lag <= reach; lag++)
         {
@@ -657,6 +708,9 @@ public static class WowFlutter
     /// material to choose it on.
     /// </summary>
     private const double MinimumResponse = 0.25;
+
+    /// <summary>Widest correlation scan kept on the stack; anything beyond it goes to the heap.</summary>
+    private const int StackScores = 256;
 
     private static double[] Hann(int n)
     {
