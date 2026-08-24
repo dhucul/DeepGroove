@@ -207,6 +207,16 @@ public sealed class AudioDocument
     /// Raised when the byte budget releases steps, as (older, newer). The shell reports it: an
     /// eviction that says nothing leaves the history quietly shorter than the user's edits.
     /// </summary>
+    /// <remarks>
+    /// <b>A handler must record and return, not read the document.</b> The budget is enforced from
+    /// the middle of a commit — before <see cref="Dirty"/>, <see cref="EditVersion"/> and the
+    /// current state id have been moved on, and before <see cref="Changed"/> — so anything read
+    /// here describes the edit that is still happening. Measured: <c>EditVersion</c> reads 2 inside
+    /// the handler where it reads 3 a moment later.
+    /// That ordering is deliberate rather than incidental: it is what lets the shell hold the count
+    /// and fold it into the line it writes when <see cref="Changed"/> arrives, instead of writing a
+    /// line that the change event immediately overwrites.
+    /// </remarks>
     public event Action<int, int>? HistoryReleased;
 
     /// <summary>
@@ -574,6 +584,59 @@ public sealed class AudioDocument
     }
 
     /// <summary>
+    /// How many retained steps hold each buffer, so that releasing one can be costed by decrement.
+    /// </summary>
+    /// <remarks>
+    /// The alternative is re-reading the deduplicated total after every eviction, which is what this
+    /// replaced: correct, and quadratic in the retained depth, because each read walks every step
+    /// again. Measured on a history squeezed in one go — the Settings dialog lowering the limit, and
+    /// the next edit paying for it — that cost <b>19 ms at 500 steps, 316 at 2 000 and 1 190 at
+    /// 5 000</b>, on the dispatcher. Counting references is one walk and then arithmetic.
+    /// </remarks>
+    private static long CountReferences(List<Edit> edits, Dictionary<float[], int> held)
+    {
+        long samples = 0;
+        foreach (Edit edit in edits)
+        {
+            foreach (var channel in edit.Old) samples += Hold(channel, held);
+            foreach (var channel in edit.New) samples += Hold(channel, held);
+        }
+        return samples * sizeof(float);
+
+        static long Hold(float[] channel, Dictionary<float[], int> held)
+        {
+            if (held.TryGetValue(channel, out int count))
+            {
+                held[channel] = count + 1;
+                return 0;
+            }
+            held[channel] = 1;
+            return channel.Length;
+        }
+    }
+
+    /// <summary>What releasing one step actually frees: the buffers no other retained step holds.</summary>
+    private static long ReleaseReferences(Edit edit, Dictionary<float[], int> held)
+    {
+        long samples = 0;
+        foreach (var channel in edit.Old) samples += Drop(channel, held);
+        foreach (var channel in edit.New) samples += Drop(channel, held);
+        return samples * sizeof(float);
+
+        static long Drop(float[] channel, Dictionary<float[], int> held)
+        {
+            if (!held.TryGetValue(channel, out int count)) return 0;
+            if (count > 1)
+            {
+                held[channel] = count - 1;
+                return 0;
+            }
+            held.Remove(channel);
+            return channel.Length;
+        }
+    }
+
+    /// <summary>
     /// Keeps the retained history inside <see cref="UndoBudgetBytes"/>, which is a per-document
     /// figure: several open tabs each hold up to that much.
     /// </summary>
@@ -586,33 +649,34 @@ public sealed class AudioDocument
     /// dropping the far end of the forward chain costs less than throwing away undo history.
     /// </para>
     /// <para>
-    /// Steps share buffers, so the total is re-read after each eviction rather than decremented by
-    /// what the dropped step held: releasing a whole-document render frees only the array its
+    /// Steps share buffers, so a drop is costed by <see cref="ReleaseReferences"/> rather than by
+    /// subtracting what the step held: releasing a whole-document render frees only the array its
     /// neighbour is not also holding, and subtracting the step's gross size would report memory
     /// reclaimed that is still live — releasing about twice as much history as the limit asks for.
-    /// The gross sum is still the screen, because it can only over-state the exact one.
+    /// The gross sum is still the screen, because it can only over-state the exact one, so the
+    /// reference walk is paid for only when it can change an answer.
     /// </para>
     /// </remarks>
     private void EnforceUndoBudget()
     {
         if (GrossRetainedBytes() <= UndoBudgetBytes) return;
-        if (RetainedBytes() <= UndoBudgetBytes) return;
+
+        var held = new Dictionary<float[], int>(ReferenceEqualityComparer.Instance);
+        long total = CountReferences(_undo, held) + CountReferences(_redo, held);
+        if (total <= UndoBudgetBytes) return;
 
         // _redo[0] is the furthest-future edit, so trimming from the front keeps the next redo step
-        // available for as long as possible.
+        // available for as long as possible. Counted first and removed in one range, because
+        // removing from the front of a list one at a time is itself quadratic in the depth.
         int dropped = 0;
-        while (_redo.Count > 0 && RetainedBytes() > UndoBudgetBytes)
-        {
-            _redo.RemoveAt(0);
-            dropped++;
-        }
+        while (dropped < _redo.Count && total > UndoBudgetBytes)
+            total -= ReleaseReferences(_redo[dropped++], held);
+        if (dropped > 0) _redo.RemoveRange(0, dropped);
 
         int droppedOlder = 0;
-        while (_undo.Count > 1 && RetainedBytes() > UndoBudgetBytes)
-        {
-            _undo.RemoveAt(0);
-            droppedOlder++;
-        }
+        while (_undo.Count - droppedOlder > 1 && total > UndoBudgetBytes)
+            total -= ReleaseReferences(_undo[droppedOlder++], held);
+        if (droppedOlder > 0) _undo.RemoveRange(0, droppedOlder);
 
         if (dropped == 0 && droppedOlder == 0) return;
         // The Edit History panel shows what was released and renumbers when it happens, so the
@@ -621,7 +685,8 @@ public sealed class AudioDocument
         _discardedOlder += droppedOlder;
         _historyGeneration++;
         DropSavepointIfUnreachable();
-        // Raised last, so a handler that reads the history sees the state the eviction settled on.
+        // Last of the eviction's own work, and still inside the commit that caused it — see the
+        // event's remarks for what a handler may and may not read from here.
         HistoryReleased?.Invoke(droppedOlder, dropped);
     }
 

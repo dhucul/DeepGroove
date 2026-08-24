@@ -58,6 +58,11 @@ public partial class MainWindow : Window
         InitializeComponent();
         _vm = new MainViewModel();
         DataContext = _vm;
+        // Subscribed here rather than in the XAML: the handler reads _vm, and
+        // InitializeComponent runs before _vm exists. Layout happens after the constructor
+        // today, so a markup subscription works — but it works by luck, and the failure it
+        // is one early measure pass away from is a null reference at startup.
+        SizeChanged += OnShellSizeChanged;
 
         spectrumView.Tap = _vm.Engine.Master;
         loudnessView.Source = _vm.Master;
@@ -1365,8 +1370,18 @@ public partial class MainWindow : Window
 
         // Resolved after the dialog, not before: the box is up long enough for the selection to
         // move, and it is the selection standing when Remove is pressed that the user meant.
+        // Re-checked against the document captured above, because the resolve reads whichever tab
+        // is active — the dialog is modal so they cannot diverge today, and splicing a mask built
+        // from one file into another is not a thing to leave resting on that.
         SpectralSelection selection = _vm.ResolveSpectralSelection();
-        if (selection.IsEmpty || selection.SampleRate != d.Doc.SampleRate) return;
+        if (!ReferenceEquals(d, Doc) || selection.IsEmpty
+            || selection.SampleRate != d.Doc.SampleRate)
+        {
+            // Never silently: the user pressed Remove, and a tool that declines without saying so
+            // is indistinguishable from one that failed.
+            _vm.ReportAction("Remove Pattern needs a selection · document unchanged.");
+            return;
+        }
 
         var options = new SpectralPatternOptions(selection.FftSize, selection.Hop,
             dialog.Values[0], dialog.Values[1],

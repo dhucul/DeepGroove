@@ -1,4 +1,5 @@
 using WaveLab.Audio;
+using WaveLab.ViewModels;
 using Xunit;
 
 namespace WaveLab.Tests;
@@ -205,6 +206,39 @@ public sealed class UndoBudgetTests : IDisposable
     }
 
     /// <summary>
+    /// Lowering the limit under a long history evicts the whole of it in one call, and that call is
+    /// on the dispatcher.
+    /// </summary>
+    /// <remarks>
+    /// A timing assertion, which this suite otherwise avoids — but the defect it guards is a
+    /// complexity class rather than a constant, so it is the shape of the number that matters and
+    /// the bound can be loose enough not to be flaky. Re-reading the deduplicated total after every
+    /// drop measured <b>1 190 ms</b> here; counting references measures <b>2</b>. The ceiling is
+    /// two orders of magnitude above the second and an order below the first.
+    /// </remarks>
+    [Fact]
+    public void ReleasingAWholeHistoryAtOnceStaysLinearInItsDepth()
+    {
+        const int steps = 5_000;
+        AudioDocument.UndoBudgetBytes = long.MaxValue;
+        var document = Document(1_000);
+        for (int i = 0; i < steps; i++) Edit(document, 100, i * 0.0001f);
+        Assert.Equal(steps, document.UndoDepth);
+
+        // What the Settings dialog does: lower the limit, and let the next edit pay for it.
+        AudioDocument.UndoBudgetBytes = 8 * 1024;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Edit(document, 100, 1f);
+        watch.Stop();
+
+        Assert.True(document.DiscardedOlderSteps > steps - 10,
+            $"only {document.DiscardedOlderSteps} of {steps} steps were released");
+        Assert.True(watch.Elapsed.TotalMilliseconds < 150,
+            $"releasing {document.DiscardedOlderSteps} steps took "
+            + $"{watch.Elapsed.TotalMilliseconds:F0} ms, which is the quadratic shape again");
+    }
+
+    /// <summary>
     /// What the user actually hits. Undo runs out with the document still carrying the edits whose
     /// steps went, and the only thing that separates that from a finished undo is this count.
     /// </summary>
@@ -219,6 +253,100 @@ public sealed class UndoBudgetTests : IDisposable
 
         Assert.True(document.DiscardedOlderSteps > 0);
         Assert.NotEqual(0f, document.Channels[0][0]);
+    }
+}
+
+/// <summary>
+/// The shell's half of the budget: an eviction has to reach the status line, whichever operation
+/// caused it.
+/// </summary>
+/// <remarks>
+/// The budget is enforced from inside the commit, before the change event the status line is
+/// written from — so a history move that writes its own line afterwards used to overwrite the
+/// eviction note and take it with it. Undo is the case that bites: it moves an edit onto the redo
+/// stack, which is retained too, so undoing on a tight budget can itself release older steps.
+/// </remarks>
+[Collection(UndoBudgetCollection.Name)]
+public sealed class UndoBudgetReportingTests : IDisposable
+{
+    private readonly long _originalBudget = AudioDocument.UndoBudgetBytes;
+
+    public void Dispose() => AudioDocument.UndoBudgetBytes = _originalBudget;
+
+    private const int Frames = 100;
+    private static long PerEdit => 2L * 2 * Frames * sizeof(float);
+
+    private static void Edit(AudioDocument document, float value)
+    {
+        var data = new float[document.ChannelCount][];
+        for (int c = 0; c < data.Length; c++)
+        {
+            data[c] = new float[Frames];
+            Array.Fill(data[c], value);
+        }
+        document.ReplaceRange(0, Frames, data, $"edit {value:0.0}");
+    }
+
+    private static MainViewModel Loaded()
+    {
+        AudioDocument.UndoBudgetBytes = long.MaxValue;
+        var document = new AudioDocument([new float[1_000], new float[1_000]], 44_100, 32);
+        var vm = new MainViewModel();
+        var tab = new DocumentViewModel(document);
+        vm.Documents.Add(tab);
+        vm.ActiveDocument = tab;
+        for (int i = 1; i <= 6; i++) Edit(document, i * 0.1f);
+        return vm;
+    }
+
+    [Fact]
+    public void AnEvictionDuringUndoReachesTheStatusLine()
+    {
+        MainViewModel vm = Loaded();
+        AudioDocument doc = vm.ActiveDocument!.Doc;
+
+        AudioDocument.UndoBudgetBytes = 3 * PerEdit;
+        vm.UndoCommand.Execute(null);
+
+        Assert.True(doc.DiscardedOlderSteps > 0, "the budget released nothing, so there is nothing to report");
+        Assert.Contains("undone", vm.ActionStatusText);
+        Assert.Contains("released", vm.ActionStatusText);
+    }
+
+    /// <summary>An eviction note must not survive onto the next operation's line.</summary>
+    [Fact]
+    public void TheNoteIsConsumedRatherThanRepeated()
+    {
+        MainViewModel vm = Loaded();
+        AudioDocument doc = vm.ActiveDocument!.Doc;
+
+        AudioDocument.UndoBudgetBytes = 3 * PerEdit;
+        vm.UndoCommand.Execute(null);
+        Assert.Contains("released", vm.ActionStatusText);
+
+        AudioDocument.UndoBudgetBytes = long.MaxValue;
+        Edit(doc, 0.9f);
+
+        Assert.DoesNotContain("released", vm.ActionStatusText);
+    }
+
+    /// <summary>
+    /// Undo running out says so, and says it instead of the per-eviction note rather than as well
+    /// as it — both name the same fact.
+    /// </summary>
+    [Fact]
+    public void RunningOutOfUndoSaysWhyExactlyOnce()
+    {
+        MainViewModel vm = Loaded();
+        AudioDocument doc = vm.ActiveDocument!.Doc;
+
+        AudioDocument.UndoBudgetBytes = 2 * PerEdit;
+        while (doc.CanUndo) vm.UndoCommand.Execute(null);
+
+        Assert.True(doc.DiscardedOlderSteps > 0);
+        string status = vm.ActionStatusText;
+        Assert.Contains("cannot be taken back further", status);
+        Assert.Equal(1, status.Split("released").Length - 1);
     }
 }
 

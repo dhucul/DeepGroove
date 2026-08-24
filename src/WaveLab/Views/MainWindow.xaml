@@ -9,8 +9,7 @@
         Background="{StaticResource Bg}" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
-        WindowStartupLocation="CenterScreen" AllowDrop="True" Drop="OnFileDrop"
-        SizeChanged="OnShellSizeChanged">
+        WindowStartupLocation="CenterScreen" AllowDrop="True" Drop="OnFileDrop">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>

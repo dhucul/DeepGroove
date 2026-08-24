@@ -1370,8 +1370,10 @@ it was throwing away roughly twice as many as the memory limit actually called f
   Loudness, Vinyl Restoration, Swap Channels, Invert Phase and Channel Balance all commit that way.
 - **The eviction loop had the same fault in its other half, and that one is subtler.** It subtracted
   the dropped step's gross size from a running total, which reports memory reclaimed that is still
-  live — releasing `_undo[0]` frees only the array `_undo[1]` is not also holding. The total is now
-  **re-read after each eviction** rather than decremented.
+  live — releasing `_undo[0]` frees only the array `_undo[1]` is not also holding. A drop is costed
+  by decrementing reference counts now, so it frees exactly the buffers nothing else holds. It was
+  first written to re-read the whole total after every eviction, which is also correct and is
+  quadratic; see the review section below for what that measured.
 - **The gross sum survives as the screen, because it can only over-state the exact one.** A document
   inside the budget by the cheap sum is inside it by the deduplicated walk too, so the walk — which
   allocates a set and touches every channel of every step — is paid for only when it can change an
@@ -1495,6 +1497,46 @@ shipped cut mid-glyph inside its `ClipToBounds` border.
   back fails it. It opens the submenus rather than reading them closed, because a declared
   `MenuItem`'s bindings are what is under test and a broken one leaves `IsEnabled` at its default,
   which is the answer the test wants either way.
+
+### Reviewing the two above found four things, and the largest was a complexity class
+
+- **Re-reading the deduplicated total after every eviction is quadratic in the retained depth, and
+  it is on the dispatcher.** Correct, and the thing the fix above needed to be correct — a drop
+  frees only the buffers no surviving step holds, so the total cannot be decremented by the dropped
+  step's gross size. Re-reading it walks every remaining step again. Measured on a history squeezed
+  in one go, which is what the Settings dialog lowering the limit does to the next edit:
+  **19 ms at 500 steps, 316 at 2 000 and 1 190 at 5 000**. `EnforceUndoBudget` counts references
+  once and then does arithmetic: **0.7, 0.7 and 6.1 ms**, and removes from the front of both stacks
+  with one `RemoveRange` rather than one at a time, which was a second quadratic underneath the
+  first. `ReleasingAWholeHistoryAtOnceStaysLinearInItsDepth` is a timing assertion, which this suite
+  otherwise avoids — justified because the defect is a shape rather than a constant, so the ceiling
+  can sit two orders of magnitude above the measurement and an order below the failure.
+- **The eviction note was announced and then overwritten, on exactly the path that most needed it.**
+  Undo moves an edit onto the redo stack, which is retained too, so undoing on a tight budget can
+  itself release older steps — measured, one Undo released two. The change event fires from inside
+  `Doc.Undo()` and the shell writes "… applied · Undo available" from it, carrying the note; then
+  `MainViewModel.Undo` overwrites the line with "… undone." and the note goes with it.
+  `_suppressEditReport` hands the line to whichever history move owns it — Undo, Redo and the panel's
+  jump — and each folds the note into its own wording. Running out of undo **supersedes** the
+  per-eviction note rather than joining it, because both name the same fact.
+- **`HistoryReleased` fires from the middle of a commit, and the remark on it claimed otherwise.**
+  It said a handler "sees the state the eviction settled on"; the eviction, yes, but not the
+  document — `Dirty`, `EditVersion` and the current state id have not moved yet, and `Changed` has
+  not fired. Measured: `EditVersion` reads 2 inside the handler where it reads 3 a moment later.
+  The ordering is load-bearing and stays — it is what lets the shell hold the count and fold it into
+  the line the change event produces — so the contract is now stated instead: **record and return,
+  do not read the document.**
+- **`SizeChanged` was subscribed in the XAML and its handler reads `_vm`, which
+  `InitializeComponent` runs before.** It works today because layout happens after the constructor,
+  which is luck rather than a guarantee: one early measure pass is a null reference at startup. It
+  is subscribed from the constructor now, after the view model exists.
+
+Two smaller ones on the spectral side, both introduced by moving the Learn pattern resolve after its
+dialog: it read whichever tab was active while splicing into the one captured before the box opened
+(unreachable while the dialog is modal, and not a thing to leave resting on that), and a resolve that
+came back empty returned in silence after the user had pressed Remove. Both are guarded, and the
+second says so — a tool that declines without a word is indistinguishable from one that failed, which
+is already on record here twice.
 
 ## Gotchas
 

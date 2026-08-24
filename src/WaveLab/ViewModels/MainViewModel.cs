@@ -35,6 +35,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private DocumentViewModel? _active;
     /// <summary>Steps the byte budget released since the last line was written about it.</summary>
     private int _releasedSteps;
+    /// <summary>
+    /// Set while a history move owns the status line, so the change event it raises does not write
+    /// one that the caller is about to overwrite — taking the eviction note with it.
+    /// </summary>
+    private bool _suppressEditReport;
     private TabViewModel? _activeTab;
     private DocumentViewModel? _playbackDocument;
     private AudioDocument? _previewDocument;
@@ -1465,10 +1470,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
         PrepareForDocumentEdit(document);
-        document.Doc.Undo();
-        ReportAction(document.Doc.CanUndo || ReleasedHistoryNote(document.Doc) is not { } note
-            ? $"{operation} undone."
-            : $"{operation} undone · {note}");
+        // Undoing can itself evict — it moves an edit onto the redo stack, which is retained too.
+        // The change event fires from inside Doc.Undo() and writes a line of its own, so without
+        // this the eviction is announced and then overwritten by the line below. Measured: one
+        // Undo on a tight budget released two older steps and said nothing about either.
+        _suppressEditReport = true;
+        try { document.Doc.Undo(); }
+        finally { _suppressEditReport = false; }
+
+        // Consumed either way, so a note this line does not use cannot leak onto the next edit's.
+        string released = TakeReleasedHistoryNote();
+        // Running out supersedes rather than joins: it already names the cumulative total, so
+        // saying both would state the same fact twice in one line.
+        string note = document.Doc.CanUndo || ReleasedHistoryNote(document.Doc) is not { } ranOut
+            ? released
+            : $" · {ranOut}";
+        ReportAction($"{operation} undone{note}.");
     }
 
     /// <summary>
@@ -1492,8 +1509,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (_active is not { } document || document.Doc.NextRedoName is not { } operation) return;
         PrepareForDocumentEdit(document);
-        document.Doc.Redo();
-        ReportAction($"{operation} reapplied · Undo available.");
+        _suppressEditReport = true;
+        try { document.Doc.Redo(); }
+        finally { _suppressEditReport = false; }
+        ReportAction($"{operation} reapplied · Undo available{TakeReleasedHistoryNote()}.");
     }
 
     /// <summary>
@@ -1518,15 +1537,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         PrepareForDocumentEdit(document);
-        int moved = document.Doc.JumpToHistoryPosition(position);
+        // Same reason as Undo and Redo: the jump raises one change event, which would write a line
+        // this method is about to replace — and take any eviction note with it.
+        _suppressEditReport = true;
+        int moved;
+        try { moved = document.Doc.JumpToHistoryPosition(position); }
+        finally { _suppressEditReport = false; }
+        string released = TakeReleasedHistoryNote();
         if (moved == 0) return;
 
         string landed = document.Doc.NextUndoName ?? "the opened state";
         int steps = Math.Abs(moved);
         string plural = steps == 1 ? "step" : "steps";
         ReportAction(moved < 0
-            ? $"Stepped back {steps} {plural} · now at {landed}."
-            : $"Stepped forward {steps} {plural} · now at {landed}.");
+            ? $"Stepped back {steps} {plural} · now at {landed}{released}."
+            : $"Stepped forward {steps} {plural} · now at {landed}{released}.");
     }
 
     /// <summary>
@@ -2145,7 +2170,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnActiveDocumentEdited(int start, int removed, int inserted)
     {
-        if (_active?.Doc.NextUndoName is { } operation)
+        if (!_suppressEditReport && _active?.Doc.NextUndoName is { } operation)
             ReportAction($"{operation} applied · Undo available{TakeReleasedHistoryNote()}.");
         Raise(nameof(HasAudioDocument));
         Raise(nameof(ShowsSpectralBar));
