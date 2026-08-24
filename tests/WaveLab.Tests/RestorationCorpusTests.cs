@@ -420,6 +420,116 @@ public sealed class RestorationCorpusTests(ITestOutputHelper output)
         }
     }
     /// <summary>
+    /// How wide the local reference should be, swept against the corpus.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The reference window is what makes one correction pass partial. Each block is matched against
+    /// the mean of the blocks around it, that mean already contains the wow, and so the measurement
+    /// is of the wow minus a smeared copy of itself — a high-pass of response <c>1 - sinc(W.f)</c>,
+    /// which at the 0.75 s default and 0.7 Hz leaves about 0.40 of what is there. Widening the
+    /// window raises that response, and on a synthetic stationary tone it raises it a long way: one
+    /// pass removes 3% of the planted wow at 0.375 s, 22% at 0.75 s, 59% at 1.5 s and 68% at 6 s.
+    /// <b>That is the wrong instrument.</b> A wider mean blends over more musical change, so the
+    /// reference resembles any individual block less well and more blocks are rejected as unreliable
+    /// and interpolated instead of measured — and a stationary tone, whose consecutive frames are
+    /// nearly identical, has no musical change to blend and so shows the benefit and none of the
+    /// cost. On real records the sweep says the opposite. Samples of residual drift against the
+    /// planted warp, over 44 cells, taken in two runs of eight widths that share 0.375 and 0.750:
+    /// </para>
+    /// <code>
+    /// planted  none | 0.125  0.188  0.250  0.313  0.375  0.500  0.625  0.750 | 1.50  2.25  3.00  4.50  6.00
+    ///   2.4%    237 |   237    233    231    226    221    219    215    197 |  273   292   292   299   290
+    ///   1.2%    128 |   129    127    122    120    119    128    129    133 |  224   276   259   276   273
+    ///   0.6%     66 |    66     64     64     65     65     85     94    100 |  200   253   258   257   291
+    ///   0.3%     34 |    34     34     38     43     44     64     85     97 |  194   240   269   269   310
+    /// </code>
+    /// <para>
+    /// <b>Every width above the shipped 0.750 s is worse than it and worse than leaving the file
+    /// alone, at every severity, and it degrades monotonically with width.</b> The confidence figure
+    /// falls from 0.872 at 0.750 s to 0.738 at 6 s, which is the cost arriving exactly where it was
+    /// predicted to: the un-muffling works, the response really does climb from 0.396 to about 1.0,
+    /// and the noise admitted with it costs more than the signal is worth.
+    /// </para>
+    /// <para>
+    /// <b>The narrow end is not a better correction, it is a disabled one.</b> At 0.125 s the
+    /// residual equals the uncorrected drift to the sample — 237/237, 129/128, 66/66, 34/34.
+    /// Narrowing does not sharpen the measurement, it drives the correction to nothing, and at 0.3%
+    /// and 0.6% doing nothing beats what the tool currently does. So the width is one dial marked
+    /// how much the tool acts at all, no setting on it wins at every severity, and 0.750 s is the
+    /// only one that does real work where the feature earns its keep. It stays.
+    /// </para>
+    /// <para>
+    /// What the sweep actually points at is not the width. Below about 1.2% the estimator cannot
+    /// tell the wow from its own noise, so anything that lets it act harder makes it inject drift,
+    /// and the remedy is to refuse rather than to detune. That is not built, because the reported
+    /// figure cannot support the gate: at the shipped width it reads 1.070% at 2.4% planted but sits
+    /// at 0.798, 0.716 and 0.733 for 1.2, 0.6 and 0.3, where the truths are 0.671, 0.335 and 0.168.
+    /// It separates the gross case from the rest and is flat below it, so a threshold would be
+    /// fitted to one corpus and four severities.
+    /// </para>
+    /// <para>
+    /// This exists because the claim it replaces was taken on a corpus that no longer exists on this
+    /// machine and by proxy rather than directly: the note on <c>WowFlutter.Compensate</c> held that
+    /// widening left 293 samples of residual drift against 215, and used that to argue against
+    /// compensating the correction path. The direction was right and it is now measured on real
+    /// records, at both ends, and on the knob itself rather than on a stand-in for it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void WideningTheReferenceIsMeasuredAgainstTheCorpus()
+    {
+        if (Skip(output)) return;
+        double[] widths = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 1.5, 3.0, 6.0];
+        var shipped = WowFlutterOptions.Default;
+        var excluded = new ConcurrentBag<string>();
+        var watch = Stopwatch.StartNew();
+
+        var rows = RestorationCorpus.MeasureWow(cell =>
+        {
+            var shift = new double[widths.Length];
+            var reads = new double[widths.Length];
+            var confidence = new double[widths.Length];
+
+            for (int i = 0; i < widths.Length; i++)
+            {
+                var channels = new[] { (float[])cell.Damaged.Clone() };
+                WowFlutterReport report = WowFlutter.Correct(channels, cell.SampleRate,
+                    shipped with { ReferenceSeconds = widths[i] });
+                shift[i] = RestorationCorpus.ResidualShiftSamples(cell.Clean, channels[0], cell.SampleRate);
+                reads[i] = report.RmsPercent;
+                confidence[i] = report.Confidence;
+            }
+
+            return (cell.PlantedPercent,
+                Uncorrected: RestorationCorpus.ResidualShiftSamples(cell.Clean, cell.Damaged, cell.SampleRate),
+                Shift: shift, Reads: reads, Confidence: confidence);
+        }, (r, why) => excluded.Add($"{r.Corpus}/{r.ShortName}: {why}"));
+        watch.Stop();
+
+        output.WriteLine($"{rows.Count} cells in {watch.Elapsed.TotalMinutes:0.0} min, {excluded.Count} excluded");
+        foreach (var planted in rows.Select(r => r.PlantedPercent).Distinct().OrderByDescending(x => x))
+        {
+            var at = rows.Where(r => r.PlantedPercent == planted).ToList();
+            output.WriteLine($"  planted {planted:0.0}% (true {planted * 0.559:0.000}% rms), " +
+                             $"{at.Average(r => r.Uncorrected):0} samples of drift uncorrected:");
+            output.WriteLine("      refSec   1-sinc(Wf)   reads%   residual shift   confidence");
+            for (int i = 0; i < widths.Length; i++)
+            {
+                double product = widths[i] * 0.7;
+                string response = widths[i] == 0 ? "     n/a"
+                    : $"{1 - Math.Sin(Math.PI * product) / (Math.PI * product),8:0.000}";
+                output.WriteLine($"      {widths[i],6:0.000}   {response}   {at.Average(r => r.Reads[i]),6:0.000}   " +
+                                 $"{at.Average(r => r.Shift[i]),14:0}   {at.Average(r => r.Confidence[i]),10:0.000}");
+            }
+        }
+
+        Assert.NotEmpty(rows);
+        // Reported, not asserted. Nothing here has been fitted, and the point of the sweep is to
+        // find out whether the shipped width is the right one, not to pin it in place.
+    }
+
+    /// <summary>
     /// Spectral repair of a planted noise burst, scored over the span the repair replaced.
     /// </summary>
     [Fact]

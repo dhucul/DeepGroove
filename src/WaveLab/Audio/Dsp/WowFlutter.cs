@@ -22,6 +22,16 @@ namespace WaveLab.Audio.Dsp;
 /// Matching instead against the average of the blocks around it measures the <i>position</i>
 /// directly: no integration, no walk, and the quantity being measured is ten times larger. Set to
 /// zero for the old frame-to-frame behaviour.
+/// <para>
+/// <b>0.75 s has been swept against the corpus in both directions and it stays.</b> Wider raises
+/// the response the reference costs — the muffling really does lift — and admits more noise with
+/// it, leaving more residual drift than doing nothing at every severity and degrading monotonically
+/// out to 6 s. Narrower does not sharpen the measurement, it drives the correction toward doing
+/// nothing at all: at 0.125 s the residual equals the uncorrected drift to the sample. No width
+/// wins everywhere and this is the only one that does real work on a badly warped side. The tables
+/// are in <c>RestorationCorpusTests.WideningTheReferenceIsMeasuredAgainstTheCorpus</c>; measure
+/// there before moving this.
+/// </para>
 /// </param>
 /// <param name="SmoothingBlocks">
 /// Centred smoothing applied to the per-block shifts before they are integrated. Integrating
