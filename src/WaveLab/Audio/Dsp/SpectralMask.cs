@@ -120,6 +120,79 @@ public sealed class SpectralMask
     }
 
     /// <summary>
+    /// How many cells a full-band mask may cover before the repair behind it is refused.
+    /// </summary>
+    /// <remarks>
+    /// A repair allocates the mask plus real, imaginary and weight planes of the same size — four
+    /// arrays of four bytes a cell — so this is the same 512 MB ceiling the clipboard and the
+    /// residual already hold themselves to, per channel. At 2048/512 that is a little over six
+    /// minutes of 44.1 kHz audio, which is far more than a spectral repair is for; a whole-file
+    /// change of level is the ordinary Gain command, not this.
+    /// </remarks>
+    public const long MaximumFullBandCells = 512L * 1024 * 1024 / (4 * sizeof(float));
+
+    /// <summary>
+    /// Whether <see cref="FullBand"/> over this span is one the repair can afford to build.
+    /// </summary>
+    public static bool FullBandFits(int startSample, int endSample, int fftSize, int hop)
+    {
+        if (fftSize <= 0 || hop <= 0) return false;
+        (startSample, endSample) = Order(startSample, endSample);
+        if (endSample <= startSample) return false;
+        return (long)FullBandFrames(startSample, endSample, hop) * (fftSize / 2 + 1)
+               <= MaximumFullBandCells;
+    }
+
+    /// <summary>
+    /// A time span taken across the whole frequency range — the mask an ordinary waveform selection
+    /// implies, so the spectral actions can work from one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not <see cref="ForRegion"/> with the band set to DC and Nyquist, for two reasons. The general
+    /// feather erodes inward from the edges of the weight array in <em>both</em> directions, and the
+    /// frequency edges here are the ends of the spectrum rather than anything in the signal — so it
+    /// would fade out the lowest and highest bins of a selection that asked for all of them. And a
+    /// taper exists to stop an edit ringing, which is a statement about edges the audio has: across
+    /// a full band there is no frequency edge to ring, only the two ends of the span, so only the
+    /// frames are tapered.
+    /// </para>
+    /// <para>
+    /// It is also the cheap way round. Eroding and smoothing a full-band mask is four passes over
+    /// every cell plus two scratch arrays the size of the mask, and a full band over a selection a
+    /// user would actually make is millions of cells.
+    /// </para>
+    /// </remarks>
+    public static SpectralMask FullBand(int startSample, int endSample, int fftSize, int hop,
+        int feather = 2)
+    {
+        if (fftSize <= 0) throw new ArgumentOutOfRangeException(nameof(fftSize));
+        if (hop <= 0) throw new ArgumentOutOfRangeException(nameof(hop));
+
+        (startSample, endSample) = Order(startSample, endSample);
+        if (endSample <= startSample) return Empty;
+
+        int bins = fftSize / 2 + 1;
+        int frames = FullBandFrames(startSample, endSample, hop);
+        if (frames <= 0) return Empty;
+        if ((long)frames * bins > MaximumFullBandCells)
+        {
+            throw new ArgumentOutOfRangeException(nameof(endSample), endSample,
+                "The span is too long for a full-band spectral mask.");
+        }
+
+        var weight = new float[frames * bins];
+        Array.Fill(weight, 1f);
+        TaperFrames(weight, frames, bins, Math.Max(0, feather));
+        return new SpectralMask(Math.Max(0, startSample / hop), 0, frames, bins, weight,
+            SpectralSelectionKind.Rectangle);
+    }
+
+    /// <summary>Frames a span covers, rounded outward exactly as <see cref="ForRegion"/> does.</summary>
+    private static int FullBandFrames(int startSample, int endSample, int hop) =>
+        (int)Math.Ceiling(endSample / (double)hop) + 1 - Math.Max(0, startSample / hop);
+
+    /// <summary>
     /// A rectangle given in the units the user sees — samples and hertz — converted onto the
     /// analysis grid.
     /// </summary>

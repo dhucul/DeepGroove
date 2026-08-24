@@ -282,6 +282,101 @@ public sealed class SpectralMaskTests(ITestOutputHelper output)
         Assert.Equal(SpectralSelectionKind.Harmonic, SpectralMask.Harmonic(data, 0, 10, 500).Kind);
     }
 
+    // ── full band, for a plain time selection ────────────────────
+
+    private const int Fft = 2048, Hop = 512;
+
+    /// <summary>
+    /// The whole point of the separate builder: the frequency edges of a full-band mask are the ends
+    /// of the spectrum, not edges in the signal, and the general feather erodes inward from both —
+    /// so routing this through <see cref="SpectralMask.ForRegion"/> fades out the very bins a
+    /// selection across everything asked for.
+    /// </summary>
+    [Fact]
+    public void AFullBandMaskDoesNotFadeOutDcAndNyquist()
+    {
+        SpectralMask full = SpectralMask.FullBand(20_000, 40_000, Fft, Hop);
+        SpectralMask viaRectangle = SpectralMask.ForRegion(
+            20_000, 40_000, 0, SampleRate / 2.0, SampleRate, Fft, Hop);
+
+        int middle = full.FrameOffset + full.Frames / 2;
+        int top = Fft / 2;
+        output.WriteLine($"full: DC {full.At(middle, 0):0.00}, Nyquist {full.At(middle, top):0.00}");
+        output.WriteLine($"rect: DC {viaRectangle.At(middle, 0):0.00}, " +
+                         $"Nyquist {viaRectangle.At(middle, top):0.00}");
+
+        Assert.Equal(1f, full.At(middle, 0));
+        Assert.Equal(1f, full.At(middle, top));
+        Assert.True(viaRectangle.At(middle, 0) < 1f, "the general feather is expected to erode here");
+    }
+
+    [Fact]
+    public void AFullBandMaskCoversEveryBinAndOnlyTheFramesAskedFor()
+    {
+        SpectralMask mask = SpectralMask.FullBand(20_000, 40_000, Fft, Hop);
+
+        Assert.Equal(0, mask.BinOffset);
+        Assert.Equal(Fft / 2 + 1, mask.Bins);
+        Assert.Equal(20_000 / Hop, mask.FrameOffset);
+
+        int middle = mask.FrameOffset + mask.Frames / 2;
+        for (int b = 0; b < mask.Bins; b++) Assert.Equal(1f, mask.At(middle, b));
+
+        Assert.Equal(0f, mask.At(mask.FrameOffset - 1, mask.Bins / 2));
+        Assert.Equal(0f, mask.At(mask.FrameOffset + mask.Frames, mask.Bins / 2));
+    }
+
+    /// <summary>The ends of the span are edges the audio has, so they are the ones that ring.</summary>
+    [Fact]
+    public void AFullBandMaskStillTapersTheEndsOfItsSpan()
+    {
+        SpectralMask mask = SpectralMask.FullBand(20_000, 40_000, Fft, Hop);
+        int bin = mask.Bins / 2;
+
+        float first = mask.At(mask.FrameOffset, bin);
+        float last = mask.At(mask.FrameOffset + mask.Frames - 1, bin);
+        output.WriteLine($"first frame {first:0.00}, last frame {last:0.00}");
+
+        Assert.InRange(first, 0f, 0.99f);
+        Assert.InRange(last, 0f, 0.99f);
+    }
+
+    [Fact]
+    public void AFullBandMaskOfNoExtentIsNothingSelected()
+    {
+        Assert.True(SpectralMask.FullBand(5_000, 5_000, Fft, Hop).IsEmpty);
+        Assert.False(SpectralMask.FullBandFits(5_000, 5_000, Fft, Hop));
+    }
+
+    /// <summary>
+    /// A repair holds four planes the size of the mask per channel, so the ceiling is what stops a
+    /// select-all from asking for gigabytes. It is refused before it is built, not partway through.
+    /// </summary>
+    [Fact]
+    public void AFullBandMaskPastTheCeilingIsRefusedRatherThanAllocated()
+    {
+        int bins = Fft / 2 + 1;
+        int frames = (int)(SpectralMask.MaximumFullBandCells / bins) + 2 * Hop;
+        int end = frames * Hop;
+
+        Assert.False(SpectralMask.FullBandFits(0, end, Fft, Hop));
+        Assert.Throws<ArgumentOutOfRangeException>(() => SpectralMask.FullBand(0, end, Fft, Hop));
+
+        int within = (int)(SpectralMask.MaximumFullBandCells / bins) / 2 * Hop;
+        Assert.True(SpectralMask.FullBandFits(0, within, Fft, Hop));
+    }
+
+    [Fact]
+    public void ReversedEndsOfAFullBandSpanAreOrderedRatherThanRejected()
+    {
+        SpectralMask forward = SpectralMask.FullBand(10_000, 30_000, Fft, Hop);
+        SpectralMask backward = SpectralMask.FullBand(30_000, 10_000, Fft, Hop);
+
+        Assert.Equal(forward.FrameOffset, backward.FrameOffset);
+        Assert.Equal(forward.Frames, backward.Frames);
+        Assert.Equal(forward.Bins, backward.Bins);
+    }
+
     [Fact]
     public void WeightsNeverLeaveTheUnitRange()
     {

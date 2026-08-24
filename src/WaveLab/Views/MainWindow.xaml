@@ -1,4 +1,4 @@
-<Window x:Class="WaveLab.Views.MainWindow"
+﻿<Window x:Class="WaveLab.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:c="clr-namespace:WaveLab.Views.Controls"
@@ -9,7 +9,8 @@
         Background="{StaticResource Bg}" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
-        WindowStartupLocation="CenterScreen" AllowDrop="True" Drop="OnFileDrop">
+        WindowStartupLocation="CenterScreen" AllowDrop="True" Drop="OnFileDrop"
+        SizeChanged="OnShellSizeChanged">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
@@ -184,6 +185,31 @@
                     <MenuItem Header="Zoom to Selection" Command="{Binding ZoomSelectionCommand}"/>
                     <Separator/>
                     <MenuItem Header="Reset Amplitude Zoom" InputGestureText="Ctrl+Wheel" Click="OnResetAmpZoom"/>
+                    <Separator/>
+                    <!-- The same three choices the spectral bar carries. They live here as well
+                         because the bar gives the switch up below about 1350 px: it is the least
+                         important control in a row that cannot hold everything at the shell's
+                         minimum width, and a choice that disappears with it would be unreachable
+                         rather than merely not on screen. IsChecked is one-way for the same reason
+                         as the toolbar segments — the scale lives on the view model.
+                         Deliberately NOT gated on ShowsSpectrogram, though it shipped that way for
+                         a day. The scale is a sticky preference rather than an action: choosing it
+                         in waveform mode is choosing what Split will draw the moment it opens, and
+                         the checkmark moving is feedback enough that nothing happens silently. A
+                         menu item greyed for a reason the user cannot see reads as broken rather
+                         than as not applicable, which is this repo's disabled-TextBox finding by
+                         another route. The View menu's own HasAudioDocument gate still applies. -->
+                    <MenuItem Header="Frequency Scale">
+                        <MenuItem Header="Linear" IsCheckable="True"
+                                  IsChecked="{Binding IsLinearScale, Mode=OneWay}"
+                                  Command="{Binding UseLinearScaleCommand}"/>
+                        <MenuItem Header="Logarithmic" IsCheckable="True"
+                                  IsChecked="{Binding IsLogarithmicScale, Mode=OneWay}"
+                                  Command="{Binding UseLogarithmicScaleCommand}"/>
+                        <MenuItem Header="Constant-Q" IsCheckable="True"
+                                  IsChecked="{Binding IsConstantQScale, Mode=OneWay}"
+                                  Command="{Binding UseConstantQScaleCommand}"/>
+                    </MenuItem>
                 </MenuItem>
                 <MenuItem Header="Mar_kers" IsEnabled="{Binding HasDocument}">
                     <MenuItem Header="Add Marker" InputGestureText="Ctrl+M" Command="{Binding AddMarkerCommand}"/>
@@ -491,17 +517,22 @@
         <!-- ═══ spectral repair ═══ -->
         <!-- Its own bar, per docs/design/spectral_editor.png. The transport row is already full;
              crammed in beside it the actions were clipped and the view switch collapsed to two
-             letters a segment. It appears only with the spectrogram, so waveform mode is untouched. -->
-        <Border BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"
+             letters a segment.
+             The bar follows the document rather than the view: the four actions work through a mask,
+             and an ordinary waveform selection is a mask across the whole band, so they are reachable
+             without the picture. The four selection tools and the scale switch draw on the picture
+             and are hidden without it, which is why each carries its own ShowsSpectrogram. -->
+        <Border x:Name="spectralBar" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"
                 Background="{StaticResource Panel}"
-                Visibility="{Binding ShowsSpectrogram, Converter={StaticResource BoolToVis}}">
+                Visibility="{Binding ShowsSpectralBar, Converter={StaticResource BoolToVis}}">
             <DockPanel Margin="14,7" LastChildFill="False">
                 <TextBlock DockPanel.Dock="Left" Text="SPECTRAL" FontSize="9" FontWeight="SemiBold"
                            VerticalAlignment="Center" Margin="0,0,14,0" Foreground="{StaticResource Faint}"/>
 
                 <!-- Four tools, because defects have shapes. IsChecked is one-way for the same
                      reason as the view switch: the tool lives on the view model. -->
-                <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30"
+                <ToggleButton x:Name="spectralRectangleTool" DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30"
+                              Visibility="{Binding ShowsSpectrogram, Converter={StaticResource BoolToVis}}"
                               IsChecked="{Binding IsRectangleTool, Mode=OneWay}"
                               Command="{Binding UseRectangleToolCommand}"
                               ToolTip="Rectangle — a time span crossed with a frequency band"
@@ -510,6 +541,7 @@
                                StrokeDashArray="2.5 2" Fill="Transparent"/>
                 </ToggleButton>
                 <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
+                              Visibility="{Binding ShowsSpectrogram, Converter={StaticResource BoolToVis}}"
                               IsChecked="{Binding IsLassoTool, Mode=OneWay}"
                               Command="{Binding UseLassoToolCommand}"
                               ToolTip="Lasso — follow the shape of the defect"
@@ -519,6 +551,7 @@
                           StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                 </ToggleButton>
                 <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
+                              Visibility="{Binding ShowsSpectrogram, Converter={StaticResource BoolToVis}}"
                               IsChecked="{Binding IsMagicWandTool, Mode=OneWay}"
                               Command="{Binding UseMagicWandToolCommand}"
                               ToolTip="Magic wand — grow a region through connected energy"
@@ -527,6 +560,7 @@
                           Stroke="{StaticResource Muted}" StrokeThickness="1.2" StrokeLineJoin="Round"/>
                 </ToggleButton>
                 <ToggleButton DockPanel.Dock="Left" Style="{StaticResource SegmentButton}" Height="30" Margin="4,0,0,0"
+                              Visibility="{Binding ShowsSpectrogram, Converter={StaticResource BoolToVis}}"
                               IsChecked="{Binding IsHarmonicTool, Mode=OneWay}"
                               Command="{Binding UseHarmonicToolCommand}"
                               ToolTip="Harmonic — a fundamental and its partials together"
@@ -536,29 +570,30 @@
                           StrokeEndLineCap="Round"/>
                 </ToggleButton>
 
-                <Border DockPanel.Dock="Left" Width="1" Margin="12,3" Background="{StaticResource Line}"/>
+                <Border DockPanel.Dock="Left" Width="1" Margin="12,3" Background="{StaticResource Line}"
+                        Visibility="{Binding ShowsSpectrogram, Converter={StaticResource BoolToVis}}"/>
                 <!-- MinWidth rather than Padding: neither the ToolButton nor the AccentButton
                      template binds Padding, so it is silently ignored on both. -->
-                <Button DockPanel.Dock="Left" Style="{StaticResource AccentButton}" Content="Heal"
+                <Button x:Name="spectralHeal" DockPanel.Dock="Left" Style="{StaticResource AccentButton}" Content="Heal"
                         Height="30" MinWidth="84"
                         Click="OnSpectralHeal" IsEnabled="{Binding HasSpectralSelection}"
-                        ToolTip="Rebuild the selected region from the partials running through it"
+                        ToolTip="Rebuild the selected region from the partials running through it. Works on a region drawn on the spectrogram, or on a range selected on the waveform across the whole frequency band."
                         AutomationProperties.Name="Heal spectral selection"/>
                 <!-- Width released: ToolButton is sized for a 38×38 icon. -->
                 <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Attenuate…"
                         Width="Auto" MinWidth="116" Height="30" Margin="8,0,0,0"
                         Click="OnSpectralAttenuate" IsEnabled="{Binding HasSpectralSelection}"
-                        ToolTip="Turn the selected region down, to its surroundings or by a fixed amount"
+                        ToolTip="Turn the selected region down, to its surroundings or by a fixed amount. Works on a region drawn on the spectrogram, or on a range selected on the waveform across the whole frequency band."
                         AutomationProperties.Name="Attenuate spectral selection"/>
                 <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Gain…"
                         Width="Auto" MinWidth="78" Height="30" Margin="6,0,0,0"
                         Click="OnSpectralGain" IsEnabled="{Binding HasSpectralSelection}"
-                        ToolTip="Raise or lower the selected region"
+                        ToolTip="Raise or lower the selected region. Works on a region drawn on the spectrogram, or on a range selected on the waveform across the whole frequency band."
                         AutomationProperties.Name="Gain spectral selection"/>
                 <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Learn pattern…"
                         Width="Auto" MinWidth="128" Height="30" Margin="6,0,0,0"
                         Click="OnSpectralLearnPattern" IsEnabled="{Binding HasSpectralSelection}"
-                        ToolTip="Learn this sound's signature and remove it from elsewhere in the file"
+                        ToolTip="Learn this sound's signature and remove it from elsewhere in the file. Learns from a region drawn on the spectrogram, or from a range selected on the waveform across the whole frequency band."
                         AutomationProperties.Name="Learn pattern from spectral selection"/>
 
                 <Border DockPanel.Dock="Right" Background="{StaticResource Panel2}"
@@ -572,7 +607,7 @@
                                    Text="{Binding SpectralSpanText, FallbackValue=—}"/>
                         <TextBlock Text="BAND" FontSize="9" FontWeight="SemiBold" Margin="16,0,0,0"
                                    VerticalAlignment="Center" Foreground="{StaticResource Faint}"/>
-                        <TextBlock FontFamily="{StaticResource MonoFont}" FontSize="10.5" Margin="8,0,0,0"
+                        <TextBlock x:Name="spectralBandText" FontFamily="{StaticResource MonoFont}" FontSize="10.5" Margin="8,0,0,0"
                                    VerticalAlignment="Center" Foreground="{StaticResource TextDim}"
                                    Text="{Binding SpectralBandText, FallbackValue=—}"/>
                     </StackPanel>
@@ -583,9 +618,11 @@
                      describes the picture rather than acting on it, and the left of the bar had
                      run out of room.
                      Design: docs/design/constant_q.png -->
-                <Border DockPanel.Dock="Right" Width="1" Margin="10,3" Background="{StaticResource Line}"/>
+                <Border DockPanel.Dock="Right" Width="1" Margin="10,3" Background="{StaticResource Line}"
+                        Visibility="{Binding ShowsSpectralScale, Converter={StaticResource BoolToVis}}"/>
                 <Border DockPanel.Dock="Right" BorderBrush="#3A4A78" BorderThickness="1" CornerRadius="5"
-                        Height="30" Margin="0,0,10,0" VerticalAlignment="Center" ClipToBounds="True">
+                        Height="30" Margin="0,0,10,0" VerticalAlignment="Center" ClipToBounds="True"
+                        Visibility="{Binding ShowsSpectralScale, Converter={StaticResource BoolToVis}}">
                     <StackPanel Orientation="Horizontal">
                         <RadioButton Style="{StaticResource ScaleSegment}" Content="LINEAR"
                                      GroupName="spectralScale" IsChecked="{Binding IsLinearScale, Mode=OneWay}"
@@ -620,8 +657,9 @@
                 </Border>
 
 
-                <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,14,0"
+                <TextBlock x:Name="spectralToolHint" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="0,0,14,0"
                            FontSize="10.5" Foreground="{StaticResource Faint}"
+                           TextTrimming="CharacterEllipsis"
                            Text="{Binding SpectralToolHint}"
                            Visibility="{Binding NeedsSpectralSelection, Converter={StaticResource BoolToVis}}"/>
             </DockPanel>

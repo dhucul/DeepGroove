@@ -1352,8 +1352,7 @@ public partial class MainWindow : Window
     private void OnSpectralLearnPattern(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        SpectralSelection selection = _vm.SpectralSelection;
-        if (LongOperationRunning || d == null || d.Doc.Length == 0 || selection.IsEmpty) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0 || !_vm.HasSpectralSelection) return;
 
         var dialog = new ParamDialog("Learn pattern from selection", "Remove",
             "Remove it from", ["The whole file", "The selection only"], 0,
@@ -1363,6 +1362,11 @@ public partial class MainWindow : Window
             Owner = this,
         };
         if (dialog.ShowDialog() != true) return;
+
+        // Resolved after the dialog, not before: the box is up long enough for the selection to
+        // move, and it is the selection standing when Remove is pressed that the user meant.
+        SpectralSelection selection = _vm.ResolveSpectralSelection();
+        if (selection.IsEmpty || selection.SampleRate != d.Doc.SampleRate) return;
 
         var options = new SpectralPatternOptions(selection.FftSize, selection.Hop,
             dialog.Values[0], dialog.Values[1],
@@ -1456,7 +1460,10 @@ public partial class MainWindow : Window
     {
         if (LongOperationRunning) return;
         var d = Doc;
-        SpectralSelection selection = _vm.SpectralSelection;
+        // Either what was drawn on the spectrogram or the time selection taken across the whole
+        // band. Built here rather than in the property the buttons bind to, because a full band over
+        // a long selection is millions of cells and that binding is re-read on every pixel of a drag.
+        SpectralSelection selection = _vm.ResolveSpectralSelection();
         if (d == null || d.Doc.Length == 0 || selection.IsEmpty) return;
 
         // The mask carries the grid it was built in, so a lasso or a wand is repaired through exactly
@@ -1506,6 +1513,22 @@ public partial class MainWindow : Window
             Mouse.OverrideCursor = null;
             LongOperationRunning = false;
         }
+    }
+
+    /// <summary>
+    /// Tells the view model how wide the shell is, so the spectral bar can drop its least important
+    /// control instead of having it cut.
+    /// </summary>
+    /// <remarks>
+    /// The width and not the bar's own measured shortfall, deliberately. Hiding a control makes room
+    /// for it, which makes it fit, which shows it again — a control that decides its own visibility
+    /// from what it was given oscillates, and hysteresis to stop that is a second number to keep in
+    /// step with the first. One measured threshold on a width nothing else depends on has neither
+    /// problem, and is a property a test can set without a window.
+    /// </remarks>
+    private void OnShellSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.WidthChanged) _vm.ShellWidthPixels = e.NewSize.Width;
     }
 
     private void OnResetAmpZoom(object sender, RoutedEventArgs e)

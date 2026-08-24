@@ -183,16 +183,31 @@ public sealed class AudioDocument
     public int HistoryPosition => _undo.Count;
 
     /// <summary>What the retained history costs, against <see cref="UndoBudgetBytes"/>.</summary>
-    public long RetainedHistoryBytes
-    {
-        get
-        {
-            long total = 0;
-            for (int i = 0; i < _undo.Count; i++) total += EditBytes(_undo[i]);
-            for (int i = 0; i < _redo.Count; i++) total += EditBytes(_redo[i]);
-            return total;
-        }
-    }
+    /// <remarks>
+    /// Each buffer is counted once however many steps hold it. Consecutive whole-document renders
+    /// share their arrays by construction — <see cref="ReplaceAllOwned"/> hands the outgoing render
+    /// to the next edit as its <c>Old</c> side, which is the same object it kept as its own
+    /// <c>New</c> — so summing the steps charged one album-sized array twice and had the budget
+    /// release history about twice as early as the memory warranted.
+    /// </remarks>
+    public long RetainedHistoryBytes => RetainedBytes();
+
+    /// <summary>How many steps the budget has released from the oldest end of the timeline.</summary>
+    /// <remarks>
+    /// Non-zero means undo can no longer reach the state the file was opened in. That is the one
+    /// thing about the limit a user has to be told rather than left to discover, because an undo
+    /// that stops early is indistinguishable from an undo that has finished.
+    /// </remarks>
+    public int DiscardedOlderSteps => _discardedOlder;
+
+    /// <summary>How many steps the budget has released from the furthest-future end.</summary>
+    public int DiscardedNewerSteps => _discardedNewer;
+
+    /// <summary>
+    /// Raised when the byte budget releases steps, as (older, newer). The shell reports it: an
+    /// eviction that says nothing leaves the history quietly shorter than the user's edits.
+    /// </summary>
+    public event Action<int, int>? HistoryReleased;
 
     /// <summary>
     /// The retained history as one linear timeline: the applied steps in the order they were
@@ -217,12 +232,15 @@ public sealed class AudioDocument
         int applied = _undo.Count;
         int total = applied + _redo.Count;
         var entries = new HistoryEntry[total];
+        // Charged to the first step on the timeline that holds each buffer, so the rows add up to
+        // the retained total instead of counting a shared array once per step that refers to it.
+        var counted = new HashSet<float[]>(ReferenceEqualityComparer.Instance);
         long retained = 0;
         bool savepointOnAStep = false;
         for (int i = 0; i < total; i++)
         {
             var edit = i < applied ? _undo[i] : _redo[total - 1 - i];
-            long bytes = EditBytes(edit);
+            long bytes = UncountedBytes(edit, counted);
             retained += bytes;
             bool isSavepoint = _savedStateId is { } saved && saved == edit.AfterStateId;
             savepointOnAStep |= isSavepoint;
@@ -507,6 +525,13 @@ public sealed class AudioDocument
         DropSavepointIfUnreachable();
     }
 
+    /// <summary>What one step holds, counting every buffer whatever else refers to it.</summary>
+    /// <remarks>
+    /// Only ever an upper bound on what the step costs, which is what makes it usable as the cheap
+    /// screen in <see cref="EnforceUndoBudget"/>: a document inside the budget by this measure is
+    /// inside it by the exact one too, so the exact walk is paid for only when it can change an
+    /// answer.
+    /// </remarks>
     private static long EditBytes(Edit edit)
     {
         long samples = 0;
@@ -516,34 +541,75 @@ public sealed class AudioDocument
     }
 
     /// <summary>
+    /// What one step adds to a running total, given the buffers <paramref name="counted"/> already
+    /// holds. Adds this step's to it.
+    /// </summary>
+    private static long UncountedBytes(Edit edit, HashSet<float[]> counted)
+    {
+        long samples = 0;
+        foreach (var channel in edit.Old) if (counted.Add(channel)) samples += channel.Length;
+        foreach (var channel in edit.New) if (counted.Add(channel)) samples += channel.Length;
+        return samples * sizeof(float);
+    }
+
+    /// <summary>
+    /// What the whole retained history costs, counting each buffer once however many steps hold it.
+    /// </summary>
+    private long RetainedBytes()
+    {
+        var counted = new HashSet<float[]>(ReferenceEqualityComparer.Instance);
+        long total = 0;
+        for (int i = 0; i < _undo.Count; i++) total += UncountedBytes(_undo[i], counted);
+        for (int i = 0; i < _redo.Count; i++) total += UncountedBytes(_redo[i], counted);
+        return total;
+    }
+
+    /// <summary>The gross sum of the steps, which can only over-state <see cref="RetainedBytes"/>.</summary>
+    private long GrossRetainedBytes()
+    {
+        long total = 0;
+        for (int i = 0; i < _undo.Count; i++) total += EditBytes(_undo[i]);
+        for (int i = 0; i < _redo.Count; i++) total += EditBytes(_redo[i]);
+        return total;
+    }
+
+    /// <summary>
     /// Keeps the retained history inside <see cref="UndoBudgetBytes"/>, which is a per-document
     /// figure: several open tabs each hold up to that much.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Both stacks count. Undoing does not free an edit, it moves it to the redo stack, so an
     /// accounting that looked only at <c>_undo</c> — as this did — reported a document as being
     /// inside its budget while undoing repeatedly grew memory without limit. Redo is also the side
     /// to give up first: it is only reachable once the user has already stepped backwards, so
     /// dropping the far end of the forward chain costs less than throwing away undo history.
+    /// </para>
+    /// <para>
+    /// Steps share buffers, so the total is re-read after each eviction rather than decremented by
+    /// what the dropped step held: releasing a whole-document render frees only the array its
+    /// neighbour is not also holding, and subtracting the step's gross size would report memory
+    /// reclaimed that is still live — releasing about twice as much history as the limit asks for.
+    /// The gross sum is still the screen, because it can only over-state the exact one.
+    /// </para>
     /// </remarks>
     private void EnforceUndoBudget()
     {
-        long total = 0;
-        for (int i = 0; i < _undo.Count; i++) total += EditBytes(_undo[i]);
-        for (int i = 0; i < _redo.Count; i++) total += EditBytes(_redo[i]);
-        if (total <= UndoBudgetBytes) return;
+        if (GrossRetainedBytes() <= UndoBudgetBytes) return;
+        if (RetainedBytes() <= UndoBudgetBytes) return;
 
         // _redo[0] is the furthest-future edit, so trimming from the front keeps the next redo step
         // available for as long as possible.
         int dropped = 0;
-        while (dropped < _redo.Count && total > UndoBudgetBytes)
-            total -= EditBytes(_redo[dropped++]);
-        if (dropped > 0) _redo.RemoveRange(0, dropped);
+        while (_redo.Count > 0 && RetainedBytes() > UndoBudgetBytes)
+        {
+            _redo.RemoveAt(0);
+            dropped++;
+        }
 
         int droppedOlder = 0;
-        while (_undo.Count > 1 && total > UndoBudgetBytes)
+        while (_undo.Count > 1 && RetainedBytes() > UndoBudgetBytes)
         {
-            total -= EditBytes(_undo[0]);
             _undo.RemoveAt(0);
             droppedOlder++;
         }
@@ -555,6 +621,8 @@ public sealed class AudioDocument
         _discardedOlder += droppedOlder;
         _historyGeneration++;
         DropSavepointIfUnreachable();
+        // Raised last, so a handler that reads the history sees the state the eviction settled on.
+        HistoryReleased?.Invoke(droppedOlder, dropped);
     }
 
     /// <summary>

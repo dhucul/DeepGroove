@@ -108,6 +108,118 @@ public sealed class UndoBudgetTests : IDisposable
 
         Assert.Equal(8, document.UndoDepth);
     }
+
+    // ── shared buffers ──────────────────────────────────────────
+
+    /// <summary>What one whole-document render's worth of samples costs, both channels.</summary>
+    private const long DocumentBytes = 2L * EditFrames * sizeof(float);
+
+    /// <summary>Replaces the whole document, the way an offline render commits.</summary>
+    private static void Render(AudioDocument document, float value)
+    {
+        var data = new float[document.ChannelCount][];
+        for (int c = 0; c < data.Length; c++)
+        {
+            data[c] = new float[EditFrames];
+            Array.Fill(data[c], value);
+        }
+        document.ReplaceAllOwned(data, $"render {value:0.00}");
+    }
+
+    /// <summary>
+    /// <see cref="AudioDocument.ReplaceAllOwned"/> hands the outgoing render to the next edit as its
+    /// <c>Old</c> side — the same object that edit kept as its <c>New</c> — so a chain of N renders
+    /// holds N+1 documents, not 2N.
+    /// </summary>
+    [Fact]
+    public void ConsecutiveWholeDocumentRendersAreChargedOncePerBuffer()
+    {
+        AudioDocument.UndoBudgetBytes = long.MaxValue;
+        var document = Document(EditFrames);
+
+        for (int i = 0; i < 4; i++) Render(document, (i + 1) * 0.1f);
+
+        Assert.Equal(5 * DocumentBytes, document.RetainedHistoryBytes);
+    }
+
+    /// <summary>The panel's rows have to add up to the figure in its header.</summary>
+    [Fact]
+    public void TheStepsSumToWhatTheHistorySaysItRetains()
+    {
+        AudioDocument.UndoBudgetBytes = long.MaxValue;
+        var document = Document(EditFrames);
+
+        for (int i = 0; i < 4; i++) Render(document, (i + 1) * 0.1f);
+        document.Undo();
+
+        HistorySnapshot history = document.GetHistory();
+        long summed = 0;
+        foreach (HistoryEntry entry in history.Entries) summed += entry.RetainedBytes;
+
+        Assert.Equal(history.RetainedBytes, summed);
+        Assert.Equal(document.RetainedHistoryBytes, history.RetainedBytes);
+    }
+
+    /// <summary>
+    /// The defect behind "I undid everything and the file was still changed": counting a shared
+    /// array once per step that holds it reported twice the memory actually retained, so the budget
+    /// released about twice as much history as the limit asked for.
+    /// </summary>
+    [Fact]
+    public void TheBudgetDoesNotReleaseHistoryThatWouldNotActuallyBeFreed()
+    {
+        // Room for the original and four renders. Charged gross this reads as eight documents and
+        // all four steps but one would go.
+        AudioDocument.UndoBudgetBytes = 5 * DocumentBytes;
+        var document = Document(EditFrames);
+
+        for (int i = 0; i < 4; i++) Render(document, (i + 1) * 0.1f);
+
+        Assert.Equal(4, document.UndoDepth);
+        Assert.Equal(0, document.DiscardedOlderSteps);
+        Assert.True(document.RetainedHistoryBytes <= AudioDocument.UndoBudgetBytes);
+
+        for (int i = 0; i < 4; i++) document.Undo();
+
+        Assert.False(document.CanUndo);
+        Assert.Equal(0f, document.Channels[0][0]);
+    }
+
+    // ── saying so ───────────────────────────────────────────────
+
+    [Fact]
+    public void ReleasingHistoryIsAnnouncedRatherThanBeingSilent()
+    {
+        AudioDocument.UndoBudgetBytes = 2 * PerEditBytes;
+        var document = Document();
+        var released = new List<(int Older, int Newer)>();
+        document.HistoryReleased += (older, newer) => released.Add((older, newer));
+
+        for (int i = 0; i < 6; i++) Edit(document, EditFrames, i * 0.01f);
+
+        Assert.NotEmpty(released);
+        int announced = 0;
+        foreach (var (older, _) in released) announced += older;
+        Assert.Equal(document.DiscardedOlderSteps, announced);
+        Assert.True(announced > 0, "steps were released from the oldest end without being announced");
+    }
+
+    /// <summary>
+    /// What the user actually hits. Undo runs out with the document still carrying the edits whose
+    /// steps went, and the only thing that separates that from a finished undo is this count.
+    /// </summary>
+    [Fact]
+    public void UndoingEverythingDoesNotReachTheOriginalOnceStepsHaveBeenReleased()
+    {
+        AudioDocument.UndoBudgetBytes = 2 * PerEditBytes;
+        var document = Document();
+
+        for (int i = 1; i <= 6; i++) Edit(document, EditFrames, i * 0.1f);
+        while (document.CanUndo) document.Undo();
+
+        Assert.True(document.DiscardedOlderSteps > 0);
+        Assert.NotEqual(0f, document.Channels[0][0]);
+    }
 }
 
 [CollectionDefinition(Name, DisableParallelization = true)]

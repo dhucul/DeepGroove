@@ -150,6 +150,7 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
     public void EachToolExplainsItsOwnGesture()
     {
         var vm = new MainViewModel();
+        vm.ShowSpectrogramCommand.Execute(null);
         var hints = new HashSet<string>();
 
         foreach (SpectralTool tool in Enum.GetValues<SpectralTool>())
@@ -158,6 +159,24 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
             output.WriteLine($"{tool}: {vm.SpectralToolHint}");
             Assert.False(string.IsNullOrWhiteSpace(vm.SpectralToolHint));
             Assert.True(hints.Add(vm.SpectralToolHint), $"{tool} reuses another tool's prompt");
+        }
+    }
+
+    /// <summary>
+    /// In waveform mode there is no picture to draw on, so naming a drawing gesture would point at
+    /// a control that is not on screen.
+    /// </summary>
+    [Fact]
+    public void WithoutTheSpectrogramThePromptAsksForATimeSelection()
+    {
+        var vm = new MainViewModel();
+
+        foreach (SpectralTool tool in Enum.GetValues<SpectralTool>())
+        {
+            vm.SpectralTool = tool;
+            output.WriteLine($"{tool}: {vm.SpectralToolHint}");
+            Assert.DoesNotContain("spectrogram", vm.SpectralToolHint, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("waveform", vm.SpectralToolHint, StringComparison.OrdinalIgnoreCase);
         }
     }
 
@@ -263,21 +282,230 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
 
     // ── toolbar visibility ───────────────────────────────────────
 
+    /// <summary>
+    /// The tools draw on the picture, so they follow it. The four actions do not — they work through
+    /// a mask, and an ordinary time selection is one.
+    /// </summary>
     [Fact]
-    public void TheRepairControlsAppearOnlyOnceTheSpectrogramDoes()
+    public void TheSelectionToolsFollowTheSpectrogramAndTheActionsDoNot()
     {
-        var vm = new MainViewModel();
+        var vm = new MainViewModel { ActiveDocument = Document() };
 
         Assert.False(vm.ShowsSpectrogram);
+        Assert.True(vm.ShowsSpectralBar);
 
         vm.ShowSplitCommand.Execute(null);
         Assert.True(vm.ShowsSpectrogram);
+        Assert.True(vm.ShowsSpectralBar);
 
         vm.ShowSpectrogramCommand.Execute(null);
         Assert.True(vm.ShowsSpectrogram);
 
         vm.ShowWaveformCommand.Execute(null);
         Assert.False(vm.ShowsSpectrogram);
+        Assert.True(vm.ShowsSpectralBar);
+    }
+
+    /// <summary>Nothing to act on, so the bar has nothing to say.</summary>
+    [Fact]
+    public void TheBarStaysAwayUntilThereIsAudio()
+    {
+        var vm = new MainViewModel();
+        Assert.False(vm.ShowsSpectralBar);
+
+        vm.ShowSpectrogramCommand.Execute(null);
+        Assert.False(vm.ShowsSpectralBar);
+
+        vm.ActiveDocument = Document();
+        Assert.True(vm.ShowsSpectralBar);
+    }
+
+    /// <summary>Constant-Q resolution describes the picture, so it goes with the picture.</summary>
+    [Fact]
+    public void BinsPerOctaveIsOfferedOnlyWithTheSpectrogram()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.UseConstantQScaleCommand.Execute(null);
+
+        Assert.False(vm.ShowsBinsPerOctave);
+
+        vm.ShowSpectrogramCommand.Execute(null);
+        Assert.True(vm.ShowsBinsPerOctave);
+
+        vm.ShowWaveformCommand.Execute(null);
+        Assert.False(vm.ShowsBinsPerOctave);
+    }
+
+    /// <summary>
+    /// The bar cannot hold everything in it at the shell's minimum width, so the scale switch is
+    /// dropped there rather than cut. A view model that has never been told a width assumes there
+    /// is room, which is what every test without a window needs.
+    /// </summary>
+    [Fact]
+    public void TheScaleSwitchIsGivenUpOnceTheBarRunsOutOfRoom()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.ShowSpectrogramCommand.Execute(null);
+        Assert.True(vm.ShowsSpectralScale);
+
+        vm.ShellWidthPixels = MainViewModel.SpectralScaleMinimumWidth - 1;
+        Assert.False(vm.ShowsSpectralScale);
+
+        vm.ShellWidthPixels = MainViewModel.SpectralScaleMinimumWidth;
+        Assert.True(vm.ShowsSpectralScale);
+
+        // It is the picture's control before it is a width question: no spectrogram, no switch,
+        // however wide the window.
+        vm.ShowWaveformCommand.Execute(null);
+        Assert.False(vm.ShowsSpectralScale);
+    }
+
+    /// <summary>
+    /// Bins per octave sits immediately beside the switch and describes it, so it goes with it —
+    /// leaving it behind would strand a control explaining a choice no longer on screen.
+    /// </summary>
+    [Fact]
+    public void BinsPerOctaveGoesWithTheScaleSwitchRatherThanStayingBehind()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.ShowSpectrogramCommand.Execute(null);
+        vm.UseConstantQScaleCommand.Execute(null);
+        Assert.True(vm.ShowsBinsPerOctave);
+
+        vm.ShellWidthPixels = MainViewModel.SpectralScaleMinimumWidth - 1;
+
+        Assert.False(vm.ShowsSpectralScale);
+        Assert.False(vm.ShowsBinsPerOctave);
+    }
+
+    /// <summary>
+    /// Dropping the switch must not drop the choice. The commands the View menu binds are the same
+    /// ones the switch binds, so the scale is still selectable at a width that has no switch.
+    /// </summary>
+    [Fact]
+    public void TheScaleIsStillSelectableAtAWidthThatHasNoSwitch()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.ShowSpectrogramCommand.Execute(null);
+        vm.ShellWidthPixels = MainViewModel.SpectralScaleMinimumWidth - 1;
+        Assert.False(vm.ShowsSpectralScale);
+
+        vm.UseConstantQScaleCommand.Execute(null);
+        Assert.True(vm.IsConstantQScale);
+
+        vm.UseLinearScaleCommand.Execute(null);
+        Assert.True(vm.IsLinearScale);
+        Assert.False(vm.IsLogarithmicScale);
+    }
+
+    /// <summary>A width that means nothing is not a width, and must not hide anything.</summary>
+    [Fact]
+    public void AnUnmeasuredWidthLeavesTheBarAsItWas()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.ShowSpectrogramCommand.Execute(null);
+
+        foreach (double nonsense in new[] { 0, -1, double.NaN })
+        {
+            vm.ShellWidthPixels = nonsense;
+            Assert.True(vm.ShowsSpectralScale, $"a width of {nonsense} hid the scale switch");
+        }
+    }
+
+    // ── a plain time selection drives the actions ────────────────
+
+    [Fact]
+    public void ATimeSelectionEnablesTheActionsAcrossTheWholeBand()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        var raised = new List<string>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
+
+        Assert.False(vm.HasSpectralSelection);
+
+        vm.ActiveDocument!.SetSelection(44_100, 66_150);
+
+        Assert.True(vm.HasSpectralSelection);
+        Assert.False(vm.NeedsSpectralSelection);
+        output.WriteLine($"span {vm.SpectralSpanText}, band {vm.SpectralBandText}");
+        Assert.Contains("→", vm.SpectralSpanText);
+        Assert.Contains("full band", vm.SpectralBandText);
+        Assert.Contains(nameof(vm.HasSpectralSelection), raised);
+
+        SpectralSelection resolved = vm.ResolveSpectralSelection();
+        Assert.False(resolved.IsEmpty);
+        Assert.Equal(0, resolved.Mask.BinOffset);
+        Assert.Equal(Fft / 2 + 1, resolved.Mask.Bins);
+        SpectralRegion bounds = resolved.Bounds;
+        Assert.InRange(bounds.StartSample, 44_100 - Hop, 44_100 + Hop);
+        Assert.InRange(bounds.EndSample, 66_150 - Hop, 66_150 + 2 * Hop);
+    }
+
+    /// <summary>
+    /// A drawn region is a narrower claim than "everything in this stretch of time", so it wins.
+    /// </summary>
+    [Fact]
+    public void ADrawnRegionWinsOverTheTimeSelection()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.ActiveDocument!.SetSelection(0, 100_000);
+        vm.SpectralSelection = Selection(44_100, 66_150, 410, 3_200);
+
+        SpectralSelection resolved = vm.ResolveSpectralSelection();
+        Assert.Same(vm.SpectralSelection, resolved);
+        Assert.True(resolved.Mask.BinOffset > 0, "the drawn band's low edge is not DC");
+        Assert.DoesNotContain("full band", vm.SpectralBandText);
+    }
+
+    /// <summary>Clearing the drawn region falls back to the time selection rather than to nothing.</summary>
+    [Fact]
+    public void ClearingTheDrawnRegionFallsBackToTheTimeSelection()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.ActiveDocument!.SetSelection(10_000, 40_000);
+        vm.SpectralSelection = Selection(44_100, 66_150, 410, 3_200);
+        Assert.DoesNotContain("full band", vm.SpectralBandText);
+
+        vm.SpectralSelection = SpectralSelection.None;
+
+        Assert.True(vm.HasSpectralSelection);
+        Assert.Contains("full band", vm.SpectralBandText);
+    }
+
+    [Fact]
+    public void ClearingTheTimeSelectionDisablesTheActionsAgain()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.ActiveDocument!.SetSelection(44_100, 66_150);
+        Assert.True(vm.HasSpectralSelection);
+
+        vm.ActiveDocument.ClearSelection();
+
+        Assert.False(vm.HasSpectralSelection);
+        Assert.Equal("—", vm.SpectralSpanText);
+        Assert.Equal("—", vm.SpectralBandText);
+        Assert.True(vm.ResolveSpectralSelection().IsEmpty);
+    }
+
+    /// <summary>
+    /// A repair holds four planes the size of the mask per channel, so a span past the ceiling would
+    /// ask for gigabytes. The actions stay disabled rather than the repair failing partway.
+    /// </summary>
+    [Fact]
+    public void ASpanTooLongToBuildAFullBandMaskForLeavesTheActionsDisabled()
+    {
+        int frames = (int)(SpectralMask.MaximumFullBandCells / (Fft / 2 + 1)) + 2 * Hop;
+        int length = frames * Hop;
+        var vm = new MainViewModel
+        {
+            ActiveDocument = new DocumentViewModel(new AudioDocument([new float[length]], Rate, 32)),
+        };
+
+        vm.ActiveDocument!.SelectAll();
+
+        output.WriteLine($"{length} samples over {frames} frames");
+        Assert.False(vm.HasSpectralSelection);
+        Assert.True(vm.ResolveSpectralSelection().IsEmpty);
     }
 
     // ── region to grid ───────────────────────────────────────────
@@ -391,6 +619,54 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
                 error += d * d;
             }
             return 10 * Math.Log10(signal / Math.Max(error, 1e-30));
+        }
+    }
+
+    /// <summary>
+    /// The end-to-end path the waveform half takes: a range selected on the wave becomes a full-band
+    /// mask, and a repair through it turns that range down and leaves the rest of the file alone.
+    /// </summary>
+    [Fact]
+    public void ARangeSelectedOnTheWaveformAttenuatesTheAudioUnderIt()
+    {
+        const int length = 132_300;                 // three seconds
+        var tone = new float[length];
+        for (int i = 0; i < length; i++)
+            tone[i] = (float)(0.4 * Math.Sin(2 * Math.PI * 1_000 * i / Rate));
+
+        var vm = new MainViewModel
+        {
+            ActiveDocument = new DocumentViewModel(new AudioDocument([tone], Rate, 32)),
+        };
+        vm.ActiveDocument!.SetSelection(Rate, 2 * Rate);
+
+        SpectralSelection selection = vm.ResolveSpectralSelection();
+        Assert.False(selection.IsEmpty);
+
+        SpectralRepairResult result = SpectralRepair.Attenuate(tone, 0, selection.Mask, -24,
+            new SpectralRepairOptions(selection.FftSize, selection.Hop,
+                SpectralRepairOptions.Default.PartialDriftRadians));
+        Assert.False(result.IsEmpty);
+
+        var merged = (float[])tone.Clone();
+        result.Samples.CopyTo(merged.AsSpan(result.Start));
+
+        // Well inside the selection, and well outside the padded span the repair rewrote.
+        double inside = Rms(merged, Rate + Rate / 2, Rate / 4);
+        double before = Rms(merged, 0, Rate / 4);
+        double reference = Rms(tone, 0, Rate / 4);
+        output.WriteLine($"inside {20 * Math.Log10(inside / reference):0.0} dB, " +
+                         $"outside {20 * Math.Log10(before / reference):0.0} dB");
+
+        Assert.True(20 * Math.Log10(inside / reference) < -18,
+            "the selected range was not turned down");
+        Assert.Equal(reference, before, 5);
+
+        static double Rms(float[] signal, int start, int count)
+        {
+            double sum = 0;
+            for (int i = start; i < start + count; i++) sum += (double)signal[i] * signal[i];
+            return Math.Sqrt(sum / count);
         }
     }
 

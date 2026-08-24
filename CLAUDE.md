@@ -1351,6 +1351,151 @@ nothing but arithmetic, which is what makes every case testable without a window
   file opened twice, or two untitled recordings — and matching the combo selection by text pointed
   the reference at a different track, silently moving the level everything else was matched to.
 
+## The undo list was short by about half, and nothing ever said so
+
+"I undid everything on the undo list and there were still changes in my file." The undo engine was
+working exactly as written; what it was written to do was silently throw the oldest steps away, and
+it was throwing away roughly twice as many as the memory limit actually called for.
+
+- **`EditBytes` counted shared buffers twice, and whole-document renders are precisely the case that
+  shares them.** `ReplaceAllOwned` reads the live channels as its `Old` side and keeps the incoming
+  render as its `New`; the next render then reads that same object as *its* `Old`. So a chain of N
+  renders holds **N+1 documents, not 2N** — and the budget was summing the steps, which charges one
+  album-sized array once per step that refers to it. `ConsecutiveWholeDocumentRendersAreChargedOncePerBuffer`
+  pins the arithmetic and `TheBudgetDoesNotReleaseHistoryThatWouldNotActuallyBeFreed` pins what it
+  cost: with room for the original and four renders, the old accounting kept **one** step of four.
+- **The scale is why it bit rather than being a rounding error.** A 20-minute stereo 44.1 kHz
+  document is 423 MB of samples, so one `ReplaceAllOwned` was charged **847 MB against a 512 MB
+  default** — over the whole budget on the first whole-file operation. Render Master Chain, Match
+  Loudness, Vinyl Restoration, Swap Channels, Invert Phase and Channel Balance all commit that way.
+- **The eviction loop had the same fault in its other half, and that one is subtler.** It subtracted
+  the dropped step's gross size from a running total, which reports memory reclaimed that is still
+  live — releasing `_undo[0]` frees only the array `_undo[1]` is not also holding. The total is now
+  **re-read after each eviction** rather than decremented.
+- **The gross sum survives as the screen, because it can only over-state the exact one.** A document
+  inside the budget by the cheap sum is inside it by the deduplicated walk too, so the walk — which
+  allocates a set and touches every channel of every step — is paid for only when it can change an
+  answer. `EnforceUndoBudget` returns on the cheap test in the overwhelmingly common case.
+- **`GetHistory` charges each buffer to the first step on the timeline that holds it**, so the
+  panel's rows add up to the figure in its header. `TheStepsSumToWhatTheHistorySaysItRetains` is what
+  stops those two drifting apart, which is the failure a per-step gross figure would have produced.
+- **Saying so was a separate fix from counting right, and the ordering is the whole of it.** The
+  budget is enforced from inside `ReplaceRange`, **before** the `Changed` event the status line is
+  written from — so a line written at eviction time is overwritten by "… applied · Undo available" a
+  moment later, and the one thing the user needed to know is the one thing that does not survive.
+  `AudioDocument.HistoryReleased` is held in `MainViewModel._releasedSteps` and *appended* to that
+  line instead. Ctrl+Z with nothing left also says why now rather than doing nothing, and both
+  messages name Settings ▸ General, where the limit is.
+- **The counting fix does not make the limit generous, and one eviction is still silent.**
+  `HistoryReleased` is subscribed for the active document only, matching `Doc.Changed`, so a tool
+  working across tabs — Match Loudness — can evict without a line. The Edit History panel has always
+  reported it per document and still does.
+
+## The spectral actions work through a mask, and a plain time selection is one
+
+Heal, Attenuate, Gain and Learn pattern were reachable only by drawing on the spectrogram, and the
+bar carrying them appeared only with the spectrogram. Nothing about the four needs the picture: they
+take a `SpectralMask`, and a range selected on the waveform is a mask across the whole frequency
+band. `MainViewModel.ResolveSpectralSelection` returns the drawn region if there is one and builds
+that band if there is not.
+
+- **`SpectralMask.FullBand` rather than `ForRegion` with the band set to DC and Nyquist, and the
+  reason is the feather.** The general taper erodes inward from the edges of the weight array in
+  *both* directions — but the frequency edges of a full-band mask are the ends of the spectrum
+  rather than anything in the signal, so it fades out exactly the bins a selection across everything
+  asked for. `AFullBandMaskDoesNotFadeOutDcAndNyquist` measures the two builders side by side. A
+  taper exists to stop an edit ringing, which is a statement about edges the audio *has*: across a
+  full band the only edges are the two ends of the span, so only the frames are tapered.
+- **It is also the cheap way round, which matters at this size.** Erode-then-smooth is four passes
+  over every cell plus two scratch arrays as large as the mask; a full band over a minute of 44.1 kHz
+  audio at 2048/512 is 5.3 million cells. A fill plus a frame taper is one pass and one allocation.
+- **There is a ceiling and it is the one this repo already uses twice.** A repair holds the mask plus
+  real, imaginary and weight planes of the same size — 16 bytes a cell, per channel — so
+  `MaximumFullBandCells` is 512 MB's worth, matching the clipboard and the residual. That is a little
+  over six minutes at 44.1 kHz. Past it the actions stay disabled rather than the repair failing
+  partway; a whole-file change of level is the ordinary Gain command, not this one.
+- **The mask is built when an action runs and never from the binding the buttons read.** Four
+  `IsEnabled` bindings re-read `HasSpectralSelection` on every pixel of a selection drag, and
+  allocating millions of cells inside a property getter would make dragging a selection cost what a
+  repair costs. `TimeSelectionSpan` answers with a length check; `ResolveSpectralSelection` builds.
+- **The bar now follows the document and the four selection tools still follow the picture.**
+  `ShowsSpectralBar` is `HasAudioDocument`; the tools, the scale switch and the bins-per-octave combo
+  each keep `ShowsSpectrogram`. Learn pattern resolves its selection **after** its dialog closes, not
+  before: the box is up long enough for the selection to move, and it is the selection standing when
+  Remove is pressed that the user meant.
+
+### Rendering it earned its keep three times
+
+The bar had only ever been laid out with the tools and the scale switch present. Showing it in
+waveform mode changes what is in it, so it was rendered at the shell's 1180 px minimum rather than
+reasoned about — and two wordings had to be cut down.
+
+- **The three right-docked groups are readout, then scale switch, then hint, and a DockPanel serves
+  them in that order — so the switch pays for every pixel the readout spends.** The first band
+  wording, "0 Hz → 22.05 kHz · full band", took the switch from **37.5 px to 2** at 1180. It reads
+  **"full band"** now, which says the same thing — DC to Nyquist *is* the whole band — and gives
+  50 px back, leaving the switch **88 px**, wider than the drawn-band case it sits beside.
+- **The hint is docked last and so is cut first.** Naming the waveform route in the rectangle tool's
+  prompt took it from 167.5 px wanted to **343**, cutting it at 1400 as well as at 1180. The
+  spectrogram wordings are therefore left exactly as they were; the route is on the four buttons'
+  tool tips, which have room, and in the waveform-mode prompt, where there is no picture to name
+  instead. The hint also carries `TextTrimming` now, so the next long one degrades to an ellipsis
+  rather than being cut mid-glyph — the fault this file already records for the rack's render
+  buttons and for the plugin name under the power LED.
+- **The margin trap caught this measurement too, exactly as it caught the monitor bar's.**
+  `DesiredSize.Width` includes an element's own margin and `ActualWidth` does not, so the scale
+  switch read "199.5 of 209.5 wanted" at every width and looked clipped at all of them; the ten
+  pixels are its `Margin="0,0,10,0"`.
+- **End to end, on a 1 kHz tone with the middle second selected on the waveform: −24.0 dB inside the
+  selection and 0.0 dB outside it**, for a −24 dB Attenuate through the resolved mask.
+
+### The bar had never fitted at 1180 px, and now it drops a control instead of cutting one
+
+The same render that measured the two wordings above found something older: **with the tools, the
+four actions, both rules and a drawn band's readout, the bar's children want 1314 px and the panel
+has 1152** at the shell's declared minimum. Something had always been losing, and what lost was
+whatever was docked last — the scale switch, at **37.5 px of the 199.5 it wants**, so `CONSTANT-Q`
+shipped cut mid-glyph inside its `ClipToBounds` border.
+
+- **The switch is the right thing to lose and the readout is not.** The readout says what a repair is
+  about to act on and exists nowhere else; the scale is one choice out of three. So the switch and
+  the bins-per-octave combo beside it are **dropped** below `MainViewModel.SpectralScaleMinimumWidth`
+  rather than squeezed, and **View ▸ Frequency Scale** carries the same three commands at every
+  width — nothing becomes unreachable, it merely stops being on the toolbar.
+- **1350 px is measured, not chosen.** The children want 1314 and the window is 28 px wider than the
+  panel they sit in, so everything fits from about 1342. The shell's minimum is 1180 and its default
+  is 1680, so this only bites in between.
+- **It keys off the window's width and deliberately not off the switch's own shortfall.** A control
+  that decides its own visibility from the room it was given oscillates: hiding it makes room, which
+  makes it fit, which shows it again. Hysteresis would stop that and would be a second number to
+  keep in step with the first. One threshold on a width nothing else depends on has neither problem,
+  and `ShellWidthPixels` is a property a test can set without a window — it starts at infinity, so a
+  view model that has never seen a window assumes there is room.
+- **Bins per octave goes with the switch rather than staying behind.** It sits immediately beside it
+  and describes it, so leaving it would strand a control explaining a choice no longer on screen —
+  and it is 100 px of the width the bar had already run out of.
+- **`SpectralBarRenderProbe` now pins the invariant that is actually true: the switch is whole or
+  absent, never in between.** In between is exactly what a `ClipToBounds` border does with less room
+  than it wants. Measured: **0 px at 1180 and 199.5 of 199.5 wanted at 1350**. The earlier assertion
+  — that the new readout costs the switch no more than a drawn band's does — is superseded by it.
+- **The View menu items were opened in the probe rather than trusted.** This repo's record is that a
+  broken binding does not throw, and that a `MenuItem` realised in the wrong place reports failures
+  that nothing is listening for. All three items realise, `Logarithmic` reads checked against the
+  default, and `BindingErrors` reports **0**.
+- **That menu shipped gated on `ShowsSpectrogram` for a day, and greying it in waveform mode was
+  wrong.** The scale is a sticky preference rather than an action: choosing it with no picture on
+  screen is choosing what Split will draw the moment it opens, and the checkmark moving is feedback
+  enough that nothing happens silently. What the gate bought was agreement with a toolbar switch
+  that is not there either — and what it cost is that **a menu item greyed for a reason the user
+  cannot see reads as broken rather than as not applicable**, which is the disabled-`TextBox`
+  finding from the delivery dialogs arriving by the opposite route. It now inherits the View menu's
+  own `HasAudioDocument` gate and nothing else.
+- **`TheFrequencyScaleStaysReachableWhicheverWayTheSwitchIsLost` covers both ways of losing the
+  switch** — waveform mode and a window too narrow — and was checked by mutation: putting the gate
+  back fails it. It opens the submenus rather than reading them closed, because a declared
+  `MenuItem`'s bindings are what is under test and a broken one leaves `IsEnabled` at its default,
+  which is the answer the test wants either way.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

@@ -33,6 +33,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private const long MaximumClipboardBytes = 512L * 1024 * 1024;
 
     private DocumentViewModel? _active;
+    /// <summary>Steps the byte budget released since the last line was written about it.</summary>
+    private int _releasedSteps;
     private TabViewModel? _activeTab;
     private DocumentViewModel? _playbackDocument;
     private AudioDocument? _previewDocument;
@@ -400,14 +402,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 previous.PropertyChanged -= OnActiveDocumentPropertyChanged;
                 previous.Doc.Changed -= OnActiveDocumentEdited;
+                previous.Doc.HistoryReleased -= OnActiveDocumentHistoryReleased;
             }
             if (_active != null)
             {
                 _active.PropertyChanged += OnActiveDocumentPropertyChanged;
                 _active.Doc.Changed += OnActiveDocumentEdited;
+                _active.Doc.HistoryReleased += OnActiveDocumentHistoryReleased;
             }
             Raise(nameof(HasDocument));
             Raise(nameof(HasAudioDocument));
+            Raise(nameof(ShowsSpectralBar));
             Raise(nameof(HasMultichannelDocument));
             Raise(nameof(HasMonoDocument));
             Raise(nameof(CanAnalyzeCleanup));
@@ -420,6 +425,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             // A time-frequency region belongs to the file it was drawn on; carrying it to another
             // tab would offer a repair at a position that means nothing there.
             SpectralSelection = SpectralSelection.None;
+            // Raised again unconditionally: the setter above says nothing when the region was
+            // already empty, and the tab switched to has a time selection of its own to report.
+            RaiseSpectralSelectionState();
+            // A note about one file's history is not a note about the next one's.
+            _releasedSteps = 0;
             RefreshEditCommandStates();
         }
     }
@@ -574,6 +584,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Raise(nameof(IsSplitView));
             Raise(nameof(IsSpectrogramView));
             Raise(nameof(ShowsSpectrogram));
+            Raise(nameof(ShowsSpectralScale));
+            Raise(nameof(ShowsBinsPerOctave));
+            Raise(nameof(SpectralToolHint));
             EditorViewChanged?.Invoke();
         }
     }
@@ -583,11 +596,60 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public bool IsSpectrogramView => _editorView == EditorViewMode.Spectrogram;
 
     /// <summary>
-    /// Whether the spectrogram is on screen at all, and so whether the spectral repair controls
-    /// belong in the toolbar. Bound directly rather than through an inverting converter, so the
+    /// Whether the spectrogram is on screen at all, and so whether the tools that draw <em>on</em>
+    /// it belong in the toolbar. Bound directly rather than through an inverting converter, so the
     /// rule is one testable property instead of markup.
     /// </summary>
     public bool ShowsSpectrogram => _editorView != EditorViewMode.Waveform;
+
+    /// <summary>
+    /// Whether the spectral bar is on screen. Wider than <see cref="ShowsSpectrogram"/>, and
+    /// deliberately: the four actions work through a mask, and an ordinary waveform selection is a
+    /// mask across the whole frequency band, so there is nothing about them that needs the picture.
+    /// What needs the picture is the four <em>selection tools</em> and the scale switch, and those
+    /// still follow <see cref="ShowsSpectrogram"/>.
+    /// </summary>
+    public bool ShowsSpectralBar => HasAudioDocument;
+
+    /// <summary>
+    /// Width of the shell, so the spectral bar can give up its least important control rather than
+    /// have it cut. Infinite until the window says otherwise, which is what a view model with no
+    /// window — every unit test — should assume.
+    /// </summary>
+    public double ShellWidthPixels
+    {
+        get => _shellWidth;
+        set
+        {
+            if (!double.IsFinite(value) || value <= 0) return;
+            if (!Set(ref _shellWidth, value)) return;
+            Raise(nameof(ShowsSpectralScale));
+            Raise(nameof(ShowsBinsPerOctave));
+        }
+    }
+
+    /// <summary>
+    /// Below this the spectral bar cannot hold everything in it, and the scale switch is what goes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Measured rather than chosen. With the tools, the four actions, both rules and a drawn band's
+    /// readout the bar's children want <b>1314 px</b>, and the window is 28 px wider than the panel
+    /// they sit in — so everything fits from about 1342 px, and this is that rounded up. Below it a
+    /// <c>ClipToBounds</c> Border was cutting <c>CONSTANT-Q</c> mid-glyph, which this repo already
+    /// records as reading like a drawing fault rather than like a control that did not fit.
+    /// </para>
+    /// <para>
+    /// The switch is the right thing to lose and the readout is not: the readout says what a repair
+    /// is about to act on and exists nowhere else, while the scale is one choice out of three that
+    /// View ▸ Frequency Scale carries at any width. Nothing becomes unreachable — the shell's
+    /// declared minimum is 1180 and its default is 1680, so this only bites in between.
+    /// </para>
+    /// </remarks>
+    public const double SpectralScaleMinimumWidth = 1350;
+
+    /// <summary>Whether the bar has room for the scale switch as well as everything else in it.</summary>
+    public bool ShowsSpectralScale => ShowsSpectrogram && _shellWidth >= SpectralScaleMinimumWidth;
 
     /// <summary>Raised so the window can lay the editor rows out for the new mode.</summary>
     public event Action? EditorViewChanged;
@@ -637,6 +699,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private SpectralTool _spectralTool = SpectralTool.Rectangle;
     private SpectralFrequencyScale _spectralScale = SpectralFrequencyScale.Logarithmic;
     private int _spectralBinsPerOctave = 36;
+    private double _shellWidth = double.PositiveInfinity;
 
     /// <summary>
     /// Which analysis and axis the spectral picture is made with. Design:
@@ -663,7 +726,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// Shown only for constant-Q, because it is the only scale for which the phrase means anything:
     /// the other two draw an analysis whose bins are evenly spaced in hertz.
     /// </summary>
-    public bool ShowsBinsPerOctave => _spectralScale == SpectralFrequencyScale.ConstantQ;
+    /// <remarks>
+    /// Follows the scale switch rather than the spectrogram: it sits immediately beside it and
+    /// describes it, so leaving it behind when the switch goes would strand a control explaining a
+    /// choice that is no longer on screen — and it is 100 px the bar has already run out of.
+    /// </remarks>
+    public bool ShowsBinsPerOctave =>
+        ShowsSpectralScale && _spectralScale == SpectralFrequencyScale.ConstantQ;
 
     /// <summary>Constant-Q resolution. 12 is a semitone; 36 is a third of one.</summary>
     public int SpectralBinsPerOctave
@@ -689,11 +758,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (!Set(ref _spectralSelection, value ?? SpectralSelection.None)) return;
-            Raise(nameof(HasSpectralSelection));
-            Raise(nameof(NeedsSpectralSelection));
-            Raise(nameof(SpectralSpanText));
-            Raise(nameof(SpectralBandText));
+            RaiseSpectralSelectionState();
         }
+    }
+
+    /// <summary>
+    /// Re-reads what the spectral actions would work through. Raised from the drawn selection, from
+    /// the document's own selection, and from anything that changes which document those belong to
+    /// — the four properties answer from whichever of the two is in force.
+    /// </summary>
+    private void RaiseSpectralSelectionState()
+    {
+        Raise(nameof(HasSpectralSelection));
+        Raise(nameof(NeedsSpectralSelection));
+        Raise(nameof(SpectralSpanText));
+        Raise(nameof(SpectralBandText));
     }
 
     /// <summary>Which tool the next gesture on the spectrogram uses.</summary>
@@ -722,29 +801,96 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand UseHarmonicToolCommand { get; }
 
     /// <summary>What the current tool expects the user to do, shown until something is selected.</summary>
-    public string SpectralToolHint => _spectralTool switch
-    {
-        SpectralTool.Lasso => "Draw around the defect",
-        SpectralTool.MagicWand => "Click the defect to grow a region through it",
-        SpectralTool.Harmonic => "Drag from the fundamental to take it and its partials",
-        _ => "Drag a region on the spectrogram",
-    };
+    /// <remarks>
+    /// The spectrogram wordings are left exactly as they were, and deliberately: this sits at the
+    /// far right of a bar that has already run out of room once, and it is the last thing laid out,
+    /// so it is the first thing cut. Measured at the shell's 1180 px minimum it is given 88 px —
+    /// naming the waveform route here as well took it to 343 px wanted and cut it at 1400 too. The
+    /// route belongs on the buttons' tool tips, which have room, and in waveform mode, where there
+    /// is no picture to name instead.
+    /// </remarks>
+    public string SpectralToolHint => !ShowsSpectrogram
+        ? "Select a range on the waveform"
+        : _spectralTool switch
+        {
+            SpectralTool.Lasso => "Draw around the defect",
+            SpectralTool.MagicWand => "Click the defect to grow a region through it",
+            SpectralTool.Harmonic => "Drag from the fundamental to take it and its partials",
+            _ => "Drag a region on the spectrogram",
+        };
 
-    public bool HasSpectralSelection => !_spectralSelection.IsEmpty;
+    /// <summary>
+    /// The grid every spectral edit is expressed in — anchored at sample zero, at the transform
+    /// length and hop the repair itself uses, never the display's.
+    /// </summary>
+    private static readonly SpectrogramSettings RepairGrid = SpectrogramSettings.Default;
+
+    public bool HasSpectralSelection => !_spectralSelection.IsEmpty || CanUseTimeSelection;
 
     /// <summary>Whether to prompt for a selection instead of showing one. The toolbar binds both.</summary>
-    public bool NeedsSpectralSelection => _spectralSelection.IsEmpty;
+    public bool NeedsSpectralSelection => !HasSpectralSelection;
+
+    /// <summary>
+    /// The document's ordinary selection, when a spectral action could work through it: nothing has
+    /// been drawn on the spectrogram, a range is selected, and it is short enough to build a
+    /// full-band mask for.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does <em>not</em> build the mask. This is read from a binding on four buttons
+    /// and re-read on every pixel of a selection drag; a full band over a minute of audio is
+    /// millions of cells, and allocating that inside a property getter would make dragging a
+    /// selection cost what a repair costs. <see cref="ResolveSpectralSelection"/> builds it, once,
+    /// when an action actually runs.
+    /// </remarks>
+    private (int Start, int End)? TimeSelectionSpan
+    {
+        get
+        {
+            if (!_spectralSelection.IsEmpty) return null;
+            if (_active is not { } d || d.Doc.Length == 0 || !d.HasSelection) return null;
+            int start = Math.Clamp(Math.Min(d.SelStart, d.SelEnd), 0, d.Doc.Length);
+            int end = Math.Clamp(Math.Max(d.SelStart, d.SelEnd), 0, d.Doc.Length);
+            if (end - start < 2) return null;
+            return SpectralMask.FullBandFits(start, end, RepairGrid.FftSize, RepairGrid.Hop)
+                ? (start, end)
+                : null;
+        }
+    }
+
+    private bool CanUseTimeSelection => TimeSelectionSpan is not null;
+
+    /// <summary>
+    /// What a spectral action will act through: the region drawn on the spectrogram if there is one,
+    /// otherwise the time selection taken across the whole frequency band. Builds the mask, so it is
+    /// called once per action rather than from a binding.
+    /// </summary>
+    public SpectralSelection ResolveSpectralSelection()
+    {
+        if (!_spectralSelection.IsEmpty) return _spectralSelection;
+        if (_active is not { } d || TimeSelectionSpan is not var (start, end)) return SpectralSelection.None;
+
+        SpectralMask mask = SpectralMask.FullBand(start, end, RepairGrid.FftSize, RepairGrid.Hop);
+        return mask.IsEmpty
+            ? SpectralSelection.None
+            : new SpectralSelection(SpectralTool.Rectangle, mask, d.Doc.SampleRate,
+                RepairGrid.FftSize, RepairGrid.Hop);
+    }
 
     /// <summary>The selected time span, as the toolbar shows it.</summary>
     public string SpectralSpanText
     {
         get
         {
-            if (_spectralSelection.IsEmpty) return "—";
-            SpectralRegion bounds = _spectralSelection.Bounds;
-            int rate = _spectralSelection.SampleRate;
-            return $"{TimeFormat.Position(bounds.StartSample, rate)} → " +
-                   $"{TimeFormat.Position(bounds.EndSample, rate)}";
+            if (!_spectralSelection.IsEmpty)
+            {
+                SpectralRegion drawn = _spectralSelection.Bounds;
+                int drawnRate = _spectralSelection.SampleRate;
+                return $"{TimeFormat.Position(drawn.StartSample, drawnRate)} → " +
+                       $"{TimeFormat.Position(drawn.EndSample, drawnRate)}";
+            }
+            if (_active is not { } d || TimeSelectionSpan is not var (start, end)) return "—";
+            return $"{TimeFormat.Position(start, d.Doc.SampleRate)} → " +
+                   $"{TimeFormat.Position(end, d.Doc.SampleRate)}";
         }
     }
 
@@ -753,9 +899,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         get
         {
-            if (_spectralSelection.IsEmpty) return "—";
-            SpectralRegion bounds = _spectralSelection.Bounds;
-            return $"{Hertz(bounds.LowFrequency)} → {Hertz(bounds.HighFrequency)}";
+            if (!_spectralSelection.IsEmpty)
+            {
+                SpectralRegion drawn = _spectralSelection.Bounds;
+                return $"{Hertz(drawn.LowFrequency)} → {Hertz(drawn.HighFrequency)}";
+            }
+            // Two words rather than "0 Hz → 22.05 kHz", which says the same thing and is 100 px
+            // wider. The scale switch is docked after this readout, so it is what pays for every
+            // pixel spent here — measured, the numbers took it from 37.5 px to 2 at the shell's
+            // 1180 px minimum. And they add nothing: DC to Nyquist *is* the whole band, which is
+            // what needed saying, and the rate is already in the title bar.
+            if (!CanUseTimeSelection) return "—";
+            return "full band";
         }
     }
 
@@ -1301,10 +1456,36 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void Undo()
     {
-        if (_active is not { } document || document.Doc.NextUndoName is not { } operation) return;
+        if (_active is not { } document) return;
+        if (document.Doc.NextUndoName is not { } operation)
+        {
+            // Nothing left to undo. That is only worth a line when the reason is that steps were
+            // released — otherwise the user is simply back at the file as they opened it.
+            if (ReleasedHistoryNote(document.Doc) is { } exhausted) ReportAction(exhausted);
+            return;
+        }
         PrepareForDocumentEdit(document);
         document.Doc.Undo();
-        ReportAction($"{operation} undone.");
+        ReportAction(document.Doc.CanUndo || ReleasedHistoryNote(document.Doc) is not { } note
+            ? $"{operation} undone."
+            : $"{operation} undone · {note}");
+    }
+
+    /// <summary>
+    /// What to say about a history the byte budget has shortened, or null when it has not.
+    /// </summary>
+    /// <remarks>
+    /// The Edit History panel has always reported this and plain Ctrl+Z never did, so undo simply
+    /// stopped — with the document still carrying the edits whose steps had been released, which
+    /// reads as undo failing to undo rather than as a memory limit doing what it was asked.
+    /// </remarks>
+    private static string? ReleasedHistoryNote(AudioDocument doc)
+    {
+        int released = doc.DiscardedOlderSteps;
+        if (released == 0) return null;
+        long megabytes = AudioDocument.UndoBudgetBytes / (1024 * 1024);
+        return $"{released} earlier step(s) were released to stay inside the {megabytes} MB undo "
+             + "limit, so the file cannot be taken back further. Raise it in Settings ▸ General.";
     }
 
     private void Redo()
@@ -1965,12 +2146,43 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void OnActiveDocumentEdited(int start, int removed, int inserted)
     {
         if (_active?.Doc.NextUndoName is { } operation)
-            ReportAction($"{operation} applied · Undo available.");
+            ReportAction($"{operation} applied · Undo available{TakeReleasedHistoryNote()}.");
         Raise(nameof(HasAudioDocument));
+        Raise(nameof(ShowsSpectralBar));
+        RaiseSpectralSelectionState();
         Raise(nameof(HasMultichannelDocument));
         Raise(nameof(HasMonoDocument));
         Raise(nameof(CanAnalyzeCleanup));
         RefreshEditCommandStates();
+    }
+
+    /// <summary>
+    /// Notes an eviction so the edit that caused it can report it, rather than reporting here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The budget is enforced from inside <c>ReplaceRange</c>, <em>before</em> the change event the
+    /// status line is written from — so a line written here is overwritten by "… applied · Undo
+    /// available" a moment later, and the one thing the user needed to know is the one thing that
+    /// does not survive. It is held and appended instead.
+    /// </para>
+    /// <para>
+    /// Subscribed for the active document only, matching <see cref="OnActiveDocumentEdited"/>. A
+    /// tool working on another tab — Match Loudness across several — can therefore evict without a
+    /// line; the Edit History panel still says what each document released.
+    /// </para>
+    /// </remarks>
+    private void OnActiveDocumentHistoryReleased(int older, int newer) => _releasedSteps += older;
+
+    /// <summary>Reads the pending eviction note and clears it, empty when there was none.</summary>
+    private string TakeReleasedHistoryNote()
+    {
+        if (_releasedSteps == 0) return "";
+        int released = _releasedSteps;
+        _releasedSteps = 0;
+        long megabytes = AudioDocument.UndoBudgetBytes / (1024 * 1024);
+        return $" · undo history full, {released} of the oldest step(s) released to stay inside the "
+             + $"{megabytes} MB limit (Settings ▸ General)";
     }
 
     private void OnActiveDocumentPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -1983,6 +2195,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (e.PropertyName is nameof(DocumentViewModel.HasSelection)
             or nameof(DocumentViewModel.MarkersVersion))
             RefreshEditCommandStates();
+        // The spectral actions read the time selection when nothing is drawn on the spectrogram, so
+        // they follow it. HasSelection is re-raised whenever either edge moves, which is what makes
+        // this enough — see DocumentViewModel.RaiseSelection.
+        if (e.PropertyName == nameof(DocumentViewModel.HasSelection)) RaiseSpectralSelectionState();
     }
 
     /// <summary>
