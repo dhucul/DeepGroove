@@ -28,6 +28,17 @@ namespace WaveLab.Audio.Dsp;
 /// measurement noise is a random walk, and a walk in the position map is a slow speed error put
 /// there by the tool meant to remove one.
 /// </param>
+/// <param name="CompensateReference">
+/// Divides the reference window's known attenuation out of the <em>reported</em> figure, so the
+/// number a user reads is of the speed variation rather than of what survived the measurement.
+/// </param>
+/// <param name="CompensateCorrection">
+/// Divides the same attenuation out of the curve the <em>resampler</em> follows, which would make
+/// one pass take out the wow that is there rather than the fraction of it the reference window
+/// leaves visible. <b>Off, because it was measured and it is a large regression</b> — see the
+/// remarks on <c>Compensate</c> for the numbers. It is kept as a switch so the result can be
+/// reproduced rather than argued about.
+/// </param>
 public readonly record struct WowFlutterOptions(
     int BlockLength = 4096,
     double LowestHz = 1000,
@@ -38,7 +49,8 @@ public readonly record struct WowFlutterOptions(
     double MinimumCorrelation = 0.6,
     int SmoothingBlocks = 2,
     double ReferenceSeconds = 0.75,
-    bool CompensateReference = true)
+    bool CompensateReference = true,
+    bool CompensateCorrection = false)
 {
     /// <remarks>Spelled out rather than <c>new()</c>, which zero-initialises a record struct.</remarks>
     /// <remarks>
@@ -238,18 +250,26 @@ public static class WowFlutter
         int baseline = Math.Max(1, (int)Math.Round(options.BaselineSeconds * sampleRate / hop));
         Detrend(cumulative, baseline);
 
+        // Computed once, because both the curve the resampler follows and the figure the user reads
+        // may want it. It only exists when a local reference was used: the frame-to-frame path has
+        // no such attenuation to undo.
+        double[]? compensated = referenceRadius > 0
+                                && (options.CompensateReference || options.CompensateCorrection)
+            ? Compensate(cumulative, options.ReferenceSeconds, sampleRate / (double)hop)
+            : null;
+
+        double[] driving = compensated is not null && options.CompensateCorrection
+            ? compensated : cumulative;
+        double[] reported = compensated is not null && options.CompensateReference
+            ? compensated : cumulative;
+
         var ratio = new double[blocks];
         for (int b = 0; b < blocks; b++)
         {
-            double octaves = cumulative[b] / perOctave;
+            double octaves = driving[b] / perOctave;
             ratio[b] = Math.Clamp(Math.Pow(2, octaves),
                 1 - options.MaximumDeviation, 1 + options.MaximumDeviation);
         }
-
-        // The report is taken from a corrected copy; the correction itself keeps the raw curve.
-        double[] reported = referenceRadius > 0 && options.CompensateReference
-            ? Compensate(cumulative, options.ReferenceSeconds, sampleRate / (double)hop)
-            : cumulative;
 
         double peak = 0, sumSquares = 0;
         for (int b = 0; b < blocks; b++)
@@ -555,11 +575,43 @@ public static class WowFlutter
     /// </para>
     /// <para>
     /// <b>Only the reported figure is corrected.</b> Dividing by a small number amplifies whatever
-    /// noise sits at that frequency along with the signal, and the correction path was measured to
-    /// work better on the raw curve: widening the reference, which has the same effect of admitting
-    /// more low-frequency content, left 293 samples of residual drift against 215. So the numbers a
-    /// user reads are compensated and the resampling is not, and the floor below keeps the division
-    /// from running away where the filter has removed nearly everything.
+    /// noise sits at that frequency along with the signal, so the numbers a user reads are
+    /// compensated and the resampling is not, and the floor below keeps the division from running
+    /// away where the filter has removed nearly everything.
+    /// </para>
+    /// <para>
+    /// <b>That asymmetry is what makes the correction take several passes to converge, and it has
+    /// been measured directly rather than by proxy.</b> Because the resampler follows the
+    /// attenuated curve, one pass removes only the fraction of the wow the reference window left
+    /// visible — about 0.4 of it at 0.7 Hz — so a second pass finds most of the remainder and the
+    /// residual falls geometrically. Feeding the compensated curve to the resampler instead
+    /// (<see cref="WowFlutterOptions.CompensateCorrection"/>) is the obvious fix and it is much
+    /// worse. Over 44 cells of real record transfers it left, in samples of residual drift against
+    /// the planted warp:
+    /// </para>
+    /// <code>
+    /// planted   uncorrected   compensated   raw curve   raw curve twice   frame-to-frame
+    ///   2.4%           237           297         197               222              275
+    ///   1.2%           128           240         133               174              260
+    ///   0.6%            66           263         100               168              243
+    ///   0.3%            34           260          97               178              239
+    /// </code>
+    /// <para>
+    /// Worse than the raw curve at every severity, worse than leaving the file alone at every
+    /// severity, and back on the flat 240-to-300 sample floor that the frame-to-frame estimator was
+    /// replaced for. The reason is in the reported figures beside them: at 0.3% planted, where the
+    /// true deviation is 0.168% rms, the compensated reading is 0.733%. Below about 1% the estimator
+    /// is reading its own noise, the compensation is a boost of up to four times aimed squarely at
+    /// the frequency where that noise lives, and handing the result to the resampler writes drift
+    /// into the file that was never on the record. An under-correction that converges is worth more
+    /// than a full correction of the wrong curve.
+    /// </para>
+    /// <para>
+    /// The same table says something about repeating the pass, which is the workaround the
+    /// asymmetry invites: applying the shipped correction twice is worse than applying it once at
+    /// every severity — 197 to 222, 133 to 174, 100 to 168, 97 to 178. Each pass is another
+    /// whole-file resample and, once the residual is near the measurement floor, the second pass is
+    /// correcting noise.
     /// </para>
     /// </remarks>
     private static double[] Compensate(double[] cumulative, double referenceSeconds, double blockRate)

@@ -325,11 +325,28 @@ public static class RestorationCorpus
             return (results, (string?)null);
         }, onExcluded: onExcluded);
 
+    /// <summary>
+    /// Speed variation, which unlike the click and crackle walks does not need a click-free
+    /// reference.
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="UsableReference"/> is deliberately not applied here.</b> It exists so that
+    /// planting clicks onto a recording that is already full of them is not scored as a repair, and
+    /// a wow measurement does nothing of the kind: a known warp is planted on the source and the
+    /// residual timing error is measured against that same source, so whatever clicks the transfer
+    /// carries appear identically in the reference and in the candidate and cancel out of the
+    /// comparison. Applying the click gate here excluded every real record transfer on this machine
+    /// — the only material in the corpora that actually has wow on it — at 1.5 to 4.1 clicks per
+    /// second, and left the walk with nothing to measure. Shellac and material too short to carry a
+    /// 0.7 Hz cycle are still refused, for reasons that do apply.
+    /// </remarks>
     public static List<T> MeasureWow<T>(Func<WowCell, T> measure,
         Action<CorpusRecording, string>? onExcluded = null) =>
         DeclipCorpus.ForEachRecording<T>((recording, document) =>
         {
-            if (!UsableReference(recording, document, out string? why)) return ((List<T>?)null, why);
+            if (recording.Corpus == "3")
+                return ((List<T>?)null, "shellac: its own speed variation is unknown, so a planted " +
+                                        "warp cannot be told from what is already there");
             var source = document.Channels[0];
             // Speed variation is measured over seconds, so a one-second notification chime cannot
             // carry it and would report noise as wow.
