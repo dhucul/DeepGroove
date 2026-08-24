@@ -401,7 +401,7 @@ public static class WowFlutter
                 progress?.Report(j / (double)signal.Length);
             }
 
-            result[j] = (float)Interpolation.At(signal, position);
+            result[j] = (float)Interpolation.AtTabulated(signal, position);
             position += 1.0 / RatioAt(ratio, hop, position);
         }
 

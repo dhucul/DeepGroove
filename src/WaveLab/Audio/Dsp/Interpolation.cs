@@ -125,6 +125,99 @@ public static class Interpolation
         return result;
     }
 
+    /// <summary>
+    /// The signal at <paramref name="position"/>, read through a kernel table rather than a kernel
+    /// built on the spot. Same interpolator, same edge behaviour, for callers that read every sample
+    /// of a side at a fraction that moves.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="Shift"/> can hoist its kernel because a constant delay has a constant fraction.
+    /// A drifting correction cannot: the fraction moves with the position, so the kernel is rebuilt
+    /// at every one of tens of millions of samples — a sine and three cosines per tap, thirty-two
+    /// taps — and that, not the transform, is what makes a wow correction take minutes.
+    /// </para>
+    /// <para>
+    /// So the kernel is tabulated at <see cref="Phases"/> fractions and <b>interpolated between the
+    /// two straddling it</b> rather than snapped to the nearer. Snapping is the obvious version and
+    /// it is a timing error of up to half a phase — small, but it moves as the correction drifts,
+    /// which is the one kind of error this interpolator exists to avoid. Blending is a convex
+    /// combination of two kernels that each sum to one, so it sums to one, keeps the DC response
+    /// that <see cref="At"/> normalises for, and leaves the residual second order in the phase step.
+    /// </para>
+    /// <para>
+    /// <see cref="At"/> stays exact and is what the tests measure the interpolator against. This is
+    /// the one to reach for in a loop over a whole file.
+    /// </para>
+    /// </remarks>
+    public static double AtTabulated(ReadOnlySpan<float> signal, double position)
+    {
+        if (signal.Length == 0) return 0;
+
+        int centre = (int)Math.Floor(position);
+        double fraction = position - centre;
+
+        // On a sample exactly, no interpolation is needed and none should be done.
+        if (fraction < 1e-12 && (uint)centre < (uint)signal.Length) return signal[centre];
+
+        double exact = fraction * Phases;
+        int phase = (int)exact;
+        if (phase >= Phases) phase = Phases - 1;
+        double blend = exact - phase;
+
+        double[] kernels = Kernels;
+        int low = phase * Taps;
+        int high = low + Taps;
+
+        double sum = 0;
+        for (int k = -DefaultHalfTaps + 1, t = 0; k <= DefaultHalfTaps; k++, t++)
+        {
+            int index = centre + k;
+            if ((uint)index < (uint)signal.Length)
+            {
+                double tap = kernels[low + t];
+                sum += (tap + (kernels[high + t] - tap) * blend) * signal[index];
+            }
+        }
+        return sum;
+    }
+
+    /// <summary>
+    /// Fractions the kernel is tabulated at. Half a megabyte at the default tap count, built once.
+    /// </summary>
+    private const int Phases = 2048;
+
+    private const int Taps = DefaultHalfTaps * 2;
+
+    /// <remarks>
+    /// One row past <see cref="Phases"/>, holding the kernel for a fraction of exactly one, so the
+    /// blend above can always read the row after the one it landed on without a bounds test.
+    /// </remarks>
+    private static readonly double[] Kernels = BuildKernels();
+
+    private static double[] BuildKernels()
+    {
+        var table = new double[(Phases + 1) * Taps];
+        for (int p = 0; p <= Phases; p++)
+        {
+            double fraction = p / (double)Phases;
+            int at = p * Taps;
+            double weight = 0;
+
+            for (int k = -DefaultHalfTaps + 1, t = 0; k <= DefaultHalfTaps; k++, t++)
+            {
+                double x = fraction - k;
+                table[at + t] = Sinc(x) * Window(x, DefaultHalfTaps);
+                weight += table[at + t];
+            }
+
+            // Normalised here rather than per read, which is the other half of the saving.
+            if (Math.Abs(weight) > 1e-12)
+                for (int t = 0; t < Taps; t++) table[at + t] /= weight;
+        }
+        return table;
+    }
+
     private static double Sinc(double x)
     {
         if (Math.Abs(x) < 1e-12) return 1;
