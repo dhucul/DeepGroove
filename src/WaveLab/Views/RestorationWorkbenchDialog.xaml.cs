@@ -765,9 +765,9 @@ public partial class RestorationWorkbenchDialog : Window
                 Threshold = settings.DecrackleThreshold,
             };
 
-            // Channels are independent - each task owns one array and reads no other - which is the
-            // parallelism CLAUDE.md records as safe and unclaimed for the same estimator behind
-            // click repair. Worth about 2x on a stereo transfer.
+            // Channels are independent - each task owns one array and reads no other - the same
+            // parallelism RepairClicksInPlace now uses internally for the estimator behind click
+            // repair. Worth about 2x on a stereo transfer.
             double stageStart = at, stageSpan = step;
             var fractions = new double[work.Length];
             Parallel.For(0, work.Length,

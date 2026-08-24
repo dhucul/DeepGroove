@@ -215,12 +215,25 @@ public static partial class Restoration
 
     /// <summary>
     /// Repair analysed events in place. Prefer <see cref="RepairClicks"/> unless the caller
-    /// already owns a disposable working copy.
+    /// already owns a disposable working copy. Channels are repaired concurrently, so
+    /// <paramref name="progress"/> reports may arrive from worker threads.
     /// </summary>
     public static int RepairClicksInPlace(float[][] data, IReadOnlyList<ClickEvent> events,
         ClickRepairOptions? options = null,
         CancellationToken cancellationToken = default,
         IProgress<RestorationProgress>? progress = null)
+        => RepairClicksInPlace(data, events, options, cancellationToken, progress,
+            maxDegreeOfParallelism: -1);
+
+    /// <summary>
+    /// <paramref name="maxDegreeOfParallelism"/> exists for the identity test alone: 1 runs the
+    /// channels in turn, giving the parallel default a reference to be bit-identical against.
+    /// </summary>
+    internal static int RepairClicksInPlace(float[][] data, IReadOnlyList<ClickEvent> events,
+        ClickRepairOptions? options,
+        CancellationToken cancellationToken,
+        IProgress<RestorationProgress>? progress,
+        int maxDegreeOfParallelism)
     {
         ArgumentNullException.ThrowIfNull(data);
         ArgumentNullException.ThrowIfNull(events);
@@ -238,34 +251,66 @@ public static partial class Restoration
         int sampleCount = data.Length == 0 ? 0 : data[0].Length;
         var ordered = CreateClickRepairPlan(events, data.Length, sampleCount,
             options.LinkChannels);
-        int repaired = 0;
-        int previousChannel = -1;
-        int previousEnd = -1;
-        for (int eventIndex = 0; eventIndex < ordered.Length; eventIndex++)
+        if (ordered.Length == 0) return 0;
+
+        // The plan is channel-major with overlapping guards already merged per channel, so each
+        // channel's events are one contiguous run over an array no other run touches. That is
+        // what makes the channels safe to repair at once — the parallelism the de-crackle stage
+        // already uses, worth about 2x on a stereo transfer — and Janssen at ~35x a linear
+        // bridge is the wall clock of this whole tool.
+        var runs = new List<(int First, int Limit)>(data.Length);
+        for (int index = 0; index < ordered.Length;)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var defect = ordered[eventIndex];
-            if (defect.Channel < 0 || defect.Channel >= data.Length) continue;
-            var samples = data[defect.Channel];
-            if (defect.Channel != previousChannel)
-            {
-                previousChannel = defect.Channel;
-                previousEnd = -1;
-            }
+            int channel = ordered[index].Channel;
+            int limit = index + 1;
+            while (limit < ordered.Length && ordered[limit].Channel == channel) limit++;
+            runs.Add((index, limit));
+            index = limit;
+        }
 
-            int start = Math.Max(defect.StartSample, previousEnd);
-            int end = defect.EndSample;
-            if (start < 1 || end >= samples.Length || start >= end) continue;
-
-            InterpolateImpulse(samples, start, end, strength, maximumOvershoot);
-            previousEnd = end;
-            repaired++;
-            if ((eventIndex & 31) == 0 || eventIndex == ordered.Length - 1)
+        int repaired = 0;
+        int processed = 0;
+        void RepairRun((int First, int Limit) run)
+        {
+            int repairedInRun = 0;
+            int previousEnd = -1;
+            for (int eventIndex = run.First; eventIndex < run.Limit; eventIndex++)
             {
-                progress?.Report(new RestorationProgress(RestorationStage.RepairingClicks,
-                    (double)(eventIndex + 1) / ordered.Length, defect.Channel, data.Length,
-                    eventIndex + 1, ordered.Length));
+                cancellationToken.ThrowIfCancellationRequested();
+                var defect = ordered[eventIndex];
+                var samples = data[defect.Channel];
+                // The plan's merge pass keeps one channel's events disjoint, so the clamp is a
+                // backstop rather than a decision.
+                int start = Math.Max(defect.StartSample, previousEnd);
+                int end = defect.EndSample;
+                int done = Interlocked.Increment(ref processed);
+                if (start >= 1 && end < samples.Length && start < end)
+                {
+                    InterpolateImpulse(samples, start, end, strength, maximumOvershoot);
+                    previousEnd = end;
+                    repairedInRun++;
+                }
+                if ((done & 31) == 0 || done == ordered.Length)
+                {
+                    progress?.Report(new RestorationProgress(RestorationStage.RepairingClicks,
+                        (double)done / ordered.Length, defect.Channel, data.Length,
+                        done, ordered.Length));
+                }
             }
+            Interlocked.Add(ref repaired, repairedInRun);
+        }
+
+        if (runs.Count == 1 || maxDegreeOfParallelism == 1)
+        {
+            foreach (var run in runs) RepairRun(run);
+        }
+        else
+        {
+            Parallel.ForEach(runs, new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            }, RepairRun);
         }
         return repaired;
     }

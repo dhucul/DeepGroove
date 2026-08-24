@@ -232,4 +232,34 @@ public sealed class ClickRepairQualityTests(ITestOutputHelper output)
         Assert.True(halfDb > noneDb, "half strength should still improve on the damage");
         Assert.True(fullDb > halfDb, "full strength should improve on half");
     }
+
+    /// <summary>
+    /// The channels repair concurrently — the parallelism the de-crackle stage already claims,
+    /// safe because each channel's samples are independent. Safe has to mean bit-identical:
+    /// this pins the parallel default against the same repair run one channel at a time, so a
+    /// scheduling dependency in the plan or the interpolator cannot creep in silently.
+    /// </summary>
+    [Fact]
+    public void RepairingChannelsInParallelMatchesDoingThemInTurn()
+    {
+        float[][] clean = CleanProgramme();
+        var (sequential, _) = WithClicks(clean, count: 24);
+        var parallel = new[] { (float[])sequential[0].Clone(), (float[])sequential[1].Clone() };
+
+        var analysis = Restoration.AnalyzeClicks(sequential, SampleRate,
+            new ClickAnalysisOptions { Sensitivity = 7.0 });
+        var options = new ClickRepairOptions();
+
+        int repairedInTurn = Restoration.RepairClicksInPlace(sequential, analysis.Events,
+            options, CancellationToken.None, progress: null, maxDegreeOfParallelism: 1);
+        int repairedAtOnce = Restoration.RepairClicksInPlace(parallel, analysis.Events, options);
+
+        Assert.True(repairedInTurn > 0, "nothing was repaired, so the comparison is meaningless");
+        Assert.Equal(repairedInTurn, repairedAtOnce);
+        for (int channel = 0; channel < 2; channel++)
+        {
+            Assert.Equal(sequential[channel], parallel[channel]);
+            output.WriteLine($"channel {channel}: {sequential[channel].Length} samples identical");
+        }
+    }
 }
