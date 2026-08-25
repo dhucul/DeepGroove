@@ -999,11 +999,12 @@ public partial class MainWindow : Window
             }
         }
 
-        // Re-checked before the scaling pass rather than only after it. MessageBox disables its
-        // owner and not the application — unlike ShowDialog — so the modeless Edit History panel is
-        // reachable while the prompt above is up, and MainViewModel.CanMoveHistory gates on exactly
-        // the flag the measure block's finally has just cleared. Failing here costs nothing;
-        // failing after costs a full pass over the document first.
+        // Re-checked before the scaling pass rather than only after it. The modeless Edit History
+        // panel is reachable throughout the measure above, and MainViewModel.CanMoveHistory gates on
+        // exactly the flag the measure block's finally has just cleared. The ceiling prompt itself
+        // is a ShowDialog and so disables the application, unlike the MessageBox it replaced —
+        // nothing moves under it. Failing here costs nothing; failing after costs a full pass over
+        // the document first.
         if (d.Doc.EditVersion != measuredAt)
         {
             _vm.ReportAction($"{title} changed while it was being measured · nothing applied.");
@@ -1050,9 +1051,12 @@ public partial class MainWindow : Window
         // and committing the full gain without the limiter that justifies it is the one outcome
         // this path must not produce, because it is the loud one.
         string? limiter = null;
+        bool rackWasBypassed = false;
         if (addLimiter)
         {
-            limiter = _vm.Master.AddConfiguredEffect("limiter",
+            // Re-aimed rather than duplicated if the rack already holds one: a second Precision
+            // Limiter is 5 ms more latency and a second gain stage doing the first one's job.
+            limiter = _vm.Master.ConfigureOrAddEffect("limiter",
                 // Threshold at 0 dB is transparent peak protection that only catches overs, which
                 // is what the gain above has just created; the ceiling is the target's own, so the
                 // rack holds exactly the bound the plan was computed against.
@@ -1066,15 +1070,30 @@ public partial class MainWindow : Window
                     + "· nothing changed.");
                 return;
             }
+
+            // A bypassed rack renders as an empty chain — ProcessOffline clones nothing — so the
+            // limiter that justifies the full gain would hold nothing, and the render this status
+            // line points at would write the overs. Activated for the reason ApplyStoredPreset
+            // activates it: a limiter the rack is not running is not protecting anything.
+            rackWasBypassed = !_vm.Master.RackEnabled;
+            if (rackWasBypassed) _vm.Master.RackEnabled = true;
         }
 
         _vm.PrepareForDocumentEdit(d);
-        d.Doc.ReplaceAllOwned(scaled, Processing.MatchLoudnessName(gainDb, plan.TargetLufs));
+        // The limiter route is not the gain-only route and the history should not read as though it
+        // were: it applies a larger gain, lands under the target rather than on it, and leaves a
+        // rack entry that undo cannot take back with the samples.
+        d.Doc.ReplaceAllOwned(scaled, limiter == null
+            ? Processing.MatchLoudnessName(gainDb, plan.TargetLufs)
+            : $"Match Loudness ≤{plan.TargetLufs:0.0} LUFS ({gainDb:+0.0;-0.0} dB + rack limiter)");
         _vm.ReportAction(limiter == null
             ? $"{title}: {gainDb:+0.0;-0.0} dB → {step.ResultingLufs:0.0} LUFS, "
                 + $"{step.ResultingTruePeakDbtp:0.0} dBTP."
-            : $"{title}: {gainDb:+0.0;-0.0} dB · {limiter} added at {plan.CeilingDbtp:0.0} dBTP · "
-                + "the file is above full scale until you render the rack (Master ▸ Render in Place).");
+            : $"{title}: {gainDb:+0.0;-0.0} dB · {limiter} at {plan.CeilingDbtp:0.0} dBTP"
+                + (rackWasBypassed ? " · rack switched out of bypass to hold it" : string.Empty)
+                + " · above full scale until the rack is rendered (Master ▸ Render in Place covers "
+                + "the selection if one is set, Render Copy always covers the whole file) · undo "
+                + "returns the samples and leaves the limiter in the rack.");
     }
 
     /// <summary>

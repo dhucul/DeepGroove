@@ -1,4 +1,4 @@
-using WaveLab.Audio;
+﻿using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
 using WaveLab.ViewModels;
@@ -147,5 +147,104 @@ public sealed class NormalizeLoudnessCeilingTests
             IAudioEffect added = master.ChainSnapshot.Last(effect => effect.TypeId == "limiter");
             Assert.Equal(target.TruePeakDbtp, added.GetParam("ceiling"), 6);
         }
+    }
+
+    /// <summary>
+    /// Normalizing twice must not leave two limiters in the rack: the second is 5 ms more latency
+    /// and a second gain stage doing the first one's job.
+    /// </summary>
+    /// <remarks>
+    /// Re-aiming overwrites whatever the user had dialled in, which is why the rack status line
+    /// says that is what happened. The alternative — leaving the first one and saying the rack
+    /// already holds one — is defensible; silently stacking is not.
+    /// </remarks>
+    [Fact]
+    public void TheRackIsReAimedRatherThanStackedWhenItAlreadyHoldsALimiter()
+    {
+        var master = new MasterSection();
+        var rack = new MasterSectionViewModel(master);
+
+        Assert.NotNull(rack.ConfigureOrAddEffect("limiter", ("ceiling", -1.0)));
+        Assert.NotNull(rack.ConfigureOrAddEffect("limiter", ("ceiling", -0.3)));
+
+        IAudioEffect only = Assert.Single(master.ChainSnapshot, fx => fx.TypeId == "limiter");
+        Assert.Equal(-0.3, only.GetParam("ceiling"), 6);
+        Assert.True(only.Enabled);
+        Assert.Contains("re-aimed", rack.RackStatusText);
+    }
+
+    /// <summary>
+    /// The reason the command switches the rack out of bypass: a bypassed rack renders as an empty
+    /// chain, so the limiter that justifies applying the full gain would hold nothing and the
+    /// render would write the overs.
+    /// </summary>
+    /// <remarks>
+    /// This pins <see cref="MasterSection.ProcessOffline"/>'s own behaviour rather than the command,
+    /// because it is the fact the command's decision rests on — and it is the half that would go on
+    /// being true if the activation were ever removed again.
+    /// </remarks>
+    [Fact]
+    public void ABypassedRackRendersAsThoughTheLimiterWereNotThere()
+    {
+        var master = new MasterSection();
+        var rack = new MasterSectionViewModel(master);
+        Assert.NotNull(rack.ConfigureOrAddEffect("limiter",
+            ("thresh", 0), ("ceiling", -0.3), ("oversample", 1)));
+
+        // Well above full scale, which is what the full-gain route leaves behind.
+        float[][] over = [new float[4096], new float[4096]];
+        for (int c = 0; c < over.Length; c++)
+            for (int i = 0; i < over[c].Length; i++)
+                over[c][i] = 2.0f * MathF.Sin(MathF.Tau * 1000f * i / 44_100f);
+
+        rack.RackEnabled = false;
+        float[][] bypassed = master.ProcessOffline(over, 44_100);
+        Assert.Equal(2.0, (double)bypassed.Max(ch => ch.Max(MathF.Abs)), 3);
+
+        rack.RackEnabled = true;
+        float[][] held = master.ProcessOffline(over, 44_100);
+        Assert.True(held.Max(ch => ch.Max(MathF.Abs)) < 1.0f,
+            "the limiter should hold the ceiling once the rack is actually running");
+    }
+
+    /// <summary>
+    /// An effect added for a purpose must carry its caller's values before the chain can see it.
+    /// </summary>
+    /// <remarks>
+    /// <c>Read</c> holds the chain lock for a whole block, so an effect published at its defaults
+    /// processes at its defaults until the next one — and setting three parameters one at a time
+    /// after publishing also lets the audio thread observe one moved and another not. This is the
+    /// same class of defect <c>CoefficientPublishingTests</c> exists for, and like that one it can
+    /// only fail, never prove: it is a backstop against anyone moving the settings back out of
+    /// <see cref="MasterSection.AddEffect"/>.
+    /// </remarks>
+    [Fact]
+    public async Task TheSettingsAreOnTheEffectBeforeTheChainCanSeeIt()
+    {
+        var master = new MasterSection();
+        var rack = new MasterSectionViewModel(master);
+        var stop = new CancellationTokenSource();
+        var seenAtDefaults = new List<double>();
+
+        var watcher = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+                foreach (IAudioEffect fx in master.ChainSnapshot)
+                    if (fx.TypeId == "limiter" && Math.Abs(fx.GetParam("ceiling") - -0.3) > 1e-9)
+                        lock (seenAtDefaults) seenAtDefaults.Add(fx.GetParam("ceiling"));
+        });
+
+        for (int i = 0; i < 200; i++)
+        {
+            rack.ConfigureOrAddEffect("limiter", ("thresh", 0), ("ceiling", -0.3), ("oversample", 1));
+            master.RemoveEffect(master.ChainSnapshot.Last(fx => fx.TypeId == "limiter"));
+        }
+
+        await stop.CancelAsync();
+        await watcher.WaitAsync(TimeSpan.FromSeconds(5));
+        lock (seenAtDefaults)
+            Assert.True(seenAtDefaults.Count == 0,
+                $"a limiter was visible in the chain at {seenAtDefaults.Count} unasked-for "
+                + $"ceiling(s): {string.Join(", ", seenAtDefaults.Take(5).Select(v => $"{v:0.000}"))}");
     }
 }

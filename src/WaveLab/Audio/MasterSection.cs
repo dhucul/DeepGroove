@@ -243,10 +243,22 @@ public sealed class MasterSection : ISampleProvider
         Retire(oldB);
     }
 
-    public IAudioEffect AddEffect(string typeId)
+    /// <summary>
+    /// Creates an effect, sets any parameters the caller named, and publishes it to the chain.
+    /// </summary>
+    /// <remarks>
+    /// The settings are applied here rather than by the caller for the same reason
+    /// <see cref="IAudioEffect.Configure"/> is: <c>Read</c> holds <c>_chainLock</c> for a whole
+    /// block, so an effect published at its defaults processes at its defaults until the next one —
+    /// and a caller that named a ceiling meant that ceiling from the first sample. Setting them
+    /// afterwards also lets the audio thread observe one parameter moved and another not.
+    /// </remarks>
+    public IAudioEffect AddEffect(string typeId, IReadOnlyList<(string Key, double Value)>? settings = null)
     {
         var fx = EffectFactory.Create(typeId);
         fx.Configure(_sampleRate, _channels);
+        if (settings != null)
+            foreach (var (key, value) in settings) fx.SetParam(key, value);
         lock (_chainLock) _chain.Add(fx);
         return fx;
     }

@@ -164,6 +164,32 @@ public sealed class MasterSectionViewModel : ObservableObject
     public string? AddConfiguredEffect(string typeId, params (string Key, double Value)[] settings) =>
         AddEffect(typeId, settings);
 
+    /// <summary>
+    /// Adds an effect, or re-aims the one the rack already holds, for a caller adding it for a
+    /// purpose rather than because the user asked for it. Returns its display name, or null if it
+    /// could not be created.
+    /// </summary>
+    /// <remarks>
+    /// A second copy of an effect added for a reason is a fault rather than a choice: two limiters
+    /// are twice the latency and a second gain stage doing the first one's job. Re-aiming
+    /// overwrites settings the user may have dialled in, so the status line says that is what
+    /// happened rather than reporting it as an ordinary add.
+    /// </remarks>
+    public string? ConfigureOrAddEffect(string typeId, params (string Key, double Value)[] settings)
+    {
+        IAudioEffect? existing = Array.Find(_master.ChainSnapshot, fx => fx.TypeId == typeId);
+        if (existing == null) return AddEffect(typeId, settings);
+
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        foreach (var (key, value) in settings) existing.SetParam(key, value);
+        _master.SetEffectEnabled(existing, true);
+        MarkChainCustom();
+        SyncFromMaster();
+        RackStatusText = $"{existing.DisplayName} was already in the rack · re-aimed rather than duplicated.";
+        NotifyTopologyChanged(expandedMonoBefore);
+        return existing.DisplayName;
+    }
+
     private string? AddEffect(string typeId, IReadOnlyList<(string Key, double Value)>? settings = null)
     {
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
@@ -171,7 +197,11 @@ public sealed class MasterSectionViewModel : ObservableObject
         IAudioEffect effect;
         try
         {
-            effect = _master.AddEffect(typeId);
+            // The settings travel with the creation so they are on the effect before the chain can
+            // see it — Read holds the chain lock for a whole block, so an effect published at its
+            // defaults processes at its defaults until the next one. SetParam clamps to each
+            // parameter's own range, so a caller cannot put an effect somewhere its UI could not.
+            effect = _master.AddEffect(typeId, settings);
         }
         catch (Exception ex)
         {
@@ -180,13 +210,6 @@ public sealed class MasterSectionViewModel : ObservableObject
             RackStatusText = $"That effect could not be added: {ex.Message} · rack unchanged.";
             return null;
         }
-
-        // Before SyncFromMaster, so the card is built holding the values the caller asked for. A
-        // card that appears at its defaults and then jumps is indistinguishable from one the user
-        // moved. SetParam clamps to each parameter's own range, so a caller cannot put an effect
-        // somewhere its UI could not.
-        if (settings != null)
-            foreach (var (key, value) in settings) effect.SetParam(key, value);
 
         MarkChainCustom();
         SyncFromMaster();
