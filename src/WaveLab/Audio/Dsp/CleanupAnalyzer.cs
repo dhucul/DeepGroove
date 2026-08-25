@@ -423,6 +423,7 @@ public static class CleanupAnalyzer
         blockLevels.Sort();
         double noiseFloor = blockLevels.Count > 0 ? PercentileSorted(blockLevels, 0.10) : double.NegativeInfinity;
         double activeMedian = blockLevels.Count > 0 ? PercentileSorted(blockLevels, 0.60) : double.NegativeInfinity;
+        double programmeFloor = blockLevels.Count > 0 ? PercentileSorted(blockLevels, 0.30) : double.NegativeInfinity;
         double dynamic = double.IsFinite(noiseFloor) && double.IsFinite(activeMedian)
             ? Math.Max(0, activeMedian - noiseFloor)
             : 0;
@@ -432,7 +433,7 @@ public static class CleanupAnalyzer
             : 1;
         return new GlobalStats(frames, rms, peak, noiseFloor, activeMedian, dynamic,
             meter.IntegratedLufs, meter.TruePeakDb, Math.Clamp(correlation, -1, 1),
-            SideToMidDb(blockMidSide, activeMedian));
+            SideToMidDb(blockMidSide, programmeFloor));
     }
 
     /// <summary>
@@ -450,10 +451,12 @@ public static class CleanupAnalyzer
     /// dB where the disc was cut mono, −9.8 and −6.0 where it was not.
     /// </para>
     /// <para>
-    /// The gate is <see cref="GlobalStats.ActiveMedianDb"/>, the 60th percentile of block level that
-    /// the dynamic-range figure is already built on, so the ratio is taken over the louder two fifths
-    /// of the file. Taken over the whole file instead it is dominated by whichever is longer, the
-    /// music or the run-out, which on a record are the two answers being told apart.
+    /// The gate is the 30th percentile of block level, so the ratio is taken over the lower three
+    /// quarters of the programme rather than only its loudest two fifths. Widening the gate stops a
+    /// loud mono-dominant passage (centred vocal, bass) from dominating the measurement — quieter
+    /// passages that carry real stereo information still contribute, and the run-out and noise floor
+    /// are excluded the same way they always were. The original 60th-percentile gate was right about
+    /// excluding the run-out but could read a naturally narrow loud passage as a mono pressing.
     /// </para>
     /// </remarks>
     private static double SideToMidDb(

@@ -101,11 +101,15 @@ internal static class RestorationRecommendations
         double highPassCutoff = Math.Clamp(Param(highPass, "cutoff", 30.0), 20, 60);
 
         // How far the side may be pulled down is a property of the pressing. Between the anchors
-        // this ramps rather than switching, because a ratio landing either side of one number would
-        // otherwise decide by itself whether a record keeps its stereo.
-        double sideLevel = Quantize(Math.Clamp(
-            (cleanup.SideToMidDb - MonoPressingSideToMidDb) /
-            (StereoSideToMidDb - MonoPressingSideToMidDb), 0, 1), 0.05);
+        // this uses a sigmoid rather than a linear ramp, with a floor at 0.20 so the side is never
+        // fully discarded. A linear ramp was calibrated on five recordings from one collection and
+        // could collapse the stereo image on material outside that narrow set; the sigmoid errs
+        // toward preserving width while still collapsing the side on a strong mono signal.
+        // At -14 dB: ~0.25 (was 0.00)   At -11 dB: ~0.55   At -8 dB: ~0.85 (was 1.00)
+        double x = (cleanup.SideToMidDb - MonoPressingSideToMidDb) /
+                   (StereoSideToMidDb - MonoPressingSideToMidDb);
+        double sigmoid = 1.0 / (1.0 + Math.Exp(-5.0 * (x - 0.55)));
+        double sideLevel = Quantize(Math.Clamp(0.20 + 0.75 * sigmoid, 0.20, 1.0), 0.05);
 
         // De-crackle rides on the same evidence as click repair: impulses found means a surface
         // that sheds them, and crackle is the population below the click detector's reach rather

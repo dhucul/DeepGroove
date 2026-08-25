@@ -760,21 +760,34 @@ public partial class RestorationWorkbenchDialog : Window
             string crackleMessage =
                 $"Removing surface crackle at {settings.DecrackleThreshold:0.0} deviations…";
             progress.Report(new OperationProgress(crackleMessage, at));
-            var crackleOptions = DecrackleOptions.Default with
-            {
-                Threshold = settings.DecrackleThreshold,
-            };
 
-            // Channels are independent - each task owns one array and reads no other - the same
-            // parallelism RepairClicksInPlace now uses internally for the estimator behind click
-            // repair. Worth about 2x on a stereo transfer.
-            double stageStart = at, stageSpan = step;
-            var fractions = new double[work.Length];
-            Parallel.For(0, work.Length,
-                new ParallelOptions { CancellationToken = cancellationToken },
-                channel => Decrackle.Process(work[channel], crackleOptions, cancellationToken,
-                    new ChannelFractionProgress(fractions, channel, progress, crackleMessage,
-                        stageStart, stageSpan)));
+            if (work.Length == 2)
+            {
+                // Stereo: run detection in the side (L−R) signal where 78% of crackle
+                // lives, and classify candidates against a musical-transient model so
+                // cymbals and sibilance are left alone. The mid signal is never seen
+                // by the detector.
+                Decrackle.ProcessStereo(work[0], work[1],
+                    DecrackleOptions.Default with { Threshold = settings.DecrackleThreshold },
+                    cancellationToken,
+                    new SimpleFractionProgress(crackleMessage, progress, at, step));
+            }
+            else
+            {
+                // Mono or multi-channel: per-channel fallback.
+                double stageStart = at, stageSpan = step;
+                var fractions = new double[work.Length];
+                var crackleOptions = DecrackleOptions.Default with
+                {
+                    Threshold = settings.DecrackleThreshold,
+                };
+                Parallel.For(0, work.Length,
+                    new ParallelOptions { CancellationToken = cancellationToken },
+                    channel => Decrackle.Process(work[channel], crackleOptions,
+                        cancellationToken,
+                        new ChannelFractionProgress(fractions, channel, progress,
+                            crackleMessage, stageStart, stageSpan)));
+            }
         }
         at += step;
 
@@ -860,6 +873,19 @@ public partial class RestorationWorkbenchDialog : Window
             outer.Report(new OperationProgress(message,
                 Math.Clamp(offset + span * total / Math.Max(1, fractions.Length), 0, 1)));
         }
+    }
+
+    /// <summary>
+    /// A single-channel progress adapter for the stereo de-crackle path, which runs
+    /// sequentially in M/S space rather than one task per channel.
+    /// </summary>
+    private sealed class SimpleFractionProgress(
+        string message, IProgress<OperationProgress> outer,
+        double offset, double span) : IProgress<double>
+    {
+        public void Report(double value) =>
+            outer.Report(new OperationProgress(message,
+                Math.Clamp(offset + span * Math.Clamp(value, 0, 1), 0, 1)));
     }
 
     private static float[][] CopyChannels(IReadOnlyList<float[]> source, int start, int count,

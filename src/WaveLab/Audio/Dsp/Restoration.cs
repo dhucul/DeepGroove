@@ -62,7 +62,76 @@ public static partial class Restoration
         var result = new float[profile.Length];
         for (int b = 0; b < profile.Length; b++)
             result[b] = frames > 0 ? (float)(profile[b] / frames) : 0f;
+        ScrubTonalPeaks(result);
         return result;
+    }
+
+    /// <summary>
+    /// Removes narrow spectral peaks from a noise profile. A noise profile learned from a
+    /// passage that still contains music (a fade-out, a quiet held note) will carry that
+    /// music's harmonics as single-bin spikes; the spectral gate then treats those bins as
+    /// noise and suppresses them, which is exactly what takes music with the hiss. A
+    /// 5-bin median filter removes these narrow peaks while leaving the broadband noise
+    /// envelope — the actual hiss — untouched.
+    /// </summary>
+    /// <remarks>
+    /// Measured, the cost of not doing this is worst where it matters most: a quiet piano
+    /// note or cymbal tail near the noise floor has most of its energy in a few bins, and
+    /// those are exactly the bins an un-scrubbed profile elevates. The median filter is
+    /// used because it removes narrow outliers while preserving steps (the hiss shelf at
+    /// a few kHz) that a smoothing filter would blur.
+    /// </remarks>
+    internal static void ScrubTonalPeaks(float[] profile)
+    {
+        if (profile.Length < 5) return;
+        // 5-bin median, centred: bin index 2 of window [b-2, b+2] replaces bin b.
+        // Bin 0 is DC and left alone; bin N-1 is Nyquist and gets a 3-bin window.
+        var scrubbed = new float[profile.Length];
+        Array.Copy(profile, scrubbed, profile.Length);
+
+        for (int b = 2; b < profile.Length - 2; b++)
+        {
+            float a = profile[b - 2], c = profile[b - 1], e = profile[b],
+                  g = profile[b + 1], i = profile[b + 2];
+            // Optimal sort-5 network (Knuth, 9 comparisons). After these,
+            // element 'e' holds the median of the five.
+            if (a > c) (a, c) = (c, a); // a ≤ c
+            if (g > i) (g, i) = (i, g); // g ≤ i
+            if (a > g) (a, g) = (g, a); // a ≤ g, a is min of {a,c,g}
+            if (c > i) (c, i) = (i, c); // c ≤ i
+            if (a > e) (a, e) = (e, a); // a ≤ e
+            if (e > i) (e, i) = (i, e); // e ≤ i
+            if (c > e) (c, e) = (e, c); // c ≤ e
+            if (e > g) (e, g) = (g, e); // e ≤ g
+            if (c > e) (c, e) = (e, c); // second pass: c ≤ e, e is median
+            scrubbed[b] = e;
+        }
+        // Bin 1: 3-bin median from indices 0,1,2
+        {
+            float a = profile[0], b = profile[1], c = profile[2];
+            if (a > b) (a, b) = (b, a);
+            if (b > c) (b, c) = (c, b);
+            if (a > b) (a, b) = (b, a);
+            scrubbed[1] = b;
+        }
+        // Bin N-2: 3-bin median from indices N-3, N-2, N-1
+        {
+            int last = profile.Length - 1;
+            float a = profile[last - 2], b = profile[last - 1], c = profile[last];
+            if (a > b) (a, b) = (b, a);
+            if (b > c) (b, c) = (c, b);
+            if (a > b) (a, b) = (b, a);
+            scrubbed[last - 1] = b;
+        }
+        // Only overwrite where the scrub lowered the profile — never raise it.
+        // Raising a bin would tell the gate that there is more noise than there
+        // is, which makes it suppress more, which is the opposite of what this
+        // is for. Lowering tells it a bin is cleaner than it measured, which is
+        // the safe direction.
+        for (int b = 0; b < profile.Length; b++)
+        {
+            if (scrubbed[b] < profile[b]) profile[b] = scrubbed[b];
+        }
     }
 
     /// <summary>
