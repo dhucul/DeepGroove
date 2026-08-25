@@ -7,6 +7,7 @@
 bin/
 obj/
 [Pp]ublish/
+artifacts/
 
 # Installer output
 installer/Output/

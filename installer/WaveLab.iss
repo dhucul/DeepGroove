@@ -1,6 +1,8 @@
 ﻿; Deep Groove — Inno Setup script
-; Build: dotnet publish first (self-contained win-x64), then compile this script.
-;   dotnet publish src\WaveLab\WaveLab.csproj -c Release -r win-x64 --self-contained true
+; Build: dotnet publish first (self-contained win-x64), then compile this script. Both the
+; payload and the intermediate build land under artifacts\, so the Visual Studio output
+; folder (bin\Release\net10.0-windows) holds nothing but the framework-dependent build.
+;   dotnet publish src\WaveLab\WaveLab.csproj -c Release -r win-x64 --self-contained true -o artifacts\publish --artifacts-path artifacts\build
 ;   ISCC.exe installer\WaveLab.iss
 
 ; Display name only: the wizard, the Start Menu group, the desktop shortcut and the
@@ -10,7 +12,7 @@
 #define MyAppName "Deep Groove"
 #define MyAppVersion "2.0.31"
 #define MyAppExeName "WaveLab.exe"
-#define PublishDir "..\src\WaveLab\bin\Release\net10.0-windows\win-x64\publish"
+#define PublishDir "..\artifacts\publish"
 
 [Setup]
 AppId={{7C4B1F2E-63A8-4D9B-9E1C-2F8A5D0B7E43}
