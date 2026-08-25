@@ -1782,6 +1782,52 @@ only ever visible in the two being asserted against each other.
 pre-fix `!bypass && sideLevel < 1.0` fails it on exactly the two rows where the box is unticked and
 the slider is not at full — which is the bug, reproduced.
 
+## The ceiling prompt stated the arithmetic and left the reader to do the subtraction
+
+Normalize Loudness put up "Loudness alone asks for +9.8 dB, but the -0.3 dBTP ceiling allows only
++5.2 dB", offered Yes/No, and never printed the one number anyone would act on: **where the file
+actually ends up**. `LoudnessMatchStep.ResultingLufs` had been on the step all along and the prompt
+did not use it. The dead end was structural as well as verbal — the message named limiting as the
+thing that would close the gap and gave it nowhere to happen.
+
+- **It leads with the outcome now, and the two costs of the alternative are stated rather than
+  discovered.** `LoudnessMatch.DescribeCeilingChoice` is pure, so the wording is unit-tested without
+  a window — the arrangement `DescribeDeclipChoices`, `DescribeNoiseDepth` and `DescribeOutputMix`
+  all use. It says the file can only reach -16.6 LUFS against the -12.0 asked for, that going louder
+  passes the ceiling, and that a limiter **lands a little under the target** (limiting removes energy
+  as well as peaks) and **leaves the document above full scale until the rack is rendered** — fine in
+  32-bit float, hard clipping the moment it is saved at 16 or 24 bits.
+- **The limiter route applies the full gain, not the permitted one, and that is the whole reason it
+  works.** A limiter after a gain already capped at the ceiling has nothing to catch, so the offer
+  would be theatre. `+9.8` goes on destructively and a Precision Limiter goes into the rack at
+  `thresh 0` — transparent peak protection that only catches overs, which is exactly what the gain
+  just created — with `ceiling` set from the plan's own `CeilingDbtp`, so the bound the gain was
+  computed against and the bound the rack enforces are one number.
+  `TheTwoCoursesOfActionCarryDifferentGains` pins it.
+- **The limiter is added before the gain is committed, so the two land together or neither does.**
+  An effect that will not load leaves the rack unchanged and reports why; committing the full gain
+  without the limiter that justifies it is the one outcome this path must not produce, because it is
+  the loud one. The scaling pass runs first, since it is the cancellable part and touches nothing.
+- **`MessageBox` cannot label its buttons**, so a three-way decision through it has to be worded as a
+  question whose Yes and No mean things the buttons do not say. `Views/ChoiceDialog` is the themed
+  alternative: title, message, and a button per course of action carrying what it will do. Being a
+  real `Window` shown with `ShowDialog`, it disables the whole application rather than its owner
+  alone — the asymmetry already recorded for the true-peak prompt, where the modeless Edit History
+  panel stayed reachable behind a `MessageBox`.
+- **The choices are stacked, not in a row, and they wrap.** They are sentences carrying figures
+  rather than verbs, and a row of them is what runs a dialog past its own width. `ToolButton` is a
+  38x38 icon square, so `ChoiceButton` clears the fixed width the way `SegmentButton` had to, and
+  `Height` becomes `MinHeight` because the content wraps — the failure mode is a taller dialog
+  rather than a word cut mid-glyph. Measured at the dialog's 460 px: the widest label wants
+  **213.5 px against 414 given**, so nothing wraps today and the probe fails if that stops being
+  true. The first option takes the accent and `IsDefault`, so the emphasised button and the default
+  answer are the same one, and it is the conservative one.
+- **`MasterSectionViewModel.AddConfiguredEffect` sets its parameters before `SyncFromMaster`**, so
+  the card is built holding the values asked for. A card that appears at its defaults and then jumps
+  is indistinguishable from one the user moved. `SetParam` clamps to each parameter's own range, so
+  a caller cannot put an effect somewhere its own UI could not reach —
+  `EveryTargetsCeilingIsReachableByTheLimiter` checks the five presets against the limiter's -12..0.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

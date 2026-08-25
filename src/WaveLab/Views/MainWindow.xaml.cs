@@ -967,24 +967,35 @@ public partial class MainWindow : Window
             return;
         }
 
+        // The gain about to be applied, and whether a limiter is going to hold the ceiling for it.
+        // Both are decided before anything is measured against the document again.
+        double gainDb = step.GainDb;
+        bool addLimiter = false;
+
         if (step.ShortfallDb > LoudnessMatch.NegligibleGainDb)
         {
             // Said rather than applied quietly. The shortfall is the amount of limiting the master
             // would need, and that is a decision — the rule LoudnessCompliance and Match Loudness
-            // both already state, asked here because there is someone in front of it to ask.
-            MessageBoxResult answer = MessageBox.Show(this,
-                $"Loudness alone asks for {step.RequestedGainDb:+0.0;-0.0} dB, but the "
-                + $"{plan.CeilingDbtp:0.0} dBTP ceiling allows only {step.GainDb:+0.0;-0.0} dB."
-                + Environment.NewLine + Environment.NewLine
-                + $"Reaching {plan.TargetLufs:0.0} LUFS would need {step.ShortfallDb:0.0} dB of "
-                + "limiting, which is not applied here."
-                + Environment.NewLine + Environment.NewLine
-                + $"Apply {step.GainDb:+0.0;-0.0} dB anyway?",
-                "Normalize loudness", MessageBoxButton.YesNo, MessageBoxImage.Question);
-            if (answer != MessageBoxResult.Yes)
+            // both already state, asked here because there is someone in front of it to ask. What
+            // is new is that the decision now has somewhere to go: a limiter is the thing that
+            // closes the shortfall, so it is offered rather than named and left to the reader.
+            CeilingChoice ceilingChoice = LoudnessMatch.DescribeCeilingChoice(plan, step);
+            switch (ChoiceDialog.Ask(this, "Normalize loudness", ceilingChoice.Message, ceilingChoice.Labels))
             {
-                _vm.ReportAction("Normalize loudness cancelled.");
-                return;
+                case 0:
+                    break;
+                case 1:
+                    // The full gain, not the permitted one: a limiter after a gain that was already
+                    // capped at the ceiling has nothing to catch, so the two only make sense
+                    // together. What this leaves behind is a document above full scale — fine in
+                    // 32-bit float, hard clipping the moment it is saved at 16 or 24 bits — which
+                    // is why the wording says so and the status line says it again afterwards.
+                    gainDb = step.RequestedGainDb;
+                    addLimiter = true;
+                    break;
+                default:
+                    _vm.ReportAction("Normalize loudness cancelled.");
+                    return;
             }
         }
 
@@ -1010,7 +1021,7 @@ public partial class MainWindow : Window
                 async (_, token) =>
                 {
                     scaled = await Task.Run(
-                        () => Processing.MatchLoudnessData(channels, step.GainDb, token), token);
+                        () => Processing.MatchLoudnessData(channels, gainDb, token), token);
                 });
         }
         catch (OperationCanceledException) { _vm.ReportAction("Normalize loudness cancelled."); return; }
@@ -1034,11 +1045,36 @@ public partial class MainWindow : Window
             return;
         }
 
+        // The limiter goes in before the gain is committed, not after, so the two land together or
+        // neither does. An effect that will not load leaves the rack unchanged and reports why —
+        // and committing the full gain without the limiter that justifies it is the one outcome
+        // this path must not produce, because it is the loud one.
+        string? limiter = null;
+        if (addLimiter)
+        {
+            limiter = _vm.Master.AddConfiguredEffect("limiter",
+                // Threshold at 0 dB is transparent peak protection that only catches overs, which
+                // is what the gain above has just created; the ceiling is the target's own, so the
+                // rack holds exactly the bound the plan was computed against.
+                ("thresh", 0),
+                ("ceiling", plan.CeilingDbtp),
+                ("oversample", 1));
+            if (limiter == null)
+            {
+                _vm.ReportAction(
+                    $"{title}: the limiter could not be added, so the gain was not applied either "
+                    + "· nothing changed.");
+                return;
+            }
+        }
+
         _vm.PrepareForDocumentEdit(d);
-        d.Doc.ReplaceAllOwned(scaled, Processing.MatchLoudnessName(step.GainDb, plan.TargetLufs));
-        _vm.ReportAction(
-            $"{title}: {step.GainDb:+0.0;-0.0} dB → {step.ResultingLufs:0.0} LUFS, "
-            + $"{step.ResultingTruePeakDbtp:0.0} dBTP.");
+        d.Doc.ReplaceAllOwned(scaled, Processing.MatchLoudnessName(gainDb, plan.TargetLufs));
+        _vm.ReportAction(limiter == null
+            ? $"{title}: {gainDb:+0.0;-0.0} dB → {step.ResultingLufs:0.0} LUFS, "
+                + $"{step.ResultingTruePeakDbtp:0.0} dBTP."
+            : $"{title}: {gainDb:+0.0;-0.0} dB · {limiter} added at {plan.CeilingDbtp:0.0} dBTP · "
+                + "the file is above full scale until you render the rack (Master ▸ Render in Place).");
     }
 
     /// <summary>

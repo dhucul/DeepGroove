@@ -309,4 +309,52 @@ public static class LoudnessMatch
 
     private static string Level(double value, string unit) =>
         double.IsFinite(value) ? $"{value:0.0} {unit}" : "—";
+
+    /// <summary>
+    /// Words a true-peak shortfall as the decision it is, for a prompt with someone in front of it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Pure, so the wording is unit-tested without a window — the arrangement
+    /// <c>DescribeDeclipChoices</c>, <c>DescribeNoiseDepth</c> and <c>DescribeOutputMix</c> all use.
+    /// </para>
+    /// <para>
+    /// It leads with the number the wording it replaced never printed: <b>where the file actually
+    /// ends up</b>. "Loudness alone asks for +9.8 dB but the ceiling allows only +5.2" states the
+    /// arithmetic behind the decision and leaves the reader to do the subtraction that matters,
+    /// which is the one thing they would act on.
+    /// </para>
+    /// <para>
+    /// Both costs of the limiter route are stated rather than discovered. It lands a little under
+    /// the target, because limiting removes energy as well as peaks; and the full gain leaves the
+    /// document above full scale until the rack is rendered, which is fine in 32-bit float and is
+    /// hard clipping the moment it is saved at 16 or 24 bits.
+    /// </para>
+    /// </remarks>
+    public static CeilingChoice DescribeCeilingChoice(in LoudnessMatchPlan plan, in LoudnessMatchStep step) => new(
+        $"This file can only reach {step.ResultingLufs:0.0} LUFS, not the {plan.TargetLufs:0.0} you asked for. "
+        + $"Going louder would push the true peak past {plan.CeilingDbtp:0.0} dBTP."
+        + Environment.NewLine + Environment.NewLine
+        + $"Closing the last {step.ShortfallDb:0.0} dB needs limiting. A limiter takes the full "
+        + $"{step.RequestedGainDb:+0.0;-0.0} dB and holds the ceiling, landing a little under "
+        + $"{plan.TargetLufs:0.0} because it removes energy as well as peaks — and the file sits above "
+        + "full scale until you render the rack.",
+        $"Apply {step.GainDb:+0.0;-0.0} dB · stop at {step.ResultingLufs:0.0} LUFS",
+        $"Apply {step.RequestedGainDb:+0.0;-0.0} dB and add a limiter",
+        "Cancel");
+}
+
+/// <summary>What the true-peak ceiling did to a step, worded for the person deciding what to do.</summary>
+/// <param name="Message">Leads with where the file lands, because that is what is being decided.</param>
+/// <param name="StopShortLabel">Take the gain the ceiling allows and stop under the target.</param>
+/// <param name="AddLimiterLabel">Take the full gain and let a limiter hold the ceiling.</param>
+/// <param name="CancelLabel">Apply nothing.</param>
+public readonly record struct CeilingChoice(
+    string Message,
+    string StopShortLabel,
+    string AddLimiterLabel,
+    string CancelLabel)
+{
+    /// <summary>The three labels in the order they are offered, safest first.</summary>
+    public string[] Labels => [StopShortLabel, AddLimiterLabel, CancelLabel];
 }

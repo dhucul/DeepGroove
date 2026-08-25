@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using WaveLab.Audio;
@@ -105,6 +105,12 @@ public sealed class DialogLoadTests
             (document, index) => document.Doc.TruncateHistoryFrom(index)),
         "match-loudness" => new MatchLoudnessDialog([ViewModel()]),
         "help" => new HelpDialog(HelpCatalog.RecordingTopicId),
+        // Built from the wording the command actually puts up, rather than from placeholders: the
+        // labels carry figures, so their length is a property of the message and not of the test.
+        "choice" => new ChoiceDialog(
+            "Normalize loudness",
+            LoudnessMatch.DescribeCeilingChoice(CeilingBoundPlan, CeilingBoundStep).Message,
+            LoudnessMatch.DescribeCeilingChoice(CeilingBoundPlan, CeilingBoundStep).Labels),
         _ => throw new ArgumentOutOfRangeException(nameof(name), name, "No such dialog."),
     };
 
@@ -112,7 +118,16 @@ public sealed class DialogLoadTests
     [
         "info", "text-prompt", "param", "normalize-peak", "normalize-loudness", "export",
         "statistics", "file-info", "command-palette", "markers", "history", "match-loudness", "help",
+        "choice",
     ];
+
+    /// <summary>The true-peak-limited case Normalize Loudness prompts about, for the choice dialog.</summary>
+    private static LoudnessMatchPlan CeilingBoundPlan { get; } = LoudnessMatch.Plan(
+        [new LoudnessMeasurement("Take 1", -21.8, -5.5, 6.0, 44_100, 44_100 * 30)],
+        LoudnessMatchMode.Target,
+        LoudnessTarget.CompactDisc);
+
+    private static LoudnessMatchStep CeilingBoundStep => CeilingBoundPlan.Steps[0];
 
     [Theory]
     [MemberData(nameof(DialogNames))]

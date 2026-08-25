@@ -156,7 +156,15 @@ public sealed class MasterSectionViewModel : ObservableObject
     /// <summary>Raised before the whole chain is swapped, for the same reason.</summary>
     public event Action? ChainReplacing;
 
-    private void AddEffect(string typeId)
+    /// <summary>
+    /// Adds an effect and sets named parameters on it, for a caller that knows what it is for.
+    /// Returns its display name, or null if it could not be created — the rack is unchanged then,
+    /// and the status line says so.
+    /// </summary>
+    public string? AddConfiguredEffect(string typeId, params (string Key, double Value)[] settings) =>
+        AddEffect(typeId, settings);
+
+    private string? AddEffect(string typeId, IReadOnlyList<(string Key, double Value)>? settings = null)
     {
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
 
@@ -170,13 +178,21 @@ public sealed class MasterSectionViewModel : ObservableObject
             // A plugin that will not load is reported here rather than thrown out of a menu click.
             // The rack is unchanged, which is what the message says.
             RackStatusText = $"That effect could not be added: {ex.Message} · rack unchanged.";
-            return;
+            return null;
         }
+
+        // Before SyncFromMaster, so the card is built holding the values the caller asked for. A
+        // card that appears at its defaults and then jumps is indistinguishable from one the user
+        // moved. SetParam clamps to each parameter's own range, so a caller cannot put an effect
+        // somewhere its UI could not.
+        if (settings != null)
+            foreach (var (key, value) in settings) effect.SetParam(key, value);
 
         MarkChainCustom();
         SyncFromMaster();
         RackStatusText = $"{effect.DisplayName} added · active in rack; source unchanged until render.";
         NotifyTopologyChanged(expandedMonoBefore);
+        return effect.DisplayName;
     }
 
     private void MoveEffect(EffectViewModel vm, int delta)

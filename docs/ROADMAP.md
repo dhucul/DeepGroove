@@ -28,10 +28,11 @@ drag-and-drop and command-line open; recent files; Close All Files.
 
 **Editing & processing** — sample-accurate selection, resizable by dragging either edge or with
 Shift+click; cut/copy/paste/trim; cross-tab clipboard; undo/redo with a memory budget and a
-browsable **Edit History** panel; gain, peak normalize, loudness normalize, **Match Loudness across
-tabs**, fades, reverse, DC removal, insert silence, crossfade smoothing, silence detection /
-trimming / splitting, channel tools (swap, phase invert per channel, balance, mono mixdown,
-mono-to-stereo, channel extraction).
+browsable **Edit History** panel; gain, peak normalize, **loudness normalize** — which offers a rack
+limiter when the true-peak ceiling stops it reaching the target, rather than only reporting the
+shortfall — **Match Loudness across tabs**, fades, reverse, DC removal, insert silence, crossfade
+smoothing, silence detection / trimming / splitting, channel tools (swap, phase invert per channel,
+balance, mono mixdown, mono-to-stereo, channel extraction).
 
 **Effects rack** — ordered real-time chain with add/remove/reorder/bypass, auto-generated parameter
 UI, per-effect reset, factory and user presets, destructive apply with undo, and an output-mix
