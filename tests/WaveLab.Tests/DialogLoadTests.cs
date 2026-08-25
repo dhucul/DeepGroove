@@ -2,7 +2,9 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using WaveLab.Audio;
+using WaveLab.Audio.Dsp;
 using WaveLab.Help;
+using WaveLab.Util;
 using WaveLab.ViewModels;
 using WaveLab.Views;
 using Xunit;
@@ -64,6 +66,34 @@ public sealed class DialogLoadTests
             [new ParamDialog.ComboSpec("Strength", ["Gentle", "Balanced", "Strong"], 1)],
             new ParamDialog.SliderSpec("Sensitivity", 0, 1, 0.4, v => $"{v:P0}"),
             new ParamDialog.SliderSpec("Maximum length", 1, 200, 40, v => $"{v:0} samples")),
+        // Both normalize dialogs are ParamDialog configurations rather than types of their own, so
+        // what is checked here is that the configuration lays out — a slider whose range excludes
+        // its own default, or a combo built from an empty list, fails on the way up. Only the
+        // static bounds are read, never AppSettings.Instance, so this stays out of the app-data
+        // sandbox that keeps SettingsDialog in ShellWindowTests.
+        "normalize-peak" => new ParamDialog(
+            "Normalize peak",
+            "Normalize",
+            null, null, 0,
+            new ParamDialog.SliderSpec("Ceiling",
+                AppSettings.MinimumNormalizePeakCeilingDb,
+                AppSettings.MaximumNormalizePeakCeilingDb,
+                AppSettings.DefaultNormalizePeakCeilingDb,
+                v => $"{v:0.0} dBFS",
+                AppSettings.NormalizePeakCeilingStepDb)),
+        "normalize-loudness" => new ParamDialog(
+            "Normalize loudness — whole file",
+            "Measure",
+            "Target",
+            [
+                .. LoudnessTarget.All.Select(t =>
+                    $"{t.Name} — {t.IntegratedLufs:0.0} LUFS, ≤ {t.TruePeakDbtp:0.0} dBTP"),
+                "Custom",
+            ],
+            LoudnessTarget.All.Count - 1,
+            new ParamDialog.SliderSpec("Custom target", -31, -6, -14, v => $"{v:0.0} LUFS", 0.5),
+            new ParamDialog.SliderSpec("Custom ceiling", -6, 0, LoudnessMatch.RelativeCeilingDbtp,
+                v => $"{v:0.0} dBTP", 0.1)),
         "export" => new ExportDialog(ViewModel()),
         "statistics" => new StatisticsDialog(Document()),
         "file-info" => new FileInfoDialog(ViewModel()),
@@ -80,8 +110,8 @@ public sealed class DialogLoadTests
 
     public static TheoryData<string> DialogNames() =>
     [
-        "info", "text-prompt", "param", "export", "statistics",
-        "file-info", "command-palette", "markers", "history", "match-loudness", "help",
+        "info", "text-prompt", "param", "normalize-peak", "normalize-loudness", "export",
+        "statistics", "file-info", "command-palette", "markers", "history", "match-loudness", "help",
     ];
 
     [Theory]

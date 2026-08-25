@@ -125,13 +125,30 @@ public sealed class RestorationRecommendationsTests
     /// The anchors are the measured gap between the mono-cut and stereo transfers: -16.5, -15.2 and
     /// -12.3 dB on one side of it, -9.8 and -6.0 on the other.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Re-pinned once</b>, when the linear ramp between the anchors became a sigmoid with a floor
+    /// at 0.20. The floor is why a mono pressing now keeps a fifth of its side instead of none, and
+    /// the softer knee is why the two anchors no longer sit exactly on 0 and 1 — both deliberate, on
+    /// the grounds that five records from one collection is not enough to justify a hard switch.
+    /// </para>
+    /// <para>
+    /// The two ends are not free to move, and that is what the last three rows are here to hold.
+    /// <b>Anything at or above real stereo must read exactly 1.0</b>, because three separate places
+    /// downstream test <c>SideLevel &lt; 1.0</c> to decide whether this stage exists at all: the
+    /// workbench's card, the render, and the evidence line. A curve that merely approaches 1.0
+    /// turns the card on for every record in the world. The 0.0 dB row is the same rule reached from
+    /// the other direction — <see cref="CleanupAnalyzer"/> returns 0 for "nothing measurable", and
+    /// documents that zero recommends leaving the side alone.
+    /// </para>
+    /// </remarks>
     [Theory]
-    [InlineData(-16.5, 0.0)]     // a mono pressing: the side is noise, discard it
-    [InlineData(-14.0, 0.0)]     // the anchor itself
-    [InlineData(-11.0, 0.5)]     // between the two, so half of what goes is music
-    [InlineData(-8.0, 1.0)]      // the other anchor
-    [InlineData(-6.0, 1.0)]      // real stereo: leave it entirely alone
-    [InlineData(0.0, 1.0)]       // no reading taken
+    [InlineData(-16.5, 0.20)]    // a mono pressing: the side is mostly noise, but the floor keeps a fifth
+    [InlineData(-14.0, 0.25)]    // the anchor itself
+    [InlineData(-11.0, 0.55)]    // between the two, so about half of what goes is music
+    [InlineData(-8.0, 0.90)]     // the other anchor: softened, so landing on it is not a cliff
+    [InlineData(-6.0, 1.00)]     // real stereo: left entirely alone, and the card stays off
+    [InlineData(0.0, 1.00)]      // no reading taken: the neutral answer, not a small reduction
     public void TheSideLevelFollowsThePressingRatherThanTheNoise(double sideToMidDb, double expected)
     {
         RestorationRecommendations.Settings result = RestorationRecommendations.Create(
@@ -140,6 +157,14 @@ public sealed class RestorationRecommendationsTests
             Cleanup(humEnabled: false, noiseEnabled: false, sideToMidDb: sideToMidDb));
 
         Assert.Equal(expected, result.SideLevel, 3);
+
+        // The interior rows are curve outputs and a tolerance is the right assertion for them. The
+        // full-level rows are a boundary, and the three sites downstream read `SideLevel < 1.0` as
+        // "this stage does not exist" — so a curve that merely approaches 1.0 turns the card on for
+        // every record in the world. 0.9999 satisfies the tolerance above and fails this.
+        if (expected >= 1.0)
+            Assert.False(result.SideLevel < 1.0,
+                $"must be exactly 1.0 for the < 1.0 guards to hold, was {result.SideLevel:R}");
     }
 
     /// <summary>

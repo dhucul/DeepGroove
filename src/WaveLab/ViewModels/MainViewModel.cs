@@ -144,7 +144,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             () => HasAudioDocument);
         GainDownCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Gain(d, s, c, -3)),
             () => HasAudioDocument);
-        NormalizeCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Normalize(d, s, c, -0.3)),
+        NormalizeCommand = new RelayCommand(() => RequestNormalizePeakDialog?.Invoke(),
+            () => HasAudioDocument);
+        NormalizeLoudnessCommand = new RelayCommand(() => RequestNormalizeLoudnessDialog?.Invoke(),
             () => HasAudioDocument);
         FadeInCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.FadeIn(d, s, c)), () => HasAudioDocument);
         FadeOutCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.FadeOut(d, s, c)), () => HasAudioDocument);
@@ -291,6 +293,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand GainUpCommand { get; }
     public RelayCommand GainDownCommand { get; }
     public RelayCommand NormalizeCommand { get; }
+    public RelayCommand NormalizeLoudnessCommand { get; }
     public RelayCommand FadeInCommand { get; }
     public RelayCommand FadeOutCommand { get; }
     public RelayCommand ReverseCommand { get; }
@@ -341,6 +344,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// <summary>The window shows the Edit History panel for the active document when this fires.</summary>
     public event Action? RequestHistoryPanel;
     public event Action? RequestMatchLoudnessDialog;
+
+    /// <summary>
+    /// The window asks for a peak ceiling and then calls <see cref="ApplyPeakNormalize"/>. The
+    /// command lives here and the dialog does not, for the same reason every other Request does:
+    /// a <c>ParamDialog</c> needs an owner window, and the view model has none.
+    /// </summary>
+    public event Action? RequestNormalizePeakDialog;
+
+    /// <summary>
+    /// The window asks for a loudness target and applies it. Unlike the peak command this one does
+    /// not come back through the view model at all: the measurement is long enough to need progress
+    /// and cancellation, which is the window's job.
+    /// </summary>
+    public event Action? RequestNormalizeLoudnessDialog;
 
     /// <summary>Raised when <see cref="IsDocumentOperationRunning"/> moves, in either direction.</summary>
     public event Action? DocumentOperationRunningChanged;
@@ -1730,6 +1747,29 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return data;
     }
 
+    /// <summary>
+    /// Scales the edit range so its loudest sample reaches <paramref name="ceilingDbfs"/>.
+    /// </summary>
+    /// <remarks>
+    /// The ceiling arrives already chosen and already clamped — see
+    /// <see cref="AppSettings.NormalizePeakCeiling"/>. Kept on the range rather than the whole
+    /// document because that is what this command has always done: normalizing a selection to its
+    /// own peak is a meaningful edit, in a way that measuring a selection's programme loudness is
+    /// not.
+    /// </remarks>
+    /// <returns>False when there was nothing to normalize, so the caller can say so.</returns>
+    public bool ApplyPeakNormalize(double ceilingDbfs)
+    {
+        if (_active == null) return false;
+        var (start, count) = _active.EditRange();
+        if (count <= 0) return false;
+        // Playback is released before the edit exactly as ApplyToRange does it for every other
+        // operation; Normalize may still decline, and releasing for a declined edit is the same
+        // cost every other tool on that path already pays.
+        PrepareForDocumentEdit(_active);
+        return Processing.Normalize(_active.Doc, start, count, ceilingDbfs);
+    }
+
     private void ApplyToRange(Action<AudioDocument, int, int> op)
     {
         if (_active == null) return;
@@ -2268,6 +2308,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         GainUpCommand.RaiseCanExecuteChanged();
         GainDownCommand.RaiseCanExecuteChanged();
         NormalizeCommand.RaiseCanExecuteChanged();
+        NormalizeLoudnessCommand.RaiseCanExecuteChanged();
         FadeInCommand.RaiseCanExecuteChanged();
         FadeOutCommand.RaiseCanExecuteChanged();
         ReverseCommand.RaiseCanExecuteChanged();

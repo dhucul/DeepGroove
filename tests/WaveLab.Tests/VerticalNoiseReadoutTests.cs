@@ -144,6 +144,53 @@ public sealed class VerticalNoiseReadoutTests(ITestOutputHelper output)
         Assert.DoesNotContain("change at its edges", line);
     }
 
+    // ── the card and the render ──────────────────────────────────
+
+    /// <summary>
+    /// The defect this pins. <c>verticalEnabled</c> reached the evidence line and nothing else —
+    /// every other card on the dialog puts its Enabled box into the settings the render reads, and
+    /// this one did not — so unticking it changed the caption and not the audio.
+    /// </summary>
+    [Theory]
+    [InlineData(false, true, 0.25, true)]    // on, with something to do
+    [InlineData(false, true, 0.0, true)]     // on, discarding the side entirely
+    [InlineData(false, true, 1.0, false)]    // on at full: a stage that would multiply by one
+    [InlineData(false, false, 0.25, false)]  // switched off, whatever the slider was left at
+    [InlineData(false, false, 1.0, false)]
+    [InlineData(true, true, 0.25, false)]    // bypassed, so nothing on this dialog runs
+    [InlineData(true, false, 0.25, false)]
+    public void TheSideStageRunsOnlyWhenTheCardSaysItWill(
+        bool bypass, bool enabled, double level, bool expected) =>
+        Assert.Equal(expected, RestorationWorkbenchDialog.SideStageRuns(bypass, enabled, level));
+
+    /// <summary>
+    /// The invariant underneath it, stated where it can fail: the caption may describe a reduction
+    /// only when one is going to happen.
+    /// </summary>
+    /// <remarks>
+    /// Pinning the predicate alone would not have caught the original defect — the predicate was
+    /// correct as far as it went, and the caption was correct as far as it went; what was wrong was
+    /// that they were reading different things. This asserts the two against each other, which is
+    /// the only form the bug was ever visible in: "This card is switched off; the side signal is
+    /// untouched", printed over a render that was reducing the side.
+    /// </remarks>
+    [Theory]
+    [InlineData(true, 0.0)]
+    [InlineData(true, 0.25)]
+    [InlineData(true, 1.0)]
+    [InlineData(false, 0.0)]
+    [InlineData(false, 0.25)]
+    [InlineData(false, 1.0)]
+    public void TheCaptionClaimsAReductionOnlyWhenOneWillHappen(bool enabled, double level)
+    {
+        bool runs = RestorationWorkbenchDialog.SideStageRuns(bypass: false, enabled, level);
+        string line = Side(-11.0, level, enabled: enabled);
+        output.WriteLine($"runs={runs}  {line}");
+
+        bool claimsAChange = line.Contains("Reducing the side by") || line.Contains("Discarding the side");
+        Assert.Equal(runs, claimsAChange);
+    }
+
     // ── the crackle card ─────────────────────────────────────────
 
     /// <summary>

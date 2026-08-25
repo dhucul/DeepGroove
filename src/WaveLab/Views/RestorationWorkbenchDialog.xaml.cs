@@ -36,6 +36,7 @@ public partial class RestorationWorkbenchDialog : Window
         double HumQ,
         bool RemoveSubsonic,
         double SubsonicCutoffHz,
+        bool ReduceSide,
         double SideLevel,
         bool Decrackle,
         double DecrackleThreshold,
@@ -711,7 +712,7 @@ public partial class RestorationWorkbenchDialog : Window
         // side is what turns one anti-phase tick into a single coherent event that one interpolator
         // can remove - left in place, each channel's model sees a different realisation of it and
         // summing the repaired channels back reconstitutes what the other one still holds.
-        if (!settings.Bypass && settings.SideLevel < 1.0)
+        if (SideStageRuns(settings.Bypass, settings.ReduceSide, settings.SideLevel))
         {
             progress.Report(new OperationProgress(settings.SideLevel <= 0
                 ? "Discarding the side signal and its vertical surface noise…"
@@ -1249,6 +1250,26 @@ public partial class RestorationWorkbenchDialog : Window
     /// </para>
     /// <para>Pure, so the wording is unit-tested without a window.</para>
     /// </remarks>
+    /// <summary>Whether the side-reduction stage will touch the audio at all.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This exists because the render and the card disagreed.</b> Every other card on this dialog
+    /// puts its Enabled box into <c>RestorationSettings</c> and the render reads it; this one did
+    /// not, so <c>verticalEnabled</c> reached the evidence line and nothing else. Unticking it
+    /// changed the caption to "the side signal is untouched" while <c>ScaleSide</c> went on reducing
+    /// the side — the caption was not merely stale, it was false, on the one card that can throw
+    /// away half of a stereo record.
+    /// </para>
+    /// <para>
+    /// Pure and named, rather than three terms inlined at the call site, so the condition the
+    /// caption implies can be asserted against the condition the render uses. A level of 1.0 is
+    /// still nothing to do, whatever the box says: a stage that runs and multiplies by one is the
+    /// case <see cref="ApplyAnalysisRecommendations"/> already refuses to recommend.
+    /// </para>
+    /// </remarks>
+    internal static bool SideStageRuns(bool bypass, bool enabled, double sideLevel) =>
+        !bypass && enabled && sideLevel < 1.0;
+
     internal static string DescribeSideLevel(bool enabled, bool analysed, bool stereo,
         double sideToMidDb, double level, bool wholeFile = true)
     {
@@ -1436,6 +1457,7 @@ public partial class RestorationWorkbenchDialog : Window
         humQ.Value,
         subsonicEnabled.IsChecked == true,
         subsonicCutoff.Value,
+        verticalEnabled.IsChecked == true,
         sideLevel.Value / 100.0,
         decrackleEnabled.IsChecked == true,
         decrackleThreshold.Value,

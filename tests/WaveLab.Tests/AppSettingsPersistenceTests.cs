@@ -32,6 +32,43 @@ public sealed class AppSettingsPersistenceTests : IDisposable
     }
 
     /// <summary>
+    /// The peak ceiling survives a real write and reload. It has to: the command asks once and then
+    /// offers the answer back, so a ceiling that does not persist turns Normalize Peak from one
+    /// keypress into a retyped number every time.
+    /// </summary>
+    [Fact]
+    public void TheNormalizePeakCeilingRoundTripsAndIsCorrectedOnReload()
+    {
+        AppSettings settings = AppSettings.Instance;
+        settings.NormalizePeakCeilingDb = -6;
+        Assert.True(settings.Save(), settings.LastSaveError);
+
+        AppSettings.AppDataDir = _sandbox;                 // drops the cached instance
+        Assert.Equal(-6, AppSettings.Instance.NormalizePeakCeilingDb, 6);
+
+        // A ceiling no slider can produce, as a hand-edited file would carry. Corrected on the way
+        // back in rather than failing the write of the whole file.
+        AppSettings.Instance.NormalizePeakCeilingDb = 400;
+        Assert.True(AppSettings.Instance.Save(), AppSettings.Instance.LastSaveError);
+
+        AppSettings.AppDataDir = _sandbox;
+        Assert.Equal(AppSettings.MaximumNormalizePeakCeilingDb,
+            AppSettings.Instance.NormalizePeakCeilingDb, 6);
+    }
+
+    [Theory]
+    [InlineData(-0.3, -0.3)]
+    [InlineData(-0.34, -0.3)]                                          // snapped to the slider's tenth
+    [InlineData(-0.36, -0.4)]
+    [InlineData(-500, AppSettings.MinimumNormalizePeakCeilingDb)]
+    [InlineData(12, AppSettings.MaximumNormalizePeakCeilingDb)]        // above full scale is not a ceiling
+    [InlineData(double.NaN, AppSettings.DefaultNormalizePeakCeilingDb)]
+    [InlineData(double.PositiveInfinity, AppSettings.DefaultNormalizePeakCeilingDb)]
+    public void TheNormalizePeakCeilingIsClampedAndSnappedRatherThanDiscarded(
+        double stored, double expected) =>
+        Assert.Equal(expected, AppSettings.NormalizePeakCeiling(stored), 6);
+
+    /// <summary>
     /// The depth ceiling survives a real write and reload, and an out-of-range one is corrected on
     /// the way back in rather than failing the whole file.
     /// </summary>

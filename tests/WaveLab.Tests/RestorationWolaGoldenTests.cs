@@ -23,6 +23,23 @@ namespace WaveLab.Tests;
 /// figures move in the seventh decimal, and the largest probe delta is 8.5e-6 — one bin at 22.05 kHz.
 /// Anything that moves them further than that is a real change in behaviour, not this.
 /// </para>
+/// <para>
+/// <b>Re-pinned twice.</b> <see cref="Restoration.ScrubTonalPeaks"/> now runs at the end of
+/// <see cref="Restoration.LearnNoiseProfile"/>: a 5-bin median that strips narrow spikes, so music
+/// left in a passage learned as "noise" is not then gated away as noise. This signal is built to
+/// contain exactly that — the profile is learned from samples 0–2800, the deliberately quiet head,
+/// which still carries the 440 Hz and 1970 Hz tones at 2% — so it is the case the filter exists for,
+/// and the move is large rather than numerical.
+/// </para>
+/// <para>
+/// Three things say the median filter is the whole of it. <b>Only one of the three pinned profile
+/// bins moved</b>: bin 10 fell 0.6547 → 0.4708, while bin 0 and bin 100 are unchanged to every digit
+/// — and bin 0 is the one the new code documents as left alone, being DC. <b>The output RMS rose</b>,
+/// 0.2295 → 0.2434, which is the direction the scrub is for: a lower profile means the gate calls
+/// less of the signal noise and removes less of it. And <b>the probes move where the tones are</b>,
+/// the largest at index 5000 (−0.0840 → −0.1256), not uniformly across the file the way a windowing
+/// or normalization change would.
+/// </para>
 /// </remarks>
 public sealed class RestorationWolaGoldenTests
 {
@@ -69,8 +86,12 @@ public sealed class RestorationWolaGoldenTests
         float[] profile = Restoration.LearnNoiseProfile(Signal(), 0, 2800);
 
         Assert.Equal(1024, profile.Length);
+        // Bin 0 is DC, which ScrubTonalPeaks leaves alone by design, so this one is unchanged from
+        // the original pinning. Bin 10 is a narrow peak the median filter removes. Bin 100 sits on
+        // the broadband hiss shelf, which is what the filter is chosen to preserve — a smoothing
+        // filter would have blurred it, and that this figure did not move is how we know it did not.
         Assert.Equal(0.423183680, profile[0], Tolerance);
-        Assert.Equal(0.654717803, profile[10], Tolerance);
+        Assert.Equal(0.470803560, profile[10], Tolerance);
         Assert.Equal(0.701537967, profile[100], Tolerance);
     }
 
@@ -83,10 +104,10 @@ public sealed class RestorationWolaGoldenTests
 
         Restoration.ReduceNoise(data, profile, 12.0, 3.0);
 
-        AssertMatches(data[0], 0.229499961, 0.510410964,
-            [0.017721303, 0.001224617, -0.016192438, -0.010751238, 0.009722359, -0.084036380, 0.325935423, 0.028876577]);
-        AssertMatches(data[1], 0.206558046, 0.459632069,
-            [0.019493433, 0.001093167, -0.018105946, -0.012146194, 0.010408811, -0.075237699, 0.292047948, 0.025766347]);
+        AssertMatches(data[0], 0.243446539, 0.510588348,
+            [0.017721303, 0.001224617, -0.015552527, -0.009724485, 0.010914816, -0.125619190, 0.332124900, 0.028351136]);
+        AssertMatches(data[1], 0.215556570, 0.459699750,
+            [0.019493433, 0.001093167, -0.018318154, -0.011852648, 0.011492296, -0.103531080, 0.296009930, 0.024763105]);
     }
 
     /// <summary>

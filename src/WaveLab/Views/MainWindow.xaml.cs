@@ -77,6 +77,8 @@ public partial class MainWindow : Window
         // The overlay does not reach a window of its own, so the panel is told directly.
         _vm.DocumentOperationRunningChanged += RefreshHistoryPanels;
         _vm.RequestMatchLoudnessDialog += ShowMatchLoudnessDialog;
+        _vm.RequestNormalizePeakDialog += OnNormalizePeak;
+        _vm.RequestNormalizeLoudnessDialog += OnNormalizeLoudness;
         _vm.Master.RequestSavePreset += PromptSavePreset;
 
         // Both fire while the effect is still whole. A plugin's editor is a native window holding
@@ -835,6 +837,223 @@ public partial class MainWindow : Window
             LongOperationRunning = false;
         }
         return applied;
+    }
+
+    // ── normalization ────────────────────────────────────────────
+
+    /// <summary>
+    /// Scales the edit range so its loudest sample reaches a chosen ceiling.
+    /// </summary>
+    /// <remarks>
+    /// The ceiling is the change: this was <c>Normalize to −0.3 dBFS</c> and could reach no other
+    /// value. It is remembered rather than asked fresh each time, so the old one-value behaviour
+    /// costs one Enter. It stays on the selection, and it stays synchronous — a peak scan is a
+    /// single pass, and the progress overlay would cost more than the work it reported.
+    /// </remarks>
+    private void OnNormalizePeak()
+    {
+        if (LongOperationRunning || Doc is not { Doc.Length: > 0 }) return;
+
+        var settings = AppSettings.Instance;
+        var dialog = new ParamDialog("Normalize peak", "Normalize", null, null, 0,
+            new ParamDialog.SliderSpec("Ceiling",
+                AppSettings.MinimumNormalizePeakCeilingDb,
+                AppSettings.MaximumNormalizePeakCeilingDb,
+                settings.NormalizePeakCeilingDb,
+                v => $"{v:0.0} dBFS",
+                AppSettings.NormalizePeakCeilingStepDb))
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        // Snapped through the same rule the settings file is validated by, so what is remembered
+        // and what is applied cannot differ by the rounding of the slider it came off.
+        double ceiling = AppSettings.NormalizePeakCeiling(dialog.Values[0]);
+        if (Math.Abs(settings.NormalizePeakCeilingDb - ceiling) > 1e-9)
+        {
+            settings.NormalizePeakCeilingDb = ceiling;
+            settings.Save();
+        }
+
+        // A silent range is declined rather than spliced over itself, so the line has to say which
+        // happened — a tool that reports success for an edit it did not make is the same defect as
+        // one that declines without a word.
+        _vm.ReportAction(_vm.ApplyPeakNormalize(ceiling)
+            ? $"Normalized to {ceiling:0.0} dBFS."
+            : "That range is silent · nothing to normalize.");
+    }
+
+    /// <summary>
+    /// Brings the whole document to a stated programme loudness, true-peak limited.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Whole document, never the selection</b>, and the title says so. BS.1770 gates 400 ms
+    /// blocks against a threshold derived from the programme itself, so a selection is not a
+    /// smaller version of the same measurement — below about a second it is not a measurement at
+    /// all, and the gate returns nothing. Peak normalization is the command that takes a range.
+    /// </para>
+    /// <para>
+    /// The measuring and the arithmetic belong to <see cref="LoudnessMatch"/>, driven here with a
+    /// one-element list. That is the point rather than a shortcut: one seam decides the gain for
+    /// this command, for Match Loudness across tabs, and for the batch converter, so the three
+    /// cannot drift apart about what a target means or about what the ceiling does to it.
+    /// </para>
+    /// </remarks>
+    private async void OnNormalizeLoudness()
+    {
+        var d = Doc;
+        if (LongOperationRunning || d is not { Doc.Length: > 0 }) return;
+
+        string[] choices =
+        [
+            .. LoudnessTarget.All.Select(t =>
+                $"{t.Name} — {t.IntegratedLufs:0.0} LUFS, ≤ {t.TruePeakDbtp:0.0} dBTP"),
+            "Custom",
+        ];
+        var dialog = new ParamDialog("Normalize loudness — whole file", "Measure",
+            "Target", choices, StreamingTargetIndex,
+            new ParamDialog.SliderSpec("Custom target", -31, -6, -14, v => $"{v:0.0} LUFS", 0.5),
+            new ParamDialog.SliderSpec("Custom ceiling", -6, 0, LoudnessMatch.RelativeCeilingDbtp,
+                v => $"{v:0.0} dBTP", 0.1))
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        int choice = dialog.ComboIndex;
+        double[] values = dialog.Values;
+        LoudnessTarget target = choice >= 0 && choice < LoudnessTarget.All.Count
+            ? LoudnessTarget.All[choice]
+            // A custom target is a target like any other: it carries its own ceiling, and one LU of
+            // tolerance so anything downstream reads it the way it reads a preset.
+            : new LoudnessTarget("Custom", values[0], values[1], 1.0);
+
+        float[][] channels = d.Doc.Channels.ToArray();
+        int rate = d.Doc.SampleRate;
+        int measuredAt = d.Doc.EditVersion;
+        string title = d.Title;
+        var plan = default(LoudnessMatchPlan);
+
+        LongOperationRunning = true;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Measuring loudness", target.Name,
+                async (progress, token) =>
+                {
+                    LoudnessMeasurement measurement = await Task.Run(
+                        () => LoudnessMatch.Measure(title, channels, rate, target, token, progress),
+                        token);
+                    plan = LoudnessMatch.Plan([measurement], LoudnessMatchMode.Target, target);
+                });
+        }
+        catch (OperationCanceledException) { _vm.ReportAction("Measurement cancelled."); return; }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Normalize loudness",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally { LongOperationRunning = false; }
+
+        if (plan.Steps is not [var step]) return;
+
+        if (!step.CanApply)
+        {
+            // "already there" and "silent below the −70 LUFS gate" are outcomes, not failures.
+            // Neither earns an undo entry, and neither is worth a modal.
+            _vm.ReportAction($"{title}: {step.Note} · nothing applied.");
+            return;
+        }
+
+        if (step.ShortfallDb > LoudnessMatch.NegligibleGainDb)
+        {
+            // Said rather than applied quietly. The shortfall is the amount of limiting the master
+            // would need, and that is a decision — the rule LoudnessCompliance and Match Loudness
+            // both already state, asked here because there is someone in front of it to ask.
+            MessageBoxResult answer = MessageBox.Show(this,
+                $"Loudness alone asks for {step.RequestedGainDb:+0.0;-0.0} dB, but the "
+                + $"{plan.CeilingDbtp:0.0} dBTP ceiling allows only {step.GainDb:+0.0;-0.0} dB."
+                + Environment.NewLine + Environment.NewLine
+                + $"Reaching {plan.TargetLufs:0.0} LUFS would need {step.ShortfallDb:0.0} dB of "
+                + "limiting, which is not applied here."
+                + Environment.NewLine + Environment.NewLine
+                + $"Apply {step.GainDb:+0.0;-0.0} dB anyway?",
+                "Normalize loudness", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes)
+            {
+                _vm.ReportAction("Normalize loudness cancelled.");
+                return;
+            }
+        }
+
+        // Re-checked before the scaling pass rather than only after it. MessageBox disables its
+        // owner and not the application — unlike ShowDialog — so the modeless Edit History panel is
+        // reachable while the prompt above is up, and MainViewModel.CanMoveHistory gates on exactly
+        // the flag the measure block's finally has just cleared. Failing here costs nothing;
+        // failing after costs a full pass over the document first.
+        if (d.Doc.EditVersion != measuredAt)
+        {
+            _vm.ReportAction($"{title} changed while it was being measured · nothing applied.");
+            return;
+        }
+
+        float[][] scaled = [];
+        LongOperationRunning = true;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Applying gain", title,
+                // Nothing is reported: MatchLoudnessData takes no IProgress, and reporting a figure
+                // even once takes the bar out of indeterminate and then pins it at 0% for the whole
+                // pass, which reads as a stalled operation rather than as an unmeasured one.
+                async (_, token) =>
+                {
+                    scaled = await Task.Run(
+                        () => Processing.MatchLoudnessData(channels, step.GainDb, token), token);
+                });
+        }
+        catch (OperationCanceledException) { _vm.ReportAction("Normalize loudness cancelled."); return; }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Normalize loudness",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        finally { LongOperationRunning = false; }
+
+        // Checked after both awaits rather than only the first: the dispatcher pumps across each of
+        // them, and what is about to be committed are the buffers that were measured, not whatever
+        // is on screen now. Committing them over a newer edit would silently discard it.
+        if (d.Doc.EditVersion != measuredAt)
+        {
+            MessageBox.Show(this,
+                $"{title} changed while it was being measured, so the gain no longer describes it. "
+                + "Measure again to work from the current audio.",
+                "Normalize loudness", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _vm.PrepareForDocumentEdit(d);
+        d.Doc.ReplaceAllOwned(scaled, Processing.MatchLoudnessName(step.GainDb, plan.TargetLufs));
+        _vm.ReportAction(
+            $"{title}: {step.GainDb:+0.0;-0.0} dB → {step.ResultingLufs:0.0} LUFS, "
+            + $"{step.ResultingTruePeakDbtp:0.0} dBTP.");
+    }
+
+    /// <summary>
+    /// Where Spotify / YouTube sits in <see cref="LoudnessTarget.All"/>, and the default offer.
+    /// Found rather than written down as an index, so reordering that list cannot silently re-aim
+    /// the command; falls back to the first entry if the preset is ever removed.
+    /// </summary>
+    private static int StreamingTargetIndex
+    {
+        get
+        {
+            for (int i = 0; i < LoudnessTarget.All.Count; i++)
+                if (LoudnessTarget.All[i].Name == LoudnessTarget.Streaming.Name) return i;
+            return 0;
+        }
     }
 
     // ── loudness compliance ──────────────────────────────────────
@@ -2271,7 +2490,8 @@ public partial class MainWindow : Window
             new("Manage Markers & Regions…", null, () => OnManageMarkers(this, new RoutedEventArgs()), () => _vm.HasDocument),
             VmCommand("Gain +3 dB", null, _vm.GainUpCommand),
             VmCommand("Gain −3 dB", null, _vm.GainDownCommand),
-            VmCommand("Normalize to −0.3 dBFS", null, _vm.NormalizeCommand),
+            VmCommand("Normalize Peak…", null, _vm.NormalizeCommand),
+            VmCommand("Normalize Loudness…", null, _vm.NormalizeLoudnessCommand),
             VmCommand("Match Loudness Across Tabs…", null, _vm.MatchLoudnessCommand),
             VmCommand("Fade In", null, _vm.FadeInCommand),
             VmCommand("Fade Out", null, _vm.FadeOutCommand),

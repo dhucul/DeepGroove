@@ -33,6 +33,14 @@ public partial class BatchConvertDialog : Window
     private static readonly Brush RedBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x5C, 0x5C));
     private static readonly Brush GreenBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0xD0, 0x7A));
 
+    /// <summary>
+    /// Done, but not at the target. It cannot be <see cref="AccentBrush"/>, which is what a row
+    /// still converting wears — colour is what an unattended queue is scanned by, and a finished
+    /// row and an in-flight one must not read the same at a glance. The shade matches the one
+    /// <see cref="MatchLoudnessDialog"/> already uses for a true-peak-limited track.
+    /// </summary>
+    private static readonly Brush AmberBrush = new SolidColorBrush(Color.FromRgb(0xF0, 0xA8, 0x3C));
+
     public BatchConvertDialog()
     {
         InitializeComponent();
@@ -179,6 +187,7 @@ public partial class BatchConvertDialog : Window
 
         var token = operation.Token;
         int done = 0;
+        int limited = 0;
         string skippedText = skipped > 0 ? $" · {skipped} skipped" : "";
 
         try
@@ -192,6 +201,10 @@ public partial class BatchConvertDialog : Window
             }
             item.Status = "converting…";
             item.StatusBrush = AccentBrush;
+            // Assigned inside the background work and read after it: a batch runs unattended, so a
+            // file that could not reach the target has to leave a mark that is still there when
+            // someone comes back to the window.
+            double shortfallDb = 0;
             try
             {
                 await Task.Run(() =>
@@ -209,13 +222,17 @@ public partial class BatchConvertDialog : Window
                         doc = new AudioDocument(processed, doc.SampleRate, doc.SourceBitDepth) { Title = doc.Title };
                     }
 
-                    if (normalizeMode > 0) Normalize(doc, normalizeMode, token);
+                    if (normalizeMode > 0) shortfallDb = Normalize(doc, normalizeMode, token);
 
                     token.ThrowIfCancellationRequested();
                     AudioExporter.Export(doc, outPath, fmt, bitrate, 0, doc.Length, 0, token);
                 }, token);
-                item.Status = "✓ done";
-                item.StatusBrush = GreenBrush;
+                bool heldBack = shortfallDb > LoudnessMatch.NegligibleGainDb;
+                item.Status = heldBack
+                    ? $"✓ done · true-peak limited, {shortfallDb:0.0} dB short of target"
+                    : "✓ done";
+                item.StatusBrush = heldBack ? AmberBrush : GreenBrush;
+                if (heldBack) limited++;
                 done++;
             }
             catch (OperationCanceledException)
@@ -230,7 +247,9 @@ public partial class BatchConvertDialog : Window
                 failed++;
             }
             progress.Value++;
-            statusText.Text = $"{done} done · {failed} failed{skippedText} — output to {outDir}";
+            statusText.Text = $"{done} done · {failed} failed{skippedText}"
+                + (limited > 0 ? $" · {limited} true-peak limited" : "")
+                + $" — output to {outDir}";
           }
         }
         finally
@@ -248,10 +267,28 @@ public partial class BatchConvertDialog : Window
         }
     }
 
-    private static void Normalize(AudioDocument doc, int mode, CancellationToken token)
+    /// <summary>Levels one document, and says how far the true-peak ceiling held it back.</summary>
+    /// <remarks>
+    /// <para>
+    /// The LUFS branch used to apply what loudness asked for and nothing else — the defect
+    /// <see cref="LoudnessMatch"/> names in its own remarks, which would push a track past 0 dBTP
+    /// and report nothing. The gain now comes from <see cref="LoudnessMatch.Plan"/>, the same seam
+    /// Normalize Loudness and Match Loudness take, so a ceiling cannot be honoured in the two paths
+    /// with someone watching and skipped in the one without.
+    /// </para>
+    /// <para>
+    /// The true peak this needs costs nothing: the meter already driven over the whole file for the
+    /// loudness figure computes it, and it was previously read and discarded.
+    /// </para>
+    /// </remarks>
+    /// <returns>
+    /// How far short of the requested target the ceiling left this file, in dB. Zero when nothing
+    /// was held back, which is also what an unmeasurable or peak-mode file returns.
+    /// </returns>
+    private static double Normalize(AudioDocument doc, int mode, CancellationToken token)
     {
         var channels = doc.Channels.ToArray();
-        if (channels.Length == 0) return;
+        if (channels.Length == 0) return 0;
         int frames = channels[0].Length;
         foreach (var channel in channels)
         {
@@ -273,12 +310,19 @@ public partial class BatchConvertDialog : Window
                     if ((i & 0xffff) == 0) token.ThrowIfCancellationRequested();
                     peak = Math.Max(peak, Math.Abs(ch[i]));
                 }
-            if (peak <= 0) return;
+            if (peak <= 0) return 0;
             ApplyGain(channels, Math.Pow(10, -0.3 / 20.0) / peak, token);
-            return;
+            return 0;
         }
 
-        double target = mode switch { 2 => -16, 3 => -14, _ => -23 };
+        // The three LUFS entries are the delivery presets they name, taken whole so the ceiling
+        // travels with the target instead of being restated — and forgotten — here.
+        LoudnessTarget target = mode switch
+        {
+            2 => LoudnessTarget.Apple,      // −16 LUFS, ≤ −1 dBTP
+            3 => LoudnessTarget.Streaming,  // −14 LUFS, ≤ −1 dBTP
+            _ => LoudnessTarget.Ebu,        // −23 LUFS, ≤ −1 dBTP
+        };
         var meter = new LoudnessMeter();
         meter.Configure(doc.SampleRate, channels.Length);
         const int block = 65536;
@@ -292,9 +336,22 @@ public partial class BatchConvertDialog : Window
                     buf[frame * channels.Length + channel] = channels[channel][start + frame];
             meter.Process(buf, 0, n * channels.Length);
         }
+        // Only now the loop is done: flushing rings the final taps out against zeros, which reads
+        // high on a measurement that is still running.
+        meter.FlushTruePeak();
         double current = meter.IntegratedLufs;
-        if (!double.IsFinite(current)) return;
-        ApplyGain(channels, Math.Pow(10, (target - current) / 20.0), token);
+        if (!double.IsFinite(current)) return 0;
+
+        LoudnessMatchStep step = LoudnessMatch.Plan(
+            [new LoudnessMeasurement(doc.Title, current, meter.TruePeakDb, meter.LoudnessRangeLu,
+                doc.SampleRate, frames)],
+            LoudnessMatchMode.Target,
+            target).Steps[0];
+
+        // A gain under the negligible threshold is not worth a pass over the file, but the
+        // shortfall is still worth reporting: it is why the file did not reach the target.
+        if (step.CanApply) ApplyGain(channels, Math.Pow(10, step.GainDb / 20.0), token);
+        return step.ShortfallDb;
     }
 
     private static void ApplyGain(float[][] channels, double gain, CancellationToken token)

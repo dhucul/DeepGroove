@@ -205,6 +205,78 @@ public sealed class LoudnessMatchTests
         }
     }
 
+    /// <summary>
+    /// Normalize Loudness and the batch converter both drive <see cref="LoudnessMatch.Plan"/> with
+    /// a single measurement. That is not a special case in the code, but it is the only case those
+    /// two ever exercise, so it is pinned apart from the multi-track modes above.
+    /// </summary>
+    [Fact]
+    public void OneTrackWithHeadroomToSpareReachesTheTargetExactly()
+    {
+        var plan = LoudnessMatch.Plan([Track("only", -24, -18)], LoudnessMatchMode.Target, Streaming);
+
+        LoudnessMatchStep step = Assert.Single(plan.Steps);
+        Assert.True(step.CanApply);
+        Assert.Equal(10, step.GainDb, 6);                    // −24 LUFS up to −14
+        Assert.Equal(0, step.ShortfallDb, 6);
+        Assert.Equal(Streaming.IntegratedLufs, step.ResultingLufs, 6);
+        Assert.Equal(-8, step.ResultingTruePeakDbtp, 6);     // −18 + 10, still well under the ceiling
+    }
+
+    /// <summary>
+    /// The batch converter's defect written as an assertion. A file whose peaks will not let it
+    /// reach the target has to stop <b>at</b> the ceiling rather than above it, and has to say how
+    /// far short that left it — the unattended path did neither.
+    /// </summary>
+    [Fact]
+    public void OneTrackHeldBackByItsPeaksStopsAtTheCeilingAndSaysHowFarShort()
+    {
+        var plan = LoudnessMatch.Plan([Track("only", -24, -3)], LoudnessMatchMode.Target, Streaming);
+
+        LoudnessMatchStep step = Assert.Single(plan.Steps);
+        Assert.True(step.CanApply);
+        Assert.Equal(2, step.GainDb, 6);                     // −3 dBTP plus 2 is exactly the ceiling
+        Assert.Equal(8, step.ShortfallDb, 6);                // of the 10 dB loudness asked for
+        Assert.Equal(Streaming.TruePeakDbtp, step.ResultingTruePeakDbtp, 6);
+        Assert.Equal(-22, step.ResultingLufs, 6);            // short of −14, and not pretending otherwise
+        Assert.Contains("true-peak limited", step.Note);
+    }
+
+    /// <summary>A file already where it was asked to be earns no gain, and so no undo entry.</summary>
+    [Fact]
+    public void OneTrackAlreadyAtTheTargetIsLeftAlone()
+    {
+        var plan = LoudnessMatch.Plan(
+            [Track("only", Streaming.IntegratedLufs, -6)], LoudnessMatchMode.Target, Streaming);
+
+        LoudnessMatchStep step = Assert.Single(plan.Steps);
+        Assert.False(step.CanApply);
+        Assert.Equal("already there", step.Note);
+        Assert.Equal(0, step.GainDb, 6);
+    }
+
+    /// <summary>
+    /// Every LUFS mode the batch converter offers is one of these presets, taken whole so the
+    /// ceiling travels with the target. If one of them ever moved off −1 dBTP the unattended path
+    /// would quietly start writing over the ceiling again, which is how it behaved before.
+    /// </summary>
+    [Theory]
+    [InlineData(-16)]   // Apple Music, the converter's "−16 LUFS (streaming)"
+    [InlineData(-14)]   // Spotify / YouTube, its "−14 LUFS (loud)"
+    [InlineData(-23)]   // EBU R128, its "−23 LUFS (broadcast)"
+    public void EveryTargetTheBatchConverterOffersReservesAnInterSamplePeak(double lufs)
+    {
+        LoudnessTarget target = LoudnessTarget.All.Single(t => t.IntegratedLufs == lufs);
+
+        Assert.Equal(LoudnessMatch.RelativeCeilingDbtp, target.TruePeakDbtp, 6);
+
+        // Given headroom, the preset is reached exactly; the ceiling is reserved, not spent.
+        LoudnessMatchStep step = Assert.Single(
+            LoudnessMatch.Plan([Track("t", -30, -20)], LoudnessMatchMode.Target, target).Steps);
+        Assert.Equal(lufs, step.ResultingLufs, 6);
+        Assert.True(step.ResultingTruePeakDbtp <= target.TruePeakDbtp + 1e-9);
+    }
+
     [Fact]
     public void ThePlanIsAPureFunctionOfItsInputs()
     {

@@ -67,91 +67,49 @@ public static class Processing
         });
     }
 
-    public static void Normalize(AudioDocument doc, int start, int count, double targetDbfs)
+    /// <summary>Scales the range so its loudest sample reaches <paramref name="targetDbfs"/>.</summary>
+    /// <remarks>
+    /// <b>The peak is measured in place, before anything is copied.</b> <see cref="Apply"/> commits
+    /// whatever its delegate leaves behind, so a delegate that returned early on silence still cost
+    /// an undo entry and a dirty document for an edit that changed nothing — the same defect the
+    /// Reduce Noise path was already fixed for, where the transform returned the untouched buffer
+    /// instead of null. Deciding before the copy also skips the copy.
+    /// </remarks>
+    /// <returns>
+    /// False when the range was silent, in which case nothing was written and no undo entry exists.
+    /// </returns>
+    public static bool Normalize(AudioDocument doc, int start, int count, double targetDbfs)
     {
-        Apply(doc, start, count, "Normalize", data =>
+        ArgumentNullException.ThrowIfNull(doc);
+        if (count <= 0) return false;
+
+        float peak = PeakOfRange(doc, start, count);
+        if (peak <= 0) return false;
+
+        float g = (float)(Math.Pow(10, targetDbfs / 20.0) / peak);
+        Apply(doc, start, count, $"Normalize {targetDbfs:0.0} dBFS", data =>
         {
-            float peak = 0;
-            foreach (var ch in data)
-                for (int i = 0; i < ch.Length; i++) peak = Math.Max(peak, Math.Abs(ch[i]));
-            if (peak <= 0) return;
-            float g = (float)(Math.Pow(10, targetDbfs / 20.0) / peak);
             foreach (var ch in data)
                 for (int i = 0; i < ch.Length; i++) ch[i] *= g;
         });
+        return true;
     }
 
-    /// <summary>EBU R128 loudness normalization to target LUFS.</summary>
-    public static void NormalizeLoudness(AudioDocument doc, int start, int count, double targetLufs = -23)
+    /// <summary>The loudest sample magnitude in a range, read from the document rather than a copy.</summary>
+    /// <remarks>
+    /// The bounds are clamped rather than trusted: this runs before <see cref="Apply"/>, which is
+    /// where <see cref="AudioDocument.CopyRange"/> would otherwise have validated them.
+    /// </remarks>
+    private static float PeakOfRange(AudioDocument doc, int start, int count)
     {
-        Apply(doc, start, count, $"Loudness Normalize {targetLufs:0.0} LUFS", data =>
-        {
-            if (data.Length == 0 || data[0].Length == 0) return;
-
-            // BS.1770 integrated loudness: K-weighted, gated, with the standard
-            // offset. An unweighted RMS lands several dB from the stated target.
-            double currentLufs = MeasureIntegratedLufs(data, doc.SampleRate);
-            // No gated block survived (silence, or a range shorter than 400 ms):
-            // there is no measurable loudness to normalize to.
-            if (!double.IsFinite(currentLufs)) return;
-            double gainDb = targetLufs - currentLufs;
-            float g = (float)Math.Pow(10, gainDb / 20.0);
-
-            // Check true-peak after gain
-            float truePeak = 0;
-            foreach (var ch in data)
-            {
-                // Each channel is its own signal: carrying prev across the channel
-                // boundary invents a peak that exists in neither channel.
-                float prev = 0;
-                for (int i = 0; i < ch.Length; i++)
-                {
-                    float s = ch[i] * g;
-                    float a = Math.Abs(s);
-                    if (a > truePeak) truePeak = a;
-                    // Inter-sample peak
-                    float mid = Math.Abs((s + prev) * 0.5f);
-                    if (mid > truePeak) truePeak = mid;
-                    prev = s;
-                }
-            }
-
-            // Limit gain if true peak would exceed -1 dBTP
-            if (truePeak > 0.891f) // -1 dBTP
-                g *= 0.891f / truePeak;
-
-            foreach (var ch in data)
-                for (int i = 0; i < ch.Length; i++) ch[i] *= g;
-        });
-    }
-
-    /// <summary>
-    /// Integrated loudness (LUFS) of an offline block, measured by driving the same
-    /// BS.1770 meter the master section uses. Returns negative infinity when no
-    /// block passes the absolute gate.
-    /// </summary>
-    private static double MeasureIntegratedLufs(float[][] data, int sampleRate)
-    {
-        int channels = data.Length;
-        if (channels == 0 || sampleRate <= 0) return double.NegativeInfinity;
-        int frames = data[0].Length;
-        if (frames == 0) return double.NegativeInfinity;
-
-        var meter = new LoudnessMeter();
-        meter.Configure(sampleRate, channels);
-        // The meter consumes interleaved audio; feed it in bounded chunks so the
-        // measurement never allocates a second copy of the whole range.
-        int chunkFrames = Math.Min(frames, 8192);
-        var interleaved = new float[chunkFrames * channels];
-        for (int offset = 0; offset < frames; offset += chunkFrames)
-        {
-            int count = Math.Min(chunkFrames, frames - offset);
-            for (int f = 0; f < count; f++)
-                for (int c = 0; c < channels; c++)
-                    interleaved[f * channels + c] = data[c][offset + f];
-            meter.Process(interleaved, 0, count * channels);
-        }
-        return meter.IntegratedLufs;
+        var channels = doc.Channels;
+        if (channels.Count == 0) return 0;
+        int from = Math.Max(0, start);
+        int to = Math.Min(channels[0].Length, start + count);
+        float peak = 0;
+        foreach (var ch in channels)
+            for (int i = from; i < to; i++) peak = Math.Max(peak, Math.Abs(ch[i]));
+        return peak;
     }
 
     public static void FadeIn(AudioDocument doc, int start, int count, int curveType = 0) =>

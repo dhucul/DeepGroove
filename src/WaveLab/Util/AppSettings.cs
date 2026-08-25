@@ -193,6 +193,48 @@ public sealed class AppSettings
             * NoiseDepthCeilingStepDb;
     }
 
+    /// <summary>
+    /// Ceiling <c>Normalize Peak</c> scales the loudest sample of the range to, in dBFS. Remembered
+    /// because a ceiling is a house choice rather than a per-file one: the command was fixed at
+    /// −0.3 before it took a ceiling at all, and anyone who works at −1 would otherwise retype it
+    /// every time.
+    /// </summary>
+    public double NormalizePeakCeilingDb { get; set; } = DefaultNormalizePeakCeilingDb;
+
+    /// <summary>−0.3 dBFS: what Normalize was hardcoded to, kept so the common path is unchanged.</summary>
+    public const double DefaultNormalizePeakCeilingDb = -0.3;
+
+    /// <summary>
+    /// Deepest ceiling the slider reaches. Further down is a level change rather than a
+    /// normalization, and Gain is the honest command for that.
+    /// </summary>
+    public const double MinimumNormalizePeakCeilingDb = -24;
+
+    /// <summary>
+    /// Highest ceiling offered. Zero is full scale, and nothing a fixed-point export can hold sits
+    /// above it.
+    /// </summary>
+    public const double MaximumNormalizePeakCeilingDb = 0;
+
+    /// <summary>Ceiling resolution, and the slider's step. A tenth is where the readout stops.</summary>
+    public const double NormalizePeakCeilingStepDb = 0.1;
+
+    /// <summary>
+    /// Clamps a ceiling into the range the slider offers and snaps it to that step, so a
+    /// hand-edited or out-of-range value is corrected rather than discarded. Only a non-finite value
+    /// falls back to the default.
+    /// </summary>
+    public static double NormalizePeakCeiling(double ceilingDb)
+    {
+        if (!double.IsFinite(ceilingDb)) return DefaultNormalizePeakCeilingDb;
+        double clamped = Math.Clamp(
+            ceilingDb, MinimumNormalizePeakCeilingDb, MaximumNormalizePeakCeilingDb);
+        // Rounded on the value, not on value/step multiplied back: −0.3 divided by 0.1 and
+        // remultiplied is −0.30000000000000004, which then does not compare equal to the default it
+        // was read from — a settings file that never changes would still look dirty.
+        return Math.Round(clamped, 1, MidpointRounding.AwayFromZero);
+    }
+
     // Autosave
     public bool AutosaveEnabled { get; set; } = true;
     public int AutosaveMinutes { get; set; } = 3;
@@ -483,6 +525,8 @@ public sealed class AppSettings
             NormalizeTargetCeilingDb(settings.RecordingTargetCeilingDb);
         settings.NoiseDepthCeilingDb =
             NormalizeNoiseDepthCeilingDb(settings.NoiseDepthCeilingDb);
+        settings.NormalizePeakCeilingDb =
+            NormalizePeakCeiling(settings.NormalizePeakCeilingDb);
         // Entries expire and are capped: a calibration is a statement about a
         // physical setup, and neither a six-month-old one nor an unbounded pile of
         // long-unplugged devices is worth offering back to the user. The optional
@@ -575,6 +619,7 @@ public sealed class AppSettings
         UndoLimitMb = d.UndoLimitMb;
         KeepRemovedMaterial = d.KeepRemovedMaterial;
         NoiseDepthCeilingDb = d.NoiseDepthCeilingDb;
+        NormalizePeakCeilingDb = d.NormalizePeakCeilingDb;
         AutosaveEnabled = d.AutosaveEnabled;
         AutosaveMinutes = d.AutosaveMinutes;
         ExportFormat = d.ExportFormat;

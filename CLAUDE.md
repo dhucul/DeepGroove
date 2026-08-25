@@ -1631,6 +1631,157 @@ is already on record here twice.
   unsaved-work box with nobody on the thread to answer it. Its readings are collected and judged
   outside the callback like the probe beside it.
 
+## Normalization had four implementations and one of them was the only one that mattered
+
+The app already did both kinds of normalization, and the question of which it had was harder to
+answer than it should have been, because it had four separate answers.
+
+**Peak** was `Processing.Normalize`, reached by one menu item that hardcoded −0.3 dBFS at the call
+site — the ceiling was not a parameter of the command, it was a literal in `MainViewModel`. **Loudness**
+was `LoudnessMatch`, which is the good one: BS.1770 gating, the 4× oversampled true peak, a gain that
+is the smaller of what loudness asks for and what the ceiling allows, and a shortfall reported rather
+than swallowed. It was reachable only as *Match Loudness Across Tabs*, so the single most ordinary
+request — bring this file to −14 LUFS — had no command. **Batch convert** had its own LUFS branch
+that applied `target - current` and nothing else. And `Processing.NormalizeLoudness` was a fourth,
+with a 2× inter-sample estimate, zero call sites in `src/` or `tests/`, and a doc comment.
+
+The batch branch was the defect, and it was already on record: `LoudnessMatch`'s own remarks name it,
+and `LoudnessMatchTests` opens by saying the file exists because of it. Nobody had fixed it. It would
+push a track past 0 dBTP and say nothing — unattended, over a queue, which is the worst place for a
+silent breach.
+
+**What changed is routing, not arithmetic.** `LoudnessMatch.Plan` is pure, total, and already tested;
+it was never multi-track-specific, and a one-element list is a valid input. So the new single-file
+*Normalize Loudness* drives it with one measurement, and the batch converter now does too. The true
+peak the batch path needed cost nothing to obtain: the meter it was already running over the whole
+file computes it, and the old code read `IntegratedLufs` off that meter and threw the peak away. The
+three LUFS modes map onto `LoudnessTarget.Apple` / `Streaming` / `Ebu` rather than onto bare numbers,
+so the ceiling travels with the target instead of being restated somewhere it can be forgotten.
+
+Three consequences worth knowing:
+
+- **Peak normalize asks for a ceiling.** `AppSettings.NormalizePeakCeilingDb` remembers it, so the
+  old one-value behaviour costs one Enter, and the undo entry is `Normalize −6.0 dBFS` rather than
+  `Normalize` — two normalizations to different ceilings used to read back identically. The rounding
+  is `Math.Round(value, 1)`, not divide-by-step-and-multiply-back, because the latter leaves −0.3 as
+  −0.30000000000000004 and a settings file nobody touched then looks dirty.
+- **Loudness normalize is whole-document and says so in its title.** A selection was considered and
+  rejected: the gate works on 400 ms blocks against a threshold taken from the programme, so a short
+  range has no loudness rather than a smaller one — `ARangeShorterThanTheGateHasNoLoudnessToNormalizeTo`
+  pins that a 100 ms fragment measures negative infinity. Peak normalize keeps taking a range,
+  because the peak of a selection is the same kind of measurement as the peak of a file.
+- **A ceiling that binds is reported, never applied quietly.** Interactively that is a Yes/No naming
+  the dB of limiting the master would need; in a batch it is `true-peak limited, N dB short of target`
+  on the row and a count in the summary line. That rule was already stated twice in this repo — by
+  `LoudnessCompliance` and by `LoudnessMatch` — and the batch path was the one place it was not held.
+
+`Processing.NormalizeLoudness` and its private `MeasureIntegratedLufs` were deleted, on the precedent
+the four unwired restoration methods set: an implementation nothing reaches has not been measured,
+and keeping a second answer to a question the app already answers correctly is how the four
+implementations happened in the first place.
+
+### Review fixes: two silent lies, a stalled bar, and a test that did not test its own claim
+
+- **`Processing.Normalize` declined silence inside `Apply`'s delegate, which commits regardless.** So
+  normalizing a silent range spliced it over itself — an undo entry and a dirty document for an edit
+  that changed nothing — and the new status line then said "Normalized to −6.0 dBFS." This is the
+  defect already on record for Reduce Noise, where the transform returned the untouched buffer
+  instead of null. The peak is measured **in place before anything is copied**, so the silent case
+  now costs neither the copy nor the entry, and the method returns `bool` so the caller can say
+  which of the two happened.
+- **The apply pass pinned the progress bar at a determinate 0%.** `OperationProgress.Refresh` treats
+  any `reported >= 0` as a figure, and `MatchLoudnessData` takes no `IProgress`, so a single
+  `Report(0)` took the bar out of indeterminate and then left it at 0% for the whole scaling pass —
+  a stalled bar rather than an honest "Working…". Nothing is reported there now.
+- **The document could move under the true-peak prompt, and the work was only discarded afterwards.**
+  `MessageBox.Show(owner, …)` is Win32 and disables **the owner alone**, unlike `ShowDialog`, which
+  disables the application — so the modeless Edit History panel stays live, and `CanMoveHistory`
+  gates on exactly the flag the measure block's `finally` has just cleared. The post-apply
+  `EditVersion` check always caught it, so nothing was ever committed wrongly; what it cost was a
+  full pass over the document behind a blocking overlay before saying so. Checked before the pass as
+  well now.
+- **A true-peak-limited batch row wore the in-flight colour.** `AccentBrush` is what a row still
+  converting wears, and colour is what an unattended queue is scanned by. It is amber now — the
+  shade `MatchLoudnessDialog` already uses for exactly this — and amber is right here rather than
+  against the house rule, because the row is reporting a limit rather than a fault.
+- **The re-pinned side-level test asserted to three decimal places while its own remarks said
+  "exactly 1.0".** 0.9999 satisfies a three-decimal tolerance and breaks all three `< 1.0` guards,
+  which is the bug that had just been fixed. The two full-level rows now assert the boundary
+  directly. **Mutation-tested, and the first attempt at that mutation is the more interesting
+  result**: multiplying the curve by 0.9999 *before* `Quantize` changed nothing, because the
+  quantiser snaps 0.99979 back onto 1.0 — so the exactness this depends on comes from the 0.05 step
+  dividing 1.0, not from the 0.80 coefficient. Applying the same drift *after* `Quantize` fails the
+  two boundary rows and no others.
+
+## The side-level sigmoid could not reach the top of its own range, and three things read the top as "off"
+
+Eight tests were red on `main` before any of the above. All eight came from one commit — `0523a24`,
+which changed two restoration algorithms and touched no test file. Six were the side-level rule; two
+were the WOLA golden pinning. Both are now green, and the six were not a stale pinning.
+
+**The rule.** How far the Vertical Surface Noise card pulls the side down was a linear ramp between
+two anchors measured off five transfers — −14 dB side-to-mid for a mono cut, −8 dB for a real stereo
+one. `0523a24` replaced it with a sigmoid, floored at 0.20 so a mono pressing keeps a fifth of its
+side, on the honest grounds that five records from one collection do not justify a hard switch. That
+much was deliberate and is kept.
+
+What was not deliberate is that `0.20 + 0.75 * sigmoid` has a supremum of **0.95**. A logistic never
+reaches 1, so the expression cannot either — and the line it sits on is
+`Math.Clamp(0.20 + 0.75 * sigmoid, 0.20, 1.0)`, whose upper bound is therefore dead code. Nobody
+clamps to a value they know is unreachable; the `1.0` is the intent, left over from the ramp.
+
+**Why 0.95 is not a rounding detail.** Three separate places read `SideLevel < 1.0` as *this stage
+exists*: the workbench ticks its card on it, the render skips `ScaleSide` on it, and
+`DescribeSideLevel` has a "leaving the side at full" branch behind it. At a ceiling of 0.95 all three
+fire for **every** stereo record — the card switches itself on, the readout says the image is being
+narrowed, and the side loses 0.4 dB nobody asked for. It also silently broke a contract stated in
+`CleanupAnalyzer.SideToMidDb`, which returns `0` when nothing clears the gate and says so in a
+comment: *"Zero is the neutral answer, and it recommends leaving the side alone."* Under 0.75, zero
+recommended 0.95.
+
+The fix is `0.75` → `0.80`, which restores a reachable 1.0 from about −6.6 dB up and leaves every
+softened value the commit chose untouched: −16.5 → 0.20, −14 → 0.25, −11 → 0.55, −8 → 0.90. Only
+those three middle rows were genuinely re-pinned. `StereoSideToMidDb`'s docstring still said "at or
+above which the side signal is left entirely alone", which the sigmoid made false at the anchor
+itself; it now says which.
+
+**Why no test caught it.** `VerticalNoiseReadoutTests` does pin the full-level behaviour — but by
+passing `level: 1.0` as a literal, so it kept passing while testing a state the recommender could no
+longer produce. The pinning was one layer below where the regression was. The re-pinned theory rows
+now carry the reason the two ends are not free to move, so the next person to reshape the curve is
+told what depends on it.
+
+**The golden pair.** `Restoration.ScrubTonalPeaks` — a 5-bin median stripping narrow spikes from a
+learned profile, so music left in a "quiet" passage is not gated away as noise — genuinely changes
+the denoiser's output, and the golden test's signal is built to contain exactly that case. Re-pinned,
+with the evidence the file's own convention asks for: of the three pinned profile bins only bin 10
+moved (0.6547 → 0.4708), bin 0 being the one the new code documents as exempt because it is DC; the
+output RMS *rose*, 0.2295 → 0.2434, which is the direction a lower profile has to move it; and the
+probes move where the tones are rather than uniformly.
+
+**And the Enabled box the render never read.** Found while tracing the above, from `5fa63a1` and
+older than it: `verticalEnabled` was read in exactly two places, set from the recommendation and
+passed to the evidence line. It never reached `RestorationSettings`, which took
+`sideLevel.Value / 100.0` directly. Six of the seven cards on that dialog put their Enabled box into
+the record and the render reads it; this one did not. So unticking *Enabled* by hand printed "This
+card is switched off; the side signal is untouched" over a render that went on reducing the side —
+not a stale caption but a false one, on the single card that can throw away half of a stereo record.
+
+The record now carries `ReduceSide` beside `SideLevel`, the way `RemoveSubsonic` sits beside
+`SubsonicCutoffHz`, and the guard became a named predicate next to the readout it has to agree with:
+
+```csharp
+internal static bool SideStageRuns(bool bypass, bool enabled, double sideLevel) =>
+    !bypass && enabled && sideLevel < 1.0;
+```
+
+**Naming it is the point, not tidiness.** Pinning the predicate alone would not have caught this: the
+guard was correct about what it read, the caption was correct about what it read, and the defect was
+only ever visible in the two being asserted against each other.
+`TheCaptionClaimsAReductionOnlyWhenOneWillHappen` does that, and reverting the predicate to the
+pre-fix `!bypass && sideLevel < 1.0` fails it on exactly the two rows where the box is unticked and
+the slider is not at full — which is the bug, reproduced.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

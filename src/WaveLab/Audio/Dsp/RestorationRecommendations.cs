@@ -42,7 +42,13 @@ internal static class RestorationRecommendations
     /// </remarks>
     internal const double MonoPressingSideToMidDb = -14.0;
 
-    /// <summary>Side-to-mid ratio at or above which the side signal is left entirely alone.</summary>
+    /// <summary>Side-to-mid ratio above which the side signal is left entirely alone.</summary>
+    /// <remarks>
+    /// <b>"At or above" was true of the linear ramp and is not true of the sigmoid.</b> The curve
+    /// reaches full only above about −6.6 dB; at this anchor it recommends 0.90, which is the
+    /// deliberate softening — a ratio landing exactly on a number measured from five records should
+    /// not be the difference between a stage that runs and one that does not.
+    /// </remarks>
     internal const double StereoSideToMidDb = -8.0;
 
     /// <summary>The de-crackle threshold in robust deviations, matching the Restore menu default.</summary>
@@ -105,11 +111,20 @@ internal static class RestorationRecommendations
         // fully discarded. A linear ramp was calibrated on five recordings from one collection and
         // could collapse the stereo image on material outside that narrow set; the sigmoid errs
         // toward preserving width while still collapsing the side on a strong mono signal.
-        // At -14 dB: ~0.25 (was 0.00)   At -11 dB: ~0.55   At -8 dB: ~0.85 (was 1.00)
+        //   −16.5 dB → 0.20   −14 → 0.25   −11 → 0.55   −8 → 0.90   −6 and above → 1.00
+        //
+        // The 0.80 span is what makes that last column reachable, and it is load-bearing rather
+        // than cosmetic. Three things downstream read "1.00" as "there is nothing to do here": the
+        // workbench ticks its Vertical Surface Noise card on `SideLevel < 1.0`, the render skips
+        // ScaleSide on the same test, and the evidence line has a "leaving the side at full"
+        // branch. A span of 0.75 caps this at 0.95, so all three fire on every stereo record —
+        // the card switches itself on, and the readout says the image is being narrowed, for
+        // 0.4 dB nobody asked for. It also breaks a contract stated in CleanupAnalyzer.SideToMidDb,
+        // which returns 0 for "no reading" precisely because 0 used to mean "leave the side alone".
         double x = (cleanup.SideToMidDb - MonoPressingSideToMidDb) /
                    (StereoSideToMidDb - MonoPressingSideToMidDb);
         double sigmoid = 1.0 / (1.0 + Math.Exp(-5.0 * (x - 0.55)));
-        double sideLevel = Quantize(Math.Clamp(0.20 + 0.75 * sigmoid, 0.20, 1.0), 0.05);
+        double sideLevel = Quantize(Math.Clamp(0.20 + 0.80 * sigmoid, 0.20, 1.0), 0.05);
 
         // De-crackle rides on the same evidence as click repair: impulses found means a surface
         // that sheds them, and crackle is the population below the click detector's reach rather
