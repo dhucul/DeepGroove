@@ -185,7 +185,7 @@ public partial class MainWindow
         {
             case MontageDestination.NewTab:
                 _vm.AddDocument(rendered);
-                _vm.ReportAction($"Montage rendered into a new tab.{measured}");
+                _vm.ReportAction($"Montage rendered into a new tab, \"{rendered.Title}\".{measured}");
                 break;
 
             case MontageDestination.File:
@@ -211,7 +211,11 @@ public partial class MainWindow
                         });
                     }
                     document.NotifyMarkersChanged();
-                    _vm.ReportAction($"Montage rendered with one region per clip.{measured}");
+                    // Names the tab and says where the writing happens: neither destination writes
+                    // anything itself, and the folder is asked for by the CD window's Export.
+                    _vm.ReportAction(
+                        $"Rendered into a new tab, \"{document.Title}\", with one region per clip. " +
+                        "Prepare Audio CD is open; its Export button writes the package." + measured);
                     CdTransferDialog.ShowFor(document, _vm, this);
                 }
                 break;

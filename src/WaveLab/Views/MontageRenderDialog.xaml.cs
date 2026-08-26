@@ -53,6 +53,19 @@ public partial class MontageRenderDialog : Window
     public MontageRenderResult? Result { get; private set; }
 
     /// <summary>
+    /// What the rendered document is called in the tab strip.
+    /// </summary>
+    /// <remarks>
+    /// Named apart from the montage it came from, because both live in that strip at once. A render
+    /// carrying the montage's own title put a second "Side A" beside the first, which is
+    /// indistinguishable from the render having done nothing at all — and Render &amp; Prepare CD
+    /// was reported as exactly that: the CD window opened and nothing else appeared to change. The
+    /// <c>(suffix).wav</c> shape is the one the channel and sample-rate tools already use.
+    /// </remarks>
+    public static string RenderedTitle(string? montageTitle) =>
+        $"{(string.IsNullOrWhiteSpace(montageTitle) ? "Montage" : montageTitle.Trim())} (render).wav";
+
+    /// <summary>
     /// One CD track per clip, in lane order, for the CD and DDP destinations.
     /// </summary>
     /// <remarks>
@@ -181,7 +194,7 @@ public partial class MontageRenderDialog : Window
 
             Rendered = new AudioDocument(audio, montage.SampleRate, sourceBitDepth: 32)
             {
-                Title = string.IsNullOrWhiteSpace(montage.Title) ? "Montage" : montage.Title,
+                Title = RenderedTitle(montage.Title),
             };
             Result = result;
             progressBar.Value = 1;

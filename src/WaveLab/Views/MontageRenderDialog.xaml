@@ -74,7 +74,10 @@
             <Border Margin="0,16,0,0" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0"
                     Padding="20,14">
                 <Grid>
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="190"/></Grid.ColumnDefinitions>
+                    <!-- Auto, not a figure. The render button is relabelled per destination and
+                         "Render & Prepare DDP…" is half as wide again as "Render"; a column sized to
+                         the short label clipped the long ones to "Render & Prepa". -->
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <StackPanel VerticalAlignment="Center">
                         <ProgressBar x:Name="progressBar" Height="6" Minimum="0" Maximum="1"
                                      Foreground="{StaticResource Accent}" Background="{StaticResource Panel3}"/>
@@ -82,10 +85,11 @@
                                    Foreground="{StaticResource Faint}" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
                     <Grid Grid.Column="2">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <Button x:Name="closeBtn" Content="Close" Height="38" Style="{StaticResource AccentButton}"
                                 Foreground="{StaticResource Muted}" Click="OnClose"/>
                         <Button x:Name="renderBtn" Grid.Column="2" Content="Render" Height="38"
+                                MinWidth="104" Padding="18,0"
                                 Style="{StaticResource AccentButton}" Click="OnRenderClick"/>
                     </Grid>
                 </Grid>
