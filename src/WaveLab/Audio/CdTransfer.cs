@@ -237,7 +237,7 @@ public static class CdTransfer
         if (tracks.Count == 0)
             issues.Add(new(CdPlanIssueSeverity.Error, "Add at least one track."));
         if (tracks.Count > MaximumTracks)
-            issues.Add(new(CdPlanIssueSeverity.Error, $"Audio CDs support at most {MaximumTracks} tracks."));
+            issues.Add(new(CdPlanIssueSeverity.Error, $"A CD holds at most {MaximumTracks} tracks."));
 
         long totalFrames = 0;
         for (int i = 0; i < tracks.Count; i++)
@@ -245,7 +245,8 @@ public static class CdTransfer
             var track = tracks[i];
             if (track.SourceStart < 0 || track.SourceEnd > documentLength || track.SourceEnd <= track.SourceStart)
             {
-                issues.Add(new(CdPlanIssueSeverity.Error, $"Track {i + 1:00} has an invalid source range."));
+                issues.Add(new(CdPlanIssueSeverity.Error,
+                    $"Track {i + 1:00} covers no audio - check its SOURCE IN and SOURCE OUT."));
                 continue;
             }
 
@@ -256,7 +257,8 @@ public static class CdTransfer
             double duration = frames / (double)CdSampleRate;
             if (duration < MinimumTrackSeconds)
                 issues.Add(new(CdPlanIssueSeverity.Error,
-                    $"Track {i + 1:00} is {duration:0.0} s after CD alignment; tracks must be at least {MinimumTrackSeconds:0} s."));
+                    $"Track {i + 1:00} comes out {duration:0.0} s long on the disc. " +
+                    $"A CD track has to run for at least {MinimumTrackSeconds:0} seconds."));
             if (string.IsNullOrWhiteSpace(track.Title))
                 issues.Add(new(CdPlanIssueSeverity.Warning, $"Track {i + 1:00} has no title."));
         }
@@ -264,13 +266,14 @@ public static class CdTransfer
         double total = totalFrames / (double)CdSampleRate;
         if (total > MaximumDurationSeconds)
             issues.Add(new(CdPlanIssueSeverity.Error,
-                $"The sector-aligned program is {FormatDuration(total)}; the CD target is at most {FormatDuration(MaximumDurationSeconds)}."));
+                $"These tracks run {FormatDuration(total)} on the disc. A CD holds at most " +
+                $"{FormatDuration(MaximumDurationSeconds)} - shorten one or take one out."));
         else if (total > 74 * 60)
             issues.Add(new(CdPlanIssueSeverity.Warning,
-                $"The sector-aligned program is {FormatDuration(total)}. Confirm that the target disc supports 80-minute media."));
+                $"These tracks run {FormatDuration(total)} on the disc. Check your blank discs hold more than 74 minutes."));
         else
             issues.Add(new(CdPlanIssueSeverity.Information,
-                $"Program length: {FormatDuration(total)} across {tracks.Count} track(s), aligned to CD sectors."));
+                $"{(tracks.Count == 1 ? "1 track" : $"{tracks.Count} tracks")}, {FormatDuration(total)} on the disc."));
         return issues;
     }
 

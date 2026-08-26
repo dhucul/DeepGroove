@@ -2064,9 +2064,34 @@ one people will believe they have to press.
   now. The ordinary WAV+CUE wording wants 319 px and fits with room to spare. The probe **asserts
   the ordinary wording and reports the DDP one**, rather than asserting a failure that predates the
   change or quietly shortening a second readout inside a commit about a button label.
-- That validation line is the last readout in this window still in the old voice — "across 99
-  track(s)", "99 of 99 ISRC(s) set" — and shortening it is what would make it fit. The two are the
-  same piece of work and neither is done here.
+
+### The validation line, where the wording and the layout turned out to be one problem
+
+The last readout in this window in the old voice, and the one where the two complaints met: it did
+not fit **because** of how it was written. "Program length: 79:58 across 99 track(s), aligned to CD
+sectors. Lead-out at 79:58:00; 99 of 99 ISRC(s) set." wanted **536 px in a column holding 475**, so
+the part being cut was the tail — which is where the DDP user's catalogue tally lives. Saying the
+same thing plainly took it to **351 px**, and the ordinary WAV+CUE form from 319 px to **141**.
+
+- **"Program length: 79:58 across 99 track(s), aligned to CD sectors."** → "99 tracks, 79:58 on the
+  disc." Everything dropped was either restating the label the number sits under or explaining an
+  implementation detail: *sector alignment* is why the figure differs from the source duration, and
+  "on the disc" already says that.
+- The rest followed the same rule as Add Track's refusals — name what the rule is rather than that
+  one was broken. "Track 03 has an invalid source range" → "Track 03 covers no audio - check its
+  SOURCE IN and SOURCE OUT." "Track 03 is 2.0 s after CD alignment; tracks must be at least 4 s" →
+  "Track 03 comes out 2.0 s long on the disc. A CD track has to run for at least 4 seconds."
+  "The sector-aligned program is 1:21:00; the CD target is at most 1:20:00" → "… A CD holds at most
+  1:20:00 - shorten one or take one out."
+- **These are the only wordings in the window that are read outside it.** `Validate`'s errors reach
+  the Export message box and are thrown out of both exporters, so the plain form has to work as a
+  sentence on its own rather than only as a line under a list.
+- **`FormatDuration` goes to `h:mm:ss` past the hour**, so a 75-minute programme reads **1:15:00**
+  and not 75:00 — which is why the warning beside it says "74 minutes" in words. Two test
+  expectations were written assuming otherwise; the code was right both times.
+- The probe now **asserts** both forms rather than reporting the DDP one. It could not before: that
+  wording had been trimming since before the button was renamed, and asserting it would have been
+  asserting a pre-existing failure inside a commit about a label.
 
 ### The cue sheet credited the application on every disc
 

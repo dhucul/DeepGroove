@@ -1107,17 +1107,19 @@ public partial class CdTransferDialog : Window
             // omitted from the sheet rather than written short, and the user should hear that now.
             if (bad > 0 && severity != CdPlanIssueSeverity.Error)
             {
-                message = $"{bad} ISRC(s) are not twelve characters; they will be omitted rather than written short.";
+                message = bad == 1
+                    ? "One ISRC is not twelve characters, so it will be left out rather than written short."
+                    : $"{bad} ISRCs are not twelve characters, so they will be left out rather than written short.";
                 severity = CdPlanIssueSeverity.Warning;
             }
             else if (upcTyped && upc.Length == 0 && severity != CdPlanIssueSeverity.Error)
             {
-                message = "The UPC/EAN is not twelve or thirteen digits; it will be omitted.";
+                message = "The UPC/EAN is not twelve or thirteen digits, so it will be left out.";
                 severity = CdPlanIssueSeverity.Warning;
             }
             else if (severity == CdPlanIssueSeverity.Information)
             {
-                message = $"{message} Lead-out at {layout.LeadOutTimecode}; {set} of {_tracks.Count} ISRC(s) set.";
+                message = $"{message} Lead-out at {layout.LeadOutTimecode}. {set} of {_tracks.Count} ISRCs set.";
             }
         }
 

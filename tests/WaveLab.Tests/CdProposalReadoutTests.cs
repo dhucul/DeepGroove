@@ -237,6 +237,97 @@ public sealed class CdListActionReadoutTests
 }
 
 /// <summary>
+/// The line above the footer, which reports whether the plan can be burned at all.
+/// </summary>
+/// <remarks>
+/// The last readout in this window still in the old voice, and the one that made the fault visible
+/// as a layout problem rather than only as a wording one: "Program length: 79:58 across 99
+/// track(s), aligned to CD sectors. Lead-out at 79:58:00; 99 of 99 ISRC(s) set." wanted 536 px in a
+/// column holding 475, so the tail a DDP user most needs — how many catalogue numbers are actually
+/// set — was the part being cut off. Saying the same thing plainly is what makes it fit.
+/// </remarks>
+public sealed class CdValidationReadoutTests
+{
+    private static List<CdPlanIssue> Issues(int rate, params (double Start, double End)[] tracks)
+    {
+        int Frames(double seconds) => (int)Math.Round(seconds * rate);
+        var plan = tracks
+            .Select((t, i) => new CdTrackPlan(Frames(t.Start), Frames(t.End), $"Track {i + 1:00}"))
+            .ToList();
+        int length = plan.Count == 0 ? rate : plan.Max(p => p.SourceEnd);
+        return CdTransfer.Validate(plan, rate, length);
+    }
+
+    private static string Say(List<CdPlanIssue> issues, CdPlanIssueSeverity severity) =>
+        issues.First(i => i.Severity == severity).Message;
+
+    private static void PlainEnough(string line)
+    {
+        Assert.DoesNotContain("track(s)", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ISRC(s)", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sector-aligned", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("source range", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Program length", line, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The line a valid plan carries, which is on screen the whole time the window is usable — and
+    /// the one the DDP tail is appended to, so its length is the constraint on both.
+    /// </summary>
+    [Fact]
+    public void AValidPlanSaysWhatIsOnTheDiscInFiveWords()
+    {
+        string line = Say(Issues(44_100, (0, 60), (60, 130), (130, 200)), CdPlanIssueSeverity.Information);
+        Assert.Equal("3 tracks, 3:20 on the disc.", line);
+        PlainEnough(line);
+
+        Assert.Equal("1 track, 1:00 on the disc.",
+            Say(Issues(44_100, (0, 60)), CdPlanIssueSeverity.Information));
+    }
+
+    /// <summary>
+    /// A refusal has to say what the rule is, the same way Add Track's does. These reach the Export
+    /// message box as well as this line, so they are read outside the window too.
+    /// </summary>
+    [Fact]
+    public void ARefusalNamesTheRuleItIsEnforcing()
+    {
+        string tooShort = Say(Issues(44_100, (0, 2), (2, 60)), CdPlanIssueSeverity.Error);
+        Assert.Contains("comes out 2.0 s long on the disc", tooShort, StringComparison.Ordinal);
+        Assert.Contains("at least 4 seconds", tooShort, StringComparison.Ordinal);
+        PlainEnough(tooShort);
+
+        string empty = Say(Issues(44_100, (5, 5)), CdPlanIssueSeverity.Error);
+        Assert.Contains("covers no audio", empty, StringComparison.Ordinal);
+        Assert.Contains("SOURCE IN and SOURCE OUT", empty, StringComparison.Ordinal);
+        PlainEnough(empty);
+    }
+
+    /// <summary>
+    /// Over 74 minutes is a question about the blank disc, not about the plan. Note the duration:
+    /// <c>FormatDuration</c> goes to h:mm:ss past the hour, so a 75-minute programme reads 1:15:00
+    /// rather than 75:00 — which is why the sentence beside it says "74 minutes" in words.
+    /// </summary>
+    [Fact]
+    public void ALongProgrammeAsksAboutTheBlankDisc()
+    {
+        string line = Say(Issues(8_000, (0, 75 * 60)), CdPlanIssueSeverity.Warning);
+        Assert.Equal("These tracks run 1:15:00 on the disc. Check your blank discs hold more than 74 minutes.", line);
+        PlainEnough(line);
+    }
+
+    [Fact]
+    public void PastEightyMinutesSaysWhatToDoAboutIt()
+    {
+        string line = Say(Issues(8_000, (0, 81 * 60)), CdPlanIssueSeverity.Error);
+        Assert.Contains("These tracks run 1:21:00 on the disc", line, StringComparison.Ordinal);
+        Assert.Contains("A CD holds at most 1:20:00", line, StringComparison.Ordinal);
+        Assert.Contains("shorten one or take one out", line, StringComparison.Ordinal);
+        PlainEnough(line);
+    }
+}
+
+/// <summary>
 /// Measures the widest of those wordings in the built dialog, at the width the window is fixed to.
 /// </summary>
 /// <remarks>
@@ -249,6 +340,17 @@ public sealed class CdListActionReadoutTests
 [Collection(AppSettingsCollection.Name)]
 public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
 {
+    /// <summary>
+    /// The two forms of the validation line at their widest — 99 tracks filling an 80-minute disc.
+    /// Written out rather than produced through <c>Validate</c> so the probe measures a fixed worst
+    /// case; <see cref="CdValidationReadoutTests"/> is what pins that these are the real wordings.
+    /// </summary>
+    private static class ValidationLine
+    {
+        public const string Plain = "99 tracks, 79:58 on the disc.";
+        public const string Ddp = Plain + " Lead-out at 79:58:00. 99 of 99 ISRCs set.";
+    }
+
     private readonly string _original = AppSettings.AppDataDir;
     private readonly string _sandbox =
         Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
@@ -375,10 +477,9 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
                 }
 
                 // What a WAV+CUE package shows, which is the overwhelming majority of the time.
-                plain = Wants("Program length: 79:58 across 99 track(s), aligned to CD sectors.");
+                plain = Wants(ValidationLine.Plain);
                 // The DDP form appends the lead-out and the ISRC tally to it.
-                longest = Wants("Program length: 79:58 across 99 track(s), aligned to CD sectors. " +
-                                "Lead-out at 79:58:00; 99 of 99 ISRC(s) set.");
+                longest = Wants(ValidationLine.Ddp);
             });
         });
 
@@ -393,11 +494,9 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
             $"Save Track List wants {wanted:F0} px and was given {button:F0} px, so its label is cut");
         Assert.True(plain <= validation,
             $"the ordinary validation wording wants {plain:F0} px and the line has {validation:F0} px");
-
-        // The DDP wording does NOT fit and did not before the rename either - it wants 536 px
-        // against 496 then and 475 now. Reported rather than asserted, because shortening it is a
-        // wording change to a different readout and belongs with that one, not with a button label.
-        if (longest > validation)
-            output.WriteLine($"NOTE: the DDP wording still trims, by {longest - validation:F0} px.");
+        // This one did not fit until the wording was rewritten: it wanted 536 px against 496 before
+        // the button was renamed and 475 after, so it had been trimming all along.
+        Assert.True(longest <= validation,
+            $"the DDP validation wording wants {longest:F0} px and the line has {validation:F0} px");
     }
 }
