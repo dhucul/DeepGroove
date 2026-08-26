@@ -2093,6 +2093,61 @@ same thing plainly took it to **351 px**, and the ordinary WAV+CUE form from 319
   wording had been trimming since before the button was renamed, and asserting it would have been
   asserting a pre-existing failure inside a commit about a label.
 
+### Find Tracks: the setting is findable, so the user should not be hunting for it
+
+Reported as *"with the Analyze button it is hard to determine how to fix the problem with the
+slider - I want an autofix feature."* Fair: the window was asking for the answer to an **inverse
+problem** — which level produces the right tracks — and the only way to answer it was guess, count
+the rows, guess again. The three rewrites before this one made the *feedback* honest and left the
+hunting exactly where it was.
+
+- **A real gap structure is robust to the threshold and a spurious one is not.** That is the whole
+  idea. Measured on three real transfers butted into one 504 s side, every setting from −55 to
+  −40 dB proposes the same three tracks with the splits steady within 0.07 s; past −40 they slide,
+  by 7.6 s at −30, because a looser threshold calls the fade-out quiet sooner. So the setting to
+  use is the **middle of the widest run of thresholds that agree**, and that is a property the
+  program can measure and the user cannot see at all.
+- **It is affordable because the envelope does not depend on the threshold.**
+  `Restoration.BlockPeaks` is the whole cost of a silence pass, and only the comparison after it
+  varies — so the envelope is measured once and forty-six thresholds run against it. The old
+  `DetectSilences` is now those two in sequence, and
+  `MeasuringTheEnvelopeOnceGivesTheSameSilencesAsMeasuringItEveryTime` pins that the split changed
+  nothing.
+- **A candidate carries the splits at its *chosen* setting, not at the edge its run began from.**
+  Find Tracks leaves the slider where its answer came from, so an Analyze pressed straight after
+  re-derives from that setting — and if the two differed by even a tenth of a second the user would
+  be told the splits had moved by pressing a button that changed nothing.
+  `AnalyzeAtTheChosenSettingReproducesWhatFindTracksApplied` is that invariant, and it is also **the
+  first direct test `SuggestTracks` has ever had**.
+- **An optional track count, because the record label carries a number the audio does not.** Blank
+  takes the steadiest answer. Filled in and unreachable, the reply is *which counts are reachable* —
+  "This side splits into 1, 3 or 4 tracks, never 6" — which is the sentence that ends the hunt
+  instead of sending the user back to the slider.
+- **12 sides built from the real transfers: right count on 12, every join placed within 0.8 s.**
+  Plateaus ran about 20 dB wide (−58 to −37 typical). `CdAutoSplitCorpusTests` is opt-in on
+  `WAVELAB_CORPUS=1` and states its own limitation: a join butted together is real run-out groove
+  against real lead-in groove, but it is **not** one continuous groove between two songs on a
+  pressing, and this file records five declip calibrations that died of exactly that gap.
+
+**The constant the corpus does not test, said plainly rather than left to be discovered.**
+`MinimumPlateauDb` (3 dB) is how wide a multi-track answer must hold before it beats "one long
+track". **Every real side produced a ~20 dB plateau, so the guard never binds there and the 12-of-12
+result is no evidence about it either way.** It binds only at the top of the sweep, and the reason
+is structural: once a gap is quiet enough to register it keeps registering at every louder setting,
+so a multi-track answer always runs to the end of the sweep and is narrow only when it first appears
+near that end. A stretch a mere 26 dB below the programme is a soft passage inside a song rather
+than the space between two.
+`AQuietPassageIsNotAGapAndOneDecibelIsNotEvidence` builds that case directly and is the only thing
+holding the constant; asking for two tracks **by name** still gets them, because the guard is about
+what to choose unprompted rather than about overruling somebody who knows their own record.
+
+- Both halves were checked by mutation: dropping the plateau-width guard fails that test, and
+  pointing `ApplyProposal` at `ReplaceTracks` unconditionally fails three.
+- `ApplyProposal` is shared by Analyze and Find Tracks, so a swept answer keeps typed titles and
+  ISRCs on exactly the terms a hand-set one does.
+- Measured in the built dialog: the AUTO SPLIT row went from four controls to seven and nothing in
+  it is cut, and the widest new wording wants 515 px of the status line's 756.
+
 ### The cue sheet credited the application on every disc
 
 Found while checking Export, which had **no test at all** — `ExportDdpAsync` was covered and

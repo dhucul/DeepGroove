@@ -455,37 +455,113 @@ public partial class CdTransferDialog : Window
             int rate = _document.Doc.SampleRate;
             double threshold = thresholdSlider.Value;
             var plans = await Task.Run(() => CdTransfer.SuggestTracks(
-                channels, rate, threshold, minimumSilenceSeconds: 1.25,
-                minimumTrackSeconds: 20, _operation.Token), _operation.Token);
+                channels, rate, threshold, CdTransfer.DefaultMinimumGapSeconds,
+                CdTransfer.AutoSplitMinimumTrackSeconds, _operation.Token), _operation.Token);
 
-            int previous = _tracks.Count;
-            if (plans.Count > 0 && plans.Count == previous)
-            {
-                // Same number of tracks means the same tracks, moved. Rebuilding the list for that
-                // throws away every title, performer and ISRC typed since — and the commonest press
-                // of all is the second one, where the window has already analysed on load and the
-                // boundaries have not moved at all. The ranges are updated in place instead, which
-                // also keeps the region each row is bound to and the row that was selected.
-                // Signed, and the furthest mover wins: which way the splits went is what says
-                // whether they are eating the end of a song or the start of the next one.
-                int worst = 0;
-                for (int i = 0; i < plans.Count; i++)
-                {
-                    worst = FurthestMove(worst, plans[i].SourceStart - _tracks[i].Plan.SourceStart);
-                    worst = FurthestMove(worst, plans[i].SourceEnd - _tracks[i].Plan.SourceEnd);
-                    _tracks[i].SetRange(plans[i].SourceStart, plans[i].SourceEnd);
-                }
-                UpdatePlan();
-                statusText.Text = CdTransfer.DescribeProposal(
-                    plans.Count, previous, worst / (double)Math.Max(1, rate));
-            }
-            else
-            {
-                ReplaceTracks(plans);
-                statusText.Text = CdTransfer.DescribeProposal(plans.Count, previous, double.NaN);
-            }
+            (int previous, double moved) = ApplyProposal(plans, rate);
+            statusText.Text = CdTransfer.DescribeProposal(plans.Count, previous, moved);
         }
         catch (OperationCanceledException) { statusText.Text = "Track analysis cancelled."; }
+        catch (Exception ex) { statusText.Text = ex.Message; }
+        finally
+        {
+            _operation?.Dispose();
+            _operation = null;
+            SetBusy(false, statusText.Text);
+        }
+    }
+
+    /// <summary>
+    /// Put a proposal into the list, and report what it did to it: how many rows there were before,
+    /// and how far the furthest split moved when the count did not change.
+    /// </summary>
+    /// <remarks>
+    /// Shared by Analyze and Find Tracks, so a swept answer keeps what has been typed on exactly the
+    /// terms a hand-set one does. <b>Same number of tracks means the same tracks, moved</b>:
+    /// rebuilding the list for that throws away every title, performer and ISRC typed since — and
+    /// the commonest press of all is the second one, where the window has already analysed on load
+    /// and the splits have not moved at all. The ranges are updated in place instead, which also
+    /// keeps the region each row is bound to and the row that was selected.
+    /// </remarks>
+    private (int Previous, double MovedSeconds) ApplyProposal(IReadOnlyList<CdTrackPlan> plans, int rate)
+    {
+        int previous = _tracks.Count;
+        if (plans.Count == 0 || plans.Count != previous)
+        {
+            ReplaceTracks(plans);
+            return (previous, double.NaN);
+        }
+
+        // Signed, and the furthest mover wins: which way the splits went is what says whether they
+        // are eating the end of a song or the start of the next one.
+        int worst = 0;
+        for (int i = 0; i < plans.Count; i++)
+        {
+            worst = FurthestMove(worst, plans[i].SourceStart - _tracks[i].Plan.SourceStart);
+            worst = FurthestMove(worst, plans[i].SourceEnd - _tracks[i].Plan.SourceEnd);
+            _tracks[i].SetRange(plans[i].SourceStart, plans[i].SourceEnd);
+        }
+        UpdatePlan();
+        return (previous, worst / (double)Math.Max(1, rate));
+    }
+
+    /// <summary>
+    /// The track count typed into the box, or null when it is blank. Anything that is not a count a
+    /// CD could hold is treated as blank, and <paramref name="rejected"/> says so.
+    /// </summary>
+    private int? TargetTracks(out bool rejected)
+    {
+        rejected = false;
+        string typed = trackCountBox.Text?.Trim() ?? "";
+        if (typed.Length == 0) return null;
+        if (int.TryParse(typed, NumberStyles.Integer, CultureInfo.CurrentCulture, out int count) &&
+            count >= 1 && count <= CdTransfer.MaximumTracks)
+            return count;
+        rejected = true;
+        return null;
+    }
+
+    /// <summary>
+    /// Try every setting and use the one the tracks hold steadiest at, instead of leaving the user
+    /// to hunt for it. See <see cref="CdTransfer.SweepTracks"/> for why that is findable at all.
+    /// </summary>
+    private async void OnFindTracks(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        if (_document.Doc.Length == 0)
+        {
+            statusText.Text = "There is no audio to look through.";
+            return;
+        }
+
+        int? target = TargetTracks(out bool rejected);
+        if (rejected)
+        {
+            statusText.Text = $"Enter a track count from 1 to {CdTransfer.MaximumTracks}, or leave the box " +
+                              "empty to take the steadiest answer.";
+            return;
+        }
+
+        SetBusy(true, "Trying every setting to see which the tracks hold steadiest at...");
+        _operation = new CancellationTokenSource();
+        try
+        {
+            var channels = _document.Doc.Channels.ToArray();
+            int rate = _document.Doc.SampleRate;
+            CdSplitSweep sweep = await Task.Run(
+                () => CdTransfer.SweepTracks(channels, rate, target, _operation.Token), _operation.Token);
+
+            if (sweep.Best is { } best)
+            {
+                // The slider moves first, so the label beside it and the line below the list are
+                // describing the same setting by the time either is read.
+                thresholdSlider.Value = Math.Clamp(
+                    best.ChosenDb, thresholdSlider.Minimum, thresholdSlider.Maximum);
+                ApplyProposal(CdTransfer.PlansFor(best), rate);
+            }
+            statusText.Text = CdTransfer.DescribeSweep(sweep, target);
+        }
+        catch (OperationCanceledException) { statusText.Text = "The search was cancelled."; }
         catch (Exception ex) { statusText.Text = ex.Message; }
         finally
         {
@@ -1144,6 +1220,8 @@ public partial class CdTransferDialog : Window
         wavCueBtn.IsEnabled = ddpBtn.IsEnabled = !busy;
         thresholdSlider.IsEnabled = !busy;
         analyzeBtn.IsEnabled = !busy;
+        findTracksBtn.IsEnabled = !busy;
+        trackCountBox.IsEnabled = !busy;
         addBtn.IsEnabled = !busy;
         saveRegionsBtn.IsEnabled = !busy;
         renderRackCheck.IsEnabled = !busy;

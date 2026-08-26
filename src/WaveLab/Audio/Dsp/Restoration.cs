@@ -576,22 +576,29 @@ public static partial class Restoration
         }
     }
 
-    /// <summary>Find silent stretches: returns (start, end) sample ranges below threshold lasting at least minLength.</summary>
-    public static List<(int Start, int End)> DetectSilences(IReadOnlyList<float[]> channels, int sampleRate,
-        double thresholdDb, double minLengthMs, CancellationToken cancellationToken = default)
+    /// <summary>How many samples one silence-detection block covers.</summary>
+    public const int SilenceBlock = 256;
+
+    /// <summary>
+    /// The loudest sample in each <see cref="SilenceBlock"/>-sample block, across every channel.
+    /// </summary>
+    /// <remarks>
+    /// Split out of <see cref="DetectSilences(IReadOnlyList{float[]}, int, double, double, CancellationToken)"/>
+    /// because it is the whole cost of it and none of it depends on the threshold. A caller trying
+    /// many thresholds — <c>CdTransfer.SweepTracks</c> sweeps forty-six — pays this once and then
+    /// re-thresholds an array a two-hundred-and-fifty-sixth the size.
+    /// </remarks>
+    public static float[] BlockPeaks(
+        IReadOnlyList<float[]> channels, int sampleRate, CancellationToken cancellationToken = default)
     {
         int n = ValidateRestorationChannels(channels, sampleRate);
         if (n == 0) return [];
-        double thresholdLin = Math.Pow(10, thresholdDb / 20.0);
-        int minLen = Math.Max(1, (int)(minLengthMs / 1000.0 * sampleRate));
-        const int hop = 256;
 
-        var result = new List<(int, int)>();
-        int silentStart = -1;
-        for (int pos = 0; pos < n; pos += hop)
+        var peaks = new float[(n + SilenceBlock - 1) / SilenceBlock];
+        for (int pos = 0, block = 0; pos < n; pos += SilenceBlock, block++)
         {
             if ((pos & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
-            int end = Math.Min(pos + hop, n);
+            int end = Math.Min(pos + SilenceBlock, n);
             float peak = 0;
             foreach (var ch in channels)
                 for (int i = pos; i < end; i++)
@@ -599,7 +606,30 @@ public static partial class Restoration
                     float a = Math.Abs(ch[i]);
                     if (a > peak) peak = a;
                 }
-            bool silent = peak < thresholdLin;
+            peaks[block] = peak;
+        }
+        return peaks;
+    }
+
+    /// <summary>
+    /// Find silent stretches in an envelope already measured by <see cref="BlockPeaks"/>.
+    /// </summary>
+    /// <param name="blockPeaks">The envelope.</param>
+    /// <param name="totalSamples">The length the envelope was measured over.</param>
+    public static List<(int Start, int End)> DetectSilences(
+        float[] blockPeaks, int totalSamples, int sampleRate, double thresholdDb, double minLengthMs)
+    {
+        ArgumentNullException.ThrowIfNull(blockPeaks);
+        if (blockPeaks.Length == 0 || totalSamples <= 0 || sampleRate <= 0) return [];
+        double thresholdLin = Math.Pow(10, thresholdDb / 20.0);
+        int minLen = Math.Max(1, (int)(minLengthMs / 1000.0 * sampleRate));
+
+        var result = new List<(int, int)>();
+        int silentStart = -1;
+        for (int block = 0; block < blockPeaks.Length; block++)
+        {
+            int pos = block * SilenceBlock;
+            bool silent = blockPeaks[block] < thresholdLin;
             if (silent && silentStart < 0) silentStart = pos;
             else if (!silent && silentStart >= 0)
             {
@@ -607,8 +637,18 @@ public static partial class Restoration
                 silentStart = -1;
             }
         }
-        if (silentStart >= 0 && n - silentStart >= minLen) result.Add((silentStart, n));
+        if (silentStart >= 0 && totalSamples - silentStart >= minLen) result.Add((silentStart, totalSamples));
         return result;
+    }
+
+    /// <summary>Find silent stretches: returns (start, end) sample ranges below threshold lasting at least minLength.</summary>
+    public static List<(int Start, int End)> DetectSilences(IReadOnlyList<float[]> channels, int sampleRate,
+        double thresholdDb, double minLengthMs, CancellationToken cancellationToken = default)
+    {
+        int n = ValidateRestorationChannels(channels, sampleRate);
+        if (n == 0) return [];
+        return DetectSilences(
+            BlockPeaks(channels, sampleRate, cancellationToken), n, sampleRate, thresholdDb, minLengthMs);
     }
 
 }

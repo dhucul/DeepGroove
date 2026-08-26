@@ -37,6 +37,38 @@ public sealed record CdPackageProgress(
 
 public sealed record CdPackageResult(string Folder, string CueFile, IReadOnlyList<string> WaveFiles);
 
+/// <summary>
+/// One answer the auto-split sweep found: a run of thresholds that all agree about where the
+/// tracks are, and the setting in the middle of it.
+/// </summary>
+/// <param name="Tracks">How many tracks this answer proposes.</param>
+/// <param name="LowestDb">The quietest threshold that gives this answer.</param>
+/// <param name="HighestDb">The loudest threshold that gives it.</param>
+/// <param name="ChosenDb">The middle of that run — the point furthest from where the answer changes.</param>
+/// <param name="MinimumGapSeconds">The shortest quiet stretch this pass was willing to call a gap.</param>
+/// <param name="Boundaries">Where the tracks divide, first at 0 and last at the length.</param>
+public sealed record CdSplitCandidate(
+    int Tracks,
+    double LowestDb,
+    double HighestDb,
+    double ChosenDb,
+    double MinimumGapSeconds,
+    IReadOnlyList<int> Boundaries);
+
+/// <summary>Every answer a sweep found, widest run of thresholds first.</summary>
+/// <param name="Best">
+/// The one to apply, or null when a track count was asked for that no setting produces.
+/// </param>
+/// <param name="GapRelaxed">
+/// Whether nothing was found until the shortest gap looked for was shortened.
+/// </param>
+public sealed record CdSplitSweep(
+    IReadOnlyList<CdSplitCandidate> Candidates,
+    CdSplitCandidate? Best,
+    double LowestSweptDb,
+    double HighestSweptDb,
+    bool GapRelaxed);
+
 /// <summary>Where one track sits on the disc, in CD frames from the start of the programme.</summary>
 public sealed record CdPqEntry(int Track, int StartFrame, int LengthFrames)
 {
@@ -82,6 +114,13 @@ public static class CdTransfer
         public void Report(T value) => report(value);
     }
 
+    /// <summary>What the AUTO SPLIT panel looks for, and the range its slider covers.</summary>
+    public const double DefaultSilenceThresholdDb = -45;
+    public const double LowestSilenceThresholdDb = -70;
+    public const double HighestSilenceThresholdDb = -25;
+    public const double DefaultMinimumGapSeconds = 1.25;
+    public const double AutoSplitMinimumTrackSeconds = 20;
+
     /// <summary>
     /// Suggest track ranges from sustained quiet gaps. Boundaries are placed at
     /// gap midpoints, so ambience and decay are retained on both sides.
@@ -89,9 +128,9 @@ public static class CdTransfer
     public static List<CdTrackPlan> SuggestTracks(
         IReadOnlyList<float[]> channels,
         int sampleRate,
-        double silenceThresholdDb = -45,
-        double minimumSilenceSeconds = 1.25,
-        double minimumTrackSeconds = 20,
+        double silenceThresholdDb = DefaultSilenceThresholdDb,
+        double minimumSilenceSeconds = DefaultMinimumGapSeconds,
+        double minimumTrackSeconds = AutoSplitMinimumTrackSeconds,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(channels);
@@ -105,7 +144,22 @@ public static class CdTransfer
             channels, sampleRate, silenceThresholdDb, minimumSilenceSeconds * 1000,
             cancellationToken);
 
-        int minimumTrack = Math.Max(1, (int)Math.Round(minimumTrackSeconds * sampleRate));
+        return PlansFrom(BoundariesFrom(
+            silences, length, MinimumTrackSamples(minimumTrackSeconds, sampleRate), cancellationToken));
+    }
+
+    private static int MinimumTrackSamples(double seconds, int sampleRate) =>
+        Math.Max(1, (int)Math.Round(seconds * sampleRate));
+
+    /// <summary>
+    /// Where the tracks divide, given the quiet stretches. Shared so that the sweep and a single
+    /// analysis cannot disagree about the same threshold, which is the fault this repo records for
+    /// every readout computed separately from the thing it describes.
+    /// </summary>
+    private static List<int> BoundariesFrom(
+        IReadOnlyList<(int Start, int End)> silences, int length, int minimumTrack,
+        CancellationToken cancellationToken)
+    {
         var boundaries = new List<int> { 0 };
         foreach (var (start, end) in silences)
         {
@@ -116,12 +170,212 @@ public static class CdTransfer
             boundaries.Add(boundary);
         }
         boundaries.Add(length);
+        return boundaries;
+    }
 
-        var result = new List<CdTrackPlan>(boundaries.Count - 1);
+    private static List<CdTrackPlan> PlansFrom(IReadOnlyList<int> boundaries)
+    {
+        var result = new List<CdTrackPlan>(Math.Max(0, boundaries.Count - 1));
         for (int i = 0; i + 1 < boundaries.Count; i++)
             result.Add(new CdTrackPlan(boundaries[i], boundaries[i + 1], $"Track {i + 1:00}"));
         return result;
     }
+
+    // ── finding the setting instead of hunting for it ────────────
+
+    /// <summary>How far apart two thresholds' splits may sit and still count as the same answer.</summary>
+    internal const double PlateauToleranceSeconds = 0.5;
+
+    /// <summary>
+    /// How many decibels a multi-track answer has to hold over before it beats "one long track".
+    /// One track is the <i>absence</i> of a finding, so a split that survives only a setting or two
+    /// is not evidence of one.
+    /// </summary>
+    public const double MinimumPlateauDb = 3;
+
+    /// <summary>Tried only when nothing at all is found at <see cref="DefaultMinimumGapSeconds"/>.</summary>
+    internal const double RelaxedMinimumGapSeconds = 0.6;
+
+    /// <summary>
+    /// Run a sweep and pick a setting, instead of leaving the user to hunt for one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Reported as "it is hard to determine how to fix the problem with the slider". The window was
+    /// asking for the answer to an inverse problem — which level produces the right tracks — and
+    /// answering it by hand means guess, count the rows, guess again, with nothing on screen saying
+    /// which way to go.
+    /// </para>
+    /// <para>
+    /// It is answerable because <b>a real gap structure is robust to the threshold and a spurious
+    /// one is not</b>. Measured on a real three-track side, every setting from −55 to −40 dB
+    /// proposes the same three tracks with the splits steady within 0.07 s; past −40 they slide, by
+    /// 7.6 s at −30, because a looser threshold calls the fade-out quiet sooner and the split lands
+    /// inside the music. So the setting to use is the middle of the widest run of thresholds that
+    /// agree, and that is a property the program can measure and the user cannot see.
+    /// </para>
+    /// <para>
+    /// The sweep is affordable because <see cref="Restoration.BlockPeaks"/> is the whole cost of a
+    /// silence pass and none of it depends on the threshold: the envelope is measured once and
+    /// forty-six thresholds are run against it.
+    /// </para>
+    /// </remarks>
+    /// <param name="targetTracks">
+    /// How many tracks the side is known to hold, or null to take the steadiest answer. When it is
+    /// given and no setting produces it, <see cref="CdSplitSweep.Best"/> is null and the counts that
+    /// <i>are</i> reachable are what the caller reports.
+    /// </param>
+    public static CdSplitSweep SweepTracks(
+        IReadOnlyList<float[]> channels,
+        int sampleRate,
+        int? targetTracks = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        var empty = new CdSplitSweep([], null, LowestSilenceThresholdDb, HighestSilenceThresholdDb, false);
+        if (channels.Count == 0 || sampleRate <= 0 || channels[0].Length == 0) return empty;
+
+        int length = channels[0].Length;
+        if (channels.Any(c => c.Length != length))
+            throw new ArgumentException("All source channels must have the same length.", nameof(channels));
+
+        float[] envelope = Restoration.BlockPeaks(channels, sampleRate, cancellationToken);
+        var candidates = Plateaus(envelope, length, sampleRate, DefaultMinimumGapSeconds, cancellationToken);
+        bool relaxed = false;
+
+        // Nothing at any setting usually means the quiet between the songs is shorter than the gap
+        // being looked for, which no threshold can fix. One more sweep against the same envelope is
+        // nearly free, and it is the difference between an answer and a dead end.
+        if (!candidates.Any(c => c.Tracks > 1))
+        {
+            var shorter = Plateaus(envelope, length, sampleRate, RelaxedMinimumGapSeconds, cancellationToken);
+            if (shorter.Any(c => c.Tracks > 1)) { candidates = shorter; relaxed = true; }
+        }
+
+        List<CdSplitCandidate> ranked =
+            [.. candidates.OrderByDescending(c => c.HighestDb - c.LowestDb).ThenBy(c => c.LowestDb)];
+        return new CdSplitSweep(ranked, Choose(ranked, targetTracks),
+            LowestSilenceThresholdDb, HighestSilenceThresholdDb, relaxed);
+    }
+
+    /// <summary>Every run of thresholds that agrees about where the tracks are.</summary>
+    private static List<CdSplitCandidate> Plateaus(
+        float[] envelope, int length, int sampleRate, double minimumGapSeconds,
+        CancellationToken cancellationToken)
+    {
+        int minimumTrack = MinimumTrackSamples(AutoSplitMinimumTrackSeconds, sampleRate);
+        int tolerance = Math.Max(1, (int)Math.Round(PlateauToleranceSeconds * sampleRate));
+        var result = new List<CdSplitCandidate>();
+
+        // Every answer in the run is kept, because the one that ships is the one at the *chosen*
+        // setting rather than the one at the edge the run started from. Within a run they differ by
+        // less than the tolerance, but not by nothing — and the slider is left at the chosen
+        // setting, so pressing Analyze straight afterwards has to re-derive exactly this list.
+        var run = new List<List<int>>();
+        double low = 0, high = 0;
+        void Close()
+        {
+            if (run.Count == 0) return;
+            // The middle of the run is the point furthest from where the answer changes.
+            double chosen = Math.Round((low + high) / 2, MidpointRounding.AwayFromZero);
+            List<int> boundaries = run[(int)(chosen - low)];
+            result.Add(new CdSplitCandidate(
+                boundaries.Count - 1, low, high, chosen, minimumGapSeconds, boundaries));
+            run.Clear();
+        }
+
+        for (double db = LowestSilenceThresholdDb; db <= HighestSilenceThresholdDb; db++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var silences = Restoration.DetectSilences(
+                envelope, length, sampleRate, db, minimumGapSeconds * 1000);
+            List<int> boundaries = BoundariesFrom(silences, length, minimumTrack, cancellationToken);
+
+            // Compared against the run's *first* answer rather than the previous one, so a slow
+            // drift over many settings cannot creep past the tolerance a step at a time.
+            if (run.Count > 0 && Agrees(run[0], boundaries, tolerance))
+            {
+                run.Add(boundaries);
+                high = db;
+                continue;
+            }
+            Close();
+            run.Add(boundaries);
+            low = high = db;
+        }
+        Close();
+        return result;
+    }
+
+    private static bool Agrees(List<int> held, List<int> found, int tolerance)
+    {
+        if (held.Count != found.Count) return false;
+        for (int i = 0; i < held.Count; i++)
+            if (Math.Abs(held[i] - found[i]) > tolerance) return false;
+        return true;
+    }
+
+    private static CdSplitCandidate? Choose(List<CdSplitCandidate> ranked, int? targetTracks)
+    {
+        if (ranked.Count == 0) return null;
+        if (targetTracks is int want) return ranked.FirstOrDefault(c => c.Tracks == want);
+
+        return ranked.FirstOrDefault(c => c.Tracks > 1 && c.HighestDb - c.LowestDb >= MinimumPlateauDb)
+               ?? ranked.FirstOrDefault(c => c.Tracks == 1)
+               ?? ranked[0];
+    }
+
+    /// <summary>The plans a chosen candidate stands for.</summary>
+    public static List<CdTrackPlan> PlansFor(CdSplitCandidate candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        return PlansFrom(candidate.Boundaries);
+    }
+
+    /// <summary>
+    /// What the sweep found, for the line under the track list. Pure, so the wording is tested
+    /// without a window, and in the same voice as <see cref="DescribeProposal"/>.
+    /// </summary>
+    public static string DescribeSweep(CdSplitSweep sweep, int? targetTracks)
+    {
+        ArgumentNullException.ThrowIfNull(sweep);
+
+        if (targetTracks is int want && sweep.Best == null)
+        {
+            int[] reachable = [.. sweep.Candidates.Select(c => c.Tracks).Distinct().Order()];
+            return reachable.Length == 0
+                ? NoGaps
+                : $"This side splits into {Counts(reachable)} tracks, never {want}. " +
+                  $"Add the missing ones with Split - tracks under {AutoSplitMinimumTrackSeconds:0} s are merged.";
+        }
+
+        if (sweep.Best is not { } best || best.Tracks <= 1) return NoGaps;
+
+        if (sweep.GapRelaxed)
+            return $"Found {Tracks(best.Tracks)} at {Db(best.ChosenDb)}, once the shortest gap it " +
+                   $"looks for was relaxed to {best.MinimumGapSeconds:0.0} s.";
+
+        string found = best.LowestDb < best.HighestDb
+            ? $"Found {Tracks(best.Tracks)} - steady from {best.LowestDb:0} to {Db(best.HighestDb)}."
+            : $"Found {Tracks(best.Tracks)} at {Db(best.ChosenDb)}.";
+
+        CdSplitCandidate? other = sweep.Candidates
+            .FirstOrDefault(c => c.Tracks > 1 && c.Tracks != best.Tracks);
+        return other != null
+            ? $"{found} There is also a {other.Tracks}-track answer near {Db(other.ChosenDb)}."
+            : $"{found} Preview each one to check where it starts.";
+    }
+
+    private const string NoGaps =
+        "No gaps found at any setting. The songs may run together, or the quiet between them may be too short.";
+
+    private static string Db(double value) => $"{value:0} dB";
+
+    private static string Counts(IReadOnlyList<int> values) => values.Count switch
+    {
+        1 => $"{values[0]}",
+        _ => string.Join(", ", values.Take(values.Count - 1)) + $" or {values[^1]}",
+    };
 
     /// <summary>
     /// What an analysis pass did, for the line under the track list.

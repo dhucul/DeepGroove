@@ -362,6 +362,31 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
         catch (IOException) { /* a leftover temp directory is not worth failing a test over */ }
     }
 
+    /// <summary>A sweep result built by hand, so the probe measures a fixed worst case.</summary>
+    private static CdSplitSweep Swept(int tracks, double low, double high, int? runnerUpTracks)
+    {
+        var best = new CdSplitCandidate(tracks, low, high, Math.Round((low + high) / 2), 1.25, [0, 1]);
+        List<CdSplitCandidate> all = [best];
+        if (runnerUpTracks is int other)
+            all.Add(new CdSplitCandidate(other, -34, -28, -31, 1.25, [0, 1]));
+        return new CdSplitSweep(all, best, -70, -25, false);
+    }
+
+    private static string SweptLine(int tracks, double low, double high, int? runnerUp) =>
+        CdTransfer.DescribeSweep(Swept(tracks, low, high, runnerUp), null);
+
+    private static CdSplitSweep Unreachable() => new(
+        [new CdSplitCandidate(5, -34, -28, -31, 1.25, [0, 1]),
+         new CdSplitCandidate(3, -55, -40, -48, 1.25, [0, 1]),
+         new CdSplitCandidate(1, -70, -56, -63, 1.25, [0, 1])],
+        null, -70, -25, false);
+
+    private static CdSplitSweep Relaxed()
+    {
+        var best = new CdSplitCandidate(4, -40, -36, -38, CdTransfer.RelaxedMinimumGapSeconds, [0, 1]);
+        return new CdSplitSweep([best], best, -70, -25, true);
+    }
+
     [Fact]
     public void EveryStatusWordingFitsTheStatusLine()
     {
@@ -383,6 +408,12 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
             CdTransferDialog.DescribeRegionSync(99, 98, changed: true),
             CdTransferDialog.DescribeRegionSync(1, 1, changed: true),
             CdTransferDialog.DescribeRegionSync(3, 0, changed: false),
+            SweptLine(3, -55, -40, null),
+            SweptLine(3, -55, -40, 5),
+            SweptLine(99, -33, -33, null),
+            CdTransfer.DescribeSweep(Unreachable(), 6),
+            CdTransfer.DescribeSweep(Relaxed(), null),
+            CdTransfer.DescribeSweep(new CdSplitSweep([], null, -70, -25, false), null),
         ];
 
         var report = new List<string>();
@@ -428,6 +459,43 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
         Assert.True(widest <= room,
             $"the widest analysis wording wants {widest:F0} px and the status line has {room:F0} px, " +
             "so it would be cut to an ellipsis");
+    }
+
+    /// <summary>
+    /// The AUTO SPLIT row after Find Tracks and the track-count box were added to it. That row was
+    /// four controls and is now seven, sharing one line at a window width that cannot change.
+    /// </summary>
+    [Fact]
+    public void TheAutoSplitRowHoldsEverythingItGained()
+    {
+        var report = new List<string>();
+        bool clipped = false;
+
+        Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            main.AddDocument(new AudioDocument([new float[44_100], new float[44_100]], 44_100, 16)
+            { Title = "Side A.wav" });
+            DocumentViewModel document = main.ActiveDocument!;
+            document.Regions.Add(new NamedRegion { Name = "A", Start = 0, End = 44_100, CdTrackOrder = 1 });
+
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Wpf.Pump();
+                foreach (string name in
+                    (string[])["thresholdSlider", "thresholdText", "trackCountBox", "findTracksBtn", "analyzeBtn"])
+                {
+                    var element = (FrameworkElement)window.FindName(name)!;
+                    double given = element.ActualWidth;
+                    double wanted = element.DesiredSize.Width - element.Margin.Left - element.Margin.Right;
+                    report.Add($"{name,-16} {given,6:F0} px given, {wanted:F0} px wanted");
+                    if (wanted > given + 0.5) clipped = true;
+                }
+            });
+        });
+
+        foreach (string line in report) output.WriteLine(line);
+        Assert.False(clipped, "something in the AUTO SPLIT row is cut: " + string.Join(" | ", report));
     }
 
     /// <summary>

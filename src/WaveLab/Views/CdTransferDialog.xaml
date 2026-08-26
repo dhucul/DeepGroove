@@ -8,6 +8,7 @@
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
     <Window.Resources>
         <sys:String x:Key="QuietBelowHelp">How quiet a stretch has to be before it counts as a gap between songs. Drag right if Analyze misses a split, left if it invents one. Dragging right also moves every split earlier, further into the fade-out.</sys:String>
+        <sys:String x:Key="TrackCountHelp">Tries every setting from -70 to -25 dB and uses the one the tracks hold steadiest at, so you do not have to hunt for it. Leave the count empty to take the steadiest answer, or fill it in if you know how many songs the side holds.</sys:String>
     </Window.Resources>
     <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect><DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/></Border.Effect>
@@ -82,8 +83,9 @@
                     BorderBrush="{StaticResource LineSoft}" BorderThickness="1" CornerRadius="9" Padding="12,10">
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="130"/><ColumnDefinition Width="125"/><ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="95"/>
+                        <ColumnDefinition Width="130"/><ColumnDefinition Width="125"/><ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="95"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="AUTO SPLIT" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
                     <TextBlock Grid.Column="1" Text="Quiet below" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
@@ -95,7 +97,21 @@
                         <TextBlock x:Name="thresholdText" Width="52" Margin="8,0,0,0" Text="-45 dB" FontFamily="{StaticResource MonoFont}"
                                    Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
                     </StackPanel>
-                    <Button x:Name="analyzeBtn" Grid.Column="3" Content="Analyze" Height="32" Style="{StaticResource AccentButton}"
+
+                    <!-- Blank is the ordinary case: the sweep takes the steadiest answer. Filled in,
+                         it is a fact the user has off the record label that the audio cannot supply. -->
+                    <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0"
+                                ToolTip="{StaticResource TrackCountHelp}">
+                        <TextBlock Text="Side has" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                        <TextBox x:Name="trackCountBox" Width="42" Margin="8,0,0,0" Padding="6,4"
+                                 FontFamily="{StaticResource MonoFont}" TextAlignment="Center"/>
+                        <TextBlock Text="tracks" Margin="8,0,0,0" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <Button x:Name="findTracksBtn" Grid.Column="5" Content="Find Tracks" MinWidth="96" Padding="12,0"
+                            Height="32" Margin="0,0,6,0" Style="{StaticResource AccentButton}" Click="OnFindTracks"
+                            ToolTip="{StaticResource TrackCountHelp}"/>
+                    <Button x:Name="analyzeBtn" Grid.Column="6" Content="Analyze" Height="32" Style="{StaticResource AccentButton}"
                             Foreground="{StaticResource Muted}" Click="OnAutoSplit"
                             ToolTip="Split the recording into tracks at the quiet gaps between songs, putting each split in the middle of its gap. It re-reads the recording and never changes it."/>
                 </Grid>

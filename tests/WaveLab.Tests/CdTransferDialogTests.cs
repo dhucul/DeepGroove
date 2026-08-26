@@ -744,4 +744,131 @@ public sealed class CdTransferDialogTests : IDisposable
         Assert.Contains("earlier", status, StringComparison.Ordinal);
         Assert.Contains("Preview them to check", status, StringComparison.Ordinal);
     }
+
+    // ── Find Tracks ──────────────────────────────────────────────
+
+    /// <summary>
+    /// The autofix, end to end: one press fills the list, moves the slider to the setting it chose,
+    /// and says what it found. Reported as "it is hard to determine how to fix the problem with the
+    /// slider" — the window was asking the user to solve an inverse problem by hand.
+    /// </summary>
+    [Fact]
+    public void FindTracksFillsTheListAndLeavesTheSliderOnTheSettingItChose()
+    {
+        (int tracks, double slider, string label, string status, int selected) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main, (0, 120));
+
+            (int, double, string, string, int) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                var list = (ListBox)window.FindName("trackList");
+                var slider = (Slider)window.FindName("thresholdSlider");
+                slider.Value = -70;                       // a setting that finds nothing at all
+                Wpf.Pump();
+
+                Click(window, "findTracksBtn");
+                SettleAnalysis(window);
+                result = (list.Items.Count, slider.Value,
+                    ((TextBlock)window.FindName("thresholdText")).Text,
+                    ((TextBlock)window.FindName("statusText")).Text, list.SelectedIndex);
+            });
+            return result;
+        });
+
+        Assert.Equal(3, tracks);
+        // It moved the slider off the setting that found nothing, and the label followed.
+        Assert.True(slider > -70, $"the slider is still at {slider:0} dB");
+        Assert.Equal($"{slider:0} dB", label);
+        Assert.Equal(0, selected);
+        Assert.Contains("Found 3 tracks", status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The invariant that stops the two buttons disagreeing, seen from the UI: Find Tracks leaves
+    /// the slider where its answer came from, so Analyze straight afterwards must re-derive exactly
+    /// that list — and say so rather than reporting splits that moved.
+    /// </summary>
+    [Fact]
+    public void AnalyzeStraightAfterFindTracksChangesNothing()
+    {
+        (string status, string title) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main, (0, 120));
+
+            (string, string) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Click(window, "findTracksBtn");
+                SettleAnalysis(window);
+
+                var list = (ListBox)window.FindName("trackList");
+                SetRowTitle(list.Items[1]!, "Sister Ray");
+
+                Click(window, "analyzeBtn");
+                SettleAnalysis(window);
+                result = (((TextBlock)window.FindName("statusText")).Text, RowTitle(list.Items[1]!));
+            });
+            return result;
+        });
+
+        Assert.Equal("Same 3 tracks, in the same places.", status);
+        Assert.Equal("Sister Ray", title);
+    }
+
+    /// <summary>
+    /// A count the user has off the record label is a fact the audio cannot supply. When no setting
+    /// can produce it, saying which ones it can is what stops the hunting.
+    /// </summary>
+    [Fact]
+    public void AnUnreachableTrackCountIsAnsweredWithTheOnesThatAreReachable()
+    {
+        (int tracks, string status) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main, (0, 120));
+
+            (int, string) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                ((TextBox)window.FindName("trackCountBox")).Text = "7";
+                Wpf.Pump();
+                Click(window, "findTracksBtn");
+                SettleAnalysis(window);
+                result = (((ListBox)window.FindName("trackList")).Items.Count,
+                    ((TextBlock)window.FindName("statusText")).Text);
+            });
+            return result;
+        });
+
+        // Nothing is applied, because nothing it found is what was asked for.
+        Assert.Equal(1, tracks);
+        Assert.Contains("never 7", status, StringComparison.Ordinal);
+    }
+
+    /// <summary>A count no CD could hold is treated as blank, and says so instead of sweeping.</summary>
+    [Fact]
+    public void ANonsenseTrackCountIsRefusedRatherThanIgnored()
+    {
+        string status = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (0, 20));
+
+            string result = "";
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                ((TextBox)window.FindName("trackCountBox")).Text = "nine";
+                Wpf.Pump();
+                Click(window, "findTracksBtn");
+                Wpf.Pump();
+                result = ((TextBlock)window.FindName("statusText")).Text;
+            });
+            return result;
+        });
+
+        Assert.Contains("Enter a track count from 1 to 99", status, StringComparison.Ordinal);
+    }
 }
