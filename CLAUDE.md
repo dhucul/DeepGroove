@@ -1950,47 +1950,63 @@ binding errors. One cosmetic thing left alone: Add Track and Split name new rows
 they land at, so a list can hold two rows both called `Track 03` until they are renamed — the
 exported filenames are prefixed `01 - `, `02 - ` and stay unique.
 
-### "Found 3 probable tracks at −45 dB" is true at −30 dB as well, and describes neither
+### The status line was written in the vocabulary of the source, and said so
 
-The follow-up report: *"if you change Quiet below to −30 it gives the same message with −30. What
-is this supposed to mean and what am I supposed to do with this information."* The line reported
-the count and the threshold — and the threshold is printed beside the slider that set it, so the
-only new fact was a count that had not moved.
+Reported twice about the same line. First: *"if you change Quiet below to −30 it gives the same
+message with −30. What is this supposed to mean and what am I supposed to do with this
+information."* Then, after a rewrite that reported the difference accurately: *"the message at the
+bottom is too cryptic — I have no idea what the info means or what I'm supposed to do with the
+info."* The second report is the one that decided the shape, and it was right about the rewrite:
+being **correct** and being **readable** are different problems, and only the first had been solved.
 
-- **The count staying the same does not mean nothing happened, and that is the whole finding.**
-  Measured on three real transfers butted into one 504 s side: **−45 dB and −30 dB both propose
-  three tracks, with the boundaries 7.6 s apart** (155.57 → 149.99 s, 367.83 → 360.27 s). A gap is
-  detected where the level falls under the threshold, and the boundary is its *midpoint*, so a
-  looser threshold calls the fade-out quiet sooner, the gap it finds starts earlier, and the
-  boundary lands inside the music. The user was being told the number that had not changed and not
-  the seven seconds that had.
-- **So the same count updates the ranges in place rather than rebuilding the list.** Same number of
-  tracks means the same tracks, moved — carrying every title, performer and ISRC across by
-  position, along with the region each row is bound to and the row that was selected. The earlier
-  fix only covered the case where the boundaries were *identical*, which meant a one-decibel nudge
-  still wiped everything typed.
-- **`CdTransfer.DescribeProposal` is the wording, pure and unit-tested without a window** — the
-  arrangement `DescribeDeclipChoices`, `DescribeNoiseDepth` and `DescribeOutputMix` use. Four
-  outcomes: same places and nothing moved; same count with the worst move named and a pointer at
-  SOURCE IN/OUT; a changed count with where it came from; and a first pass, which says what to judge
-  the count against.
-- **Which way to drag lives on the slider's tool tip, not in the line.** It is needed once and the
-  line has 756 px; the exception is the one-track case, where there is nothing to rename or reorder
-  and the user is stuck, so that line spends its room saying "toward −25 dB". **The direction is
-  worth stating because it is genuinely backwards-looking**: −25 dB is the *laxer* test, so moving
-  toward the smaller-looking number finds *more* gaps.
+- **The original said a count and the setting that produced it.** "Found 3 probable tracks at
+  −45 dB" — and the setting is printed beside the slider that set it, so the only new fact was a
+  count that had not moved. The rewrite after it was an accurate diff written in the words of the
+  code: *boundaries*, decibels, and a pointer at two column headers. A status line arrives once,
+  unbidden, and is read by somebody who has not seen any of that.
+- **The rule that came out of it, and it is worth applying to the next readout as well: name what
+  is on screen in ordinary words, then name the next thing to do.** No level (the slider prints its
+  own), nothing called a boundary, and no reference to internal vocabulary. Every branch of
+  `DescribeProposal` now ends in an action — "Select one and press Preview Track", "Preview them to
+  check", "Drag Quiet below to the right, then Analyze again". `PlainEnough` asserts the negative
+  half of that on every wording, because the failure here is additive: the next person with a new
+  case will reach for the vocabulary that is already in the file.
+- **The count staying the same does not mean nothing happened, and that is why the "splits moved"
+  line survives the simplification.** Measured on three real transfers butted into one 504 s side:
+  **−45 dB and −30 dB both propose three tracks with the splits 7.6 s apart** (155.57 → 149.99 s,
+  367.83 → 360.27 s). A split is the midpoint of a detected gap, so a looser threshold calls the
+  fade-out quiet sooner and the split lands inside the music. Reporting only the count there is
+  reporting the one number that did not move. It is stated in seconds, with **which way** — earlier
+  eats the end of the song before the gap, later eats the start of the one after it — and with what
+  that costs, because that is what tells a listener where to listen.
+- **The same count updates the ranges in place rather than rebuilding the list.** Same number of
+  tracks means the same tracks, moved: every title, performer and ISRC carries across by position,
+  along with the region each row is bound to and the row that was selected. An earlier fix only
+  covered splits that were *identical*, so a one-decibel nudge still wiped everything typed.
+- **Which way to drag lives on the slider's own tool tip, which had none.** It is needed once, and
+  the line has 756 px. The exception is the single-track result, where there is nothing to rename,
+  reorder or preview and the user is stuck — that line spends its room saying "drag to the right".
+  **Right is worth naming because it reads backwards**: right is the number nearer zero and the
+  *laxer* test, so it finds *more* gaps.
+- **The slider now holds whole decibels rather than being asked to look like it does.**
+  `IsSnapToTickEnabled` applies to a thumb drag and not to a value set any other way, so a slider
+  moved from code sat at −45.4 dB under a label reading "−45 dB" and analysed at the figure nobody
+  was shown. `OnThresholdChanged` rounds and re-enters once with an already-round number.
 - **The render probe's first version measured the wrong thing and reported a pass.**
   `DesiredSize.Width` on a `TextBlock` in a tree is capped at the room its parent gave it, so four
   different wordings all read **752 px against 756** — which looks like "fits" and means "trimmed to
   the ellipsis". A detached copy carrying the live element's own typeface, measured against
-  infinity, is what answers it: the widest wording now wants **548 px of 756**. This is the same
-  class of trap as the monitor bar's margin, and the second time a measurement in this repo has
-  flattered itself.
+  infinity, is what answers it; the widest wording wants **576 px of 756**. Same class as the monitor
+  bar's margin, and the second time a measurement in this repo has flattered itself.
 - Both dialog tests were checked by mutation: rebuilding the list instead of updating it in place
   fails `AnalyzeThatFindsTheSameBoundariesKeepsWhatWasTypedIntoTheRows` and
   `ALooserThresholdMovesTheBoundariesAndSaysSoWithoutLosingTheRows`. The synthetic side they run on
   needed **a fade into each gap** to be worth anything — without one the edge of a gap is a step, so
-  the boundary lands in the same place at every threshold and the test cannot see the defect.
+  the split lands in the same place at every threshold and the test cannot see the defect.
+- **Three other lines in this window are still in the old voice** — Add Track's "off the unclaimed
+  stretch", Split's "fine-tune the boundary", Sync Regions' "Synchronized 3 arranged track
+  region(s)". They are left alone deliberately rather than swept along with this, but they are the
+  same fault and the same rule applies.
 
 ### The cue sheet credited the application on every disc
 

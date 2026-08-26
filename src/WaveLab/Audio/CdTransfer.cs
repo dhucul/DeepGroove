@@ -124,62 +124,69 @@ public static class CdTransfer
     }
 
     /// <summary>
-    /// What an analysis pass actually did, for the line under the track list.
+    /// What an analysis pass did, for the line under the track list.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Reporting the count and the threshold alone is very nearly no information: the threshold is
-    /// printed beside the slider that set it, and the count is only interesting when it moves.
-    /// Measured on a real three-track side, −45 dB and −30 dB both propose three tracks — and the
-    /// boundaries between them sit <b>7.6 s apart</b>, because a laxer threshold calls the fade-out
-    /// quiet sooner, so the gap it finds starts earlier and its midpoint lands inside the music.
-    /// "Found 3 probable tracks at −30 dB" is true of both and describes neither.
+    /// Reported twice, and the second report is the one that settled the shape of this: the line
+    /// used to read "Found 3 probable tracks at −45 dB", which is a count and the setting that
+    /// produced it — and the setting is printed beside the slider that set it, so the only new fact
+    /// was a count that had not moved. It said nothing a person could act on.
     /// </para>
     /// <para>
-    /// So the line says what changed against the list already on screen, and where the count is the
-    /// thing to judge it says what to judge it against. Pure, so the wording is tested without a
-    /// window — the arrangement <c>DescribeDeclipChoices</c> and <c>DescribeNoiseDepth</c> use.
+    /// The count staying the same does not mean nothing happened. Measured on three real transfers
+    /// butted into one 504 s side, −45 dB and −30 dB both propose three tracks with the splits
+    /// <b>7.6 s apart</b>: a split is the midpoint of a detected gap, so a looser threshold calls
+    /// the fade-out quiet sooner and the split lands inside the music. That is the fact worth
+    /// reporting, and it is reported in seconds and in plain words rather than as a boundary diff.
+    /// </para>
+    /// <para>
+    /// Every line names the next thing to do, because a status line arrives once and is read by
+    /// somebody who has not read this file. No decibel figure appears in any of them — the slider
+    /// prints its own — and nothing is called a boundary. Pure, so the wording is tested without a
+    /// window, the arrangement <c>DescribeDeclipChoices</c> and <c>DescribeNoiseDepth</c> use.
     /// </para>
     /// </remarks>
     /// <param name="proposed">Tracks this pass proposes.</param>
     /// <param name="previous">Tracks listed before it ran; zero when the list was empty.</param>
     /// <param name="worstMoveSeconds">
-    /// How far the furthest boundary moved, when the count did not change. <see cref="double.NaN"/>
-    /// when the counts differ and there is no boundary-to-boundary comparison to make.
+    /// How far the split that moved furthest moved, when the count did not change — <b>signed</b>,
+    /// negative for earlier in the recording. <see cref="double.NaN"/> when the counts differ and
+    /// there is no split-to-split comparison to make.
     /// </param>
-    /// <param name="thresholdDb">The level a stretch had to fall under to count as a gap.</param>
-    public static string DescribeProposal(
-        int proposed, int previous, double worstMoveSeconds, double thresholdDb)
+    public static string DescribeProposal(int proposed, int previous, double worstMoveSeconds)
     {
-        string at = $"{thresholdDb:0} dB";
-        if (proposed <= 0) return $"Nothing was proposed at {at}.";
+        if (proposed <= 0) return "No tracks were proposed.";
 
-        // Which way to drag the slider lives on the slider's own tool tip, where it can be a whole
-        // sentence and is there whenever it is wanted. The line has about 756 px and is only worth
-        // spending on the one case where the user is stuck with nothing to reorder.
         if (proposed == 1 && previous <= 1)
-            return $"No sustained gaps at {at}, so this is one track. Raise Quiet below toward -25 dB and analyze again.";
+            return "No gaps found - this is all one track. " +
+                   "Drag Quiet below to the right, then Analyze again.";
 
         if (previous == proposed)
         {
-            return !double.IsFinite(worstMoveSeconds) || worstMoveSeconds <= 0
-                ? $"Analysis at {at} found the same {Tracks(proposed)} in the same places; nothing moved."
-                : $"Still {Tracks(proposed)} at {at}, but the boundaries moved by up to {Span(worstMoveSeconds)}. " +
-                  "Check SOURCE IN and OUT before exporting.";
+            if (!double.IsFinite(worstMoveSeconds) || worstMoveSeconds == 0)
+                return $"Same {Tracks(proposed)}, in the same places.";
+
+            // Earlier eats the end of the song before the gap; later eats the start of the one
+            // after it. Both are the same fault from opposite sides, and naming which one it is
+            // tells the listener where to listen.
+            bool earlier = worstMoveSeconds < 0;
+            return $"Still {Tracks(proposed)}, but the splits moved up to " +
+                   $"{Span(Math.Abs(worstMoveSeconds))} {(earlier ? "earlier" : "later")} and may now cut into the " +
+                   $"{(earlier ? "end" : "start")} of a song. Preview them to check.";
         }
 
         if (previous > 0)
-            return $"Found {Tracks(proposed)} at {at}, {(proposed > previous ? "up" : "down")} from {previous}.";
+            return $"Now {Tracks(proposed)} - there {(previous == 1 ? "was" : "were")} {previous}. " +
+                   "Preview each one to check where it starts.";
 
-        return $"Found {Tracks(proposed)} at {at}. If the side holds a different number, move Quiet below and analyze again.";
+        return $"{Tracks(proposed)} found. Select one and press Preview Track to hear where it starts.";
     }
 
     private static string Tracks(int count) => count == 1 ? "1 track" : $"{count} tracks";
 
     private static string Span(double seconds) =>
         seconds < 60 ? $"{seconds:0.0} s" : TimeFormat.Compact(seconds);
-
-    private static string LowerFirst(string text) => char.ToLowerInvariant(text[0]) + text[1..];
 
     public static List<CdTrackPlan> FromRegions(IEnumerable<NamedRegion> regions, int documentLength)
     {

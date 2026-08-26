@@ -451,10 +451,7 @@ public partial class CdTransferDialog : Window
         {
             var channels = _document.Doc.Channels.ToArray();
             int rate = _document.Doc.SampleRate;
-            // Rounded here rather than trusted to the tick snap, which WPF applies to a thumb drag
-            // and not to a value set any other way. The label prints whole decibels, so this is what
-            // makes the threshold analysed the threshold the user was shown.
-            double threshold = Math.Round(thresholdSlider.Value);
+            double threshold = thresholdSlider.Value;
             var plans = await Task.Run(() => CdTransfer.SuggestTracks(
                 channels, rate, threshold, minimumSilenceSeconds: 1.25,
                 minimumTrackSeconds: 20, _operation.Token), _operation.Token);
@@ -467,21 +464,23 @@ public partial class CdTransferDialog : Window
                 // of all is the second one, where the window has already analysed on load and the
                 // boundaries have not moved at all. The ranges are updated in place instead, which
                 // also keeps the region each row is bound to and the row that was selected.
-                double worst = 0;
+                // Signed, and the furthest mover wins: which way the splits went is what says
+                // whether they are eating the end of a song or the start of the next one.
+                int worst = 0;
                 for (int i = 0; i < plans.Count; i++)
                 {
-                    worst = Math.Max(worst, Math.Abs(plans[i].SourceStart - _tracks[i].Plan.SourceStart));
-                    worst = Math.Max(worst, Math.Abs(plans[i].SourceEnd - _tracks[i].Plan.SourceEnd));
+                    worst = FurthestMove(worst, plans[i].SourceStart - _tracks[i].Plan.SourceStart);
+                    worst = FurthestMove(worst, plans[i].SourceEnd - _tracks[i].Plan.SourceEnd);
                     _tracks[i].SetRange(plans[i].SourceStart, plans[i].SourceEnd);
                 }
                 UpdatePlan();
                 statusText.Text = CdTransfer.DescribeProposal(
-                    plans.Count, previous, worst / Math.Max(1, rate), threshold);
+                    plans.Count, previous, worst / (double)Math.Max(1, rate));
             }
             else
             {
                 ReplaceTracks(plans);
-                statusText.Text = CdTransfer.DescribeProposal(plans.Count, previous, double.NaN, threshold);
+                statusText.Text = CdTransfer.DescribeProposal(plans.Count, previous, double.NaN);
             }
         }
         catch (OperationCanceledException) { statusText.Text = "Track analysis cancelled."; }
@@ -493,6 +492,10 @@ public partial class CdTransferDialog : Window
             SetBusy(false, statusText.Text);
         }
     }
+
+    /// <summary>Whichever of the two moved further from where it was, sign kept.</summary>
+    private static int FurthestMove(int worst, int candidate) =>
+        Math.Abs(candidate) > Math.Abs(worst) ? candidate : worst;
 
     /// <summary>
     /// How much one press takes when there is no selection to take instead. Three minutes is a song
@@ -1094,9 +1097,22 @@ public partial class CdTransferDialog : Window
             splitBtn.IsEnabled = selected;
     }
 
+    /// <summary>
+    /// The label prints whole decibels, so the control holds them. Rounding here rather than
+    /// relying on <c>IsSnapToTickEnabled</c>, which WPF applies to a thumb drag and not to a value
+    /// set any other way — so a slider moved from code sat at −45.4 dB under a label reading
+    /// "−45 dB", and analysed at the figure nobody was shown. Setting Value re-enters this handler
+    /// once with an already-round number, which then falls through.
+    /// </summary>
     private void OnThresholdChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (thresholdText != null) thresholdText.Text = $"{e.NewValue:0} dB";
+        double whole = Math.Round(e.NewValue);
+        if (whole != e.NewValue)
+        {
+            thresholdSlider.Value = whole;
+            return;
+        }
+        if (thresholdText != null) thresholdText.Text = $"{whole:0} dB";
     }
 
     private void OnPlanChanged(object sender, TextChangedEventArgs e)

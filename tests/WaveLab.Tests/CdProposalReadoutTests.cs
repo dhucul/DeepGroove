@@ -14,91 +14,111 @@ namespace WaveLab.Tests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Reported as "it gives the same message with −30 — what is this supposed to mean and what am I
-/// supposed to do with this information", and the report is right. The line said "Found 3 probable
-/// tracks at −45 dB", which is the count and the setting that produced it — and the setting is
-/// printed beside the slider that set it, so the only new fact was the count, which had not moved.
+/// Reported twice. First as "Analyze does nothing"; then, once it plainly did something, as
+/// <i>"the message at the bottom is too cryptic — I have no idea what the info means or what I'm
+/// supposed to do with it"</i>. Both reports are about the same line, and the second one is the
+/// one that decided its shape.
 /// </para>
 /// <para>
-/// Measured on three real transfers butted into one 504 s side: −45 dB and −30 dB both propose
-/// three tracks, and the boundaries between them sit <b>7.6 s apart</b> — at −30 the fade-out
-/// counts as quiet sooner, so the gap starts earlier and its midpoint lands inside the music. The
-/// old wording was true of both and described neither.
+/// What it used to say was a count and the threshold that produced it — and the threshold is
+/// printed beside the slider that set it, so the only new fact was a count that had not moved. The
+/// versions after that were worse in a different way: they were accurate diffs written in the
+/// vocabulary of the source, naming boundaries and decibels and column headers. A status line
+/// arrives once, unbidden, and is read by somebody who has not seen any of that.
+/// </para>
+/// <para>
+/// So every line here states what is on screen in ordinary words and names the next thing to do,
+/// and no line carries a decibel figure or the word "boundary".
 /// </para>
 /// </remarks>
 public sealed class CdProposalReadoutTests
 {
-    [Fact]
-    public void AFirstPassSaysWhatToJudgeTheCountAgainst()
+    /// <summary>Nothing may quote a level; the slider prints its own, six inches away.</summary>
+    private static void PlainEnough(string line)
     {
-        string line = CdTransfer.DescribeProposal(3, previous: 0, double.NaN, -45);
-        Assert.Contains("3 tracks", line, StringComparison.Ordinal);
-        Assert.Contains("-45 dB", line, StringComparison.Ordinal);
-        Assert.Contains("if the side holds a different number", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(" dB", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("boundar", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("threshold", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SOURCE", line, StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// The count is the interesting number only when it moves, so when it does, say where from.
-    /// </summary>
+    [Fact]
+    public void AFirstPassNamesTheNextThingToDo()
+    {
+        string line = CdTransfer.DescribeProposal(3, previous: 0, double.NaN);
+        Assert.Equal("3 tracks found. Select one and press Preview Track to hear where it starts.", line);
+        PlainEnough(line);
+    }
+
     [Theory]
-    [InlineData(3, 1, "up from 1")]
-    [InlineData(2, 5, "down from 5")]
+    [InlineData(3, 1, "Now 3 tracks - there was 1.")]
+    [InlineData(2, 5, "Now 2 tracks - there were 5.")]
     public void AChangedCountSaysWhereItCameFrom(int proposed, int previous, string expected)
     {
-        string line = CdTransfer.DescribeProposal(proposed, previous, double.NaN, -35);
-        Assert.Contains(expected, line, StringComparison.Ordinal);
+        string line = CdTransfer.DescribeProposal(proposed, previous, double.NaN);
+        Assert.StartsWith(expected, line, StringComparison.Ordinal);
+        Assert.Contains("Preview each one", line, StringComparison.Ordinal);
+        PlainEnough(line);
+    }
+
+    [Fact]
+    public void AnotherPassThatChangesNothingSaysSoAndStops()
+    {
+        string line = CdTransfer.DescribeProposal(3, previous: 3, 0);
+        Assert.Equal("Same 3 tracks, in the same places.", line);
+        PlainEnough(line);
     }
 
     /// <summary>
-    /// The case the report came from. Three tracks before and three after is not "found 3 tracks"
-    /// again — it is either nothing at all, or every boundary quietly moving into the fades, and
-    /// those are the two things worth telling apart.
+    /// The case the second report came from. Three tracks before and three after is not the same
+    /// answer: measured on a real three-track side, −45 dB and −30 dB both give three tracks with
+    /// the splits 7.6 s apart, which is far enough to cut into the end of a song. Reporting only
+    /// the count there is reporting the one number that did not move.
     /// </summary>
     [Fact]
-    public void TheSameCountReportsWhetherTheBoundariesActuallyMoved()
+    public void TheSameCountReportsWhichWayTheSplitsWentAndWhatThatCosts()
     {
-        string still = CdTransfer.DescribeProposal(3, previous: 3, 0, -45);
-        Assert.Contains("the same 3 tracks in the same places", still, StringComparison.Ordinal);
-        Assert.Contains("nothing moved", still, StringComparison.Ordinal);
+        string earlier = CdTransfer.DescribeProposal(3, previous: 3, -7.55);
+        Assert.Equal(
+            "Still 3 tracks, but the splits moved up to 7.6 s earlier and may now cut into the end " +
+            "of a song. Preview them to check.", earlier);
 
-        // 7.55 s is the real figure measured between -45 dB and -30 dB on the three-track side.
-        string moved = CdTransfer.DescribeProposal(3, previous: 3, 7.55, -30);
-        Assert.Contains("Still 3 tracks", moved, StringComparison.Ordinal);
-        Assert.Contains("7.6 s", moved, StringComparison.Ordinal);
-        Assert.Contains("SOURCE IN and OUT", moved, StringComparison.Ordinal);
-        Assert.DoesNotContain("nothing moved", moved, StringComparison.Ordinal);
+        // Tightening the threshold moves them the other way, where they eat the song after the gap
+        // rather than the one before it.
+        string later = CdTransfer.DescribeProposal(3, previous: 3, 7.55);
+        Assert.Contains("7.6 s later", later, StringComparison.Ordinal);
+        Assert.Contains("start of a song", later, StringComparison.Ordinal);
+
+        PlainEnough(earlier);
+        PlainEnough(later);
     }
 
-    /// <summary>A move past a minute reads as a timecode, not as "185.0 s".</summary>
+    /// <summary>A move past a minute reads as a timecode rather than as "185.0 s".</summary>
     [Fact]
     public void ALongMoveIsWrittenAsATimecode()
     {
-        Assert.Contains("3:05", CdTransfer.DescribeProposal(3, 3, 185, -30), StringComparison.Ordinal);
-        Assert.Contains("59.5 s", CdTransfer.DescribeProposal(3, 3, 59.5, -30), StringComparison.Ordinal);
+        Assert.Contains("3:05 earlier", CdTransfer.DescribeProposal(3, 3, -185), StringComparison.Ordinal);
+        Assert.Contains("59.5 s earlier", CdTransfer.DescribeProposal(3, 3, -59.5), StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// The one case where the user is stuck — nothing to rename, nothing to reorder — is the one
-    /// worth spending the line on saying which way the slider goes. Everywhere else that lives on
-    /// the slider's own tool tip, where it can be a whole sentence.
+    /// The one outcome with nothing to rename, reorder or preview, so it is the one that has to say
+    /// which way the slider goes. Right is the laxer test and therefore the direction that finds
+    /// more gaps — which reads backwards, since right is the number closer to zero.
     /// </summary>
     [Fact]
     public void OneTrackIsTheCaseThatSaysWhichWayToMoveTheSlider()
     {
-        string line = CdTransfer.DescribeProposal(1, previous: 0, double.NaN, -45);
-        Assert.Contains("one track", line, StringComparison.Ordinal);
-        Assert.Contains("toward -25 dB", line, StringComparison.Ordinal);
-
-        // -25 dB is the laxer test and so the direction that finds more gaps. Pointing at -70 there
-        // would send the user the way that finds fewer, which is the opposite of what they want.
-        Assert.DoesNotContain("toward -70", line, StringComparison.Ordinal);
+        string line = CdTransfer.DescribeProposal(1, previous: 0, double.NaN);
+        Assert.Equal("No gaps found - this is all one track. Drag Quiet below to the right, then Analyze again.", line);
+        PlainEnough(line);
+        Assert.DoesNotContain("left", line, StringComparison.Ordinal);
     }
 
     [Fact]
     public void AnEmptyProposalDoesNotClaimToHaveFoundTracks()
     {
-        string line = CdTransfer.DescribeProposal(0, previous: 3, double.NaN, -45);
-        Assert.Contains("Nothing was proposed", line, StringComparison.Ordinal);
+        Assert.Equal("No tracks were proposed.", CdTransfer.DescribeProposal(0, previous: 3, double.NaN));
     }
 }
 
@@ -132,13 +152,13 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
         AppSettings.AppDataDir = _sandbox;
         string[] wordings =
         [
-            CdTransfer.DescribeProposal(3, 0, double.NaN, -45),
-            CdTransfer.DescribeProposal(3, 1, double.NaN, -35),
-            CdTransfer.DescribeProposal(12, 3, double.NaN, -25),
-            CdTransfer.DescribeProposal(3, 3, 0, -45),
-            CdTransfer.DescribeProposal(3, 3, 7.55, -30),
-            CdTransfer.DescribeProposal(99, 98, 185, -30),
-            CdTransfer.DescribeProposal(1, 0, double.NaN, -45),
+            CdTransfer.DescribeProposal(3, 0, double.NaN),
+            CdTransfer.DescribeProposal(3, 1, double.NaN),
+            CdTransfer.DescribeProposal(12, 3, double.NaN),
+            CdTransfer.DescribeProposal(3, 3, 0),
+            CdTransfer.DescribeProposal(3, 3, -7.55),
+            CdTransfer.DescribeProposal(99, 99, 185),
+            CdTransfer.DescribeProposal(1, 0, double.NaN),
         ];
 
         var report = new List<string>();

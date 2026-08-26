@@ -581,7 +581,7 @@ public sealed class CdTransferDialogTests : IDisposable
 
         Assert.Equal(3, tracks);
         Assert.Equal("Sister Ray", title);
-        Assert.Contains("in the same places", status, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Same 3 tracks, in the same places.", status);
     }
 
     /// <summary>The threshold is a level, so moving it has to change what counts as a gap.</summary>
@@ -620,36 +620,32 @@ public sealed class CdTransferDialogTests : IDisposable
     }
 
     /// <summary>
-    /// The label beside the slider is a measurement, so the threshold analysed has to be the one
-    /// printed. The slider's range is continuous, the label prints whole decibels, and the status
-    /// line quotes the figure the analysis was actually handed — which is what ties the two.
+    /// The label beside the slider is a measurement, so the control has to hold the number the
+    /// label prints. <c>IsSnapToTickEnabled</c> does not do it — WPF applies that to a thumb drag
+    /// and not to a value set any other way — so the slider could sit at -45.4 dB under a label
+    /// reading "-45 dB" and analyse at the figure nobody was shown.
     /// </summary>
     [Fact]
     public void TheThresholdAnalysedIsTheThresholdPrinted()
     {
-        (string label, string status) = Wpf.Run(() =>
+        (double value, string label) = Wpf.Run(() =>
         {
             using var main = new MainViewModel();
-            DocumentViewModel document = OpenSideWithGaps(main, (0, 120));
+            DocumentViewModel document = Open(main, (0, 20));
 
-            (string, string) result = default;
+            (double, string) result = default;
             Wpf.Show(new CdTransferDialog(document, main), window =>
             {
                 var slider = (Slider)window.FindName("thresholdSlider");
                 slider.Value = -45.4;
                 Wpf.Pump();
-
-                Click(window, "analyzeBtn");
-                SettleAnalysis(window);
-                result = (((TextBlock)window.FindName("thresholdText")).Text,
-                    ((TextBlock)window.FindName("statusText")).Text);
+                result = (slider.Value, ((TextBlock)window.FindName("thresholdText")).Text);
             });
             return result;
         });
 
+        Assert.Equal(-45, value);
         Assert.Equal("-45 dB", label);
-        Assert.Contains("-45 dB", status, StringComparison.Ordinal);
-        Assert.DoesNotContain("-45.4", status, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -744,7 +740,8 @@ public sealed class CdTransferDialogTests : IDisposable
         // And the boundary really did move, earlier, into the fade.
         Assert.True(movedBoundary < firstBoundary,
             $"the boundary went from {firstBoundary} to {movedBoundary}; a looser threshold should move it earlier");
-        Assert.Contains("Still 3 tracks at -30 dB", status, StringComparison.Ordinal);
-        Assert.Contains("boundaries moved by up to", status, StringComparison.Ordinal);
+        Assert.StartsWith("Still 3 tracks, but the splits moved up to", status, StringComparison.Ordinal);
+        Assert.Contains("earlier", status, StringComparison.Ordinal);
+        Assert.Contains("Preview them to check", status, StringComparison.Ordinal);
     }
 }

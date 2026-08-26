@@ -7,7 +7,7 @@
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False">
     <Window.Resources>
-        <sys:String x:Key="QuietBelowHelp">How quiet a stretch has to be before it counts as a gap between tracks. Toward -25 dB finds more gaps and starts each one earlier, inside the fade-out; toward -70 dB finds fewer and keeps the fades whole.</sys:String>
+        <sys:String x:Key="QuietBelowHelp">How quiet a stretch has to be before it counts as a gap between songs. Drag right if Analyze misses a split, left if it invents one. Dragging right also moves every split earlier, further into the fade-out.</sys:String>
     </Window.Resources>
     <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect><DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/></Border.Effect>
@@ -97,7 +97,7 @@
                     </StackPanel>
                     <Button x:Name="analyzeBtn" Grid.Column="3" Content="Analyze" Height="32" Style="{StaticResource AccentButton}"
                             Foreground="{StaticResource Muted}" Click="OnAutoSplit"
-                            ToolTip="Propose track boundaries from the quiet gaps, placing each one at the middle of its gap. It re-reads the recording and does not change it."/>
+                            ToolTip="Split the recording into tracks at the quiet gaps between songs, putting each split in the middle of its gap. It re-reads the recording and never changes it."/>
                 </Grid>
             </Border>
 
