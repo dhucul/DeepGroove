@@ -79,7 +79,7 @@
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="130"/><ColumnDefinition Width="125"/><ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="95"/><ColumnDefinition Width="10"/><ColumnDefinition Width="112"/>
+                        <ColumnDefinition Width="95"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="AUTO SPLIT" VerticalAlignment="Center" Style="{StaticResource UpperLabel}"/>
                     <TextBlock Grid.Column="1" Text="Quiet below" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
@@ -90,8 +90,6 @@
                     </StackPanel>
                     <Button x:Name="analyzeBtn" Grid.Column="3" Content="Analyze" Height="32" Style="{StaticResource AccentButton}"
                             Foreground="{StaticResource Muted}" Click="OnAutoSplit"/>
-                    <Button x:Name="addSelectionBtn" Grid.Column="5" Content="Use Selection" Height="32" Style="{StaticResource AccentButton}"
-                            Foreground="{StaticResource Muted}" Click="OnAddSelection"/>
                 </Grid>
             </Border>
 
@@ -179,6 +177,9 @@
                 <StackPanel Orientation="Horizontal">
                     <Button x:Name="upBtn" Content="▲" Width="34" Height="30" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Click="OnMoveUp"/>
                     <Button x:Name="downBtn" Content="▼" Width="34" Height="30" Margin="6,0,0,0" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Click="OnMoveDown"/>
+                    <Button x:Name="addBtn" Content="Add Track" Width="82" Height="30" Margin="10,0,0,0" Style="{StaticResource AccentButton}"
+                            Foreground="{StaticResource Muted}" Click="OnAddTrack"
+                            ToolTip="Add a track from the selection, or — with nothing selected — take a three-minute block off the front of the selected track and leave the rest as the next one. Press it again for the next track."/>
                     <Button x:Name="removeBtn" Content="Remove" Width="72" Height="30" Margin="6,0,0,0" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Click="OnRemove"/>
                     <Button x:Name="splitBtn" Content="Split" Width="54" Height="30" Margin="6,0,0,0" Style="{StaticResource AccentButton}"
                             Foreground="{StaticResource Muted}" ToolTip="Split at the document cursor, or at the midpoint" Click="OnSplitSelected"/>

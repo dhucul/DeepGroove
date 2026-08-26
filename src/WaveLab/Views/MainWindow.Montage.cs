@@ -212,7 +212,7 @@ public partial class MainWindow
                     }
                     document.NotifyMarkersChanged();
                     _vm.ReportAction($"Montage rendered with one region per clip.{measured}");
-                    new CdTransferDialog(document, _vm) { Owner = this }.ShowDialog();
+                    CdTransferDialog.ShowFor(document, _vm, this);
                 }
                 break;
             }

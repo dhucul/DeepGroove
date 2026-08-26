@@ -662,17 +662,18 @@ public partial class MainWindow : Window
     private void OnPrepareAudioCd(object sender, RoutedEventArgs e)
     {
         if (Doc == null) return;
-        new CdTransferDialog(Doc, _vm) { Owner = this }.ShowDialog();
+        CdTransferDialog.ShowFor(Doc, _vm, this);
     }
 
     private void OnVinylWorkflow(object sender, RoutedEventArgs e)
     {
         var document = Doc;
         if (document == null || document.Doc.Length == 0) return;
-        var restoration = new RestorationWorkbenchDialog(document, _vm) { Owner = this };
-        bool applied = restoration.ShowDialog() == true;
-        if (applied && restoration.PrepareCdRequested && _vm.Documents.Contains(document))
-            new CdTransferDialog(document, _vm) { Owner = this }.ShowDialog();
+        RestorationWorkbenchDialog.ShowFor(document, _vm, this, prepareCd =>
+        {
+            if (prepareCd && _vm.Documents.Contains(document))
+                CdTransferDialog.ShowFor(document, _vm, this);
+        });
     }
 
     /// <summary>

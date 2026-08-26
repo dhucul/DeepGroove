@@ -473,20 +473,31 @@ public sealed class DocumentViewModel : TabViewModel
         ViewStart = _viewStart;
     }
 
+    /// <summary>
+    /// Where a sample position lands after a splice replaced <paramref name="removedCount"/> samples
+    /// at <paramref name="editStart"/> with <paramref name="insertedCount"/>. Positions before the
+    /// edit do not move, positions after it shift by the length delta, and a position inside the
+    /// removed span collapses onto the nearest surviving sample.
+    /// </summary>
+    /// <remarks>
+    /// Public because the cursor, playhead and selection are not the only things anchored to the
+    /// timeline: <c>CdTransferDialog</c> is modeless and holds source ranges of its own, which have
+    /// to survive an edit made while it is open the same way these do.
+    /// </remarks>
+    public static int MapEditAnchor(int value, int editStart, int removedCount, int insertedCount)
+    {
+        if (value <= editStart) return value;
+        int oldEnd = editStart + removedCount;
+        if (value >= oldEnd) return value + insertedCount - removedCount;
+        return editStart + Math.Min(value - editStart, insertedCount);
+    }
+
     private void OnDocChanged(int start, int removed, int inserted)
     {
-        static int MapAnchor(int value, int editStart, int removedCount, int insertedCount)
-        {
-            if (value <= editStart) return value;
-            int oldEnd = editStart + removedCount;
-            if (value >= oldEnd) return value + insertedCount - removedCount;
-            return editStart + Math.Min(value - editStart, insertedCount);
-        }
-
-        int mappedCursor = MapAnchor(_cursor, start, removed, inserted);
-        int mappedPlayhead = MapAnchor(_playhead, start, removed, inserted);
-        int mappedSelectionStart = HasSelection ? MapAnchor(_selStart, start, removed, inserted) : -1;
-        int mappedSelectionEnd = HasSelection ? MapAnchor(_selEnd, start, removed, inserted) : -1;
+        int mappedCursor = MapEditAnchor(_cursor, start, removed, inserted);
+        int mappedPlayhead = MapEditAnchor(_playhead, start, removed, inserted);
+        int mappedSelectionStart = HasSelection ? MapEditAnchor(_selStart, start, removed, inserted) : -1;
+        int mappedSelectionEnd = HasSelection ? MapEditAnchor(_selEnd, start, removed, inserted) : -1;
 
         // keep markers/regions anchored through splices
         int delta = inserted - removed;

@@ -1,0 +1,381 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using WaveLab.Audio;
+using WaveLab.Util;
+using WaveLab.ViewModels;
+using WaveLab.Views;
+using Xunit;
+
+namespace WaveLab.Tests;
+
+/// <summary>
+/// Prepare Audio CD as a modeless window over a live document: adding a track by hand, and keeping
+/// up with the file, the rack and the tab list while all three can still change underneath it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// What these close is a window that could only ever be told about the outside world once. It was
+/// modal, so the selection Add Track takes and the cursor Split cuts at were frozen at whatever they
+/// were before it opened — pressing "Use Selection" twice added the same range twice, and there was
+/// no other way to put a track in the list by hand at all.
+/// </para>
+/// <para>
+/// In the shared UI thread and the app-settings collection for <see cref="MainViewModel"/>'s sake,
+/// the same reasons <see cref="CloseAllTests"/> gives.
+/// </para>
+/// </remarks>
+[Collection(AppSettingsCollection.Name)]
+public sealed class CdTransferDialogTests : IDisposable
+{
+    private const int Rate = 44_100;
+
+    /// <summary>
+    /// For the tests that need minutes rather than seconds of timeline. Add Track's block is defined
+    /// in seconds, so what it does is a function of duration alone — and eight minutes here is 3.8 M
+    /// samples instead of the 42 M a real side would be.
+    /// </summary>
+    private const int Slow = 8_000;
+
+    private readonly string _originalAppDataDir = AppSettings.AppDataDir;
+    private readonly string _sandbox =
+        Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+
+    public CdTransferDialogTests() => AppSettings.AppDataDir = _sandbox;
+
+    public void Dispose()
+    {
+        AppSettings.AppDataDir = _originalAppDataDir;
+        try { Directory.Delete(_sandbox, recursive: true); }
+        catch (IOException) { /* a leftover temp directory is not worth failing a test over */ }
+    }
+
+    private static int Seconds(double value) => (int)Math.Round(value * Rate);
+
+    /// <summary>
+    /// A twenty-second transfer with regions already on it. Seeding at least one region matters:
+    /// the window analyses for track gaps on load only when it opens with an empty list, and that
+    /// analysis is asynchronous, so a test that wants a known list must not provoke it.
+    /// </summary>
+    private static DocumentViewModel Open(MainViewModel main, params (double Start, double End)[] regions) =>
+        Open(main, Rate, 20, regions);
+
+    private static DocumentViewModel Open(
+        MainViewModel main, int rate, double seconds, params (double Start, double End)[] regions)
+    {
+        int frames = (int)Math.Round(seconds * rate);
+        main.AddDocument(new AudioDocument(
+            [new float[frames], new float[frames]], rate, 16) { Title = "Side A.wav" });
+        DocumentViewModel document = main.ActiveDocument!;
+        foreach ((double start, double end) in regions)
+        {
+            document.Regions.Add(new NamedRegion
+            {
+                Name = $"Track {document.Regions.Count + 1:00}",
+                Start = (int)Math.Round(start * rate),
+                End = (int)Math.Round(end * rate),
+                CdTrackOrder = document.Regions.Count + 1,
+            });
+        }
+        return document;
+    }
+
+    private static void Click(Window window, string name) =>
+        ((Button)window.FindName(name)).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+
+    private static IReadOnlyList<CdTrackPlan> Plans(Window window)
+    {
+        var list = (ListBox)window.FindName("trackList");
+        // The row type is private to the window — deliberately, it is a view model for one ListBox —
+        // but the plan it carries is the public record the exporter is handed, so that is what is
+        // read back here rather than the formatted text of the cells.
+        return list.Items.Cast<object>()
+            .Select(row => (CdTrackPlan)row.GetType().GetProperty("Plan")!.GetValue(row)!)
+            .ToList();
+    }
+
+    /// <summary>
+    /// The direct expression of "this part is a track". It is taken verbatim, and because the window
+    /// is modeless the selection it reads is the one on the waveform now.
+    /// </summary>
+    [Fact]
+    public void AddTrackTakesTheCurrentSelection()
+    {
+        IReadOnlyList<CdTrackPlan> plans = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (0, 5));
+            document.SetSelection(Seconds(12), Seconds(18));
+
+            IReadOnlyList<CdTrackPlan> result = [];
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Click(window, "addBtn");
+                Wpf.Pump();
+                result = Plans(window);
+            });
+            return result;
+        });
+
+        Assert.Equal(2, plans.Count);
+        Assert.Equal((Seconds(12), Seconds(18)), (plans[1].SourceStart, plans[1].SourceEnd));
+    }
+
+    /// <summary>
+    /// A stretch shorter than the block one press takes is claimed whole. Splitting it would leave a
+    /// remainder under the CD minimum behind it, which is not a track and would need a second press
+    /// to get rid of.
+    /// </summary>
+    [Fact]
+    public void AddTrackClaimsAShortUnclaimedStretchWhole()
+    {
+        IReadOnlyList<CdTrackPlan> plans = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (0, 5), (8, 12));
+            document.ClearSelection();
+
+            IReadOnlyList<CdTrackPlan> result = [];
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                // Selecting the first row also fixes where the new one lands: after it, not at the end.
+                ((ListBox)window.FindName("trackList")).SelectedIndex = 0;
+                Wpf.Pump();
+                Click(window, "addBtn");
+                Wpf.Pump();
+                result = Plans(window);
+            });
+            return result;
+        });
+
+        // Gaps are 5–8 s and 12–20 s; the longer one wins.
+        Assert.Equal(3, plans.Count);
+        Assert.Equal((Seconds(12), Seconds(20)), (plans[1].SourceStart, plans[1].SourceEnd));
+        Assert.Equal((Seconds(8), Seconds(12)), (plans[2].SourceStart, plans[2].SourceEnd));
+    }
+
+    /// <summary>
+    /// The point of taking a block rather than the whole stretch: the button has to still do
+    /// something on the second press, and on the third. A side is one unclaimed stretch, so claiming
+    /// all of it would have made the first press the only one that worked — which is what the old
+    /// Use Selection did, under a different name.
+    /// </summary>
+    [Fact]
+    public void PressingAddTrackRepeatedlyBuildsTheListInSourceOrder()
+    {
+        IReadOnlyList<CdTrackPlan> plans = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            // Eight minutes at a low rate: long enough to hold several three-minute blocks without
+            // allocating a real side's worth of samples.
+            DocumentViewModel document = Open(main, Slow, 480, (0, 60));
+            document.ClearSelection();
+
+            IReadOnlyList<CdTrackPlan> result = [];
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                ((ListBox)window.FindName("trackList")).SelectedIndex = 0;
+                Wpf.Pump();
+                for (int press = 0; press < 3; press++)
+                {
+                    Click(window, "addBtn");
+                    Wpf.Pump();
+                }
+                result = Plans(window);
+            });
+            return result;
+        });
+
+        Assert.Equal(4, plans.Count);
+        Assert.Equal((0, Slow * 60), (plans[0].SourceStart, plans[0].SourceEnd));
+        Assert.Equal((Slow * 60, Slow * 240), (plans[1].SourceStart, plans[1].SourceEnd));
+        Assert.Equal((Slow * 240, Slow * 420), (plans[2].SourceStart, plans[2].SourceEnd));
+        // 420–480 s is a minute, under the three-minute block, so the last press takes what is left
+        // rather than leaving a scrap behind it.
+        Assert.Equal((Slow * 420, Slow * 480), (plans[3].SourceStart, plans[3].SourceEnd));
+    }
+
+    /// <summary>
+    /// The case the whole button turns on, and the one both earlier versions of it got wrong. The
+    /// opening analysis proposes boundaries covering the entire recording, so in the ordinary flow
+    /// there is never any unclaimed space — a search for some found nothing and reported that
+    /// everything was claimed, which with a one-gap analysis is a list of two and no way to a third.
+    /// Another track has to come out of an existing one.
+    /// </summary>
+    [Fact]
+    public void AddTrackDividesTheSelectedTrackWhenTheRecordingIsAlreadyTiled()
+    {
+        IReadOnlyList<CdTrackPlan> plans = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            // One region over the whole eight minutes: what Analyze leaves behind on a side with no
+            // gap it can find, and the state the report came from.
+            DocumentViewModel document = Open(main, Slow, 480, (0, 480));
+            document.ClearSelection();
+
+            IReadOnlyList<CdTrackPlan> result = [];
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                ((ListBox)window.FindName("trackList")).SelectedIndex = 0;
+                Wpf.Pump();
+                for (int press = 0; press < 3; press++)
+                {
+                    Click(window, "addBtn");
+                    Wpf.Pump();
+                }
+                result = Plans(window);
+            });
+            return result;
+        });
+
+        Assert.Equal(4, plans.Count);
+        Assert.Equal((0, Slow * 180), (plans[0].SourceStart, plans[0].SourceEnd));
+        Assert.Equal((Slow * 180, Slow * 360), (plans[1].SourceStart, plans[1].SourceEnd));
+        // Two minutes left, which cannot give a three-minute block and a valid remainder, so the
+        // third press falls back to the midpoint — the same clamp Split uses.
+        Assert.Equal((Slow * 360, Slow * 420), (plans[2].SourceStart, plans[2].SourceEnd));
+        Assert.Equal((Slow * 420, Slow * 480), (plans[3].SourceStart, plans[3].SourceEnd));
+    }
+
+    /// <summary>
+    /// Two CD tracks need eight seconds between them. Under that the row cannot be divided, and the
+    /// button says which row and why rather than doing nothing.
+    /// </summary>
+    [Fact]
+    public void AddTrackSaysSoWhenThereIsNothingLeftLongEnoughToDivide()
+    {
+        (int tracks, string status) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, Rate, 6, (0, 6));
+            document.ClearSelection();
+
+            (int Tracks, string Status) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Click(window, "addBtn");
+                Wpf.Pump();
+                result = (Plans(window).Count, ((TextBlock)window.FindName("statusText")).Text);
+            });
+            return result;
+        });
+
+        Assert.Equal(1, tracks);
+        Assert.Contains("too short to divide", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A track range is anchored to the timeline exactly as a marker or a region is. An edit made
+    /// while this window is open therefore moves it, instead of leaving it pointing at a different
+    /// piece of music than the one the user chose.
+    /// </summary>
+    [Fact]
+    public void ATrackRangeMovesWithAnEditMadeWhileTheWindowIsOpen()
+    {
+        (CdTrackPlan before, CdTrackPlan after) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (5, 10));
+
+            (CdTrackPlan Before, CdTrackPlan After) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                result.Before = Plans(window)[0];
+
+                // One second of silence inserted at the head of the file.
+                document.Doc.ReplaceRange(0, 0,
+                    [new float[Seconds(1)], new float[Seconds(1)]], "Insert Silence");
+                Wpf.Pump();
+                result.After = Plans(window)[0];
+            });
+            return result;
+        });
+
+        Assert.Equal((Seconds(5), Seconds(10)), (before.SourceStart, before.SourceEnd));
+        Assert.Equal((Seconds(6), Seconds(11)), (after.SourceStart, after.SourceEnd));
+    }
+
+    /// <summary>
+    /// The checkbox is the one master rack, not a private copy of it, so a bypass pressed in the
+    /// main window while this is open reaches it — and export cannot promise a rack that is off.
+    /// </summary>
+    [Fact]
+    public void TheRackCheckboxFollowsTheMainWindow()
+    {
+        (bool? enabled, bool? bypassed) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (0, 5));
+
+            (bool? Enabled, bool? Bypassed) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                var check = (CheckBox)window.FindName("renderRackCheck");
+                main.Master.RackEnabled = true;
+                Wpf.Pump();
+                result.Enabled = check.IsChecked;
+
+                main.Master.RackEnabled = false;
+                Wpf.Pump();
+                result.Bypassed = check.IsChecked;
+            });
+            return result;
+        });
+
+        Assert.True(enabled);
+        Assert.False(bypassed);
+    }
+
+    /// <summary>Closing the file closes the window arranging it; there is nothing left to prepare.</summary>
+    [Fact]
+    public void ClosingTheDocumentClosesTheWindow()
+    {
+        bool visible = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (0, 5));
+
+            bool stillOpen = true;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                main.CloseAllCommand.Execute(null);
+                Wpf.Pump();
+                stillOpen = window.IsVisible;
+            });
+            return stillOpen;
+        });
+
+        Assert.False(visible);
+    }
+
+    /// <summary>
+    /// Modeless windows can be asked for twice. The second Prepare Audio CD raises the list already
+    /// being arranged rather than standing a rival one up beside it, which would have two windows
+    /// writing regions over each other.
+    /// </summary>
+    [Fact]
+    public void AskingTwiceRaisesTheWindowThatIsAlreadyOpen()
+    {
+        (bool same, bool closed) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (0, 5));
+
+            CdTransferDialog first = CdTransferDialog.ShowFor(document, main, null);
+            Wpf.Pump();
+            bool isSame = ReferenceEquals(first, CdTransferDialog.ShowFor(document, main, null));
+
+            // Closing is part of the test rather than cleanup after it. This is the one place here
+            // that goes through the real ShowFor, so the window is shown and activated rather than
+            // parked offscreen by Wpf.Show — and it holds subscriptions to the view model this block
+            // is about to dispose. One left open takes those, and the focus, into the next test.
+            first.Close();
+            long deadline = Environment.TickCount64 + 15_000;
+            while (first.IsVisible && Environment.TickCount64 < deadline) Wpf.Pump();
+            return (isSame, !first.IsVisible);
+        });
+
+        Assert.True(same);
+        Assert.True(closed, "the CD window outlived the test that opened it");
+    }
+}

@@ -1828,6 +1828,121 @@ thing that would close the gap and gave it nowhere to happen.
   a caller cannot put an effect somewhere its own UI could not reach —
   `EveryTargetsCeilingIsReachableByTheLimiter` checks the five presets against the limiter's -12..0.
 
+## Prepare Audio CD could be told about the world exactly once
+
+Reported as "I see no way of adding more tracks", and the report was very nearly right. There was
+one way — a button called **Use Selection**, parked in the AUTO SPLIT panel between the threshold
+slider and Analyze, named after its input rather than its action. It read `_document.SelStart`/
+`SelEnd` at click time. The window was opened with `ShowDialog()`, which disables the owner, so
+those could not be changed while it was up: the selection was whatever happened to be set before
+the window appeared, and pressing the button twice added the same range twice. `Split` had the same
+defect one level down — it splits at `_document.Cursor` and quietly fell back to the track midpoint
+because the cursor could not be moved either. Everything else in the list came from Analyze, which
+*replaces* the list rather than adding to it, or from regions read once in the constructor.
+
+So the window was modal over the only two pieces of state its manual editing depended on. Both
+changes below follow from removing that.
+
+**Modeless.** `ShowDialog()` → a static `ShowFor(document, main, owner)` that `Show()`s. Three
+things that a modal window never had to handle:
+
+- *Asked for twice.* `OpenDialogs`, keyed by `DocumentViewModel`, raises the window already
+  arranging that file. Two windows on one document would both be writing regions through Sync
+  Regions, last one winning silently.
+- *The file changes underneath it.* `Doc.Changed` is subscribed, and every track range is mapped
+  through the splice the way the cursor, playhead, selection, markers and regions already were.
+  `DocumentViewModel`'s local `MapAnchor` became `public static MapEditAnchor` for this — the third
+  caller made it worth naming. A track the edit collapses is left in the list rather than dropped:
+  validation names it, and the row is the only record of a title and ISRC that would go with it.
+  (`PqSheet` tolerates the collapsed row — `DdpImage.Timecode` clamps at zero — and the misleading
+  lead-out figure it would produce is only printed at Information severity, which an invalid range
+  precludes.)
+- *The tab closes.* `Documents.CollectionChanged` closes the window. `_busy` is cleared first,
+  because `OnDialogClosing` vetoes a close while an operation runs and there is no longer a document
+  to finish it for.
+
+**The rack checkbox stopped being a private copy.** It was captured at open and restored on close.
+Modeless, that restore stomps a bypass the user pressed in the main window meanwhile — so the
+checkbox now follows `Master.RackEnabled` both ways and nothing is restored. It always *was* the one
+master rack; only the modality made a snapshot look reasonable.
+
+**Add Track.** One button, in the row with Remove and Split where the other list operations are,
+replacing Use Selection. Selection if there is one — verbatim, short or overlapping, because the
+user pointed at that range and validation is better placed than the button to object — otherwise
+the longest stretch no row has claimed, swept rather than assumed ordered, since ranges may overlap
+and the list is an arrangement rather than a timeline. Inserts after the selected row, and selects
+what it inserted, which is what makes repeated presses come out in source order without ▲▼.
+
+The no-selection fallback took two goes to get right, and both wrong answers came from the same
+unexamined premise: that a new track comes from *space no track is using*.
+
+First it claimed the whole longest unclaimed stretch, reasoning that any other length would be
+invented. Correct, and useless — a side is one unclaimed stretch, so the first press was the only
+one that did anything. Then it took a three-minute block off the front of that stretch, which fixes
+the second press but not the premise, and the premise is the bug: **the tracks tile the recording.**
+`SuggestTracks` returns boundaries running `0 → …gaps… → end`, contiguously, and the window runs it
+on load. All of the file is claimed before the user has touched anything, so the search found
+nothing and the button reported that everything was claimed — with an analysis that had found one
+gap, a list of two tracks and no way to reach a third. That is what got reported, twice, and the
+second report is the one that said the button was no better than the Use Selection it replaced.
+
+So another track comes out of an existing one. `DivideRow` takes a block off the selected row's
+front and leaves the remainder as the next row — which is exactly what Split already did, at a fixed
+offset instead of at the cursor, so both now call it. It selects the remainder, and *that* is what
+makes a repeated press walk forward through the side instead of subdividing the same head. A row too
+short to give a block and a valid remainder is divided at its midpoint, the clamp Split already had.
+
+Unclaimed space is still checked first, because a Remove leaves a real hole worth filling, but it is
+now the exception rather than the rule.
+
+`AddTrackDividesTheSelectedTrackWhenTheRecordingIsAlreadyTiled` is the one to keep. Both earlier
+versions passed their own tests — each was seeded with regions that left a gap, which is not the
+state the dialog actually opens in. It seeds one region over the whole file, which is what Analyze
+leaves on a side with no gap it can find. It runs at 8 kHz: the block is defined in seconds, so what
+it does is a function of duration alone, and eight minutes of timeline is 3.8 M samples there
+against the 42 M a real side would be.
+
+`CdTransferDialogTests` covers all of it. The one thing worth knowing before writing more: seed the
+document with at least one region, or the constructor's `Loaded` handler starts the asynchronous gap
+analysis and the list is not the one the test set up.
+
+## The workbench holds an analysis, which is a harder thing to be modeless about
+
+Same treatment for `RestorationWorkbenchDialog`, and the registry, the tab-close and the rack all
+came out the same shape. What did not is the middle one, because this window does not hold a *view*
+of the document the way the CD list does — it holds a **measurement** of it: channel arrays, a
+range, an edit version, taken once, rendered from, and spliced back over the document at Apply.
+
+Modal, the source could not move. There was already a version check before the splice, for an async
+race nobody expected to hit; it refused with "Reopen the workbench to analyze the current audio"
+*after* paying for a full restoration render. Modeless, editing while it is open stops being a race
+and becomes a thing people do, so:
+
+- `Doc.Changed` sets `_sourceStale`, which disables both Apply buttons and prints the reason next to
+  the range the analysis describes. Refused at the edit, not after the render. The post-render check
+  stays — a render can outlive the edit that invalidates it — and now sets the same flag.
+- A selection move is *not* that. The captured range is still the range that was analyzed, so
+  `_rangeStale` only offers a re-scope and leaves Apply alone. Two flags, worded apart, because only
+  one of them makes what the window is holding wrong.
+- **Re-analyze** re-runs the capture and the scan against whatever the document has become. Every
+  `readonly` capture field had to stop being one; `CaptureSource(firstCapture)` is the single place
+  they are taken, and the flag exists for `keepRemovedCheck` alone — a re-capture must clear the box
+  if the new range is past the residual budget, but must not otherwise re-read a stored preference
+  over a choice the user has already made. It re-tunes every control, exactly as reopening did.
+
+No locking guards the capture fields against the worker threads that read them, and none is needed:
+`OnReanalyze` returns on `_busy` and `UpdateStaleChrome` disables the button for the same reason, so
+a capture can never be replaced while a scan or a render is reading it.
+
+`DialogResult = true` is the one line that could not survive this — it throws on a window that was
+shown rather than shown modally. It became `Close()` plus an `Applied` event carrying
+`PrepareCdRequested`, which is what `ShowFor`'s `onApplied` wires to the CD hand-off.
+`ApplyingCommitsOneUndoableEditAndReportsThroughTheAppliedEvent` exists for that line specifically:
+it runs a real analysis and a real apply on two seconds of tone, because no amount of layout or
+readout coverage would have reached it. The rack path is the one thing untested — bypass-on-preview
+needs both a finished analysis and playback — so the snapshot now following a bypass the user works
+themselves rests on inspection.
+
 ## Gotchas
 
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).

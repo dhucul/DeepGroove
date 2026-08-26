@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
@@ -121,32 +122,73 @@ public partial class CdTransferDialog : Window
         public void BindRegion(NamedRegion region) => SourceRegion = region;
     }
 
+    /// <summary>
+    /// The window open on each document, so a second Prepare Audio CD raises the one already
+    /// arranging that file instead of standing up a rival list beside it. Modeless windows can be
+    /// asked for twice; a modal one never could.
+    /// </summary>
+    private static readonly Dictionary<DocumentViewModel, CdTransferDialog> OpenDialogs = [];
+
     private readonly DocumentViewModel _document;
     private readonly MainViewModel _main;
     private readonly ObservableCollection<TrackRow> _tracks = [];
     private readonly HashSet<NamedRegion> _knownPlanRegions = new(ReferenceEqualityComparer.Instance);
-    private readonly bool _rackWasEnabled;
     private CancellationTokenSource? _operation;
     private bool _busy;
     private bool _closeWhenFinished;
     private bool _dialogReady;
-    private bool _restoringRack;
+    private bool _syncingRack;
+
+    /// <summary>
+    /// Open — or raise — the CD window for <paramref name="document"/>. It is modeless, so the
+    /// waveform stays live underneath it: the selection Add Track takes, and the cursor Split cuts
+    /// at, are the ones on screen now rather than whichever ones happened to be set before the
+    /// window appeared.
+    /// </summary>
+    public static CdTransferDialog ShowFor(DocumentViewModel document, MainViewModel main, Window? owner)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(main);
+        if (OpenDialogs.TryGetValue(document, out CdTransferDialog? existing))
+        {
+            if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
+            existing.Activate();
+            return existing;
+        }
+
+        var dialog = new CdTransferDialog(document, main) { Owner = owner };
+        OpenDialogs[document] = dialog;
+        dialog.Closed += (_, _) =>
+        {
+            if (OpenDialogs.TryGetValue(document, out CdTransferDialog? registered) &&
+                ReferenceEquals(registered, dialog))
+                OpenDialogs.Remove(document);
+        };
+        dialog.Show();
+        return dialog;
+    }
 
     public CdTransferDialog(DocumentViewModel document, MainViewModel main)
     {
         InitializeComponent();
         _document = document;
         _main = main;
-        _rackWasEnabled = main.Master.RackEnabled;
         trackList.ItemsSource = _tracks;
         discTitle.Text = Path.GetFileNameWithoutExtension(document.Doc.Title);
-        renderRackCheck.IsChecked = _rackWasEnabled;
+        renderRackCheck.IsChecked = main.Master.RackEnabled;
 
         var regionTracks = CdTransfer.FromRegionsWithSources(document.Regions, document.Doc.Length);
         if (regionTracks.Count > 0)
             ReplaceTracks(regionTracks.Select(item => item.Plan).ToList(),
                 regionTracks.Select(item => item.Source).ToList());
         ApplyDeliverable();
+
+        // Everything this window shows is a view of state the main window can still change while it
+        // is open. Each subscription keeps one of those in step; all three come off again on close.
+        document.Doc.Changed += OnSourceEdited;
+        main.Master.PropertyChanged += OnMasterChanged;
+        main.Documents.CollectionChanged += OnDocumentsChanged;
+
         Loaded += async (_, _) =>
         {
             _dialogReady = true;
@@ -156,10 +198,71 @@ public partial class CdTransferDialog : Window
         Closing += OnDialogClosing;
         Closed += (_, _) =>
         {
+            document.Doc.Changed -= OnSourceEdited;
+            main.Master.PropertyChanged -= OnMasterChanged;
+            main.Documents.CollectionChanged -= OnDocumentsChanged;
             _operation?.Cancel();
             _main.StopPreview();
-            RestoreRackState();
         };
+    }
+
+    /// <summary>
+    /// An edit landed in the file underneath the arranged list. Track ranges are anchored to the
+    /// timeline exactly as markers and regions are, so they move with the splice rather than
+    /// silently coming to mean a different piece of music.
+    /// </summary>
+    private void OnSourceEdited(int start, int removed, int inserted)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => OnSourceEdited(start, removed, inserted));
+            return;
+        }
+
+        int length = _document.Doc.Length;
+        foreach (TrackRow row in _tracks)
+        {
+            int mappedStart = Math.Clamp(
+                DocumentViewModel.MapEditAnchor(row.Plan.SourceStart, start, removed, inserted), 0, length);
+            int mappedEnd = Math.Clamp(
+                DocumentViewModel.MapEditAnchor(row.Plan.SourceEnd, start, removed, inserted), 0, length);
+            if (mappedStart != row.Plan.SourceStart || mappedEnd != row.Plan.SourceEnd)
+                row.SetRange(mappedStart, mappedEnd);
+        }
+
+        // A track the edit collapsed is left in the list rather than dropped: validation names it,
+        // and the row is the only record of a title and ISRC that would otherwise go with it.
+        UpdatePlan();
+    }
+
+    /// <summary>
+    /// The rack this window renders through is the one master rack, which the main window can bypass
+    /// while this is open. The checkbox is that switch, not a private copy of it — so it follows,
+    /// and closing the window no longer restores a state the user has since changed deliberately.
+    /// </summary>
+    private void OnMasterChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is not (nameof(MasterSectionViewModel.RackEnabled) or null)) return;
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => OnMasterChanged(sender, e));
+            return;
+        }
+        if (renderRackCheck.IsChecked == _main.Master.RackEnabled) return;
+        _syncingRack = true;
+        try { renderRackCheck.IsChecked = _main.Master.RackEnabled; }
+        finally { _syncingRack = false; }
+    }
+
+    /// <summary>The file this window arranges was closed; there is nothing left to prepare.</summary>
+    private void OnDocumentsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        // An Add is a new tab and can never be the reason this document went away.
+        if (e.Action == NotifyCollectionChangedAction.Add) return;
+        if (_main.Documents.Contains(_document)) return;
+        _busy = false; // a pending operation must not veto the close of a window with no document
+        _operation?.Cancel();
+        Close();
     }
 
     private void ReplaceTracks(
@@ -180,7 +283,7 @@ public partial class CdTransferDialog : Window
     }
 
     /// <summary>
-    /// The one place a row is built, so a row added by Split or Use Selection cannot come out with
+    /// The one place a row is built, so a row added by Split or Add Track cannot come out with
     /// its catalogue fields in a different state from the rest of the list.
     /// </summary>
     private TrackRow NewRow(CdTrackPlan plan, int order, NamedRegion? sourceRegion = null)
@@ -341,14 +444,172 @@ public partial class CdTransferDialog : Window
         }
     }
 
-    private void OnAddSelection(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// How much one press takes when there is no selection to take instead. Three minutes is a song
+    /// rather than a measurement; the In/Out fields are where it becomes the right length.
+    /// </summary>
+    private const double NewTrackBlockSeconds = 180;
+
+    /// <summary>
+    /// Add a track by hand.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The selection wins where there is one — that is the direct expression of "this part is a
+    /// track". With nothing selected there are two other places a track can come from, and the
+    /// order between them is the whole of what this button had wrong twice.
+    /// </para>
+    /// <para>
+    /// The tracks here <b>tile the recording</b>: the analysis this window opens with proposes
+    /// boundaries running <c>0 → …gaps… → end</c>, contiguously, so all of the file is claimed
+    /// before the user has touched anything. Hunting for unclaimed space therefore found nothing in
+    /// the ordinary flow and the button reported that everything was claimed — with an analysis that
+    /// had found one gap, that is a list of two tracks and no way to reach a third. Unclaimed space
+    /// only exists after a Remove or a shortened row, so it is checked first and is the exception.
+    /// The rule is that another track comes out of an existing one: a block off its front, leaving
+    /// the remainder as the next row, which is <see cref="DivideRow"/> — the same operation Split
+    /// performs, at a fixed offset instead of at the cursor.
+    /// </para>
+    /// </remarks>
+    private void OnAddTrack(object sender, RoutedEventArgs e)
     {
-        if (_busy || !_document.HasSelection) return;
-        TrackRow row = NewRow(new CdTrackPlan(_document.SelStart, _document.SelEnd,
-            $"Track {_tracks.Count + 1:00}"), _tracks.Count + 1);
-        _tracks.Add(row);
+        if (_busy) return;
+        if (_tracks.Count >= CdTransfer.MaximumTracks)
+        {
+            statusText.Text = $"Audio CDs support at most {CdTransfer.MaximumTracks} tracks; remove one first.";
+            return;
+        }
+
+        int rate = Math.Max(1, _document.Doc.SampleRate);
+        int block = (int)Math.Round(NewTrackBlockSeconds * rate);
+        int minimum = Math.Max(1, (int)Math.Ceiling(CdTransfer.MinimumTrackSeconds * rate));
+
+        if (_document.HasSelection)
+        {
+            // Taken verbatim, short or overlapping. The user pointed at this range; if it cannot be
+            // a CD track the validation line says why, which beats quietly adding a different one.
+            AppendRow(_document.SelStart, _document.SelEnd, "the selection");
+            return;
+        }
+
+        if (_document.Doc.Length == 0)
+        {
+            statusText.Text = "There is no audio to cut a track from.";
+            return;
+        }
+
+        (int gapStart, int gapEnd) = LargestUnclaimedSpan();
+        if (gapEnd - gapStart >= minimum)
+        {
+            int end = gapStart + block;
+            // Take the whole stretch rather than leave a scrap behind it too short to be a track of
+            // its own — a remainder under the CD minimum is unusable, and a press that produced one
+            // would need a second press to undo it.
+            if (end >= gapEnd || gapEnd - end < minimum) end = gapEnd;
+            AppendRow(gapStart, end, end == gapEnd
+                ? "the rest of the unclaimed stretch"
+                : $"a {TimeFormat.Compact(NewTrackBlockSeconds)} block off the unclaimed stretch");
+            return;
+        }
+
+        TrackRow? target = trackList.SelectedItem as TrackRow ?? LongestRow();
+        if (target == null)
+        {
+            statusText.Text = "There are no tracks to divide. Press Analyze, or select a range to add as a track.";
+            return;
+        }
+
+        int targetOrder = target.Order;
+        TrackRow? remainder = DivideRow(target, target.Plan.SourceStart + block, $"Track {target.Order + 1:00}");
+        if (remainder == null)
+        {
+            statusText.Text = $"Track {targetOrder:00} is too short to divide into two valid CD tracks.";
+            return;
+        }
+        statusText.Text =
+            $"Track {targetOrder:00} now runs to {target.EndText}; track {remainder.Order:00} carries the rest. " +
+            "Edit the In/Out fields to fine-tune the boundary.";
+    }
+
+    /// <summary>Put a new row after the selected one, or at the end, and select it.</summary>
+    private void AppendRow(int start, int end, string origin)
+    {
+        int index = trackList.SelectedItem is TrackRow selected ? _tracks.IndexOf(selected) + 1 : _tracks.Count;
+        TrackRow row = NewRow(new CdTrackPlan(start, end, $"Track {index + 1:00}"), index + 1);
+        _tracks.Insert(index, row);
+        RefreshOrder();
+        // Selecting the new row is also what makes the next press land after it rather than beside
+        // it, so repeated presses come out in source order without the user reaching for ▲▼.
         trackList.SelectedItem = row;
-        UpdatePlan();
+        trackList.ScrollIntoView(row);
+        statusText.Text =
+            $"Added track {row.Order:00} from {origin} — {row.StartText} to {row.EndText}. Edit the In/Out fields to fine-tune it.";
+    }
+
+    /// <summary>The row covering the most of the recording, or null when the list is empty.</summary>
+    private TrackRow? LongestRow()
+    {
+        TrackRow? longest = null;
+        foreach (TrackRow row in _tracks)
+            if (longest == null || row.Plan.Length > longest.Plan.Length) longest = row;
+        return longest;
+    }
+
+    /// <summary>
+    /// Divide one row in two at <paramref name="split"/> and select the right-hand half — which is
+    /// what makes a repeated Add Track march forward through the recording rather than subdivide the
+    /// same head over and over. <paramref name="split"/> is clamped to the row's midpoint where
+    /// either half would otherwise fall under the CD minimum. Null when the row cannot be divided.
+    /// </summary>
+    private TrackRow? DivideRow(TrackRow row, int split, string rightTitle)
+    {
+        CdTrackPlan plan = row.ToPlan();
+        int minimum = Math.Max(1, (int)Math.Ceiling(CdTransfer.MinimumTrackSeconds * row.SampleRate));
+        if (plan.Length < minimum * 2) return null;
+        if (split - plan.SourceStart < minimum || plan.SourceEnd - split < minimum)
+            split = plan.SourceStart + plan.Length / 2;
+
+        int index = _tracks.IndexOf(row);
+        row.SetRange(plan.SourceStart, split);
+
+        // The right-hand half inherits performer, songwriter and pre-emphasis — the same record made
+        // them — but not the ISRC, which identifies one recording. Two tracks cannot both carry it.
+        TrackRow right = NewRow(plan with
+        {
+            SourceStart = split,
+            Title = rightTitle,
+            Isrc = string.Empty,
+        }, index + 2);
+        _tracks.Insert(index + 1, right);
+        RefreshOrder();
+        trackList.SelectedItem = right;
+        trackList.ScrollIntoView(right);
+        return right;
+    }
+
+    /// <summary>
+    /// The longest run of the recording that no track's source range covers. Ranges may overlap and
+    /// need not be in order, so they are swept rather than assumed to be a tidy sequence.
+    /// </summary>
+    private (int Start, int End) LargestUnclaimedSpan()
+    {
+        int length = _document.Doc.Length;
+        if (length <= 0) return (0, 0);
+
+        var claimed = _tracks
+            .Select(t => (Start: Math.Clamp(t.Plan.SourceStart, 0, length), End: Math.Clamp(t.Plan.SourceEnd, 0, length)))
+            .Where(range => range.End > range.Start)
+            .OrderBy(range => range.Start)
+            .ToList();
+
+        int bestStart = 0, bestEnd = 0, covered = 0;
+        foreach ((int start, int end) in claimed)
+        {
+            if (start > covered && start - covered > bestEnd - bestStart) (bestStart, bestEnd) = (covered, start);
+            covered = Math.Max(covered, end);
+        }
+        if (length - covered > bestEnd - bestStart) (bestStart, bestEnd) = (covered, length);
+        return (bestStart, bestEnd);
     }
 
     private void OnRangeEditCommitted(object sender, RoutedEventArgs e)
@@ -427,34 +688,20 @@ public partial class CdTransferDialog : Window
     {
         if (_busy || trackList.SelectedItem is not TrackRow row) return;
         CdTrackPlan plan = row.ToPlan();
-        int minimum = Math.Max(1, (int)Math.Ceiling(CdTransfer.MinimumTrackSeconds * row.SampleRate));
-        if (plan.Length < minimum * 2)
-        {
-            statusText.Text = $"Track {row.Order:00} is too short to split into two valid CD tracks.";
-            return;
-        }
-
+        int order = row.Order;
+        // The cursor is live now that the window is modeless, so this is the boundary on screen
+        // rather than wherever the playhead happened to be before it opened.
         int split = _document.Cursor > plan.SourceStart && _document.Cursor < plan.SourceEnd
             ? _document.Cursor
             : plan.SourceStart + plan.Length / 2;
-        if (split - plan.SourceStart < minimum || plan.SourceEnd - split < minimum)
-            split = plan.SourceStart + plan.Length / 2;
 
-        int index = _tracks.IndexOf(row);
-        row.SetRange(plan.SourceStart, split);
-
-        // The right-hand half inherits performer, songwriter and pre-emphasis — the same record made
-        // them — but not the ISRC, which identifies one recording. Two tracks cannot both carry it.
-        TrackRow right = NewRow(plan with
+        if (DivideRow(row, split, $"{plan.Title} B") == null)
         {
-            SourceStart = split,
-            Title = $"{plan.Title} B",
-            Isrc = string.Empty,
-        }, index + 2);
-        _tracks.Insert(index + 1, right);
-        RefreshOrder();
-        trackList.SelectedItem = right;
-        statusText.Text = $"Split at {TimeFormat.Position(split, row.SampleRate)}; edit In/Out fields to fine-tune the boundary.";
+            statusText.Text = $"Track {order:00} is too short to split into two valid CD tracks.";
+            return;
+        }
+        statusText.Text =
+            $"Split at {row.EndText}; edit In/Out fields to fine-tune the boundary.";
     }
 
     private void OnMoveUp(object sender, RoutedEventArgs e) => MoveSelected(-1);
@@ -773,7 +1020,7 @@ public partial class CdTransferDialog : Window
         wavCueBtn.IsEnabled = ddpBtn.IsEnabled = !busy;
         thresholdSlider.IsEnabled = !busy;
         analyzeBtn.IsEnabled = !busy;
-        addSelectionBtn.IsEnabled = !busy;
+        addBtn.IsEnabled = !busy;
         saveRegionsBtn.IsEnabled = !busy;
         renderRackCheck.IsEnabled = !busy;
         previewBtn.IsEnabled = !busy && trackList.SelectedItem != null;
@@ -808,19 +1055,12 @@ public partial class CdTransferDialog : Window
 
     private void OnRenderRackChanged(object sender, RoutedEventArgs e)
     {
-        if (!_dialogReady || _restoringRack) return;
+        if (!_dialogReady || _syncingRack) return;
         _main.StopPreview();
         _main.Master.RackEnabled = renderRackCheck.IsChecked == true;
         statusText.Text = renderRackCheck.IsChecked == true
             ? "The current rack will be heard in Preview and rendered into the CD files."
             : "Preview and export are both using the dry, unprocessed source.";
-    }
-
-    private void RestoreRackState()
-    {
-        _restoringRack = true;
-        try { _main.Master.RackEnabled = _rackWasEnabled; }
-        finally { _restoringRack = false; }
     }
 
     private void OnDialogClosing(object? sender, CancelEventArgs e)

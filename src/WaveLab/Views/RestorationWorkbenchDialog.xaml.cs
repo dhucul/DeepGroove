@@ -1,4 +1,5 @@
-﻿using System.ComponentModel;
+﻿using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -82,18 +83,28 @@ public partial class RestorationWorkbenchDialog : Window
                 Math.Clamp(start + value.Fraction * span, 0, 1)));
     }
 
+    /// <summary>
+    /// The workbench open on each document. Modeless, Restore &gt; Vinyl Restoration can be chosen
+    /// twice; two of these on one file would each hold their own analysis of it and each be willing
+    /// to commit that analysis over the other's edit.
+    /// </summary>
+    private static readonly Dictionary<DocumentViewModel, RestorationWorkbenchDialog> OpenDialogs = [];
+
     private readonly DocumentViewModel _document;
     private readonly MainViewModel _main;
-    private readonly float[][] _sourceReferences;
-    private readonly float[]? _capturedNoiseProfile;
-    private readonly int _rangeStart;
-    private readonly int _rangeCount;
-    private readonly int _sampleRate;
-    private readonly int _sourceBitDepth;
-    private readonly int _sourceEditVersion;
-    private readonly int _previewStart;
-    private readonly int _previewLength;
-    private readonly bool _rackWasEnabled;
+
+    // Everything the analysis was taken from. Not readonly: the window outlives an edit now, and
+    // Re-analyze re-takes all of it against whatever the document has become. See CaptureSource.
+    private float[][] _sourceReferences = [];
+    private float[]? _capturedNoiseProfile;
+    private int _rangeStart;
+    private int _rangeCount;
+    private int _sampleRate;
+    private int _sourceBitDepth;
+    private int _sourceEditVersion;
+    private int _previewStart;
+    private int _previewLength;
+    private bool _rackWasEnabled;
     private readonly DispatcherTimer _previewDebounce;
     private readonly SemaphoreSlim _analysisGate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
@@ -113,9 +124,12 @@ public partial class RestorationWorkbenchDialog : Window
     private bool _applying;
     private bool _previewStarted;
     private bool _previewRackBypassed;
+    private bool _bypassingRackForPreview;
     private bool _suppressControlEvents;
     private bool _closed;
     private bool _closeWhenFinished;
+    private bool _sourceStale;
+    private bool _rangeStale;
 
     public RestorationWorkbenchDialog(DocumentViewModel document, MainViewModel main)
     {
@@ -126,47 +140,18 @@ public partial class RestorationWorkbenchDialog : Window
         _document = document;
         _main = main;
         _rackWasEnabled = main.Master.RackEnabled;
-        (_rangeStart, _rangeCount) = document.EditRange();
-        _sampleRate = document.Doc.SampleRate;
-        _sourceBitDepth = document.Doc.SourceBitDepth;
-        _sourceEditVersion = document.Doc.EditVersion;
-
-        // Capture only array references on the UI thread. AudioDocument splices replace
-        // channel arrays, so these remain a coherent point-in-time source while the
-        // potentially large copy is made on a worker thread.
-        _sourceReferences = document.Doc.Channels.ToArray();
-        _capturedNoiseProfile = document.NoiseProfile is { Length: > 0 } profile
-            ? (float[])profile.Clone()
-            : null;
-
-        int maximumPreview = Math.Max(1, Math.Min(_rangeCount, checked(_sampleRate * 12)));
-        int relativeCursor = document.Cursor >= _rangeStart && document.Cursor < _rangeStart + _rangeCount
-            ? document.Cursor - _rangeStart
-            : 0;
-        _previewStart = Math.Clamp(relativeCursor - _sampleRate * 2, 0,
-            Math.Max(0, _rangeCount - maximumPreview));
-        _previewLength = maximumPreview;
 
         _previewDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(360) };
         _previewDebounce.Tick += OnPreviewDebounce;
 
-        rangeText.Text = document.HasSelection
-            ? $"Selection · {TimeFormat.Position(_rangeStart, _sampleRate)} — {TimeFormat.Position(_rangeStart + _rangeCount, _sampleRate)}"
-            : "Entire recording";
-        string channels = document.Doc.ChannelCount switch
-        {
-            1 => "mono",
-            2 => "stereo",
-            var count => $"{count} channels",
-        };
-        formatText.Text = $"{TimeFormat.Compact((double)_rangeCount / Math.Max(1, _sampleRate))} · {_sampleRate / 1000.0:0.0} kHz · {channels}";
+        CaptureSource(firstCapture: true);
 
-        // Past the ceiling the option is shown and disabled rather than hidden, and the caption
-        // carries the figure and what to do about it.
-        bool tooLarge = ResidualSummary.ExceedsBudget(_rangeCount, document.Doc.ChannelCount);
-        keepRemovedCheck.IsEnabled = !tooLarge;
-        keepRemovedCheck.IsChecked = !tooLarge && AppSettings.Instance.KeepRemovedMaterial;
-        keepRemovedCaption.Text = ResidualSummary.DescribeCost(_rangeCount, document.Doc.ChannelCount);
+        // Everything this window measured can move underneath it now. Each subscription watches one
+        // of those, and all four come off in OnClosed.
+        document.Doc.Changed += OnSourceEdited;
+        document.PropertyChanged += OnDocumentStateChanged;
+        main.Master.PropertyChanged += OnMasterChanged;
+        main.Documents.CollectionChanged += OnDocumentsChanged;
 
         _initialized = true;
         UpdateReadouts();
@@ -178,7 +163,198 @@ public partial class RestorationWorkbenchDialog : Window
     /// <summary>True when the successful apply should continue into CD track preparation.</summary>
     public bool PrepareCdRequested { get; private set; }
 
-    private async void OnLoaded(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Raised once the restoration has been committed, immediately before the window closes. The
+    /// argument is <see cref="PrepareCdRequested"/>: modeless, there is no <c>ShowDialog</c> return
+    /// value for the caller to read it from.
+    /// </summary>
+    public event Action<bool>? Applied;
+
+    /// <summary>
+    /// Open — or raise — the workbench for <paramref name="document"/>. It is modeless, so the
+    /// recording stays editable while it is open; <paramref name="onApplied"/> replaces what the
+    /// caller used to do with the <c>ShowDialog</c> result.
+    /// </summary>
+    public static RestorationWorkbenchDialog ShowFor(
+        DocumentViewModel document, MainViewModel main, Window? owner, Action<bool>? onApplied = null)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(main);
+        if (OpenDialogs.TryGetValue(document, out RestorationWorkbenchDialog? existing))
+        {
+            if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
+            existing.Activate();
+            return existing;
+        }
+
+        var dialog = new RestorationWorkbenchDialog(document, main) { Owner = owner };
+        OpenDialogs[document] = dialog;
+        if (onApplied != null) dialog.Applied += onApplied;
+        dialog.Closed += (_, _) =>
+        {
+            if (OpenDialogs.TryGetValue(document, out RestorationWorkbenchDialog? registered) &&
+                ReferenceEquals(registered, dialog))
+                OpenDialogs.Remove(document);
+        };
+        dialog.Show();
+        return dialog;
+    }
+
+    /// <summary>
+    /// Take everything the analysis is about to be built from: the range, the format, the channel
+    /// arrays and the document's own noise print. Only array <em>references</em> are read on the UI
+    /// thread — <see cref="AudioDocument"/> splices replace channel arrays rather than mutating
+    /// them, so these stay a coherent point-in-time source while the large copy is made on a worker.
+    /// </summary>
+    private void CaptureSource(bool firstCapture)
+    {
+        (_rangeStart, _rangeCount) = _document.EditRange();
+        _sampleRate = _document.Doc.SampleRate;
+        _sourceBitDepth = _document.Doc.SourceBitDepth;
+        _sourceEditVersion = _document.Doc.EditVersion;
+        _sourceReferences = _document.Doc.Channels.ToArray();
+        _capturedNoiseProfile = _document.NoiseProfile is { Length: > 0 } profile
+            ? (float[])profile.Clone()
+            : null;
+
+        int maximumPreview = Math.Max(1, Math.Min(_rangeCount, checked(_sampleRate * 12)));
+        int relativeCursor = _document.Cursor >= _rangeStart && _document.Cursor < _rangeStart + _rangeCount
+            ? _document.Cursor - _rangeStart
+            : 0;
+        _previewStart = Math.Clamp(relativeCursor - _sampleRate * 2, 0,
+            Math.Max(0, _rangeCount - maximumPreview));
+        _previewLength = maximumPreview;
+
+        rangeText.Text = _document.HasSelection
+            ? $"Selection · {TimeFormat.Position(_rangeStart, _sampleRate)} — {TimeFormat.Position(_rangeStart + _rangeCount, _sampleRate)}"
+            : "Entire recording";
+        string channels = _document.Doc.ChannelCount switch
+        {
+            1 => "mono",
+            2 => "stereo",
+            var count => $"{count} channels",
+        };
+        formatText.Text = $"{TimeFormat.Compact((double)_rangeCount / Math.Max(1, _sampleRate))} · {_sampleRate / 1000.0:0.0} kHz · {channels}";
+
+        // Past the ceiling the option is shown and disabled rather than hidden, and the caption
+        // carries the figure and what to do about it.
+        bool tooLarge = ResidualSummary.ExceedsBudget(_rangeCount, _document.Doc.ChannelCount);
+        keepRemovedCheck.IsEnabled = !tooLarge;
+        // Only the first capture reads the stored preference. A re-analysis that put the range past
+        // the ceiling has to clear the box, but one that did not must leave a choice already made.
+        if (firstCapture) keepRemovedCheck.IsChecked = !tooLarge && AppSettings.Instance.KeepRemovedMaterial;
+        else if (tooLarge) keepRemovedCheck.IsChecked = false;
+        keepRemovedCaption.Text = ResidualSummary.DescribeCost(_rangeCount, _document.Doc.ChannelCount);
+
+        _sourceStale = false;
+        _rangeStale = false;
+        UpdateStaleChrome();
+    }
+
+    /// <summary>
+    /// The recording changed. The analysis still describes the audio as it was, so it may no longer
+    /// be committed — said here, at the edit, rather than discovered after a full render.
+    /// </summary>
+    private void OnSourceEdited(int start, int removed, int inserted)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => OnSourceEdited(start, removed, inserted));
+            return;
+        }
+        if (_closed || _document.Doc.EditVersion == _sourceEditVersion) return;
+        _sourceStale = true;
+        UpdateStaleChrome();
+        UpdateUiState();
+    }
+
+    /// <summary>
+    /// The selection moved. Unlike an edit this does not invalidate anything — the captured range is
+    /// still the range that was analyzed — so Apply stays available and the offer is only to re-scope.
+    /// </summary>
+    private void OnDocumentStateChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is not (nameof(DocumentViewModel.HasSelection) or
+            nameof(DocumentViewModel.SelStart) or nameof(DocumentViewModel.SelEnd) or null)) return;
+        if (_closed) return;
+        (int start, int count) = _document.EditRange();
+        bool moved = start != _rangeStart || count != _rangeCount;
+        if (moved == _rangeStale) return;
+        _rangeStale = moved;
+        UpdateStaleChrome();
+    }
+
+    /// <summary>
+    /// A preview bypasses the master rack so the A/B is of the restoration alone, and close puts the
+    /// rack back. Modeless, the user can also work that switch themselves while this is open — and
+    /// once they have, theirs is the state close should restore, not the one captured at open.
+    /// </summary>
+    private void OnMasterChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is not (nameof(MasterSectionViewModel.RackEnabled) or null)) return;
+        if (_bypassingRackForPreview || _closed) return;
+        _rackWasEnabled = _main.Master.RackEnabled;
+        _previewRackBypassed = false;
+    }
+
+    /// <summary>The file being restored was closed; there is nothing left to apply to.</summary>
+    private void OnDocumentsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        // An Add is a new tab — the residual one this workbench itself opens, among others — and can
+        // never be the reason this document went away, so it is not worth a scan of the list.
+        if (_closed || e.Action == NotifyCollectionChangedAction.Add) return;
+        if (_main.Documents.Contains(_document)) return;
+        // Close through the ordinary path: a render in flight cancels first and OnWindowClosing
+        // re-issues this once it unwinds, which is also what stops it committing to a closed file.
+        Close();
+    }
+
+    private void UpdateStaleChrome()
+    {
+        if (staleText == null || reanalyzeBtn == null) return;
+        string message = _sourceStale
+            ? "The recording changed · this analysis describes the audio as it was"
+            : _rangeStale
+                ? "The selection moved · this analysis still covers the captured range"
+                : "";
+        staleText.Text = message;
+        staleText.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        reanalyzeBtn.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        reanalyzeBtn.IsEnabled = !_busy;
+    }
+
+    /// <summary>
+    /// Scan again from what the document is now. Equivalent to closing the workbench and reopening
+    /// it — including re-tuning every control from the new measurements — without losing the window.
+    /// </summary>
+    private async void OnReanalyze(object sender, RoutedEventArgs e)
+    {
+        if (_busy || _closed) return;
+        _main.StopPreview();
+        _previewDebounce.Stop();
+        _source = null;
+        _noiseProfile = null;
+        _clickAnalysis = null;
+        _clippingAnalysis = null;
+        _analysisRecommendations = null;
+        _analyzedClickSensitivity = double.NaN;
+        _noiseToProgrammeDb = null;
+        _sideToMidDb = null;
+        _rumbleEvidence = null;
+        _rumbleConfidence = 0;
+        _impulsesFound = 0;
+        _previewWetCacheSettings = null;
+        _previewWetCache = null;
+        _previewStarted = false;
+        noiseEnabled.IsEnabled = true;
+        CaptureSource(firstCapture: false);
+        UpdateUiState();
+        await AnalyzeAsync();
+    }
+
+    private async void OnLoaded(object sender, RoutedEventArgs e) => await AnalyzeAsync();
+
+    private async Task AnalyzeAsync()
     {
         if (_rangeCount <= 0 || _sourceReferences.Length == 0)
         {
@@ -334,7 +510,10 @@ public partial class RestorationWorkbenchDialog : Window
         {
             // This workbench commits only its restoration render. Keep A/B
             // playback honest by excluding unrelated master-rack processing.
-            _main.Master.RackEnabled = false;
+            // Flagged, so OnMasterChanged can tell this write from the user's own.
+            _bypassingRackForPreview = true;
+            try { _main.Master.RackEnabled = false; }
+            finally { _bypassingRackForPreview = false; }
             _previewRackBypassed = true;
         }
         var settings = CaptureSettings();
@@ -432,6 +611,13 @@ public partial class RestorationWorkbenchDialog : Window
     private async Task ApplyAsync(bool prepareCd)
     {
         if (_source == null || _busy || bypassCheck.IsChecked == true || _closed) return;
+        if (_sourceStale)
+        {
+            // UpdateUiState already disables both Apply buttons here; this is the keyboard and
+            // command-palette route to the same place, refused before the render rather than after.
+            statusText.Text = "The recording changed · re-analyze before applying.";
+            return;
+        }
         _main.StopPreview();
         var settings = CaptureSettings() with { Bypass = false };
         // Not part of RestorationSettings: it changes nothing about the audio, so folding it in
@@ -475,9 +661,11 @@ public partial class RestorationWorkbenchDialog : Window
                 _rangeStart < 0 || _rangeStart + _rangeCount > _document.Doc.Length)
             {
                 MessageBox.Show(this,
-                    "The source document changed while the restoration workbench was open. Nothing was applied. Reopen the workbench to analyze the current audio.",
+                    "The source document changed while the restoration was rendering. Nothing was applied. Use Re-analyze to scan the current audio.",
                     "Source changed", MessageBoxButton.OK, MessageBoxImage.Information);
                 statusText.Text = "Source changed · restoration was not applied.";
+                _sourceStale = true;
+                UpdateStaleChrome();
                 return;
             }
 
@@ -518,7 +706,11 @@ public partial class RestorationWorkbenchDialog : Window
 
         if (!committed || _closed) return;
         PrepareCdRequested = prepareCd;
-        DialogResult = true;
+        // The commit is itself an edit to the document, so this analysis is now stale by definition
+        // and the window has nothing left to offer. Closed before the handler runs, so whatever it
+        // opens next is not raised behind a window on its way out.
+        Close();
+        Applied?.Invoke(prepareCd);
     }
 
     private AnalysisBundle EnsureAnalyses(double sensitivity, CancellationToken cancellationToken,
@@ -1765,10 +1957,13 @@ public partial class RestorationWorkbenchDialog : Window
         previewBtn.IsEnabled = ready && !_applying;
         auditionChannelCombo.IsEnabled = ready && !_applying &&
                                          _sourceReferences.Length >= 2;
-        bool canApply = ready && !_busy && bypassCheck.IsChecked != true;
+        // A stale analysis describes audio the document no longer holds. Committing it would splice
+        // a render of the old samples over the new ones, so it is refused at the button.
+        bool canApply = ready && !_busy && !_sourceStale && bypassCheck.IsChecked != true;
         applyBtn.IsEnabled = canApply;
         applyCdBtn.IsEnabled = canApply;
         closeBtn.Content = _busy ? "Cancel" : "Close";
+        UpdateStaleChrome();
     }
 
     private void OnClose(object sender, RoutedEventArgs e)
@@ -1802,6 +1997,10 @@ public partial class RestorationWorkbenchDialog : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _closed = true;
+        _document.Doc.Changed -= OnSourceEdited;
+        _document.PropertyChanged -= OnDocumentStateChanged;
+        _main.Master.PropertyChanged -= OnMasterChanged;
+        _main.Documents.CollectionChanged -= OnDocumentsChanged;
         _previewDebounce.Stop();
         try { _operation?.Cancel(); } catch { }
         try { _lifetime.Cancel(); } catch { }

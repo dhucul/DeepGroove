@@ -66,10 +66,27 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="APPLY RANGE" Style="{StaticResource UpperLabel}"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                        <TextBlock x:Name="rangeText" Text="Preparing selection…" FontWeight="SemiBold"/>
-                        <TextBlock x:Name="formatText" Margin="12,0,0,0" Foreground="{StaticResource Muted}"/>
-                    </StackPanel>
+                    <!-- A Grid rather than a horizontal StackPanel: the workbench is modeless, so the
+                         recording and the selection it measured can both move underneath it, and the
+                         sentence saying which has to give way to the button that fixes it rather than
+                         push it off the strip. Saying it beside the range the analysis describes is
+                         why it sits here and not in the action row. -->
+                    <Grid Margin="0,5,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="rangeText" Text="Preparing selection…" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="formatText" Grid.Column="1" Margin="12,0,0,0"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="staleText" Grid.Column="2" Margin="12,0,6,0" Foreground="{StaticResource Amber}"
+                                   FontSize="10.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                   Visibility="Collapsed"/>
+                        <Button x:Name="reanalyzeBtn" Grid.Column="3" Content="Re-analyze" Width="88"
+                                Style="{StaticResource SmallAction}" Foreground="{StaticResource Muted}"
+                                Visibility="Collapsed" Click="OnReanalyze"
+                                ToolTip="Scan the current audio and selection again, re-tuning every control from what it finds"/>
+                    </Grid>
                 </StackPanel>
                 <Grid Grid.Column="2">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
