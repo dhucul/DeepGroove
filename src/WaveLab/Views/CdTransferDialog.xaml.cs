@@ -459,24 +459,29 @@ public partial class CdTransferDialog : Window
                 channels, rate, threshold, minimumSilenceSeconds: 1.25,
                 minimumTrackSeconds: 20, _operation.Token), _operation.Token);
 
-            string at = $"{threshold:0} dB";
-            if (MatchesCurrentBoundaries(plans))
+            int previous = _tracks.Count;
+            if (plans.Count > 0 && plans.Count == previous)
             {
-                // The window analyses on load, so re-pressing Analyze usually proposes exactly what
-                // is already listed. Rebuilding the rows for that would throw away every title and
-                // ISRC the user has typed since — for nothing, because the boundaries are the same
-                // ones. Say what was found instead, and leave the list where it is.
-                statusText.Text = plans.Count == 1
-                    ? $"Analysis at {at} again found no sustained track gaps; the single track is unchanged."
-                    : $"Analysis at {at} proposed the same {plans.Count} boundaries; the list is unchanged. " +
-                      "Move the threshold to look for different gaps.";
+                // Same number of tracks means the same tracks, moved. Rebuilding the list for that
+                // throws away every title, performer and ISRC typed since — and the commonest press
+                // of all is the second one, where the window has already analysed on load and the
+                // boundaries have not moved at all. The ranges are updated in place instead, which
+                // also keeps the region each row is bound to and the row that was selected.
+                double worst = 0;
+                for (int i = 0; i < plans.Count; i++)
+                {
+                    worst = Math.Max(worst, Math.Abs(plans[i].SourceStart - _tracks[i].Plan.SourceStart));
+                    worst = Math.Max(worst, Math.Abs(plans[i].SourceEnd - _tracks[i].Plan.SourceEnd));
+                    _tracks[i].SetRange(plans[i].SourceStart, plans[i].SourceEnd);
+                }
+                UpdatePlan();
+                statusText.Text = CdTransfer.DescribeProposal(
+                    plans.Count, previous, worst / Math.Max(1, rate), threshold);
             }
             else
             {
                 ReplaceTracks(plans);
-                statusText.Text = plans.Count > 1
-                    ? $"Found {plans.Count} probable tracks at {at}. Rename or reorder them before export."
-                    : $"No sustained track gaps were found at {at}; one full-length track was proposed.";
+                statusText.Text = CdTransfer.DescribeProposal(plans.Count, previous, double.NaN, threshold);
             }
         }
         catch (OperationCanceledException) { statusText.Text = "Track analysis cancelled."; }
@@ -487,23 +492,6 @@ public partial class CdTransferDialog : Window
             _operation = null;
             SetBusy(false, statusText.Text);
         }
-    }
-
-    /// <summary>
-    /// Whether a proposal is the boundaries already listed, in the same order. Titles and catalogue
-    /// fields are not compared: Analyze does not produce either, so a run that agrees about where
-    /// the tracks are has nothing to say about what the user has typed into them.
-    /// </summary>
-    private bool MatchesCurrentBoundaries(IReadOnlyList<CdTrackPlan> plans)
-    {
-        if (plans.Count == 0 || plans.Count != _tracks.Count) return false;
-        for (int i = 0; i < plans.Count; i++)
-        {
-            if (plans[i].SourceStart != _tracks[i].Plan.SourceStart ||
-                plans[i].SourceEnd != _tracks[i].Plan.SourceEnd)
-                return false;
-        }
-        return true;
     }
 
     /// <summary>

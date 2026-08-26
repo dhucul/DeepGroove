@@ -1950,6 +1950,48 @@ binding errors. One cosmetic thing left alone: Add Track and Split name new rows
 they land at, so a list can hold two rows both called `Track 03` until they are renamed — the
 exported filenames are prefixed `01 - `, `02 - ` and stay unique.
 
+### "Found 3 probable tracks at −45 dB" is true at −30 dB as well, and describes neither
+
+The follow-up report: *"if you change Quiet below to −30 it gives the same message with −30. What
+is this supposed to mean and what am I supposed to do with this information."* The line reported
+the count and the threshold — and the threshold is printed beside the slider that set it, so the
+only new fact was a count that had not moved.
+
+- **The count staying the same does not mean nothing happened, and that is the whole finding.**
+  Measured on three real transfers butted into one 504 s side: **−45 dB and −30 dB both propose
+  three tracks, with the boundaries 7.6 s apart** (155.57 → 149.99 s, 367.83 → 360.27 s). A gap is
+  detected where the level falls under the threshold, and the boundary is its *midpoint*, so a
+  looser threshold calls the fade-out quiet sooner, the gap it finds starts earlier, and the
+  boundary lands inside the music. The user was being told the number that had not changed and not
+  the seven seconds that had.
+- **So the same count updates the ranges in place rather than rebuilding the list.** Same number of
+  tracks means the same tracks, moved — carrying every title, performer and ISRC across by
+  position, along with the region each row is bound to and the row that was selected. The earlier
+  fix only covered the case where the boundaries were *identical*, which meant a one-decibel nudge
+  still wiped everything typed.
+- **`CdTransfer.DescribeProposal` is the wording, pure and unit-tested without a window** — the
+  arrangement `DescribeDeclipChoices`, `DescribeNoiseDepth` and `DescribeOutputMix` use. Four
+  outcomes: same places and nothing moved; same count with the worst move named and a pointer at
+  SOURCE IN/OUT; a changed count with where it came from; and a first pass, which says what to judge
+  the count against.
+- **Which way to drag lives on the slider's tool tip, not in the line.** It is needed once and the
+  line has 756 px; the exception is the one-track case, where there is nothing to rename or reorder
+  and the user is stuck, so that line spends its room saying "toward −25 dB". **The direction is
+  worth stating because it is genuinely backwards-looking**: −25 dB is the *laxer* test, so moving
+  toward the smaller-looking number finds *more* gaps.
+- **The render probe's first version measured the wrong thing and reported a pass.**
+  `DesiredSize.Width` on a `TextBlock` in a tree is capped at the room its parent gave it, so four
+  different wordings all read **752 px against 756** — which looks like "fits" and means "trimmed to
+  the ellipsis". A detached copy carrying the live element's own typeface, measured against
+  infinity, is what answers it: the widest wording now wants **548 px of 756**. This is the same
+  class of trap as the monitor bar's margin, and the second time a measurement in this repo has
+  flattered itself.
+- Both dialog tests were checked by mutation: rebuilding the list instead of updating it in place
+  fails `AnalyzeThatFindsTheSameBoundariesKeepsWhatWasTypedIntoTheRows` and
+  `ALooserThresholdMovesTheBoundariesAndSaysSoWithoutLosingTheRows`. The synthetic side they run on
+  needed **a fade into each gap** to be worth anything — without one the edge of a gap is a step, so
+  the boundary lands in the same place at every threshold and the test cannot see the defect.
+
 ### The cue sheet credited the application on every disc
 
 Found while checking Export, which had **no test at all** — `ExportDdpAsync` was covered and

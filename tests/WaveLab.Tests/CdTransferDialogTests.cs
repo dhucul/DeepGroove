@@ -424,13 +424,20 @@ public sealed class CdTransferDialogTests : IDisposable
 
     /// <summary>
     /// A side with two sustained quiet gaps in it, carrying a real −60 dBFS floor in those gaps
-    /// rather than digital silence. The threshold is a level, so a gap holding nothing at all makes
-    /// every setting of the slider agree and the analysis untestable.
+    /// rather than digital silence, and a three-second fade into each one.
     /// </summary>
+    /// <remarks>
+    /// Both details are what make the threshold testable. A gap holding nothing at all is quieter
+    /// than every setting of the slider, so they would all agree; and without a fade the edge of
+    /// each gap is a step, so the boundary lands in the same place whatever counts as quiet. Real
+    /// sides have both — measured on three transfers butted together, −45 dB and −30 dB propose the
+    /// same three tracks with the boundaries 7.6 s apart, which is the fade being read as the gap.
+    /// </remarks>
     private static DocumentViewModel OpenSideWithGaps(
         MainViewModel main, params (double Start, double End)[] regions)
     {
         const int seconds = 120;
+        const double fade = 3;
         int frames = seconds * Rate;
         var left = new float[frames];
         var right = new float[frames];
@@ -439,7 +446,14 @@ public sealed class CdTransferDialogTests : IDisposable
         {
             double second = i / (double)Rate;
             bool music = second < 40 || (second >= 45 && second < 85) || second >= 90;
-            float value = (float)((noise.NextDouble() * 2 - 1) * (music ? 0.3 : 0.001));
+            double level = 0.001;
+            if (music)
+            {
+                // Full level until the last three seconds before a gap, then down to the floor.
+                double toGap = second < 40 ? 40 - second : second < 85 ? 85 - second : double.MaxValue;
+                level = toGap >= fade ? 0.3 : 0.001 + (0.3 - 0.001) * (toGap / fade);
+            }
+            float value = (float)((noise.NextDouble() * 2 - 1) * level);
             left[i] = value;
             right[i] = value;
         }
@@ -535,7 +549,9 @@ public sealed class CdTransferDialogTests : IDisposable
     /// <summary>
     /// The window analyses on load, so the ordinary second press proposes exactly the boundaries
     /// already listed. Rebuilding the rows for that threw away every title and ISRC typed since —
-    /// for nothing, because the tracks are the same tracks. It reports what it found instead.
+    /// for nothing, because the tracks are the same tracks. The same number of tracks now updates
+    /// the ranges in place instead, so a nudge of the threshold keeps what has been typed even when
+    /// the boundaries do move.
     /// </summary>
     [Fact]
     public void AnalyzeThatFindsTheSameBoundariesKeepsWhatWasTypedIntoTheRows()
@@ -565,7 +581,7 @@ public sealed class CdTransferDialogTests : IDisposable
 
         Assert.Equal(3, tracks);
         Assert.Equal("Sister Ray", title);
-        Assert.Contains("the list is unchanged", status, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("in the same places", status, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The threshold is a level, so moving it has to change what counts as a gap.</summary>
@@ -686,5 +702,49 @@ public sealed class CdTransferDialogTests : IDisposable
         });
 
         Assert.All(enabled, Assert.False);
+    }
+
+    /// <summary>
+    /// The report this came from: "it gives the same message with −30". Three tracks before and
+    /// three after is not the same answer — at a looser threshold the fade counts as quiet sooner,
+    /// so every gap starts earlier and its midpoint moves into the music. The line has to say that
+    /// happened, and the rows have to survive it, because they are the same three tracks.
+    /// </summary>
+    [Fact]
+    public void ALooserThresholdMovesTheBoundariesAndSaysSoWithoutLosingTheRows()
+    {
+        (int tracks, string title, double firstBoundary, double movedBoundary, string status) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main);
+
+            (int, string, double, double, string) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                SettleAnalysis(window);
+                var list = (ListBox)window.FindName("trackList");
+                Assert.Equal(3, list.Items.Count);
+                SetRowTitle(list.Items[1]!, "Sister Ray");
+                double before = Plans(window)[1].SourceStart;
+
+                ((Slider)window.FindName("thresholdSlider")).Value = -30;
+                Wpf.Pump();
+                Click(window, "analyzeBtn");
+                SettleAnalysis(window);
+
+                result = (list.Items.Count, RowTitle(list.Items[1]!), before, Plans(window)[1].SourceStart,
+                    ((TextBlock)window.FindName("statusText")).Text);
+            });
+            return result;
+        });
+
+        Assert.Equal(3, tracks);
+        // The same three tracks, so what was typed into them survives the pass.
+        Assert.Equal("Sister Ray", title);
+        // And the boundary really did move, earlier, into the fade.
+        Assert.True(movedBoundary < firstBoundary,
+            $"the boundary went from {firstBoundary} to {movedBoundary}; a looser threshold should move it earlier");
+        Assert.Contains("Still 3 tracks at -30 dB", status, StringComparison.Ordinal);
+        Assert.Contains("boundaries moved by up to", status, StringComparison.Ordinal);
     }
 }
