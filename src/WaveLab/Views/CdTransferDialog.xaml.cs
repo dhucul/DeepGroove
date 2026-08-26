@@ -650,9 +650,10 @@ public partial class CdTransferDialog : Window
         $"{CdTransfer.MinimumTrackSeconds:0} seconds a CD track has to run for.";
 
     /// <summary>
-    /// Sync Regions writes the track list onto the waveform as named regions, which is where they
-    /// are visible and what the sidecar saves. "Synchronized 3 arranged track region(s)" described
-    /// the operation; this describes what the user now has.
+    /// Save Track List writes the track list onto the waveform as named regions, which is where
+    /// they are visible and what the sidecar saves. "Synchronized 3 arranged track region(s)"
+    /// described the operation, in the word the code uses for the thing it wrote; this describes
+    /// what the user now has, in the word on the label.
     /// </summary>
     internal static string DescribeRegionSync(int tracks, int untouched, bool changed)
     {

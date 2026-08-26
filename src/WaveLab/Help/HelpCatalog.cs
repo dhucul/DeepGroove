@@ -1,4 +1,4 @@
-namespace WaveLab.Help;
+﻿namespace WaveLab.Help;
 
 public sealed record HelpSection(string Title, string Body);
 
@@ -158,7 +158,7 @@ public static class HelpCatalog
             Section("Prepare Tracks for Audio CD",
                 "Open a continuous recording, then use Restore > Prepare Tracks for Audio CD. Analyze proposes track boundaries from quiet gaps using the selected threshold, replacing the list. The tracks tile the recording: Analyze proposes boundaries covering all of it, so every part of the file belongs to some track and another one has to come out of an existing one. Add Track builds the list by hand. With a range selected in the editor it adds exactly that range. With nothing selected it takes a three-minute block off the front of the selected track and leaves the remainder as the next track, then selects that remainder — so pressing it repeatedly walks forward through the side, and a track too short to give a block is divided at its midpoint instead. Where a Remove has left a genuine gap, that gap is filled first. Every boundary it proposes is editable in the In/Out fields, and Split cuts the selected track at the playhead. The window stays open alongside the editor, so the selection it takes and the cursor Split cuts at are the ones on the waveform now. Reorder, remove, split, and edit In/Out values before export."),
             Section("Regions and preview",
-                "Sync Regions writes the current track plan back to document regions. Preview Track plays the selected track using the same dry or rack-rendered path chosen for export. Render the current rack includes rack processing in preview and output; leave it off for the unprocessed source."),
+                "Save Track List marks the arranged tracks on the waveform and stores them beside the file, so reopening it brings the same list back. Exporting does not need it. Preview Track plays the selected track using the same dry or rack-rendered path chosen for export. Render the current rack includes rack processing in preview and output; leave it off for the unprocessed source."),
             Section("CD package output",
                 "Export CD Package creates gapless, 44.1 kHz, 16-bit, CD-frame-aligned WAV tracks and a CUE sheet. It does not burn a physical disc. Use disc-authoring software to burn the generated CUE/WAV package. Validate track order, names, boundaries, and total duration first.")),
 

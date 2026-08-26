@@ -191,7 +191,12 @@
                     <Button x:Name="removeBtn" IsEnabled="False" Content="Remove" Width="72" Height="30" Margin="6,0,0,0" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Click="OnRemove"/>
                     <Button x:Name="splitBtn" IsEnabled="False" Content="Split" Width="54" Height="30" Margin="6,0,0,0" Style="{StaticResource AccentButton}"
                             Foreground="{StaticResource Muted}" ToolTip="Split at the document cursor, or at the midpoint" Click="OnSplitSelected"/>
-                    <Button x:Name="saveRegionsBtn" Content="Sync Regions" Width="100" Height="30" Margin="6,0,0,0" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}" Click="OnSaveRegions"/>
+                    <!-- MinWidth rather than Width: the label is the longest in this row and
+                         AccentButton honours Padding, so it sizes to its own text. -->
+                    <Button x:Name="saveRegionsBtn" Content="Save Track List" MinWidth="100" Height="30" Padding="12,0"
+                            Margin="6,0,0,0" Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"
+                            Click="OnSaveRegions"
+                            ToolTip="Saves this list onto the waveform, so the tracks are still here next time you open the file. Exporting does not need it, and nothing about the recording is changed."/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Margin="14,-2" VerticalAlignment="Center">
                     <TextBlock x:Name="validationText" TextTrimming="CharacterEllipsis"

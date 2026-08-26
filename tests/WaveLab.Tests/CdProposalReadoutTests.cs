@@ -327,4 +327,77 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
             $"the widest analysis wording wants {widest:F0} px and the status line has {room:F0} px, " +
             "so it would be cut to an ellipsis");
     }
+
+    /// <summary>
+    /// "Sync Regions" became "Save Track List", which is four characters longer in a row of six
+    /// buttons that shares its width with the validation line beside them.
+    /// </summary>
+    /// <remarks>
+    /// The button itself cannot be cut — it is in a <c>StackPanel</c>, which measures its children
+    /// unbounded — so what a wider label actually costs is taken out of the <c>*</c> column holding
+    /// the validation text, which trims. That is the measurement worth making, and it is not the
+    /// one the button's own size answers.
+    /// </remarks>
+    [Fact]
+    public void TheRenamedButtonFitsAndLeavesTheValidationLineItsRoom()
+    {
+        double button = 0, wanted = 0, validation = 0, plain = 0, longest = 0;
+        Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            main.AddDocument(new AudioDocument([new float[44_100 * 30], new float[44_100 * 30]], 44_100, 16)
+            { Title = "Side A.wav" });
+            DocumentViewModel document = main.ActiveDocument!;
+            document.Regions.Add(new NamedRegion { Name = "A", Start = 0, End = 44_100 * 30, CdTrackOrder = 1 });
+
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Wpf.Pump();
+                var save = (Button)window.FindName("saveRegionsBtn")!;
+                var line = (TextBlock)window.FindName("validationText")!;
+                button = save.ActualWidth;
+                wanted = save.DesiredSize.Width;
+                validation = line.ActualWidth;
+
+                double Wants(string text)
+                {
+                    var probe = new TextBlock
+                    {
+                        Text = text,
+                        FontFamily = line.FontFamily,
+                        FontSize = line.FontSize,
+                        FontStyle = line.FontStyle,
+                        FontWeight = line.FontWeight,
+                        FontStretch = line.FontStretch,
+                    };
+                    probe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    return probe.DesiredSize.Width;
+                }
+
+                // What a WAV+CUE package shows, which is the overwhelming majority of the time.
+                plain = Wants("Program length: 79:58 across 99 track(s), aligned to CD sectors.");
+                // The DDP form appends the lead-out and the ISRC tally to it.
+                longest = Wants("Program length: 79:58 across 99 track(s), aligned to CD sectors. " +
+                                "Lead-out at 79:58:00; 99 of 99 ISRC(s) set.");
+            });
+        });
+
+        output.WriteLine($"Save Track List: {button:F0} px given, {wanted:F0} px wanted");
+        output.WriteLine($"validation line: {validation:F0} px given; " +
+            $"WAV+CUE wording wants {plain:F0} px, the DDP one {longest:F0} px");
+
+        Assert.True(button > 0, "the button row was not laid out");
+        // DesiredSize includes the 6 px left margin that ActualWidth does not - the trap this repo
+        // already records for the monitor bar and the spectral scale switch.
+        Assert.True(wanted - 6 <= button + 0.5,
+            $"Save Track List wants {wanted:F0} px and was given {button:F0} px, so its label is cut");
+        Assert.True(plain <= validation,
+            $"the ordinary validation wording wants {plain:F0} px and the line has {validation:F0} px");
+
+        // The DDP wording does NOT fit and did not before the rename either - it wants 536 px
+        // against 496 then and 475 now. Reported rather than asserted, because shortening it is a
+        // wording change to a different readout and belongs with that one, not with a button label.
+        if (longest > validation)
+            output.WriteLine($"NOTE: the DDP wording still trims, by {longest - validation:F0} px.");
+    }
 }

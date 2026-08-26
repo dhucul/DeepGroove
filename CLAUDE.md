@@ -2045,6 +2045,29 @@ time.** A sweep through the real window printed every line the buttons produce, 
 Widest wording measured in the built dialog at **656 px of 756**, after trimming two that came back
 at 692 and 744 — the second of those with 12 px to spare, which is not a fit worth shipping.
 
+**Sync Regions is now Save Track List**, with a tool tip, because the name was the same fault as the
+lines: *sync* says how it works and not which way it goes, and *regions* is this app's word for the
+thing it writes rather than anything the user asked for. What the button actually is: the **save
+button for the arrangement** — the window's list lives in memory, so nothing else makes it survive
+being closed. It marks the tracks on the time ruler and writes them to the `.wlmeta.json` sidecar
+immediately, which is what lets reopening the file rebuild the same list. **Export does not need
+it** and the tool tip says so, because a button sitting beside Export that looks like a save step is
+one people will believe they have to press.
+
+- **The button cannot be clipped and that is not the measurement to make.** It is in a `StackPanel`,
+  which measures its children unbounded, so a longer label is never cut — it is *taken out of the
+  `*` column beside it*, which holds the validation line and trims. Measured: the label wants
+  **127 px** and is given **121** (the 6 px difference is its own margin, the trap already on record
+  for the monitor bar), and the validation line goes from 496 px to **475**.
+- **That line already did not fit, and the rename made it 21 px worse.** Its DDP wording — program
+  length, lead-out and the ISRC tally — wants **536 px**, so it trimmed by 40 px before and by 62
+  now. The ordinary WAV+CUE wording wants 319 px and fits with room to spare. The probe **asserts
+  the ordinary wording and reports the DDP one**, rather than asserting a failure that predates the
+  change or quietly shortening a second readout inside a commit about a button label.
+- That validation line is the last readout in this window still in the old voice — "across 99
+  track(s)", "99 of 99 ISRC(s) set" — and shortening it is what would make it fit. The two are the
+  same piece of work and neither is done here.
+
 ### The cue sheet credited the application on every disc
 
 Found while checking Export, which had **no test at all** — `ExportDdpAsync` was covered and
