@@ -28,6 +28,7 @@ public partial class MontageRenderDialog : Window
     private readonly MasterSection? _master;
     private CancellationTokenSource? _operation;
     private bool _busy;
+    private bool _closeWhenFinished;
 
     public MontageRenderDialog(MontageViewModel montage, MasterSection? master = null)
     {
@@ -253,12 +254,21 @@ public partial class MontageRenderDialog : Window
         closeBtn.Content = busy ? "Cancel" : "Close";
         statusText.Text = status;
         if (!busy) progressBar.Value = 0;
+        if (!busy && _closeWhenFinished)
+        {
+            _closeWhenFinished = false;
+            Close();
+        }
     }
 
     private void OnDialogClosing(object? sender, CancelEventArgs e)
     {
         if (!_busy) return;
         e.Cancel = true;
+        // Remember the request: SetBusy re-issues the close once the render unwinds, otherwise X
+        // during a render cancels the render, leaves the window standing, and has to be pressed a
+        // second time. Both sibling dialogs already track the request for the same reason.
+        _closeWhenFinished = true;
         _operation?.Cancel();
     }
 

@@ -157,14 +157,18 @@ public partial class CdTransferDialog : Window
         }
 
         var dialog = new CdTransferDialog(document, main) { Owner = owner };
-        OpenDialogs[document] = dialog;
         dialog.Closed += (_, _) =>
         {
             if (OpenDialogs.TryGetValue(document, out CdTransferDialog? registered) &&
                 ReferenceEquals(registered, dialog))
                 OpenDialogs.Remove(document);
         };
+        // Registered only once it is actually up. A Show that throws — a closing owner, most
+        // plausibly during shutdown — would otherwise leave an entry nothing can clear, because the
+        // Closed that removes it never runs; every later request would then raise a window that was
+        // never shown, and Activate on one of those fails silently.
         dialog.Show();
+        OpenDialogs[document] = dialog;
         return dialog;
     }
 
@@ -260,8 +264,11 @@ public partial class CdTransferDialog : Window
         // An Add is a new tab and can never be the reason this document went away.
         if (e.Action == NotifyCollectionChangedAction.Add) return;
         if (_main.Documents.Contains(_document)) return;
-        _busy = false; // a pending operation must not veto the close of a window with no document
-        _operation?.Cancel();
+        // Close through the ordinary path. Clearing _busy here forced the close past
+        // OnDialogClosing and took the window down while an export was still unwinding: a write
+        // that had already finished then reached InfoDialog.Show with a dead owner, and a package
+        // sitting correctly on disk was reported as having failed. OnDialogClosing cancels this,
+        // cancels the operation and re-issues the close once it lands.
         Close();
     }
 

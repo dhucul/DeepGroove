@@ -139,6 +139,36 @@ public sealed class MontageRenderProbe : IDisposable
     }
 
     /// <summary>
+    /// X during a render cancels the render and closes the window. The close is vetoed while the
+    /// render unwinds — otherwise it would be abandoned mid-flight — and has to be re-issued once it
+    /// has: without that the window simply stayed open and had to be closed a second time.
+    /// </summary>
+    [Fact]
+    public void ClosingDuringARenderCancelsItAndStillCloses()
+    {
+        (bool closed, bool rendered) = Wpf.Run(() =>
+        {
+            var dialog = new MontageRenderDialog(Montage());
+            (bool Closed, bool Rendered) result = default;
+            Wpf.Show(dialog, window =>
+            {
+                ((Button)window.FindName("renderBtn")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                // Straight into the close, with the render still in flight.
+                window.Close();
+                long deadline = Environment.TickCount64 + 20_000;
+                while (window.IsVisible && Environment.TickCount64 < deadline) Wpf.Pump();
+                result = (!window.IsVisible, dialog.Rendered != null);
+            });
+            return result;
+        });
+
+        Assert.True(closed, "the close was vetoed while the render unwound and never re-issued");
+        // Whichever side of the race it lands on, the window has to end up closed. A render that
+        // beat the cancellation is a legitimate result; one that did not must leave nothing behind.
+        output.WriteLine(rendered ? "render completed before the cancel" : "render cancelled");
+    }
+
+    /// <summary>
     /// A render opens beside the montage it came from, so it cannot carry the montage's own name.
     /// Two tabs both reading "Side A" is indistinguishable from the render having done nothing.
     /// </summary>

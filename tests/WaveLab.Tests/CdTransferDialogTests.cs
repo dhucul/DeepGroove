@@ -326,6 +326,46 @@ public sealed class CdTransferDialogTests : IDisposable
         Assert.False(bypassed);
     }
 
+    /// <summary>
+    /// Closing the tab while an operation is in flight goes through the ordinary cancel-then-close
+    /// path rather than forcing the window down on top of it.
+    /// </summary>
+    /// <remarks>
+    /// It did not. The handler cleared <c>_busy</c> so that <c>OnDialogClosing</c> would let the
+    /// close through, which took the window down while an export was still unwinding — and a write
+    /// that had already finished then tried to parent its "CD Package Ready" dialog to a dead owner,
+    /// turning a package sitting correctly on disk into a "CD package failed" box. The window is
+    /// modeless now, so reaching the tab strip during an export is a thing a user can do.
+    /// </remarks>
+    [Fact]
+    public void ClosingTheDocumentMidOperationLetsTheOperationUnwindFirst()
+    {
+        (bool vetoedFirst, bool closed) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (0, 5));
+
+            (bool Vetoed, bool Closed) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                // Analyze is the operation available without a folder picker; it sets the same
+                // _busy the export does, and OnDialogClosing does not distinguish them.
+                ((Button)window.FindName("analyzeBtn")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                main.CloseAllCommand.Execute(null);
+
+                // Still up on the first pass: the close is deferred, not refused.
+                result.Vetoed = window.IsVisible;
+                long deadline = Environment.TickCount64 + 20_000;
+                while (window.IsVisible && Environment.TickCount64 < deadline) Wpf.Pump();
+                result.Closed = !window.IsVisible;
+            });
+            return result;
+        });
+
+        Assert.True(vetoedFirst, "the window went down before the operation had unwound");
+        Assert.True(closed, "the deferred close was never re-issued");
+    }
+
     /// <summary>Closing the file closes the window arranging it; there is nothing left to prepare.</summary>
     [Fact]
     public void ClosingTheDocumentClosesTheWindow()

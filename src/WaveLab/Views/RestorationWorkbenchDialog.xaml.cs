@@ -188,7 +188,6 @@ public partial class RestorationWorkbenchDialog : Window
         }
 
         var dialog = new RestorationWorkbenchDialog(document, main) { Owner = owner };
-        OpenDialogs[document] = dialog;
         if (onApplied != null) dialog.Applied += onApplied;
         dialog.Closed += (_, _) =>
         {
@@ -196,7 +195,12 @@ public partial class RestorationWorkbenchDialog : Window
                 ReferenceEquals(registered, dialog))
                 OpenDialogs.Remove(document);
         };
+        // Registered only once it is actually up. A Show that throws — a closing owner, most
+        // plausibly during shutdown — would otherwise leave an entry nothing can clear, because the
+        // Closed that removes it never runs; every later request would then raise a window that was
+        // never shown, and Activate on one of those fails silently.
         dialog.Show();
+        OpenDialogs[document] = dialog;
         return dialog;
     }
 

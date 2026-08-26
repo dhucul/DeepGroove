@@ -1945,6 +1945,20 @@ themselves rests on inspection.
 
 ## Gotchas
 
+- **A dialog that vetoes its own close while busy must re-issue it.** `CdTransferDialog`,
+  `RestorationWorkbenchDialog` and `MontageRenderDialog` all cancel a close while an operation runs,
+  so an X cannot abandon a render mid-flight — and all three therefore need `_closeWhenFinished`,
+  which `SetBusy`/`CompleteOperation` acts on once the work unwinds. `MontageRenderDialog` was
+  missing it, so X during a render cancelled the render and left the window standing. The matching
+  error is the other direction: do not clear `_busy` to force a close through. `CdTransferDialog`
+  did that when its document's tab closed, which took the window down while an export was still
+  unwinding — a write that had already finished then parented its "CD Package Ready" dialog to a
+  dead owner, and a package sitting correctly on disk was reported as failed.
+- **A modeless window's registry entry goes in after `Show()`, not before.** `ShowFor` on both
+  modeless dialogs keys a static dictionary by document. Registering first means a `Show` that
+  throws leaves an entry nothing can clear — the `Closed` that removes it never runs — and every
+  later request raises a window that was never shown, where `Activate` fails silently.
+
 - Absolutely-positioned canvases in the HTML mockups need explicit width/height 100% (replaced elements ignore inset stretching).
 - `EnableWindowsTargeting` is set so the project also builds on non-Windows CI.
 - WPF menu/combo templates are custom — new menu items inherit styling automatically; keep `InputGestureText` in sync with `Window.InputBindings` in MainWindow.xaml.
