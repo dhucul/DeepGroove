@@ -976,4 +976,52 @@ public sealed class CdTransferDialogTests : IDisposable
         Assert.Contains("Enter a gap from 0 to 10 seconds", status, StringComparison.Ordinal);
         Assert.Equal("0", box);
     }
+
+    /// <summary>
+    /// This window is modeless so the waveform stays editable while it is open, which means a
+    /// splice can land in the middle of an analysis. By the time the analysis returns,
+    /// <c>OnSourceEdited</c> has already carried every row onto the new timeline; writing ranges
+    /// measured against the old audio over them would put each track on music it was never
+    /// measured against, and nothing would say so. Preview and Export have always checked this.
+    /// </summary>
+    /// <remarks>
+    /// Deterministic rather than a race: raising Click runs the handler synchronously as far as its
+    /// first await and then returns, so the edit below is made while the analysis is in flight and
+    /// before its continuation has had a chance to run.
+    /// </remarks>
+    [Theory]
+    [InlineData("analyzeBtn")]
+    [InlineData("findTracksBtn")]
+    public void AnEditDuringAnAnalysisIsRefusedRatherThanAppliedToTheWrongAudio(string button)
+    {
+        (int tracks, string status, CdTrackPlan first) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main, (0, 120));
+
+            (int, string, CdTrackPlan) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Click(window, button);
+                // In flight now. One second of silence at the head moves every anchor by a second.
+                document.Doc.ReplaceRange(0, 0,
+                    [new float[Seconds(1)], new float[Seconds(1)]], "Insert Silence");
+                SettleAnalysis(window);
+
+                result = (((ListBox)window.FindName("trackList")).Items.Count,
+                    ((TextBlock)window.FindName("statusText")).Text, Plans(window)[0]);
+            });
+            return result;
+        });
+
+        Assert.Contains("The recording changed while it was being read", status, StringComparison.Ordinal);
+
+        // The one row the window opened with is still there, carried onto the new timeline by the
+        // edit rather than replaced by a proposal that predates it. Its start stays at zero -- an
+        // anchor sitting exactly where the silence went in does not move -- so the end is what
+        // shows the row was mapped through the splice: 120 s of side became 121.
+        Assert.Equal(1, tracks);
+        Assert.Equal(0, first.SourceStart);
+        Assert.Equal(Seconds(121), first.SourceEnd);
+    }
 }

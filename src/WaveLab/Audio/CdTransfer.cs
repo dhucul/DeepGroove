@@ -242,13 +242,14 @@ public static class CdTransfer
         IReadOnlyList<CdTrackPlan> tracks,
         double gapSeconds,
         double quietBelowDb,
+        float[]? blockPeaks = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(channels);
         ArgumentNullException.ThrowIfNull(tracks);
         if (tracks.Count == 0) return [];
 
-        double gap = Math.Clamp(gapSeconds, 0, MaximumGapSeconds);
+        double gap = SnapGapSeconds(gapSeconds);
         var result = new List<CdTrackPlan>(tracks.Count);
         for (int i = 0; i < tracks.Count; i++) result.Add(tracks[i] with { PregapSeconds = i == 0 ? 0 : gap });
 
@@ -257,6 +258,15 @@ public static class CdTransfer
 
         int length = channels[0].Length;
         double threshold = Math.Pow(10, quietBelowDb / 20.0);
+
+        // Searched through the block envelope rather than sample by sample. The scan runs inward
+        // from a track end until it meets music, so a track holding nothing above the threshold - a
+        // run-out, a quiet interlude - makes it walk the whole track, and RefreshOrder calls this
+        // on every arrow press. A stale envelope of the wrong length is rebuilt, not trusted.
+        int blocks = (length + Restoration.SilenceBlock - 1) / Restoration.SilenceBlock;
+        float[] envelope = blockPeaks is { } given && given.Length == blocks
+            ? given
+            : Restoration.BlockPeaks(channels, sampleRate, cancellationToken);
 
         for (int i = 0; i < result.Count; i++)
         {
@@ -267,8 +277,10 @@ public static class CdTransfer
             if (end <= start) continue;
 
             // Only the ends that face another track are trimmed.
-            int music = i == 0 ? start : FirstAbove(channels, start, end, threshold, cancellationToken);
-            int quiet = i == result.Count - 1 ? end : LastAbove(channels, start, end, threshold, cancellationToken) + 1;
+            int music = i == 0 ? start : FirstAbove(channels, envelope, start, end, threshold, cancellationToken);
+            int quiet = i == result.Count - 1
+                ? end
+                : LastAbove(channels, envelope, start, end, threshold, cancellationToken) + 1;
 
             // A track holding nothing above the threshold has no music to trim back to, and
             // collapsing it would delete a row the user can see. Leave it alone.
@@ -278,29 +290,68 @@ public static class CdTransfer
         return result;
     }
 
+    /// <summary>
+    /// The first sample at or above <paramref name="threshold"/>, or <paramref name="to"/>.
+    /// </summary>
+    /// <remarks>
+    /// Exact despite reading the envelope first: a block's entry is the largest magnitude in it, so
+    /// a block under the threshold cannot hold a sample at or above one. Only a block that clears
+    /// it is read sample by sample, which makes this a walk over a two-hundred-and-fifty-sixth of
+    /// the audio plus one block.
+    /// </remarks>
     private static int FirstAbove(
-        IReadOnlyList<float[]> channels, int from, int to, double threshold, CancellationToken token)
+        IReadOnlyList<float[]> channels, float[] envelope, int from, int to, double threshold,
+        CancellationToken token)
     {
-        for (int i = from; i < to; i++)
+        if (to <= from) return to;
+        int lastBlock = Math.Min(envelope.Length - 1, (to - 1) / Restoration.SilenceBlock);
+        for (int block = from / Restoration.SilenceBlock; block <= lastBlock; block++)
         {
-            if ((i & 0xFFFF) == 0) token.ThrowIfCancellationRequested();
-            foreach (float[] channel in channels)
-                if (Math.Abs(channel[i]) >= threshold) return i;
+            if ((block & 0x3FF) == 0) token.ThrowIfCancellationRequested();
+            if (envelope[block] < threshold) continue;
+            int at = block * Restoration.SilenceBlock;
+            int stop = Math.Min(to, at + Restoration.SilenceBlock);
+            // A block's peak can belong to a sample outside this track's range, so finding nothing
+            // inside the range is ordinary rather than a contradiction.
+            for (int i = Math.Max(from, at); i < stop; i++)
+                foreach (float[] channel in channels)
+                    if (Math.Abs(channel[i]) >= threshold) return i;
         }
         return to;
     }
 
+    /// <summary>The last sample at or above <paramref name="threshold"/>, or <c>from - 1</c>.</summary>
     private static int LastAbove(
-        IReadOnlyList<float[]> channels, int from, int to, double threshold, CancellationToken token)
+        IReadOnlyList<float[]> channels, float[] envelope, int from, int to, double threshold,
+        CancellationToken token)
     {
-        for (int i = to - 1; i >= from; i--)
+        if (to <= from) return from - 1;
+        int firstBlock = from / Restoration.SilenceBlock;
+        for (int block = Math.Min(envelope.Length - 1, (to - 1) / Restoration.SilenceBlock);
+             block >= firstBlock; block--)
         {
-            if ((i & 0xFFFF) == 0) token.ThrowIfCancellationRequested();
-            foreach (float[] channel in channels)
-                if (Math.Abs(channel[i]) >= threshold) return i;
+            if ((block & 0x3FF) == 0) token.ThrowIfCancellationRequested();
+            if (envelope[block] < threshold) continue;
+            int at = block * Restoration.SilenceBlock;
+            int start = Math.Max(from, at);
+            for (int i = Math.Min(to, at + Restoration.SilenceBlock) - 1; i >= start; i--)
+                foreach (float[] channel in channels)
+                    if (Math.Abs(channel[i]) >= threshold) return i;
         }
         return from - 1;
     }
+
+    /// <summary>
+    /// A gap rounded to the only lengths a pregap can be: whole CD frames, seventy-five a second.
+    /// </summary>
+    /// <remarks>
+    /// Without it a box accepting tenths lets 0.1 s through, which is seven and a half frames and
+    /// reaches the disc as eight - 0.107 s under a readout saying 0.1. Whole seconds are exact
+    /// either way, which is why it took a review to notice.
+    /// </remarks>
+    public static double SnapGapSeconds(double seconds) =>
+        Math.Round(Math.Clamp(seconds, 0, MaximumGapSeconds) * DdpImage.FramesPerSecond,
+            MidpointRounding.AwayFromZero) / DdpImage.FramesPerSecond;
 
     /// <summary>What setting a gap did, in the plain voice the rest of this window reports in.</summary>
     public static string DescribeGap(double seconds, int tracks, int trimmed)
@@ -314,7 +365,7 @@ public static class CdTransfer
             1 => "One track trimmed back to its music to make room.",
             _ => $"{trimmed} tracks trimmed back to their music to make room.",
         };
-        return $"{seconds:0.#} s between every pair of tracks. {ends} " +
+        return $"{seconds:0.###} s between every pair of tracks. {ends} " +
                "Choosing a track still starts on the music.";
     }
 

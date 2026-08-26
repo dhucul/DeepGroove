@@ -230,4 +230,100 @@ public sealed class CdGapTests(ITestOutputHelper output)
         Assert.Contains("Nothing needed trimming", CdTransfer.DescribeGap(2, 3, 0), StringComparison.Ordinal);
         Assert.Contains("Gap removed", CdTransfer.DescribeGap(0, 3, 0), StringComparison.Ordinal);
     }
+
+    // ── what the review changed ──────────────────────────────────
+
+    /// <summary>Where the music starts and ends, found the slow, obvious way.</summary>
+    private static (int First, int Last) ByHand(float[][] side, int from, int to, double threshold)
+    {
+        int first = to, last = from - 1;
+        for (int i = from; i < to; i++)
+            foreach (float[] channel in side)
+                if (Math.Abs(channel[i]) >= threshold)
+                {
+                    if (first == to) first = i;
+                    last = i;
+                    break;
+                }
+        return (first, last);
+    }
+
+    /// <summary>
+    /// The trim reads a block envelope rather than every sample, because it is reached from
+    /// <c>RefreshOrder</c> and so runs on the dispatcher on every arrow press — and a track with no
+    /// music above the threshold made it walk the whole track. It has to give the same answer to
+    /// the sample, and it does: a block's entry is the largest magnitude in it, so a block under
+    /// the threshold cannot hide a sample at or above one.
+    /// </summary>
+    [Fact]
+    public void TheEnvelopeSearchFindsExactlyWhatWalkingEverySampleWould()
+    {
+        float[][] side = Side();
+        double threshold = Math.Pow(10, -45 / 20.0);
+        var after = CdTransfer.ApplyGaps(side, Rate, Tiled(), 2, -45);
+        List<CdTrackPlan> before = Tiled();
+
+        for (int i = 0; i < after.Count; i++)
+        {
+            (int first, int last) = ByHand(side, before[i].SourceStart, before[i].SourceEnd, threshold);
+            // The outer ends of the side are left alone; only the ends facing another track move.
+            int expectedStart = i == 0 ? before[i].SourceStart : first;
+            int expectedEnd = i == after.Count - 1 ? before[i].SourceEnd : last + 1;
+            Assert.Equal(expectedStart, after[i].SourceStart);
+            Assert.Equal(expectedEnd, after[i].SourceEnd);
+        }
+    }
+
+    /// <summary>A cached envelope that no longer describes the audio is rebuilt, not believed.</summary>
+    [Fact]
+    public void AnEnvelopeOfTheWrongLengthIsRebuiltRatherThanTrusted()
+    {
+        float[][] side = Side();
+        var honest = CdTransfer.ApplyGaps(side, Rate, Tiled(), 2, -45);
+        var stale = CdTransfer.ApplyGaps(side, Rate, Tiled(), 2, -45, blockPeaks: new float[7]);
+        Assert.Equal(honest, stale);
+    }
+
+    /// <summary>
+    /// A pregap can only be a whole number of CD frames. Rounding a typed gap to tenths let 0.1 s
+    /// through, which is seven and a half frames and reaches the disc as eight — 0.107 s under a
+    /// readout saying 0.1, which is the readout disagreeing with what ran.
+    /// </summary>
+    [Fact]
+    public void AGapIsSnappedToTheLengthsAPregapCanActuallyBe()
+    {
+        Assert.Equal(2, CdTransfer.SnapGapSeconds(2));
+        Assert.Equal(8 / 75.0, CdTransfer.SnapGapSeconds(0.1), 9);
+        Assert.Equal(0, CdTransfer.SnapGapSeconds(-1));
+        Assert.Equal(CdTransfer.MaximumGapSeconds, CdTransfer.SnapGapSeconds(500));
+
+        // Snapping is what makes the sector count exact rather than rounded a second time.
+        var plan = new CdTrackPlan(0, 1, "x", PregapSeconds: CdTransfer.SnapGapSeconds(0.1));
+        Assert.Equal(8, plan.PregapSectors);
+        Assert.Equal(plan.PregapSectors / 75.0, plan.PregapSeconds, 9);
+
+        // And it is stable: snapping an already-snapped figure moves nothing.
+        Assert.Equal(plan.PregapSeconds, CdTransfer.SnapGapSeconds(plan.PregapSeconds), 9);
+    }
+
+    /// <summary>
+    /// Mismatched channels are refused by name rather than surfacing as an index off the end of the
+    /// shorter one.
+    /// </summary>
+    /// <remarks>
+    /// A review asked for a guard here, on the grounds that the length is read off channel 0 and
+    /// every channel is then indexed to it. Writing one showed it was already covered: measuring
+    /// the envelope is the first thing that touches the audio, and
+    /// <c>Restoration.BlockPeaks</c> validates. A guard no test could tell the presence of is dead
+    /// weight, so this pins the behaviour instead of duplicating the check.
+    /// </remarks>
+    [Fact]
+    public void MismatchedChannelLengthsAreRefusedByName()
+    {
+        var ragged = new[] { new float[1000], new float[900] };
+        ArgumentException error = Assert.Throws<ArgumentException>(() =>
+            CdTransfer.ApplyGaps(ragged, Rate, [new CdTrackPlan(0, 900, "One")], 2, -45));
+        Assert.Contains("same length", error.Message, StringComparison.Ordinal);
+        Assert.Equal("channels", error.ParamName);
+    }
 }

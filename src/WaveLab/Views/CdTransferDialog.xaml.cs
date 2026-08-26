@@ -9,6 +9,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using WaveLab.Audio;
+using WaveLab.Audio.Dsp;
 using WaveLab.Util;
 using WaveLab.ViewModels;
 
@@ -157,6 +158,7 @@ public partial class CdTransferDialog : Window
     private bool _syncingRack;
     private double _gapSeconds;
     private bool _applyingGap;
+    private float[]? _envelope;
 
     /// <summary>
     /// Open — or raise — the CD window for <paramref name="document"/>. It is modeless, so the
@@ -241,6 +243,9 @@ public partial class CdTransferDialog : Window
             Dispatcher.BeginInvoke(() => OnSourceEdited(start, removed, inserted));
             return;
         }
+
+        // The envelope describes audio that has just been spliced, so it is no longer this file's.
+        _envelope = null;
 
         int length = _document.Doc.Length;
         foreach (TrackRow row in _tracks)
@@ -468,11 +473,16 @@ public partial class CdTransferDialog : Window
         {
             var channels = _document.Doc.Channels.ToArray();
             int rate = _document.Doc.SampleRate;
+            int version = _document.Doc.EditVersion;
             double threshold = thresholdSlider.Value;
+            // Captured rather than read off the field inside the lambda, which runs on the pool
+            // while the finally below is free to null it.
+            CancellationToken token = _operation.Token;
             var plans = await Task.Run(() => CdTransfer.SuggestTracks(
                 channels, rate, threshold, CdTransfer.DefaultMinimumGapSeconds,
-                CdTransfer.AutoSplitMinimumTrackSeconds, _operation.Token), _operation.Token);
+                CdTransfer.AutoSplitMinimumTrackSeconds, token), token);
 
+            RefuseAStaleProposal(version, "Press Analyze again.");
             (int previous, double moved) = ApplyProposal(plans, rate);
             statusText.Text = CdTransfer.DescribeProposal(plans.Count, previous, moved);
         }
@@ -484,6 +494,23 @@ public partial class CdTransferDialog : Window
             _operation = null;
             SetBusy(false, statusText.Text);
         }
+    }
+
+    /// <summary>
+    /// Refuse a proposal measured against audio the document no longer holds.
+    /// </summary>
+    /// <remarks>
+    /// This window is modeless so the waveform stays editable underneath it, which means a splice
+    /// can land while an analysis is running. <see cref="OnSourceEdited"/> has already carried
+    /// every row onto the new timeline by then; writing ranges derived from the old audio over them
+    /// would put each track on music it was never measured against, and nothing would say so.
+    /// Preview and Export have always checked this. The two analysis paths did not.
+    /// </remarks>
+    private void RefuseAStaleProposal(int version, string retry)
+    {
+        if (version != _document.Doc.EditVersion)
+            throw new InvalidOperationException(
+                $"The recording changed while it was being read. {retry}");
     }
 
     /// <summary>
@@ -568,7 +595,7 @@ public partial class CdTransferDialog : Window
         {
             var trimmed = CdTransfer.ApplyGaps(
                 _document.Doc.Channels.ToArray(), _document.Doc.SampleRate, CurrentPlan(),
-                _gapSeconds, thresholdSlider.Value);
+                _gapSeconds, thresholdSlider.Value, Envelope());
             for (int i = 0; i < _tracks.Count && i < trimmed.Count; i++) _tracks[i].SetPlan(trimmed[i]);
         }
         finally { _applyingGap = false; }
@@ -599,13 +626,16 @@ public partial class CdTransferDialog : Window
         if (!double.TryParse(typed, NumberStyles.Float, CultureInfo.CurrentCulture, out double seconds) &&
             !double.TryParse(typed, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds))
         {
-            gapBox.Text = $"{_gapSeconds:0.#}";
+            gapBox.Text = $"{_gapSeconds:0.###}";
             statusText.Text = $"Enter a gap from 0 to {CdTransfer.MaximumGapSeconds:0} seconds.";
             return;
         }
 
-        seconds = Math.Round(Math.Clamp(seconds, 0, CdTransfer.MaximumGapSeconds), 1);
-        gapBox.Text = $"{seconds:0.#}";
+        // Snapped to the only lengths a pregap can be, and shown snapped: rounding the entry to
+        // tenths let 0.1 s through, which is seven and a half CD frames and reaches the disc as
+        // eight, so the box said 0.1 and the disc got 0.107.
+        seconds = CdTransfer.SnapGapSeconds(seconds);
+        gapBox.Text = $"{seconds:0.###}";
         if (_tracks.Count == 0) { _gapSeconds = seconds; return; }
 
         _applyingGap = true;
@@ -614,7 +644,7 @@ public partial class CdTransferDialog : Window
         {
             trimmed = CdTransfer.ApplyGaps(
                 _document.Doc.Channels.ToArray(), _document.Doc.SampleRate, CurrentPlan(),
-                seconds, thresholdSlider.Value);
+                seconds, thresholdSlider.Value, Envelope());
         }
         finally { _applyingGap = false; }
 
@@ -659,9 +689,12 @@ public partial class CdTransferDialog : Window
         {
             var channels = _document.Doc.Channels.ToArray();
             int rate = _document.Doc.SampleRate;
+            int version = _document.Doc.EditVersion;
+            CancellationToken token = _operation.Token;
             CdSplitSweep sweep = await Task.Run(
-                () => CdTransfer.SweepTracks(channels, rate, target, _operation.Token), _operation.Token);
+                () => CdTransfer.SweepTracks(channels, rate, target, token), token);
 
+            RefuseAStaleProposal(version, "Press Find Tracks again.");
             if (sweep.Best is { } best)
             {
                 // The slider moves first, so the label beside it and the line below the list are
@@ -681,6 +714,19 @@ public partial class CdTransferDialog : Window
             SetBusy(false, statusText.Text);
         }
     }
+
+    /// <summary>
+    /// The document's block-peak envelope, kept because the gap pass searches it instead of the
+    /// samples.
+    /// </summary>
+    /// <remarks>
+    /// Measuring it is one pass over the file, and it is dropped whenever the file changes, so a
+    /// gap applied after an edit pays for it once. What it buys is that <see cref="RetrimForGap"/>
+    /// - which every arrow press reaches through <see cref="RefreshOrder"/> - no longer walks the
+    /// audio each time.
+    /// </remarks>
+    private float[] Envelope() =>
+        _envelope ??= Restoration.BlockPeaks(_document.Doc.Channels.ToArray(), _document.Doc.SampleRate);
 
     /// <summary>Whichever of the two moved further from where it was, sign kept.</summary>
     private static int FurthestMove(int worst, int candidate) =>

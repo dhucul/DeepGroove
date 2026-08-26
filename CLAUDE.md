@@ -2187,6 +2187,49 @@ burned.
   putting a character outside it into that file is not. The header is a hyphen now and the test
   asserts the whole sheet is question-mark free, which catches the next one.
 
+### Review of the CD window: two real faults, and a guard that turned out to be already there
+
+- **A proposal outlived the document it was measured against.** Both analysis paths snapshot the
+  audio, await, and write the result into the list — with nothing checking the document is still
+  the one they measured. **This window is modeless precisely so the waveform stays editable
+  underneath it**, and a splice reaches `OnSourceEdited`, which carries every row onto the new
+  timeline; the continuation then overwrote those rows with ranges derived from audio that no
+  longer existed, putting each track on music it was never measured against, silently. Preview and
+  Export have always checked `EditVersion`. The analysis paths never had, and Find Tracks
+  inherited the omission along with a longer window to hit it in.
+  `RefuseAStaleProposal` is the check; `AnEditDuringAnAnalysisIsRefusedRatherThanAppliedToTheWrongAudio`
+  is **deterministic rather than a race** — raising Click runs an `async void` handler as far as its
+  first await and returns, so the test edits the document while the analysis is genuinely in flight.
+- **The gap trim walked the audio on the dispatcher, on every arrow press.** `RefreshOrder` reaches
+  `RetrimForGap`, and `FirstAbove`/`LastAbove` ran inward from each track end until they met music
+  — so a track with nothing above the threshold, which is what a run-out or a quiet interlude is,
+  made each one walk the whole track, uncancellable, with `RefreshOrder` on the path of Add, Split,
+  Remove and both arrows. The same envelope that made the sweep affordable fixes it: a block's
+  entry is the largest magnitude in it, so a block under the threshold **cannot** hide a sample at
+  or above one, and only a block that clears it is read sample by sample. Exact, and a walk over a
+  two-hundred-and-fifty-sixth of the audio.
+  `TheEnvelopeSearchFindsExactlyWhatWalkingEverySampleWould` compares it against a brute-force
+  reference, because "faster" is worth nothing here if it is not the same answer.
+- **The envelope is cached on the dialog and dropped in `OnSourceEdited`**, so a gap applied after
+  an edit pays one pass and every press after it pays none. A cached envelope of the wrong length
+  is rebuilt rather than trusted, which is what makes a stale cache a slow path instead of a wrong
+  answer.
+- **A pregap can only be a whole number of CD frames**, and the box rounded entries to tenths — so
+  0.1 s was seven and a half frames, reached the disc as eight, and the readout said 0.1 while the
+  disc got 0.107. `SnapGapSeconds` rounds to frames and the box shows what it snapped to. Whole
+  seconds are exact either way, which is why it took a review to see.
+- `_operation.Token` was read **inside** the `Task.Run` lambda, so a field the `finally` is free to
+  null was being dereferenced on the pool. Unreachable today because `_busy` serialises operations;
+  a latent `NullReferenceException` for whoever adds a second one. Captured into a local, which is
+  what `OnPreview` already did.
+- **The fifth finding was already fixed and the mutation test is what said so.** A guard against
+  mismatched channel lengths in `ApplyGaps` looked obviously right — the length is read off channel
+  0 and every channel indexed to it. Removing it changed no test, because measuring the envelope is
+  the first thing that touches the audio and `Restoration.BlockPeaks` validates. **A guard whose
+  presence no test can detect is dead weight**, so it came back out and
+  `MismatchedChannelLengthsAreRefusedByName` pins the behaviour instead. Four of the five mutations
+  failed a named test; the one that did not is the one that should not have been written.
+
 ### The cue sheet credited the application on every disc
 
 Found while checking Export, which had **no test at all** — `ExportDdpAsync` was covered and
