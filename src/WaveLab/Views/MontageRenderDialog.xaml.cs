@@ -46,7 +46,12 @@ public partial class MontageRenderDialog : Window
     /// <summary>What the user chose.</summary>
     public MontageDestination Destination { get; private set; } = MontageDestination.NewTab;
 
-    /// <summary>The rendered audio, once Render has succeeded.</summary>
+    /// <summary>
+    /// The rendered audio, once Render has succeeded, and null whenever it has not. This — rather
+    /// than <c>DialogResult</c> — is what says the render worked: the caller was already testing it,
+    /// and a window that only reports success through <c>DialogResult</c> can only ever be shown
+    /// modally, which put the whole render path out of reach of a test.
+    /// </summary>
     public AudioDocument? Rendered { get; private set; }
 
     /// <summary>What the render measured, for the caller to report.</summary>
@@ -207,12 +212,11 @@ public partial class MontageRenderDialog : Window
                     cancellationToken: token), token);
             }
 
-            DialogResult = true;
-            Close();
         }
-        catch (OperationCanceledException) { statusText.Text = "Render cancelled."; }
+        catch (OperationCanceledException) { statusText.Text = "Render cancelled."; Rendered = null; }
         catch (Exception ex)
         {
+            Rendered = null;
             MessageBox.Show(ex.Message, "Render failed", MessageBoxButton.OK, MessageBoxImage.Warning);
             statusText.Text = "Nothing was rendered.";
         }
@@ -222,6 +226,14 @@ public partial class MontageRenderDialog : Window
             _operation = null;
             SetBusy(false, statusText.Text);
         }
+
+        // Outside the try, and after SetBusy has cleared _busy. Closing from inside it ran while the
+        // window still considered itself busy, and OnDialogClosing cancels a close in that state to
+        // protect a render in flight — so the window stayed open, ShowDialog never returned, and
+        // everything the caller does with the result never happened. Rendering to a file looked like
+        // it worked because the file is written before this point; every other destination does its
+        // visible work after ShowDialog returns, so all of them looked dead.
+        if (Rendered != null) Close();
     }
 
     private static string SafeName(string value)

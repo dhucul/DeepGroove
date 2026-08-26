@@ -104,33 +104,50 @@ public sealed class MontageRenderProbe : IDisposable
     }
 
     /// <summary>
-    /// A render opens beside the montage it came from, so it cannot carry the montage's own name.
-    /// Two tabs both reading "Side A" is indistinguishable from the render having done nothing, and
-    /// that is how Render &amp; Prepare CD was reported: the CD window opened, and nothing else in
-    /// the app appeared to have changed.
+    /// Render has to leave the window closed, because everything the caller does with the result —
+    /// opening the tab, opening the CD window — happens after <c>ShowDialog</c> returns.
     /// </summary>
     /// <remarks>
-    /// The title is read off the static rather than by pressing Render on a shown window: the render
-    /// finishes with <c>DialogResult = true</c>, which throws on a window that was not shown modally,
-    /// and this dialog is genuinely modal in the app. Wpf.Show cannot drive it.
+    /// It did not. The close ran inside the try, before the <c>finally</c> cleared <c>_busy</c>, and
+    /// <c>OnDialogClosing</c> cancels a close while busy to protect a render in flight. So the
+    /// window stayed open and <c>ShowDialog</c> never returned. Rendering to a file was the one
+    /// destination that looked like it worked, because the file is written before that point — which
+    /// is exactly how it was reported: WAV/AIFF fine, the other three doing nothing at all.
     /// </remarks>
     [Fact]
-    public void TheRenderedTabIsNamedApartFromTheMontage()
+    public void RenderingLeavesTheWindowClosedAndTheResultBehind()
     {
-        string montageTab = Wpf.Run(() => Montage().Title);
-        string renderedTab = MontageRenderDialog.RenderedTitle(montageTab);
+        (bool closed, string title, bool busyAfter) = Wpf.Run(() =>
+        {
+            var dialog = new MontageRenderDialog(Montage());
+            (bool Closed, string Title, bool Busy) result = default;
+            Wpf.Show(dialog, window =>
+            {
+                ((Button)window.FindName("renderBtn")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                long deadline = Environment.TickCount64 + 20_000;
+                while (dialog.Rendered == null && Environment.TickCount64 < deadline) Wpf.Pump();
+                Wpf.Pump();
+                result = (!window.IsVisible, dialog.Rendered?.Title ?? "",
+                    ((Button)window.FindName("closeBtn")).Content?.ToString() == "Cancel");
+            });
+            return result;
+        });
 
-        Assert.Equal("Side A", montageTab);
-        Assert.NotEqual(montageTab, renderedTab);
-        Assert.Equal("Side A (render).wav", renderedTab);
+        Assert.True(closed, "the render finished but the window stayed open, so ShowDialog would never return");
+        Assert.False(busyAfter, "the window still considered a render to be in flight");
+        Assert.Equal("Side A (render).wav", title);
     }
 
+    /// <summary>
+    /// A render opens beside the montage it came from, so it cannot carry the montage's own name.
+    /// Two tabs both reading "Side A" is indistinguishable from the render having done nothing.
+    /// </summary>
     [Theory]
     [InlineData(null, "Montage (render).wav")]
     [InlineData("", "Montage (render).wav")]
     [InlineData("   ", "Montage (render).wav")]
     [InlineData("  Side B  ", "Side B (render).wav")]
-    public void AnUnnamedMontageStillRendersToANamedTab(string? title, string expected) =>
+    public void TheRenderedTabIsNamedApartFromTheMontage(string? title, string expected) =>
         Assert.Equal(expected, MontageRenderDialog.RenderedTitle(title));
 
     /// <summary>

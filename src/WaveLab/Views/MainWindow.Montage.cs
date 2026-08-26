@@ -172,7 +172,10 @@ public partial class MainWindow
         if (_vm.ActiveMontage is not { } vm) return;
 
         var dialog = new MontageRenderDialog(vm, _vm.Engine.Master) { Owner = this };
-        if (dialog.ShowDialog() != true || dialog.Rendered is not { } rendered) return;
+        dialog.ShowDialog();
+        // Rendered is the signal, not DialogResult: this test was always here, and dropping the
+        // other one is what lets the dialog be closed from outside a modal frame.
+        if (dialog.Rendered is not { } rendered) return;
 
         MontageRenderResult? result = dialog.Result;
         string measured = result == null ? "" :
