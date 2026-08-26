@@ -2003,10 +2003,47 @@ being **correct** and being **readable** are different problems, and only the fi
   `ALooserThresholdMovesTheBoundariesAndSaysSoWithoutLosingTheRows`. The synthetic side they run on
   needed **a fade into each gap** to be worth anything — without one the edge of a gap is a step, so
   the split lands in the same place at every threshold and the test cannot see the defect.
-- **Three other lines in this window are still in the old voice** — Add Track's "off the unclaimed
-  stretch", Split's "fine-tune the boundary", Sync Regions' "Synchronized 3 arranged track
-  region(s)". They are left alone deliberately rather than swept along with this, but they are the
-  same fault and the same rule applies.
+### The other three lines, and what reading them in order found
+
+The three left behind by the pass above — Add Track, Split, Sync Regions — brought into the same
+voice, as `CdTransferDialog.DescribeAddedTrack` / `DescribeAddedByDividing` / `DescribeSplitTrack` /
+`DescribeTooShort` / `DescribeRegionSync`, internal and pure so they are tested and measured without
+a window. All three had the same fault as the analysis line: naming things by what they are called
+in the source rather than by what the user is looking at.
+
+- **"Added track 03 from a 3:00 block off the unclaimed stretch"** → "Track 03 added, 0:00 to 3:00,
+  off the front of the stretch no track was using." *Unclaimed* is `LargestUnclaimedSpan` leaking
+  out; the position of a track is what the user is looking at.
+- **"Split at 00:00:21.249; edit In/Out fields to fine-tune the boundary"** → "Split at 0:21 — track
+  01 ends there and track 02 starts. Use their SOURCE IN and SOURCE OUT boxes to move it." Two
+  changes worth naming. **The milliseconds go**, because the In and Out *cells* carry them (a split
+  point is exact) and a sentence about one does not. And **the columns are named as they are
+  labelled on screen** — SOURCE IN, not "the In/Out fields", which is what they are called in the
+  code.
+- **"Synchronized 3 arranged track region(s); 0 other region(s) preserved"** → "Marked 3 tracks on
+  the waveform." plus "One other region was left alone." where there is one. It described the
+  operation; this describes what the user now has. Singular and plural are written out, because
+  "1 region(s)" is the same voice by another route, and `PlainEnough` asserts against it.
+- **"Too short to divide into two valid CD tracks"** → "… each half would be under the 4 seconds a
+  CD track has to run for." A refusal becomes an explanation by naming the rule, and the rule is
+  about CDs rather than about this program.
+
+**Reading the lines in order is what found the last two faults, and neither is visible one line at a
+time.** A sweep through the real window printed every line the buttons produce, in sequence:
+
+- **Analyze dropping from three tracks to one said "Now 1 track — there were 3. Preview each one to
+  check where it starts."** Advice about a list that no longer exists. The no-gaps wording was
+  guarded on `previous <= 1`, so it only appeared for a side that had never found any; one track is
+  one track however many there were before, and it is the outcome with nothing to rename, reorder or
+  preview, so it is the one that has to say which way the slider goes.
+- **Pressing Add Track answered "Split at 0:31".** True — `DivideRow` is shared, and Add Track is
+  Split at a fixed offset — and it describes the code rather than the press. It now reads "Track 03
+  added by dividing track 02 at 0:31." **The button pressed is not the same question as the
+  operation performed**, and a readout built from shared machinery will answer the second one unless
+  it is made to answer the first.
+
+Widest wording measured in the built dialog at **656 px of 756**, after trimming two that came back
+at 692 and 744 — the second of those with 12 px to spare, which is not a fit worth shipping.
 
 ### The cue sheet credited the application on every disc
 

@@ -158,7 +158,11 @@ public static class CdTransfer
     {
         if (proposed <= 0) return "No tracks were proposed.";
 
-        if (proposed == 1 && previous <= 1)
+        // One track is one track however many there were before: there is nothing to rename,
+        // reorder or preview, so the line spends its room on the way out rather than on a count the
+        // collapsed list has already shown. Guarding this on the previous count sent a side that
+        // dropped from three tracks to one away with "Preview each one to check where it starts".
+        if (proposed == 1)
             return "No gaps found - this is all one track. " +
                    "Drag Quiet below to the right, then Analyze again.";
 

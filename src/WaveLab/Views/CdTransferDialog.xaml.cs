@@ -89,6 +89,8 @@ public partial class CdTransferDialog : Window
         public string OrderText => $"{Order:00}";
         public string StartText => TimeFormat.Position(Plan.SourceStart, SampleRate);
         public string EndText => TimeFormat.Position(Plan.SourceEnd, SampleRate);
+        public double SecondsStart => SampleRate > 0 ? Plan.SourceStart / (double)SampleRate : 0;
+        public double SecondsEnd => SampleRate > 0 ? Plan.SourceEnd / (double)SampleRate : 0;
         public string DurationText => TimeFormat.Compact(Plan.DurationSeconds(SampleRate));
 
         /// <summary>
@@ -529,7 +531,7 @@ public partial class CdTransferDialog : Window
         if (_busy) return;
         if (_tracks.Count >= CdTransfer.MaximumTracks)
         {
-            statusText.Text = $"Audio CDs support at most {CdTransfer.MaximumTracks} tracks; remove one first.";
+            statusText.Text = $"A CD holds at most {CdTransfer.MaximumTracks} tracks. Remove one before adding another.";
             return;
         }
 
@@ -541,13 +543,13 @@ public partial class CdTransferDialog : Window
         {
             // Taken verbatim, short or overlapping. The user pointed at this range; if it cannot be
             // a CD track the validation line says why, which beats quietly adding a different one.
-            AppendRow(_document.SelStart, _document.SelEnd, "the selection");
+            AppendRow(_document.SelStart, _document.SelEnd, TrackOrigin.Selection);
             return;
         }
 
         if (_document.Doc.Length == 0)
         {
-            statusText.Text = "There is no audio to cut a track from.";
+            statusText.Text = "There is no audio here to make a track from.";
             return;
         }
 
@@ -559,16 +561,15 @@ public partial class CdTransferDialog : Window
             // its own — a remainder under the CD minimum is unusable, and a press that produced one
             // would need a second press to undo it.
             if (end >= gapEnd || gapEnd - end < minimum) end = gapEnd;
-            AppendRow(gapStart, end, end == gapEnd
-                ? "the rest of the unclaimed stretch"
-                : $"a {TimeFormat.Compact(NewTrackBlockSeconds)} block off the unclaimed stretch");
+            AppendRow(gapStart, end, end == gapEnd ? TrackOrigin.RestOfGap : TrackOrigin.StartOfGap);
             return;
         }
 
         TrackRow? target = trackList.SelectedItem as TrackRow ?? LongestRow();
         if (target == null)
         {
-            statusText.Text = "There are no tracks to divide. Press Analyze, or select a range to add as a track.";
+            statusText.Text = "There are no tracks to divide yet. " +
+                "Press Analyze, or select part of the waveform and press Add Track again.";
             return;
         }
 
@@ -576,16 +577,17 @@ public partial class CdTransferDialog : Window
         TrackRow? remainder = DivideRow(target, target.Plan.SourceStart + block, $"Track {target.Order + 1:00}");
         if (remainder == null)
         {
-            statusText.Text = $"Track {targetOrder:00} is too short to divide into two valid CD tracks.";
+            statusText.Text = DescribeTooShort(targetOrder, "divide");
             return;
         }
-        statusText.Text =
-            $"Track {targetOrder:00} now runs to {target.EndText}; track {remainder.Order:00} carries the rest. " +
-            "Edit the In/Out fields to fine-tune the boundary.";
+        statusText.Text = DescribeAddedByDividing(targetOrder, target.SecondsEnd, remainder.Order);
     }
 
+    /// <summary>Where a hand-added track came from, for the line that reports it.</summary>
+    internal enum TrackOrigin { Selection, RestOfGap, StartOfGap }
+
     /// <summary>Put a new row after the selected one, or at the end, and select it.</summary>
-    private void AppendRow(int start, int end, string origin)
+    private void AppendRow(int start, int end, TrackOrigin origin)
     {
         int index = trackList.SelectedItem is TrackRow selected ? _tracks.IndexOf(selected) + 1 : _tracks.Count;
         TrackRow row = NewRow(new CdTrackPlan(start, end, $"Track {index + 1:00}"), index + 1);
@@ -595,8 +597,73 @@ public partial class CdTransferDialog : Window
         // it, so repeated presses come out in source order without the user reaching for ▲▼.
         trackList.SelectedItem = row;
         trackList.ScrollIntoView(row);
-        statusText.Text =
-            $"Added track {row.Order:00} from {origin} — {row.StartText} to {row.EndText}. Edit the In/Out fields to fine-tune it.";
+        statusText.Text = DescribeAddedTrack(row.Order, row.SecondsStart, row.SecondsEnd, origin);
+    }
+
+    // ── what the list operations say they did ────────────────────
+    //
+    // Same rule as CdTransfer.DescribeProposal, and for the same report: name what is on screen in
+    // ordinary words, then name the next thing to do. These three lines were the ones left in the
+    // old voice — "off the unclaimed stretch", "fine-tune the boundary", "Synchronized 3 arranged
+    // track region(s)" — naming things by what they are called in the source rather than by what
+    // the user is looking at. Pure and internal so the wording is tested and measured without a
+    // window, which is how DescribeOutputMix and DescribeNoiseDepth are arranged.
+
+    /// <summary>
+    /// A position in the status line, which is prose. The In and Out cells carry milliseconds
+    /// because a boundary is exact; a sentence about one does not need them.
+    /// </summary>
+    private static string At(double seconds) => TimeFormat.Compact(seconds);
+
+    internal static string DescribeAddedTrack(int order, double start, double end, TrackOrigin origin)
+    {
+        string from = origin switch
+        {
+            TrackOrigin.Selection => "taken from what you had selected",
+            TrackOrigin.RestOfGap => "filling the stretch no track was using",
+            _ => "off the front of the stretch no track was using",
+        };
+        return $"Track {order:00} added, {At(start)} to {At(end)}, {from}. " +
+               "Use its SOURCE IN and SOURCE OUT boxes to move it.";
+    }
+
+    /// <summary>
+    /// Add Track and Split share <see cref="DivideRow"/>, and the button pressed is not the same
+    /// question as the operation performed: pressing Add Track and being told "Split at 0:31" is
+    /// the readout describing the code rather than the press.
+    /// </summary>
+    internal static string DescribeAddedByDividing(int fromOrder, double splitAt, int newOrder) =>
+        $"Track {newOrder:00} added by dividing track {fromOrder:00} at {At(splitAt)}. " +
+        "Use their SOURCE IN and SOURCE OUT boxes to move the split.";
+
+    internal static string DescribeSplitTrack(int order, double splitAt, int newOrder) =>
+        $"Split at {At(splitAt)} - track {order:00} ends there and track {newOrder:00} starts. " +
+        "Use their SOURCE IN and SOURCE OUT boxes to move it.";
+
+    /// <summary>
+    /// Why a row will not divide, which is a rule about CDs rather than about this program: both
+    /// halves have to clear the minimum a disc can hold. Naming the number is the difference
+    /// between a refusal and an explanation.
+    /// </summary>
+    internal static string DescribeTooShort(int order, string verb) =>
+        $"Track {order:00} is too short to {verb} - each half would be under the " +
+        $"{CdTransfer.MinimumTrackSeconds:0} seconds a CD track has to run for.";
+
+    /// <summary>
+    /// Sync Regions writes the track list onto the waveform as named regions, which is where they
+    /// are visible and what the sidecar saves. "Synchronized 3 arranged track region(s)" described
+    /// the operation; this describes what the user now has.
+    /// </summary>
+    internal static string DescribeRegionSync(int tracks, int untouched, bool changed)
+    {
+        if (!changed) return "The regions on the waveform already match this track list.";
+        string rest = untouched switch
+        {
+            0 => "",
+            1 => " One other region was left alone.",
+            _ => $" {untouched} other regions were left alone.",
+        };
+        return $"Marked {(tracks == 1 ? "1 track" : $"{tracks} tracks")} on the waveform.{rest}";
     }
 
     /// <summary>The row covering the most of the recording, or null when the list is empty.</summary>
@@ -748,13 +815,13 @@ public partial class CdTransferDialog : Window
             ? _document.Cursor
             : plan.SourceStart + plan.Length / 2;
 
-        if (DivideRow(row, split, $"{plan.Title} B") == null)
+        TrackRow? remainder = DivideRow(row, split, $"{plan.Title} B");
+        if (remainder == null)
         {
-            statusText.Text = $"Track {order:00} is too short to split into two valid CD tracks.";
+            statusText.Text = DescribeTooShort(order, "split");
             return;
         }
-        statusText.Text =
-            $"Split at {row.EndText}; edit In/Out fields to fine-tune the boundary.";
+        statusText.Text = DescribeSplitTrack(order, row.SecondsEnd, remainder.Order);
     }
 
     private void OnMoveUp(object sender, RoutedEventArgs e) => MoveSelected(-1);
@@ -845,9 +912,9 @@ public partial class CdTransferDialog : Window
         }
 
         if (added > 0 || updated > 0 || removed > 0 || reordered) _document.NotifyMarkersChanged();
-        statusText.Text = added > 0 || updated > 0 || removed > 0 || reordered
-            ? $"Synchronized {_tracks.Count} arranged track region(s); {preservedRegions.Count} other region(s) preserved."
-            : "Track regions already match the arranged CD sequence.";
+        statusText.Text = DescribeRegionSync(
+            _tracks.Count, preservedRegions.Count,
+            changed: added > 0 || updated > 0 || removed > 0 || reordered);
     }
 
     private async void OnPreview(object sender, RoutedEventArgs e)

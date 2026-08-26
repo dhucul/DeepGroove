@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using WaveLab.Audio;
 using WaveLab.Util;
@@ -109,16 +109,130 @@ public sealed class CdProposalReadoutTests
     [Fact]
     public void OneTrackIsTheCaseThatSaysWhichWayToMoveTheSlider()
     {
-        string line = CdTransfer.DescribeProposal(1, previous: 0, double.NaN);
-        Assert.Equal("No gaps found - this is all one track. Drag Quiet below to the right, then Analyze again.", line);
-        PlainEnough(line);
-        Assert.DoesNotContain("left", line, StringComparison.Ordinal);
+        const string expected =
+            "No gaps found - this is all one track. Drag Quiet below to the right, then Analyze again.";
+        Assert.Equal(expected, CdTransfer.DescribeProposal(1, previous: 0, double.NaN));
+
+        // However many there were before. Guarding this on the previous count sent a side that
+        // collapsed from three tracks to one away with "Preview each one to check where it starts",
+        // which is advice about a list that no longer exists.
+        Assert.Equal(expected, CdTransfer.DescribeProposal(1, previous: 3, double.NaN));
+
+        PlainEnough(expected);
+        Assert.DoesNotContain("left", expected, StringComparison.Ordinal);
     }
 
     [Fact]
     public void AnEmptyProposalDoesNotClaimToHaveFoundTracks()
     {
         Assert.Equal("No tracks were proposed.", CdTransfer.DescribeProposal(0, previous: 3, double.NaN));
+    }
+}
+
+/// <summary>
+/// The other three lines this window writes, brought into the same voice as the analysis one.
+/// </summary>
+/// <remarks>
+/// They were the ones left behind by the readout rewrite, and all three named things by what they
+/// are called in the source rather than by what the user is looking at: a track came "off the
+/// unclaimed stretch", a split wanted the "boundary" fine-tuned, and Sync Regions "Synchronized 3
+/// arranged track region(s)" — which describes the operation rather than what the user now has.
+/// </remarks>
+public sealed class CdListActionReadoutTests
+{
+    private static void PlainEnough(string line)
+    {
+        Assert.DoesNotContain("unclaimed", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("boundar", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("region(s)", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Synchroniz", line, StringComparison.OrdinalIgnoreCase);
+        // A count written "1 tracks" is the same fault by another route.
+        Assert.DoesNotContain("1 tracks", line, StringComparison.Ordinal);
+    }
+
+    /// <remarks>
+    /// One fact rather than a theory because <c>TrackOrigin</c> is internal to the window, and an
+    /// internal type cannot be a parameter of a public test method.
+    /// </remarks>
+    [Fact]
+    public void AddTrackSaysWhereTheTrackCameFromInWordsRatherThanInTheSourcesTerms()
+    {
+        (CdTransferDialog.TrackOrigin Origin, string Expected)[] cases =
+        [
+            (CdTransferDialog.TrackOrigin.Selection, "taken from what you had selected"),
+            (CdTransferDialog.TrackOrigin.RestOfGap, "filling the stretch no track was using"),
+            (CdTransferDialog.TrackOrigin.StartOfGap, "off the front of the stretch no track was using"),
+        ];
+
+        foreach ((CdTransferDialog.TrackOrigin origin, string expected) in cases)
+        {
+            string line = CdTransferDialog.DescribeAddedTrack(3, 0, 180, origin);
+            Assert.StartsWith("Track 03 added, 0:00 to 3:00, ", line, StringComparison.Ordinal);
+            Assert.Contains(expected, line, StringComparison.Ordinal);
+            Assert.Contains("SOURCE IN and SOURCE OUT", line, StringComparison.Ordinal);
+            PlainEnough(line);
+        }
+    }
+
+    /// <summary>
+    /// The In and Out cells carry milliseconds because a split point is exact. A sentence about one
+    /// does not need them, and "Split at 00:00:21.249" is the readout talking to itself.
+    /// </summary>
+    [Fact]
+    public void ASplitNamesBothHalvesAndDropsTheMilliseconds()
+    {
+        string line = CdTransferDialog.DescribeSplitTrack(2, 21.249, 3);
+        Assert.StartsWith("Split at 0:21 - track 02 ends there and track 03 starts.", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("21.2", line, StringComparison.Ordinal);
+        Assert.Contains("SOURCE IN and SOURCE OUT", line, StringComparison.Ordinal);
+        PlainEnough(line);
+    }
+
+    /// <summary>
+    /// "Too short to divide into two valid CD tracks" is a refusal. Naming the number a disc
+    /// actually requires is an explanation, and it is the difference between the two.
+    /// </summary>
+    [Fact]
+    public void RefusingToDivideSaysWhatTheRuleIs()
+    {
+        string line = CdTransferDialog.DescribeTooShort(2, "divide");
+        Assert.Contains("too short to divide", line, StringComparison.Ordinal);
+        Assert.Contains("4 seconds a CD track has to run for", line, StringComparison.Ordinal);
+        Assert.Contains("split", CdTransferDialog.DescribeTooShort(2, "split"), StringComparison.Ordinal);
+        PlainEnough(line);
+    }
+
+    /// <summary>
+    /// Add Track divides an existing row when the recording is already tiled, which is Split's
+    /// operation at a fixed offset — but the user pressed Add Track, and being answered "Split at
+    /// 0:31" describes the code rather than the press.
+    /// </summary>
+    [Fact]
+    public void AddTrackSaysATrackWasAddedEvenWhenItGotThereByDividing()
+    {
+        string line = CdTransferDialog.DescribeAddedByDividing(2, 31.87, 3);
+        Assert.StartsWith("Track 03 added by dividing track 02 at 0:31.", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("Split", line, StringComparison.Ordinal);
+        PlainEnough(line);
+    }
+
+    [Fact]
+    public void SyncRegionsSaysWhatTheUserNowHasRatherThanWhatItDid()
+    {
+        Assert.Equal("The regions on the waveform already match this track list.",
+            CdTransferDialog.DescribeRegionSync(3, 0, changed: false));
+
+        Assert.Equal("Marked 3 tracks on the waveform.",
+            CdTransferDialog.DescribeRegionSync(3, 0, changed: true));
+
+        // Singular and plural are written out, because "1 other region(s)" is the old voice.
+        Assert.Equal("Marked 1 track on the waveform. One other region was left alone.",
+            CdTransferDialog.DescribeRegionSync(1, 1, changed: true));
+
+        Assert.Equal("Marked 3 tracks on the waveform. 2 other regions were left alone.",
+            CdTransferDialog.DescribeRegionSync(3, 2, changed: true));
+
+        PlainEnough(CdTransferDialog.DescribeRegionSync(3, 2, changed: true));
     }
 }
 
@@ -147,7 +261,7 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
     }
 
     [Fact]
-    public void EveryAnalysisWordingFitsTheStatusLine()
+    public void EveryStatusWordingFitsTheStatusLine()
     {
         AppSettings.AppDataDir = _sandbox;
         string[] wordings =
@@ -159,6 +273,14 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
             CdTransfer.DescribeProposal(3, 3, -7.55),
             CdTransfer.DescribeProposal(99, 99, 185),
             CdTransfer.DescribeProposal(1, 0, double.NaN),
+            CdTransferDialog.DescribeAddedTrack(3, 0, 180, CdTransferDialog.TrackOrigin.StartOfGap),
+            CdTransferDialog.DescribeAddedTrack(99, 3599, 3720, CdTransferDialog.TrackOrigin.Selection),
+            CdTransferDialog.DescribeSplitTrack(98, 3599, 99),
+            CdTransferDialog.DescribeAddedByDividing(98, 3599, 99),
+            CdTransferDialog.DescribeTooShort(99, "divide"),
+            CdTransferDialog.DescribeRegionSync(99, 98, changed: true),
+            CdTransferDialog.DescribeRegionSync(1, 1, changed: true),
+            CdTransferDialog.DescribeRegionSync(3, 0, changed: false),
         ];
 
         var report = new List<string>();
