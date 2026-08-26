@@ -17,8 +17,9 @@ namespace WaveLab.Views;
 public partial class CdTransferDialog : Window
 {
     /// <summary>
-    /// One row of the PQ sheet. Everything past the title is catalogue information that only a DDP
-    /// deliverable carries; a cue sheet has nowhere to put any of it.
+    /// One row of the PQ sheet. Title and performer reach both deliverables — a cue sheet carries a
+    /// PERFORMER line per track as well as for the disc. Songwriter, ISRC and pre-emphasis are
+    /// catalogue information only a DDP carries, and <see cref="DdpFields"/> is what gates those.
     /// </summary>
     private sealed class TrackRow : ObservableObject
     {
@@ -97,8 +98,9 @@ public partial class CdTransferDialog : Window
         public string CdLengthText { get => _cdLengthText; set => Set(ref _cdLengthText, value); }
 
         /// <summary>
-        /// Whether the catalogue fields are live. They are disabled rather than hidden for a WAV+CUE
-        /// package, so the reason they do not apply is visible instead of the columns vanishing.
+        /// Whether the DDP-only catalogue fields — songwriter, ISRC and pre-emphasis — are live. They
+        /// are disabled rather than hidden for a WAV+CUE package, so the reason they do not apply is
+        /// visible instead of the columns vanishing. Performer is not among them any more.
         /// </summary>
         public bool DdpFields { get => _ddpFields; set => Set(ref _ddpFields, value); }
 
@@ -287,6 +289,12 @@ public partial class CdTransferDialog : Window
             _tracks.Add(NewRow(plans[i], order++, sourceRegion));
         }
         UpdatePlan();
+        // Rebuilding the collection leaves the list with nothing selected, and Preview, Remove,
+        // Split, ▲ and ▼ all read their enabled state off that selection — so Analyze used to hand
+        // back a list with five of the buttons below it dead until the user clicked a row. On a
+        // side whose gaps have not moved it also proposes exactly what is already on screen, so
+        // there was nothing else to see either, and the button read as doing nothing at all.
+        if (_tracks.Count > 0) trackList.SelectedIndex = 0;
     }
 
     /// <summary>
@@ -331,7 +339,11 @@ public partial class CdTransferDialog : Window
         bool ddp = Ddp;
         foreach (TrackRow row in _tracks) row.DdpFields = ddp;
 
-        discPerformer.IsEnabled = discUpc.IsEnabled = !_busy && ddp;
+        // The disc performer is not DDP-only: a cue sheet carries a PERFORMER line, and until it
+        // was wired through the exporter wrote a fabricated one. UPC and the ISRC tools stay DDP,
+        // because a cue sheet has nowhere to put either.
+        discPerformer.IsEnabled = !_busy;
+        discUpc.IsEnabled = !_busy && ddp;
         importIsrcBtn.IsEnabled = autoNumberBtn.IsEnabled = !_busy && ddp;
         exportBtn.Content = ddp ? "Export DDP Image Set…" : "Export CD Package…";
         deliverableHint.Text = ddp
@@ -425,21 +437,47 @@ public partial class CdTransferDialog : Window
 
     private async Task SuggestTracksAsync()
     {
-        if (_busy || _document.Doc.Length == 0) return;
+        if (_busy) return;
+        if (_document.Doc.Length == 0)
+        {
+            // Silence here read as a dead button: the press does nothing and says nothing.
+            statusText.Text = "There is no audio to analyze.";
+            return;
+        }
+
         SetBusy(true, "Analyzing quiet gaps without changing the recording...");
         _operation = new CancellationTokenSource();
         try
         {
             var channels = _document.Doc.Channels.ToArray();
             int rate = _document.Doc.SampleRate;
-            double threshold = thresholdSlider.Value;
+            // Rounded here rather than trusted to the tick snap, which WPF applies to a thumb drag
+            // and not to a value set any other way. The label prints whole decibels, so this is what
+            // makes the threshold analysed the threshold the user was shown.
+            double threshold = Math.Round(thresholdSlider.Value);
             var plans = await Task.Run(() => CdTransfer.SuggestTracks(
                 channels, rate, threshold, minimumSilenceSeconds: 1.25,
                 minimumTrackSeconds: 20, _operation.Token), _operation.Token);
-            ReplaceTracks(plans);
-            statusText.Text = plans.Count > 1
-                ? $"Found {plans.Count} probable tracks. Rename or reorder them before export."
-                : "No sustained track gaps were found; one full-length track was proposed.";
+
+            string at = $"{threshold:0} dB";
+            if (MatchesCurrentBoundaries(plans))
+            {
+                // The window analyses on load, so re-pressing Analyze usually proposes exactly what
+                // is already listed. Rebuilding the rows for that would throw away every title and
+                // ISRC the user has typed since — for nothing, because the boundaries are the same
+                // ones. Say what was found instead, and leave the list where it is.
+                statusText.Text = plans.Count == 1
+                    ? $"Analysis at {at} again found no sustained track gaps; the single track is unchanged."
+                    : $"Analysis at {at} proposed the same {plans.Count} boundaries; the list is unchanged. " +
+                      "Move the threshold to look for different gaps.";
+            }
+            else
+            {
+                ReplaceTracks(plans);
+                statusText.Text = plans.Count > 1
+                    ? $"Found {plans.Count} probable tracks at {at}. Rename or reorder them before export."
+                    : $"No sustained track gaps were found at {at}; one full-length track was proposed.";
+            }
         }
         catch (OperationCanceledException) { statusText.Text = "Track analysis cancelled."; }
         catch (Exception ex) { statusText.Text = ex.Message; }
@@ -449,6 +487,23 @@ public partial class CdTransferDialog : Window
             _operation = null;
             SetBusy(false, statusText.Text);
         }
+    }
+
+    /// <summary>
+    /// Whether a proposal is the boundaries already listed, in the same order. Titles and catalogue
+    /// fields are not compared: Analyze does not produce either, so a run that agrees about where
+    /// the tracks are has nothing to say about what the user has typed into them.
+    /// </summary>
+    private bool MatchesCurrentBoundaries(IReadOnlyList<CdTrackPlan> plans)
+    {
+        if (plans.Count == 0 || plans.Count != _tracks.Count) return false;
+        for (int i = 0; i < plans.Count; i++)
+        {
+            if (plans[i].SourceStart != _tracks[i].Plan.SourceStart ||
+                plans[i].SourceEnd != _tracks[i].Plan.SourceEnd)
+                return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -941,7 +996,7 @@ public partial class CdTransferDialog : Window
             else
             {
                 var result = await CdTransfer.ExportPackageAsync(exportSource, plan, picker.FolderName,
-                    discTitle.Text, progress, token);
+                    discTitle.Text, discPerformer.Text, progress, token);
                 progressBar.Value = 1;
                 InfoDialog.Show(this, "CD Package Ready",
                     $"Created {result.WaveFiles.Count} sector-aligned CD WAV file(s) and a CUE sheet. Open the CUE file in your preferred disc-burning application.",
@@ -1022,7 +1077,8 @@ public partial class CdTransferDialog : Window
         _busy = busy;
         trackList.IsEnabled = !busy;
         discTitle.IsEnabled = !busy;
-        discPerformer.IsEnabled = discUpc.IsEnabled = !busy && Ddp;
+        discPerformer.IsEnabled = !busy;
+        discUpc.IsEnabled = !busy && Ddp;
         importIsrcBtn.IsEnabled = autoNumberBtn.IsEnabled = !busy && Ddp;
         wavCueBtn.IsEnabled = ddpBtn.IsEnabled = !busy;
         thresholdSlider.IsEnabled = !busy;

@@ -1906,6 +1906,71 @@ against the 42 M a real side would be.
 document with at least one region, or the constructor's `Loaded` handler starts the asynchronous gap
 analysis and the list is not the one the test set up.
 
+## Analyze was doing its job and taking five other buttons down with it
+
+Reported as "the Analyze button does not seem to do anything — a quick flash of the box and nothing
+else", and the flash is the diagnosis: the analysis ran, found what it found, and rebuilt the
+`ListBox`. Every button in the dialog was then swept, driving the real window through the shared
+test harness rather than reading the handlers. Four faults, and the reported one is a compound of
+the first two.
+
+- **Rebuilding the collection clears the selection, and five buttons read their enabled state off
+  it.** `ReplaceTracks` clears `_tracks`, `OnTrackSelected` fires with nothing selected, and
+  Preview, Remove, Split, ▲ and ▼ all go dead. Nothing re-selects — the constructor's `Loaded`
+  handler sets `SelectedIndex = 0` and does not run again. So every press of Analyze handed back a
+  list with five of its six buttons inert until the user happened to click a row. Measured: `sel`
+  goes 0 → −1 and all five read `False`. The fix is in `ReplaceTracks` rather than in the caller,
+  because it is the one place a row can stop existing.
+- **The second press proposes what is already on screen, so there was nothing to see either.** The
+  window analyses on load, so by the time anyone reaches for the button the list *is* the analysis;
+  pressing it again at the same threshold rebuilds identical rows. It also threw away every title,
+  ISRC, performer and pre-emphasis typed since — for nothing, because the boundaries had not moved.
+  `MatchesCurrentBoundaries` compares the proposal against the rows and leaves the list alone when
+  they agree, saying so and naming the threshold. **Titles are deliberately not compared**: Analyze
+  does not produce one, so a run that agrees about where the tracks are has nothing to say about
+  what the user has typed into them.
+- **The threshold analysed was not the threshold printed.** The slider is continuous and the label
+  prints `{0:0}`, so a drag to −45.4 dB shows "−45 dB" and analysed at −45.4. `IsSnapToTickEnabled`
+  is set, and is not the fix on its own — **WPF applies it to a thumb drag and not to a value set
+  any other way**, which is exactly what the first version of the test discovered. `SuggestTracksAsync`
+  rounds, and the status line quotes the rounded figure, which is what ties the two together in a
+  test.
+- **Analyze on a zero-length document returned in silence** — the finding this file already records
+  for Reduce Noise and for four spectral declines: a tool that stops without a word is
+  indistinguishable from one that was never wired up.
+- **The five row buttons started enabled with no row to act on.** Nothing sets their state until a
+  selection *changes*, so a list that opens empty leaves them lit and inert. The XAML starts them
+  disabled and `OnTrackSelected` turns them on.
+
+**Everything else in the window is connected and does what it says**, verified by driving it: both
+deliverable toggles, the threshold slider (−70 dB gives one track on a side whose gaps hold a
+−60 dBFS floor, −45 gives three), Add Track, Remove, Split, ▲▼, Sync Regions, Preview, Import
+ISRCs, Auto-number, the rack checkbox in both directions, Close-as-Cancel, and both exporters. Zero
+binding errors. One cosmetic thing left alone: Add Track and Split name new rows from the order
+they land at, so a list can hold two rows both called `Track 03` until they are renamed — the
+exported filenames are prefixed `01 - `, `02 - ` and stay unique.
+
+### The cue sheet credited the application on every disc
+
+Found while checking Export, which had **no test at all** — `ExportDdpAsync` was covered and
+`ExportPackageAsync`, the dialog's *default* deliverable, was not. The cue writer emitted a fixed
+`PERFORMER "Deep Groove Transfer"`, so every disc burned from one carried CD-TEXT naming the app as
+the artist. Meanwhile the dialog's own DISC PERFORMER box was greyed out in WAV+CUE mode with a
+tooltip reading "DDP only" — a field that could not be filled in, standing beside a line that was
+filled in with something nobody had said.
+
+- The typed performer is threaded through `ExportPackageAsync`, and **blank stays blank**: the
+  `PERFORMER` line is omitted rather than invented, which is the rule `CdTrackPlan` already states
+  about a track's performer, and a plant or a burner reads a sheet as a statement of fact.
+- Disc performer and the per-track Performer column are live in **both** deliverables now, because a
+  cue sheet carries `PERFORMER` at both levels. UPC, ISRC and pre-emphasis stay DDP-only and
+  `TrackRow.DdpFields` gates those three alone. (A cue sheet can carry `CATALOG`, `ISRC` and
+  `SONGWRITER` too; leaving those out is the existing design, not an oversight found here.)
+- `TheCueSheetCarriesThePerformersThatWereTypedAndInventsNone` is the first test of that exporter at
+  all. It asserts the count of `PERFORMER` lines, not just their presence — a disc line plus one
+  track line for three tracks of which two are anonymous — because "contains the right string" would
+  pass a writer that emitted a default for the other two.
+
 ## The workbench holds an analysis, which is a harder thing to be modeless about
 
 Same treatment for `RestorationWorkbenchDialog`, and the registry, the tab-close and the rack all

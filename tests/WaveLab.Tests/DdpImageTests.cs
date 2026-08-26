@@ -298,6 +298,46 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
             document, plan, _directory, new DdpDiscInfo("Side A")));
     }
 
+    /// <summary>
+    /// The other deliverable, which had no test at all — and the cue sheet it writes carried a
+    /// fixed <c>PERFORMER "Deep Groove Transfer"</c>, so every disc burned from one was credited to
+    /// the application. The dialog's own DISC PERFORMER field is what belongs there.
+    /// </summary>
+    [Fact]
+    public async Task TheCueSheetCarriesThePerformersThatWereTypedAndInventsNone()
+    {
+        var document = new AudioDocument(Track(Rate * 15), Rate, sourceBitDepth: 16);
+        List<CdTrackPlan> plan =
+        [
+            new(0, Rate * 5, "One", Performer: "The Band"),
+            new(Rate * 5, Rate * 10, "Two"),
+            new(Rate * 10, Rate * 15, "Three"),
+        ];
+
+        string named = Path.Combine(_directory, "named");
+        CdPackageResult withPerformer = await CdTransfer.ExportPackageAsync(
+            document, plan, named, "Side A", "The Transfer");
+
+        Assert.Equal(3, withPerformer.WaveFiles.Count);
+        Assert.All(withPerformer.WaveFiles, f => Assert.True(File.Exists(f), $"{f} is missing"));
+        Assert.Empty(Directory.EnumerateDirectories(named));
+
+        string cue = File.ReadAllText(withPerformer.CueFile);
+        output.WriteLine(cue);
+        Assert.Contains("TITLE \"Side A\"", cue, StringComparison.Ordinal);
+        Assert.Contains("PERFORMER \"The Transfer\"", cue, StringComparison.Ordinal);
+        Assert.Contains("PERFORMER \"The Band\"", cue, StringComparison.Ordinal);
+        Assert.DoesNotContain("Deep Groove", cue, StringComparison.Ordinal);
+        // Two of the three tracks have no performer, so the disc line plus one track line is all.
+        Assert.Equal(2, cue.Split("PERFORMER").Length - 1);
+
+        // Blank stays blank rather than becoming something invented, which is the rule the PQ sheet
+        // already states about a track's performer.
+        CdPackageResult anonymous = await CdTransfer.ExportPackageAsync(
+            document, [new(0, Rate * 15, "Only")], Path.Combine(_directory, "anon"), "Side B");
+        Assert.DoesNotContain("PERFORMER", File.ReadAllText(anonymous.CueFile), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void CancellationIsObserved()
     {

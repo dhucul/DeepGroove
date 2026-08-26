@@ -214,6 +214,7 @@ public static class CdTransfer
         IReadOnlyList<CdTrackPlan> orderedTracks,
         string outputFolder,
         string discTitle,
+        string? discPerformer = null,
         IProgress<CdPackageProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -231,8 +232,11 @@ public static class CdTransfer
         var plans = orderedTracks.ToArray();
         string folder = Path.GetFullPath(outputFolder.Trim());
         string title = string.IsNullOrWhiteSpace(discTitle) ? "Audio CD" : discTitle.Trim();
+        // Blank stays blank rather than becoming something invented, which is the same rule the PQ
+        // sheet already states about a track's performer: a deliverable is read as fact.
+        string performer = discPerformer?.Trim() ?? string.Empty;
 
-        return Task.Run(() => ExportPackage(snapshot, plans, folder, title, progress, cancellationToken),
+        return Task.Run(() => ExportPackage(snapshot, plans, folder, title, performer, progress, cancellationToken),
             cancellationToken);
     }
 
@@ -241,6 +245,7 @@ public static class CdTransfer
         IReadOnlyList<CdTrackPlan> orderedTracks,
         string outputFolder,
         string discTitle,
+        string discPerformer,
         IProgress<CdPackageProgress>? progress,
         CancellationToken cancellationToken)
     {
@@ -277,7 +282,11 @@ public static class CdTransfer
             bool dither = !IsExact16BitPcm(continuous, cancellationToken);
             var cue = new StringBuilder();
             cue.AppendLine($"TITLE \"{CueEscape(discTitle)}\"");
-            cue.AppendLine("PERFORMER \"Deep Groove Transfer\"");
+            // The dialog's DISC PERFORMER field is what belongs here. A fixed "Deep Groove Transfer"
+            // shipped for a while, which credited the application on every disc burned from a cue
+            // sheet it wrote — a statement about the release that nobody had made.
+            if (discPerformer.Length > 0)
+                cue.AppendLine($"PERFORMER \"{CueEscape(discPerformer)}\"");
 
             for (int i = 0; i < prepared.Count; i++)
             {
@@ -301,6 +310,8 @@ public static class CdTransfer
                 cue.AppendLine($"FILE \"{CueEscape(finalNames[i])}\" WAVE");
                 cue.AppendLine($"  TRACK {i + 1:00} AUDIO");
                 cue.AppendLine($"    TITLE \"{CueEscape(track.Title)}\"");
+                if (!string.IsNullOrWhiteSpace(track.Plan.Performer))
+                    cue.AppendLine($"    PERFORMER \"{CueEscape(track.Plan.Performer.Trim())}\"");
                 cue.AppendLine("    INDEX 01 00:00:00");
             }
 

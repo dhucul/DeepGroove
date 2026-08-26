@@ -1,6 +1,7 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Threading;
 using WaveLab.Audio;
 using WaveLab.Util;
 using WaveLab.ViewModels;
@@ -417,5 +418,273 @@ public sealed class CdTransferDialogTests : IDisposable
 
         Assert.True(same);
         Assert.True(closed, "the CD window outlived the test that opened it");
+    }
+
+    // ── Analyze ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// A side with two sustained quiet gaps in it, carrying a real −60 dBFS floor in those gaps
+    /// rather than digital silence. The threshold is a level, so a gap holding nothing at all makes
+    /// every setting of the slider agree and the analysis untestable.
+    /// </summary>
+    private static DocumentViewModel OpenSideWithGaps(
+        MainViewModel main, params (double Start, double End)[] regions)
+    {
+        const int seconds = 120;
+        int frames = seconds * Rate;
+        var left = new float[frames];
+        var right = new float[frames];
+        var noise = new Random(11);
+        for (int i = 0; i < frames; i++)
+        {
+            double second = i / (double)Rate;
+            bool music = second < 40 || (second >= 45 && second < 85) || second >= 90;
+            float value = (float)((noise.NextDouble() * 2 - 1) * (music ? 0.3 : 0.001));
+            left[i] = value;
+            right[i] = value;
+        }
+
+        main.AddDocument(new AudioDocument([left, right], Rate, 16) { Title = "Side A.wav" });
+        DocumentViewModel document = main.ActiveDocument!;
+        foreach ((double start, double end) in regions)
+        {
+            document.Regions.Add(new NamedRegion
+            {
+                Name = $"Track {document.Regions.Count + 1:00}",
+                Start = (int)Math.Round(start * Rate),
+                End = (int)Math.Round(end * Rate),
+                CdTrackOrder = document.Regions.Count + 1,
+            });
+        }
+        return document;
+    }
+
+    /// <summary>Pump until the background gap analysis has landed, or give up loudly.</summary>
+    private static void SettleAnalysis(Window window)
+    {
+        long deadline = Environment.TickCount64 + 20_000;
+        while (Environment.TickCount64 < deadline)
+        {
+            Wpf.Pump(DispatcherPriority.SystemIdle);
+            if (((Button)window.FindName("analyzeBtn")).IsEnabled &&
+                !((TextBlock)window.FindName("statusText")).Text
+                    .StartsWith("Analyzing", StringComparison.Ordinal))
+                return;
+            Thread.Sleep(10);
+        }
+
+        Assert.Fail("the gap analysis did not finish.");
+    }
+
+    /// <summary>The five buttons whose enabled state comes from the list selection.</summary>
+    private static bool[] RowButtonsEnabled(Window window) =>
+    [
+        ((Button)window.FindName("previewBtn")).IsEnabled,
+        ((Button)window.FindName("removeBtn")).IsEnabled,
+        ((Button)window.FindName("splitBtn")).IsEnabled,
+        ((Button)window.FindName("upBtn")).IsEnabled,
+        ((Button)window.FindName("downBtn")).IsEnabled,
+    ];
+
+    /// <summary>
+    /// The row type is private to the window, so its editable title is reached the way the cell
+    /// binding does. It is deliberately not <c>Plan.Title</c>: the plan carries the title the row
+    /// was built with, and <c>ToPlan</c> is where the edited one is merged in.
+    /// </summary>
+    private static void SetRowTitle(object row, string title) =>
+        row.GetType().GetProperty("Title")!.SetValue(row, title);
+
+    private static string RowTitle(object row) =>
+        (string)row.GetType().GetProperty("Title")!.GetValue(row)!;
+
+    /// <summary>
+    /// Reported as "Analyze does nothing — a quick flash of the box and nothing else", and the flash
+    /// is the ListBox being rebuilt. Preview, Remove, Split, ▲ and ▼ all read their enabled state
+    /// off the list selection, and rebuilding the collection clears it — so every press handed back
+    /// a list with five of the buttons under it dead, and nothing said why.
+    /// </summary>
+    [Fact]
+    public void AnalyzeLeavesARowSelectedSoTheButtonsBelowTheListStayLive()
+    {
+        (int tracks, bool[] before, bool[] after, int selected) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main, (0, 120));
+
+            (int, bool[], bool[], int) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                var list = (ListBox)window.FindName("trackList");
+                list.SelectedIndex = 0;
+                Wpf.Pump();
+                bool[] before = RowButtonsEnabled(window);
+
+                Click(window, "analyzeBtn");
+                SettleAnalysis(window);
+                result = (list.Items.Count, before, RowButtonsEnabled(window), list.SelectedIndex);
+            });
+            return result;
+        });
+
+        Assert.Equal(3, tracks);
+        Assert.All(before, Assert.True);
+        Assert.All(after, Assert.True);
+        Assert.Equal(0, selected);
+    }
+
+    /// <summary>
+    /// The window analyses on load, so the ordinary second press proposes exactly the boundaries
+    /// already listed. Rebuilding the rows for that threw away every title and ISRC typed since —
+    /// for nothing, because the tracks are the same tracks. It reports what it found instead.
+    /// </summary>
+    [Fact]
+    public void AnalyzeThatFindsTheSameBoundariesKeepsWhatWasTypedIntoTheRows()
+    {
+        (int tracks, string title, string status) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            // No regions, so the constructor's own analysis is what fills the list — the state a
+            // user is in when they reach for the button.
+            DocumentViewModel document = OpenSideWithGaps(main);
+
+            (int, string, string) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                SettleAnalysis(window);
+                var list = (ListBox)window.FindName("trackList");
+                Assert.Equal(3, list.Items.Count);
+                SetRowTitle(list.Items[1]!, "Sister Ray");
+
+                Click(window, "analyzeBtn");
+                SettleAnalysis(window);
+                result = (list.Items.Count, RowTitle(list.Items[1]!),
+                    ((TextBlock)window.FindName("statusText")).Text);
+            });
+            return result;
+        });
+
+        Assert.Equal(3, tracks);
+        Assert.Equal("Sister Ray", title);
+        Assert.Contains("the list is unchanged", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The threshold is a level, so moving it has to change what counts as a gap.</summary>
+    [Fact]
+    public void TheThresholdSliderDecidesWhatCountsAsAGap()
+    {
+        (int deep, int shallow) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main, (0, 120));
+
+            (int Deep, int Shallow) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                var slider = (Slider)window.FindName("thresholdSlider");
+                var list = (ListBox)window.FindName("trackList");
+
+                // Below the −60 dBFS floor in the gaps: nothing there is quiet enough to be one.
+                slider.Value = -70;
+                Wpf.Pump();
+                Click(window, "analyzeBtn");
+                SettleAnalysis(window);
+                int deep = list.Items.Count;
+
+                slider.Value = -45;
+                Wpf.Pump();
+                Click(window, "analyzeBtn");
+                SettleAnalysis(window);
+                result = (deep, list.Items.Count);
+            });
+            return result;
+        });
+
+        Assert.Equal(1, deep);
+        Assert.Equal(3, shallow);
+    }
+
+    /// <summary>
+    /// The label beside the slider is a measurement, so the threshold analysed has to be the one
+    /// printed. The slider's range is continuous, the label prints whole decibels, and the status
+    /// line quotes the figure the analysis was actually handed — which is what ties the two.
+    /// </summary>
+    [Fact]
+    public void TheThresholdAnalysedIsTheThresholdPrinted()
+    {
+        (string label, string status) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main, (0, 120));
+
+            (string, string) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                var slider = (Slider)window.FindName("thresholdSlider");
+                slider.Value = -45.4;
+                Wpf.Pump();
+
+                Click(window, "analyzeBtn");
+                SettleAnalysis(window);
+                result = (((TextBlock)window.FindName("thresholdText")).Text,
+                    ((TextBlock)window.FindName("statusText")).Text);
+            });
+            return result;
+        });
+
+        Assert.Equal("-45 dB", label);
+        Assert.Contains("-45 dB", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("-45.4", status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Analyze on a document with no audio returned in silence, which is indistinguishable from a
+    /// button that was never wired up — the finding this repo already records for Reduce Noise.
+    /// </summary>
+    [Fact]
+    public void AnalyzeSaysSoWhenThereIsNoAudioToAnalyze()
+    {
+        string status = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            main.AddDocument(new AudioDocument([[], []], Rate, 16) { Title = "Empty.wav" });
+            DocumentViewModel document = main.ActiveDocument!;
+
+            string result = "";
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Click(window, "analyzeBtn");
+                Wpf.Pump();
+                result = ((TextBlock)window.FindName("statusText")).Text;
+            });
+            return result;
+        });
+
+        Assert.Contains("no audio to analyze", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Those five buttons take their enabled state from a selection, and nothing sets that state
+    /// until a selection changes — so on a list that opens empty they were lit and inert. The XAML
+    /// starts them disabled and <c>OnTrackSelected</c> is what turns them on.
+    /// </summary>
+    [Fact]
+    public void TheRowButtonsStartDisabledWhenThereIsNoRowToActOn()
+    {
+        bool[] enabled = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            main.AddDocument(new AudioDocument([[], []], Rate, 16) { Title = "Empty.wav" });
+            DocumentViewModel document = main.ActiveDocument!;
+
+            bool[] result = [];
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Wpf.Pump();
+                result = RowButtonsEnabled(window);
+            });
+            return result;
+        });
+
+        Assert.All(enabled, Assert.False);
     }
 }
