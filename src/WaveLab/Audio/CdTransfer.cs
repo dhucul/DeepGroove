@@ -15,10 +15,24 @@ namespace WaveLab.Audio;
 /// </remarks>
 public sealed record CdTrackPlan(
     int SourceStart, int SourceEnd, string Title,
-    string Performer = "", string Songwriter = "", string Isrc = "", bool PreEmphasis = false)
+    string Performer = "", string Songwriter = "", string Isrc = "", bool PreEmphasis = false,
+    double PregapSeconds = 0)
 {
     public int Length => Math.Max(0, SourceEnd - SourceStart);
     public double DurationSeconds(int sampleRate) => sampleRate > 0 ? (double)Length / sampleRate : 0;
+
+    /// <summary>
+    /// The silence written ahead of this track, in whole CD sectors.
+    /// </summary>
+    /// <remarks>
+    /// It belongs to this track as its pregap — the stretch between INDEX 00 and INDEX 01 — so a
+    /// player counts it down during continuous listening and skips it when the track is chosen
+    /// directly, which is what a shop-bought CD does. Track 01 never has one: the two-second
+    /// lead-in every disc begins with already is it.
+    /// </remarks>
+    public int PregapSectors => PregapSeconds <= 0
+        ? 0
+        : (int)Math.Round(PregapSeconds * CdAudioFormat.SampleRate / CdAudioFormat.FramesPerSector);
 }
 
 public enum CdPlanIssueSeverity { Information, Warning, Error }
@@ -104,9 +118,13 @@ public static class CdTransfer
         int EditVersion,
         int Length);
 
-    private sealed record PreparedTrack(CdTrackPlan Plan, string Title, int Start, int End)
+    private sealed record PreparedTrack(CdTrackPlan Plan, string Title, int Start, int End, int PregapSamples)
     {
         public int Length => End - Start;
+
+        /// <summary>The pregap plus the music: what this track occupies on the disc.</summary>
+        public int Occupies => PregapSamples + Length;
+        public int PregapFrames => PregapSamples / CdAudioFormat.FramesPerSector;
     }
 
     private sealed class CallbackProgress<T>(Action<T> report) : IProgress<T>
@@ -179,6 +197,132 @@ public static class CdTransfer
         for (int i = 0; i + 1 < boundaries.Count; i++)
             result.Add(new CdTrackPlan(boundaries[i], boundaries[i + 1], $"Track {i + 1:00}"));
         return result;
+    }
+
+    // ── an even gap between every pair of tracks ─────────────────
+
+    /// <summary>What a CD normally leaves between two songs.</summary>
+    public const double DefaultGapSeconds = 2;
+    public const double MaximumGapSeconds = 10;
+
+    /// <summary>
+    /// Trim each split back to the music either side of it and declare a fixed gap, so the silence
+    /// between every pair of tracks is the same length whatever the record did.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The splits land at the middle of the quiet between two songs, so each track already carries
+    /// half of whatever quiet the record had there — three seconds on one side of the disc and six
+    /// on the other. Adding a fixed silence on top of that would preserve the unevenness and make
+    /// it worse. Taking the quiet off both ends and putting back exactly what was asked for is what
+    /// makes every gap the same.
+    /// </para>
+    /// <para>
+    /// <b>Nothing above the threshold is ever trimmed</b>, so a fade is only shortened where it has
+    /// already fallen below the level the user called quiet — inaudible by that definition. A track
+    /// with nothing above the threshold anywhere is left exactly as it is rather than collapsed.
+    /// </para>
+    /// <para>
+    /// The first track's head and the last track's tail are untouched. This sets what is
+    /// <i>between</i> tracks, and the lead-in and run-out are not between anything.
+    /// </para>
+    /// <para>
+    /// It is idempotent: trimming a range to its music and trimming it again gives the same range,
+    /// so changing the gap from two seconds to three re-runs it harmlessly rather than eating
+    /// another slice each time.
+    /// </para>
+    /// </remarks>
+    /// <param name="quietBelowDb">
+    /// What counts as quiet — the same level the AUTO SPLIT slider used to find the gaps, so the
+    /// two halves of the window cannot disagree about where a song ends.
+    /// </param>
+    public static List<CdTrackPlan> ApplyGaps(
+        IReadOnlyList<float[]> channels,
+        int sampleRate,
+        IReadOnlyList<CdTrackPlan> tracks,
+        double gapSeconds,
+        double quietBelowDb,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        ArgumentNullException.ThrowIfNull(tracks);
+        if (tracks.Count == 0) return [];
+
+        double gap = Math.Clamp(gapSeconds, 0, MaximumGapSeconds);
+        var result = new List<CdTrackPlan>(tracks.Count);
+        for (int i = 0; i < tracks.Count; i++) result.Add(tracks[i] with { PregapSeconds = i == 0 ? 0 : gap });
+
+        if (channels.Count == 0 || sampleRate <= 0 || channels[0].Length == 0 || gap <= 0)
+            return result;
+
+        int length = channels[0].Length;
+        double threshold = Math.Pow(10, quietBelowDb / 20.0);
+
+        for (int i = 0; i < result.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CdTrackPlan plan = result[i];
+            int start = Math.Clamp(plan.SourceStart, 0, length);
+            int end = Math.Clamp(plan.SourceEnd, 0, length);
+            if (end <= start) continue;
+
+            // Only the ends that face another track are trimmed.
+            int music = i == 0 ? start : FirstAbove(channels, start, end, threshold, cancellationToken);
+            int quiet = i == result.Count - 1 ? end : LastAbove(channels, start, end, threshold, cancellationToken) + 1;
+
+            // A track holding nothing above the threshold has no music to trim back to, and
+            // collapsing it would delete a row the user can see. Leave it alone.
+            if (music >= quiet) continue;
+            result[i] = plan with { SourceStart = music, SourceEnd = quiet };
+        }
+        return result;
+    }
+
+    private static int FirstAbove(
+        IReadOnlyList<float[]> channels, int from, int to, double threshold, CancellationToken token)
+    {
+        for (int i = from; i < to; i++)
+        {
+            if ((i & 0xFFFF) == 0) token.ThrowIfCancellationRequested();
+            foreach (float[] channel in channels)
+                if (Math.Abs(channel[i]) >= threshold) return i;
+        }
+        return to;
+    }
+
+    private static int LastAbove(
+        IReadOnlyList<float[]> channels, int from, int to, double threshold, CancellationToken token)
+    {
+        for (int i = to - 1; i >= from; i--)
+        {
+            if ((i & 0xFFFF) == 0) token.ThrowIfCancellationRequested();
+            foreach (float[] channel in channels)
+                if (Math.Abs(channel[i]) >= threshold) return i;
+        }
+        return from - 1;
+    }
+
+    /// <summary>What setting a gap did, in the plain voice the rest of this window reports in.</summary>
+    public static string DescribeGap(double seconds, int tracks, int trimmed)
+    {
+        if (seconds <= 0)
+            return "Gap removed. The quiet between tracks is whatever the record left there.";
+
+        string ends = trimmed switch
+        {
+            0 => "Nothing needed trimming.",
+            1 => "One track trimmed back to its music to make room.",
+            _ => $"{trimmed} tracks trimmed back to their music to make room.",
+        };
+        return $"{seconds:0.#} s between every pair of tracks. {ends} " +
+               "Choosing a track still starts on the music.";
+    }
+
+    /// <summary>How long the gaps add up to, for the line that reports what a plan comes to.</summary>
+    public static double TotalGapSeconds(IReadOnlyList<CdTrackPlan> tracks)
+    {
+        ArgumentNullException.ThrowIfNull(tracks);
+        return tracks.Sum(t => Math.Max(0, t.PregapSeconds));
     }
 
     // ── finding the setting instead of hunting for it ────────────
@@ -508,6 +652,7 @@ public static class CdTransfer
             int end = MapBoundary(track.SourceEnd, sampleRate, documentLength, isEnd: true);
             int frames = Math.Max(0, end - start);
             totalFrames += frames;
+            if (i > 0) totalFrames += track.PregapSectors * CdAudioFormat.FramesPerSector;
             double duration = frames / (double)CdSampleRate;
             if (duration < MinimumTrackSeconds)
                 issues.Add(new(CdPlanIssueSeverity.Error,
@@ -567,6 +712,24 @@ public static class CdTransfer
             cancellationToken);
     }
 
+    /// <summary>
+    /// The track's audio with its pregap ahead of it. The silence is real samples rather than a
+    /// note in the sheet, because a DDP image has to carry it and both deliverables are cut from
+    /// the same programme — a gap that existed in one and not the other would be two different
+    /// discs described by one window.
+    /// </summary>
+    private static float[][] WithPregap(float[][] audio, int pregapSamples)
+    {
+        if (pregapSamples <= 0 || audio.Length == 0) return audio;
+        var padded = new float[audio.Length][];
+        for (int c = 0; c < audio.Length; c++)
+        {
+            padded[c] = new float[pregapSamples + audio[c].Length];
+            Array.Copy(audio[c], 0, padded[c], pregapSamples, audio[c].Length);
+        }
+        return padded;
+    }
+
     private static CdPackageResult ExportPackage(
         SourceSnapshot source,
         IReadOnlyList<CdTrackPlan> orderedTracks,
@@ -622,7 +785,8 @@ public static class CdTransfer
                 double trackBase = 0.2 + 0.75 * i / Math.Max(1, prepared.Count);
                 progress?.Report(new CdPackageProgress(i, prepared.Count, track.Title, trackBase));
 
-                float[][] data = CopyRange(continuous, track.Start, track.Length, cancellationToken);
+                float[][] data = WithPregap(
+                    CopyRange(continuous, track.Start, track.Length, cancellationToken), track.PregapSamples);
                 string stagePath = Path.Combine(stageFolder, finalNames[i]);
                 var output = new AudioDocument(data, CdSampleRate, CdBitDepth)
                 {
@@ -639,7 +803,12 @@ public static class CdTransfer
                 cue.AppendLine($"    TITLE \"{CueEscape(track.Title)}\"");
                 if (!string.IsNullOrWhiteSpace(track.Plan.Performer))
                     cue.AppendLine($"    PERFORMER \"{CueEscape(track.Plan.Performer.Trim())}\"");
-                cue.AppendLine("    INDEX 01 00:00:00");
+                // INDEX 00 is where the pregap starts and INDEX 01 where the music does, which is
+                // what lets a player count the gap down in continuous listening and skip it when
+                // the track is chosen. Written only when there is a gap: a lone INDEX 00 at the
+                // same place as INDEX 01 is noise in the sheet.
+                if (track.PregapFrames > 0) cue.AppendLine("    INDEX 00 00:00:00");
+                cue.AppendLine($"    INDEX 01 {DdpImage.Timecode(track.PregapFrames)}");
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -697,6 +866,9 @@ public static class CdTransfer
         int frame = LeadInFrames;
         foreach (PreparedTrack track in PrepareTrackBoundaries(tracks, sampleRate, documentLength))
         {
+            // The pregap sits before the track and is counted in the timeline, but a track's
+            // stated length is what plays when it is chosen — which begins at INDEX 01.
+            frame += track.PregapFrames;
             int length = track.Length / CdAudioFormat.FramesPerSector;
             entries.Add(new CdPqEntry(entries.Count + 1, frame, length));
             frame += length;
@@ -795,10 +967,12 @@ public static class CdTransfer
                 progress?.Report(new CdPackageProgress(i, prepared.Count, prepared[i].Title,
                     0.2 + 0.5 * i / Math.Max(1, prepared.Count)));
 
-                audio.Add(CopyRange(continuous, prepared[i].Start, prepared[i].Length, cancellationToken));
+                audio.Add(WithPregap(
+                    CopyRange(continuous, prepared[i].Start, prepared[i].Length, cancellationToken),
+                    prepared[i].PregapSamples));
                 CdTrackPlan plan = prepared[i].Plan;
                 info.Add(new DdpTrackInfo(prepared[i].Title, plan.Performer, plan.Songwriter,
-                    plan.Isrc, plan.PreEmphasis));
+                    plan.Isrc, plan.PreEmphasis, prepared[i].PregapFrames));
             }
 
             Directory.CreateDirectory(stageFolder);
@@ -847,7 +1021,10 @@ public static class CdTransfer
             int start = MapBoundary(plan.SourceStart, sampleRate, documentLength, isEnd: false);
             int end = MapBoundary(plan.SourceEnd, sampleRate, documentLength, isEnd: true);
             string title = string.IsNullOrWhiteSpace(plan.Title) ? $"Track {i + 1:00}" : plan.Title.Trim();
-            result.Add(new PreparedTrack(plan, title, start, end));
+            // Track 01 never carries one however the plan is written: the two-second lead-in every
+            // disc begins with already is its pregap.
+            int pregap = i == 0 ? 0 : plan.PregapSectors * CdAudioFormat.FramesPerSector;
+            result.Add(new PreparedTrack(plan, title, start, end, pregap));
         }
         return result;
     }

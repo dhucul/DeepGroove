@@ -115,9 +115,22 @@ public partial class CdTransferDialog : Window
             PreEmphasis = PreEmphasis,
         };
 
-        public void SetRange(int start, int end)
+        public void SetRange(int start, int end) =>
+            SetPlan(Plan with { SourceStart = start, SourceEnd = end });
+
+        /// <summary>
+        /// Replace the range and the pregap together. The editable fields — title, performer,
+        /// songwriter, ISRC, pre-emphasis — are held on the row rather than on the plan, so a plan
+        /// arriving from a gap pass cannot overwrite what the user has typed.
+        /// </summary>
+        public void SetPlan(CdTrackPlan plan)
         {
-            Plan = Plan with { SourceStart = start, SourceEnd = end };
+            Plan = Plan with
+            {
+                SourceStart = plan.SourceStart,
+                SourceEnd = plan.SourceEnd,
+                PregapSeconds = plan.PregapSeconds,
+            };
             Raise(nameof(StartText));
             Raise(nameof(EndText));
             Raise(nameof(DurationText));
@@ -142,6 +155,8 @@ public partial class CdTransferDialog : Window
     private bool _closeWhenFinished;
     private bool _dialogReady;
     private bool _syncingRack;
+    private double _gapSeconds;
+    private bool _applyingGap;
 
     /// <summary>
     /// Open — or raise — the CD window for <paramref name="document"/>. It is modeless, so the
@@ -489,6 +504,8 @@ public partial class CdTransferDialog : Window
         if (plans.Count == 0 || plans.Count != previous)
         {
             ReplaceTracks(plans);
+            RetrimForGap();
+            UpdatePlan();
             return (previous, double.NaN);
         }
 
@@ -501,6 +518,7 @@ public partial class CdTransferDialog : Window
             worst = FurthestMove(worst, plans[i].SourceEnd - _tracks[i].Plan.SourceEnd);
             _tracks[i].SetRange(plans[i].SourceStart, plans[i].SourceEnd);
         }
+        RetrimForGap();
         UpdatePlan();
         return (previous, worst / (double)Math.Max(1, rate));
     }
@@ -519,6 +537,99 @@ public partial class CdTransferDialog : Window
             return count;
         rejected = true;
         return null;
+    }
+
+    // ── an even gap between every pair of tracks ─────────────────
+
+    /// <summary>Enter commits the box, so a gap can be set without reaching for another control.</summary>
+    private void OnGapKey(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        ApplyGap();
+    }
+
+    private void OnGapCommitted(object sender, RoutedEventArgs e) => ApplyGap();
+
+    /// <summary>
+    /// Put the gap back over a list that has just changed underneath it.
+    /// </summary>
+    /// <remarks>
+    /// A gap is an instruction about the disc — "two seconds between every pair" — not a one-off
+    /// edit, so re-analysing or adding a track must not quietly drop it. Safe to run at any time
+    /// because <see cref="CdTransfer.ApplyGaps"/> is idempotent: a range already trimmed to its
+    /// music trims to itself. Silent, because the caller has its own line to write.
+    /// </remarks>
+    private void RetrimForGap()
+    {
+        if (_gapSeconds <= 0 || _applyingGap || _tracks.Count == 0) return;
+        _applyingGap = true;
+        try
+        {
+            var trimmed = CdTransfer.ApplyGaps(
+                _document.Doc.Channels.ToArray(), _document.Doc.SampleRate, CurrentPlan(),
+                _gapSeconds, thresholdSlider.Value);
+            for (int i = 0; i < _tracks.Count && i < trimmed.Count; i++) _tracks[i].SetPlan(trimmed[i]);
+        }
+        finally { _applyingGap = false; }
+    }
+
+    /// <summary>
+    /// Set the silence between every pair of tracks to what the box says.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This <b>trims the rows, visibly</b>, rather than doing something at export the user cannot
+    /// see: an even gap means taking the record's own quiet off both ends of each split and putting
+    /// back exactly what was asked for, so SOURCE IN and SOURCE OUT move and can be read and
+    /// corrected. A gap arranged in secret at export would be a plan that does not describe the
+    /// disc, which is the fault this window has been reported for four times.
+    /// </para>
+    /// <para>
+    /// The quiet is judged at the AUTO SPLIT threshold — the level the user has already called
+    /// quiet — so the two halves of the window cannot disagree about where a song ends.
+    /// </para>
+    /// </remarks>
+    private void ApplyGap()
+    {
+        if (_busy || !_dialogReady || _applyingGap) return;
+
+        string typed = gapBox.Text?.Trim() ?? "";
+        if (typed.Length == 0) typed = "0";
+        if (!double.TryParse(typed, NumberStyles.Float, CultureInfo.CurrentCulture, out double seconds) &&
+            !double.TryParse(typed, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds))
+        {
+            gapBox.Text = $"{_gapSeconds:0.#}";
+            statusText.Text = $"Enter a gap from 0 to {CdTransfer.MaximumGapSeconds:0} seconds.";
+            return;
+        }
+
+        seconds = Math.Round(Math.Clamp(seconds, 0, CdTransfer.MaximumGapSeconds), 1);
+        gapBox.Text = $"{seconds:0.#}";
+        if (_tracks.Count == 0) { _gapSeconds = seconds; return; }
+
+        _applyingGap = true;
+        List<CdTrackPlan> trimmed;
+        try
+        {
+            trimmed = CdTransfer.ApplyGaps(
+                _document.Doc.Channels.ToArray(), _document.Doc.SampleRate, CurrentPlan(),
+                seconds, thresholdSlider.Value);
+        }
+        finally { _applyingGap = false; }
+
+        int moved = 0;
+        for (int i = 0; i < _tracks.Count && i < trimmed.Count; i++)
+        {
+            if (trimmed[i].SourceStart != _tracks[i].Plan.SourceStart ||
+                trimmed[i].SourceEnd != _tracks[i].Plan.SourceEnd)
+                moved++;
+            _tracks[i].SetPlan(trimmed[i]);
+        }
+
+        _gapSeconds = seconds;
+        UpdatePlan();
+        statusText.Text = CdTransfer.DescribeGap(seconds, _tracks.Count, moved);
     }
 
     /// <summary>
@@ -927,6 +1038,7 @@ public partial class CdTransferDialog : Window
     private void RefreshOrder()
     {
         for (int i = 0; i < _tracks.Count; i++) _tracks[i].Order = i + 1;
+        RetrimForGap();
         UpdatePlan();
     }
 
@@ -1219,6 +1331,7 @@ public partial class CdTransferDialog : Window
         importIsrcBtn.IsEnabled = autoNumberBtn.IsEnabled = !busy && Ddp;
         wavCueBtn.IsEnabled = ddpBtn.IsEnabled = !busy;
         thresholdSlider.IsEnabled = !busy;
+        gapBox.IsEnabled = !busy;
         analyzeBtn.IsEnabled = !busy;
         findTracksBtn.IsEnabled = !busy;
         trackCountBox.IsEnabled = !busy;

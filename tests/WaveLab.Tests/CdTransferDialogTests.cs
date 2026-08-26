@@ -871,4 +871,109 @@ public sealed class CdTransferDialogTests : IDisposable
 
         Assert.Contains("Enter a track count from 1 to 99", status, StringComparison.Ordinal);
     }
+
+    // ── the gap between tracks ───────────────────────────────────
+
+    private static void SetGap(Window window, string text)
+    {
+        var box = (TextBox)window.FindName("gapBox");
+        box.Text = text;
+        box.RaiseEvent(new RoutedEventArgs(UIElement.LostFocusEvent));
+        Wpf.Pump();
+    }
+
+    /// <summary>
+    /// Setting a gap trims the rows <b>visibly</b>. An even gap means taking the record's own quiet
+    /// off both ends of each split and putting back exactly what was asked for, so SOURCE IN and
+    /// SOURCE OUT move — and doing that in secret at export would be a plan that does not describe
+    /// the disc, which is the fault this window has been reported for repeatedly.
+    /// </summary>
+    [Fact]
+    public void SettingAGapTrimsTheRowsWhereTheUserCanSeeIt()
+    {
+        (IReadOnlyList<CdTrackPlan> before, IReadOnlyList<CdTrackPlan> after, string status) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main);
+
+            (IReadOnlyList<CdTrackPlan>, IReadOnlyList<CdTrackPlan>, string) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                SettleAnalysis(window);
+                IReadOnlyList<CdTrackPlan> was = Plans(window);
+                SetGap(window, "2");
+                result = (was, Plans(window), ((TextBlock)window.FindName("statusText")).Text);
+            });
+            return result;
+        });
+
+        Assert.Equal(3, after.Count);
+        // Track 01 never carries a pregap; the others do.
+        Assert.Equal(0, after[0].PregapSeconds);
+        Assert.Equal(2, after[1].PregapSeconds);
+        Assert.Equal(2, after[2].PregapSeconds);
+
+        // The ends facing another track pulled back to the music; the outer ends did not move.
+        Assert.True(after[0].SourceEnd < before[0].SourceEnd);
+        Assert.True(after[1].SourceStart > before[1].SourceStart);
+        Assert.Equal(before[0].SourceStart, after[0].SourceStart);
+        Assert.Equal(before[^1].SourceEnd, after[^1].SourceEnd);
+
+        Assert.Contains("2 s between every pair of tracks", status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A gap is an instruction about the disc, not a one-off edit, so re-analysing must not quietly
+    /// drop it. Safe to re-apply because trimming a range to its music is idempotent.
+    /// </summary>
+    [Fact]
+    public void AGapSurvivesTheListBeingRebuiltUnderneathIt()
+    {
+        IReadOnlyList<CdTrackPlan> plans = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = OpenSideWithGaps(main);
+
+            IReadOnlyList<CdTrackPlan> result = [];
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                SettleAnalysis(window);
+                SetGap(window, "2");
+
+                // A whole new list, from a different setting.
+                ((Slider)window.FindName("thresholdSlider")).Value = -30;
+                Wpf.Pump();
+                Click(window, "analyzeBtn");
+                SettleAnalysis(window);
+                result = Plans(window);
+            });
+            return result;
+        });
+
+        Assert.All(plans.Skip(1), p => Assert.Equal(2, p.PregapSeconds));
+        Assert.Equal(0, plans[0].PregapSeconds);
+    }
+
+    [Fact]
+    public void ANonsenseGapIsRefusedRatherThanIgnored()
+    {
+        (string status, string box) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main, (0, 20));
+
+            (string, string) result = default;
+            Wpf.Show(new CdTransferDialog(document, main), window =>
+            {
+                Wpf.Pump();
+                SetGap(window, "later");
+                result = (((TextBlock)window.FindName("statusText")).Text,
+                    ((TextBox)window.FindName("gapBox")).Text);
+            });
+            return result;
+        });
+
+        Assert.Contains("Enter a gap from 0 to 10 seconds", status, StringComparison.Ordinal);
+        Assert.Equal("0", box);
+    }
 }

@@ -414,6 +414,10 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
             CdTransfer.DescribeSweep(Unreachable(), 6),
             CdTransfer.DescribeSweep(Relaxed(), null),
             CdTransfer.DescribeSweep(new CdSplitSweep([], null, -70, -25, false), null),
+            CdTransfer.DescribeGap(2, 3, 2),
+            CdTransfer.DescribeGap(2, 3, 1),
+            CdTransfer.DescribeGap(2, 3, 0),
+            CdTransfer.DescribeGap(0, 3, 0),
         ];
 
         var report = new List<string>();
@@ -483,7 +487,8 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
             {
                 Wpf.Pump();
                 foreach (string name in
-                    (string[])["thresholdSlider", "thresholdText", "trackCountBox", "findTracksBtn", "analyzeBtn"])
+                    (string[])["thresholdSlider", "thresholdText", "trackCountBox", "findTracksBtn",
+                               "analyzeBtn", "gapBox", "wavCueBtn", "ddpBtn", "importIsrcBtn", "autoNumberBtn"])
                 {
                     var element = (FrameworkElement)window.FindName(name)!;
                     double given = element.ActualWidth;

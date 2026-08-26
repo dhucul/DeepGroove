@@ -160,7 +160,7 @@ public static class HelpCatalog
             Section("Regions and preview",
                 "Save Track List marks the arranged tracks on the waveform and stores them beside the file, so reopening it brings the same list back. Exporting does not need it. Preview Track plays the selected track using the same dry or rack-rendered path chosen for export. Render the current rack includes rack processing in preview and output; leave it off for the unprocessed source."),
             Section("CD package output",
-                "Export CD Package creates gapless, 44.1 kHz, 16-bit, CD-frame-aligned WAV tracks and a CUE sheet. It does not burn a physical disc. Use disc-authoring software to burn the generated CUE/WAV package. Validate track order, names, boundaries, and total duration first.")),
+                "Gap sets the silence between one track and the next, the same length between every pair whatever the record left there: the quiet is trimmed off both ends of each split and exactly what you asked for is put back, so the SOURCE IN and SOURCE OUT columns move where you can see them. It is the incoming track's pregap, so a player counts it down while the disc plays through and skips it when you choose that track. Zero keeps the record's own quiet as it is. Export CD Package creates 44.1 kHz, 16-bit, CD-frame-aligned WAV tracks and a CUE sheet. It does not burn a physical disc. Use disc-authoring software to burn the generated CUE/WAV package. Validate track order, names, boundaries, and total duration first.")),
 
         Topic("master-rack", "MASTERING", "Master Rack and rendering",
             "Build a real-time processing chain, save presets, and commit it safely.",

@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -10,8 +10,14 @@ namespace WaveLab.Audio;
 /// <param name="Songwriter">CD-TEXT songwriter.</param>
 /// <param name="Isrc">The recording's ISRC, twelve characters, or empty.</param>
 /// <param name="PreEmphasis">Whether the track was cut with pre-emphasis.</param>
+/// <param name="PregapFrames">
+/// How much of this track's audio is the silence ahead of the music, in CD frames. The PQ sheet
+/// states it as an INDEX 00 of its own, which is what tells a player — and a plant — that the gap
+/// belongs to this track and is to be skipped when the track is chosen directly.
+/// </param>
 public readonly record struct DdpTrackInfo(
-    string Title, string Performer = "", string Songwriter = "", string Isrc = "", bool PreEmphasis = false)
+    string Title, string Performer = "", string Songwriter = "", string Isrc = "",
+    bool PreEmphasis = false, int PregapFrames = 0)
 {
     /// <summary>An ISRC with its punctuation removed and its case normalised, or empty if unusable.</summary>
     public string NormalisedIsrc => Audio.Isrc.Normalise(Isrc);
@@ -262,7 +268,10 @@ public static class DdpImage
         IReadOnlyList<DdpTrackInfo> info, DdpDiscInfo disc)
     {
         var text = new StringBuilder();
-        text.AppendLine($"# PQ descriptor — {info.Count} track{(info.Count == 1 ? "" : "s")}");
+        // Hyphen rather than an em dash on purpose: this file is written as ASCII, which maps
+        // anything above 0x7F to a question mark, so the wording has to stay inside it. Same trap
+        // the AIFF text chunks were fixed for.
+        text.AppendLine($"# PQ descriptor - {info.Count} track{(info.Count == 1 ? "" : "s")}");
         if (disc.NormalisedUpc.Length > 0) text.AppendLine($"UPC/EAN  {disc.NormalisedUpc}");
         text.AppendLine("TRK  INDEX  START         LENGTH        ISRC          EMPH  TITLE");
 
@@ -273,8 +282,17 @@ public static class DdpImage
             int start = starts[t] + LeadInFrames;
             int end = (t + 1 < starts.Length ? starts[t + 1] : totalFrames) + LeadInFrames;
 
+            // A pregap is stated as an index of its own: INDEX 00 where the silence begins and
+            // INDEX 01 where the music does. Without the first row the plant reads the gap as the
+            // opening of the track, and a player would neither count it down nor skip it.
+            int pregap = Math.Clamp(info[t].PregapFrames, 0, Math.Max(0, end - start));
+            if (pregap > 0)
+                text.AppendLine(
+                    $"{t + 1,3:D2}  00     {Timecode(start)}  {Timecode(pregap)}  " +
+                    $"{Fixed(string.Empty, 12)}  {(info[t].PreEmphasis ? "ON " : "OFF")}   (pregap)");
+
             text.AppendLine(
-                $"{t + 1,3:D2}  01     {Timecode(start)}  {Timecode(end - start)}  " +
+                $"{t + 1,3:D2}  01     {Timecode(start + pregap)}  {Timecode(end - start - pregap)}  " +
                 $"{Fixed(info[t].NormalisedIsrc, 12)}  {(info[t].PreEmphasis ? "ON " : "OFF")}   {info[t].Title}");
         }
 

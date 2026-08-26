@@ -9,6 +9,7 @@
     <Window.Resources>
         <sys:String x:Key="QuietBelowHelp">How quiet a stretch has to be before it counts as a gap between songs. Drag right if Analyze misses a split, left if it invents one. Dragging right also moves every split earlier, further into the fade-out.</sys:String>
         <sys:String x:Key="TrackCountHelp">Tries every setting from -70 to -25 dB and uses the one the tracks hold steadiest at, so you do not have to hunt for it. Leave the count empty to take the steadiest answer, or fill it in if you know how many songs the side holds.</sys:String>
+        <sys:String x:Key="GapHelp">Silence between one track and the next, the same length between every pair whatever the record left there. It is the incoming track's pregap, so a player counts it down while the disc plays through and skips it when you choose that track. Zero keeps the record's own quiet exactly as it is.</sys:String>
     </Window.Resources>
     <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
         <Border.Effect><DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.6" Color="#000000"/></Border.Effect>
@@ -53,7 +54,10 @@
             </Grid>
 
             <Grid Grid.Row="2" Margin="20,0,20,10">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="DELIVERABLE" Style="{StaticResource UpperLabel}"/>
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
@@ -68,7 +72,15 @@
                 <TextBlock x:Name="deliverableHint" Grid.Column="1" Margin="16,20,16,0" FontSize="10.5"
                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                            Foreground="{StaticResource Faint}"/>
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom"
+                            Margin="0,0,12,0" ToolTip="{StaticResource GapHelp}">
+                    <TextBlock Text="Gap" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                    <TextBox x:Name="gapBox" Width="46" Margin="8,0,0,0" Padding="6,7" Text="0"
+                             FontFamily="{StaticResource MonoFont}" TextAlignment="Center"
+                             LostFocus="OnGapCommitted" KeyDown="OnGapKey"/>
+                    <TextBlock Text="s" Margin="6,0,0,0" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Bottom">
                     <Button x:Name="importIsrcBtn" Content="Import ISRCs…" Width="112" Height="30"
                             Style="{StaticResource AccentButton}" Foreground="{StaticResource Muted}"
                             Click="OnImportIsrcs" ToolTip="A plain text file, one ISRC per line, in track order."/>

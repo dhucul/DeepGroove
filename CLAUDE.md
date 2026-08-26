@@ -2148,6 +2148,45 @@ what to choose unprompted rather than about overruling somebody who knows their 
 - Measured in the built dialog: the AUTO SPLIT row went from four controls to seven and nothing in
   it is cut, and the widest new wording wants 515 px of the status line's 756.
 
+### An even gap between tracks, which is a subtraction before it is an addition
+
+Asked for as *"can we have an option to put in some pregaps — silence between tracks."* Two
+decisions, both put to the user because the wrong choice on either is invisible until the disc is
+burned.
+
+- **Every gap is made the same length rather than lengthened by the same amount.** The splits land
+  at the middle of the quiet between two songs, so each track already carries half of whatever the
+  record left there — measured on the test side, four seconds at one split and eight at the next.
+  Adding a fixed silence on top of that keeps the unevenness and makes it worse. `ApplyGaps` trims
+  each split back to the music either side of it and puts back exactly what was asked for.
+  **So the setting usually makes the disc shorter, not longer**: with 4 s gaps the test side goes
+  from 3:00 to 2:56, because twelve seconds of the record's own quiet came out and eight went back.
+- **Nothing above the threshold is ever trimmed**, so a fade only loses the part of itself that had
+  already fallen below the level the user called quiet — inaudible by that definition. The level is
+  the AUTO SPLIT slider's, so the two halves of the window cannot disagree about where a song ends.
+  A track with nothing above the threshold anywhere is left exactly as it is rather than collapsed.
+- **It trims the rows visibly rather than doing it at export.** SOURCE IN and SOURCE OUT move and
+  can be read and corrected. A gap arranged in secret would be a plan that does not describe the
+  disc, which is the fault this window has been reported for four times.
+- **It is idempotent**, which is what lets it be re-applied whenever the list changes underneath it:
+  a range already trimmed to its music trims to itself. A gap is an instruction about the disc, not
+  a one-off edit, so re-analysing must not silently drop it — `RetrimForGap` runs from
+  `ApplyProposal` and `RefreshOrder`, and `AGapSurvivesTheListBeingRebuiltUnderneathIt` pins it.
+- **The silence is the incoming track's pregap, not its opening**, so choosing a track starts on the
+  music the way a shop-bought CD does rather than serving two seconds of dead air. That cost a
+  format change in both deliverables: the cue sheet gains `INDEX 00` / `INDEX 01`, and the PQ
+  descriptor — which had one INDEX 01 row per track hardcoded — gains a row of its own for the gap.
+  `BothDeliverablesCarryTheGapAsAPregapRatherThanAsTheTrackOpening` checks the two against each
+  other, because a gap in one and not the other is two discs described by one window.
+  **Track 01 never carries one**: the two-second lead-in every disc begins with already is it.
+- The silence is **real samples in both**, not a note in the sheet, because a DDP image has to carry
+  it and both deliverables are cut from the same programme.
+- **Found on the way past: `PQDESCR` is written as `Encoding.ASCII`, and its own header carried an
+  em dash** — so every image set ever written says `# PQ descriptor ? 3 tracks`. Same trap this file
+  already records for the AIFF text chunks. ASCII is defensible for a file a plant's systems read;
+  putting a character outside it into that file is not. The header is a hyphen now and the test
+  asserts the whole sheet is question-mark free, which catches the next one.
+
 ### The cue sheet credited the application on every disc
 
 Found while checking Export, which had **no test at all** — `ExportDdpAsync` was covered and

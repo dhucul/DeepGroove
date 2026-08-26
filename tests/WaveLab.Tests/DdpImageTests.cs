@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using WaveLab.Audio;
@@ -336,6 +336,64 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
         CdPackageResult anonymous = await CdTransfer.ExportPackageAsync(
             document, [new(0, Rate * 15, "Only")], Path.Combine(_directory, "anon"), "Side B");
         Assert.DoesNotContain("PERFORMER", File.ReadAllText(anonymous.CueFile), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A gap has to reach the disc as a <i>pregap</i> in both deliverables, or the two describe
+    /// different discs. It is real silence at the head of the track's audio — a DDP image has to
+    /// carry it as samples — and both sheets say where the music starts so a player skips it when
+    /// the track is chosen rather than serving two seconds of dead air.
+    /// </summary>
+    [Fact]
+    public async Task BothDeliverablesCarryTheGapAsAPregapRatherThanAsTheTrackOpening()
+    {
+        var document = new AudioDocument(Track(Rate * 15), Rate, sourceBitDepth: 16);
+        List<CdTrackPlan> plan =
+        [
+            new(0, Rate * 5, "One"),
+            new(Rate * 5, Rate * 10, "Two", PregapSeconds: 2),
+            new(Rate * 10, Rate * 15, "Three", PregapSeconds: 2),
+        ];
+
+        // ── the burner's package ──
+        string cueFolder = Path.Combine(_directory, "cue");
+        CdPackageResult package = await CdTransfer.ExportPackageAsync(document, plan, cueFolder, "Side A");
+        string cue = File.ReadAllText(package.CueFile);
+        output.WriteLine(cue);
+
+        // Track 01 has no pregap, so it carries no INDEX 00 at all - a lone one sitting at the same
+        // place as INDEX 01 would be noise in the sheet.
+        Assert.Equal(2, cue.Split("INDEX 00").Length - 1);
+        Assert.Equal(3, cue.Split("INDEX 01").Length - 1);
+        Assert.Contains("INDEX 01 00:00:00", cue, StringComparison.Ordinal);   // track 01
+        Assert.Contains("INDEX 00 00:00:00", cue, StringComparison.Ordinal);   // the gap starts here
+        Assert.Contains("INDEX 01 00:02:00", cue, StringComparison.Ordinal);   // the music starts here
+
+        // The silence is really in the file: two seconds of it, at CD rate, 16-bit stereo.
+        var lengths = package.WaveFiles.Select(f => new FileInfo(f).Length).ToList();
+        Assert.Equal(lengths[0] + 2 * Rate * 4, lengths[1]);
+        Assert.Equal(lengths[0] + 2 * Rate * 4, lengths[2]);
+
+        // ── the plant's image ──
+        string ddpFolder = Path.Combine(_directory, "ddp");
+        DdpResult image = await CdTransfer.ExportDdpAsync(
+            document, plan, ddpFolder, new DdpDiscInfo("Side A"));
+        string pq = File.ReadAllText(image.Files.First(f => f.EndsWith("PQDESCR", StringComparison.Ordinal)));
+        output.WriteLine(pq);
+
+        // Two tracks gained a row of their own for the gap, and the music row moved two seconds on.
+        Assert.Equal(2, pq.Split("  00     ").Length - 1);
+        Assert.Contains("(pregap)", pq, StringComparison.Ordinal);
+        // Track 02: lead-in 2 s + track 01's 5 s = 00:07:00 for the pregap, music at 00:09:00.
+        Assert.Contains("02  00     00:07:00  00:02:00", pq, StringComparison.Ordinal);
+        Assert.Contains("02  01     00:09:00", pq, StringComparison.Ordinal);
+        // The image is four seconds longer than the audio, which is the two gaps.
+        Assert.Equal((Rate * 15L + 4L * Rate) * 4, image.ImageBytes);
+
+        // The sheet is written as ASCII, which turns anything above 0x7F into a question mark - so
+        // nothing this app writes into it may be outside ASCII. The header carried an em dash and
+        // shipped as "# PQ descriptor ? 3 tracks".
+        Assert.DoesNotContain('?', pq);
     }
 
     [Fact]
