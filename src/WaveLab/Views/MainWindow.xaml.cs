@@ -2098,7 +2098,7 @@ public partial class MainWindow : Window
     private async void OnReduceNoise(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null) return;
+        if (LongOperationRunning || d == null) return;
         if (d.NoiseProfile == null)
         {
             InfoDialog.Show(this, "Reduce Noise", "Learn a noise profile from a noise-only selection first (Restore menu).");
@@ -2155,7 +2155,7 @@ public partial class MainWindow : Window
     private async void OnRemoveClicks(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null || d.Doc.Length == 0) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
         var dlg = new ParamDialog("Remove Clicks & Pops", "Apply", null, null, 0,
             new ParamDialog.SliderSpec("Sensitivity", 1, 10, 5, v => $"{v:0}", 1)) { Owner = this };
         AddKeepRemoved(dlg, d);
@@ -2184,7 +2184,7 @@ public partial class MainWindow : Window
     private void OnRemoveHum(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null || d.Doc.Length == 0) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
         var dlg = new ParamDialog("Remove Hum", "Apply", "Mains frequency", ["50 Hz (Europe)", "60 Hz (Americas)"], 1,
             new ParamDialog.SliderSpec("Harmonics", 1, 8, 4, v => $"{v:0}", 1),
             new ParamDialog.SliderSpec("Notch width (Q)", 10, 60, 30, v => $"Q {v:0}")) { Owner = this };
@@ -2212,7 +2212,7 @@ public partial class MainWindow : Window
     private async void OnDetectSilence(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null || d.Doc.Length == 0) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
         var dlg = SilenceDialog("Detect Silences", "Mark");
         if (dlg!.ShowDialog() != true) return;
         var silences = await DetectSilencesAsync(d, dlg.Values[0], dlg.Values[1]);
@@ -2226,7 +2226,7 @@ public partial class MainWindow : Window
     private async void OnTrimSilence(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null || d.Doc.Length == 0) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
         var dlg = SilenceDialog("Trim Silences", "Trim");
         if (dlg!.ShowDialog() != true) return;
         var silences = await DetectSilencesAsync(d, dlg.Values[0], dlg.Values[1]);
@@ -2255,7 +2255,7 @@ public partial class MainWindow : Window
     private async void OnSplitSilence(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null || d.Doc.Length == 0) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
         var dlg = SilenceDialog("Split by Silence", "Split");
         if (dlg!.ShowDialog() != true) return;
         var silences = await DetectSilencesAsync(d, dlg.Values[0], dlg.Values[1]);
@@ -2432,7 +2432,7 @@ public partial class MainWindow : Window
 
     private async void OnChannelBalance(object sender, RoutedEventArgs e)
     {
-        if (Doc is not { Doc.ChannelCount: > 1 }) return;
+        if (LongOperationRunning || Doc is not { Doc.ChannelCount: > 1 }) return;
         var dlg = new ParamDialog("Channel Balance", "Apply", null, null, 0,
             new ParamDialog.SliderSpec("Left gain", -24, 6, 0, v => $"{v:+0.0;-0.0;0.0} dB"),
             new ParamDialog.SliderSpec("Right gain", -24, 6, 0, v => $"{v:+0.0;-0.0;0.0} dB")) { Owner = this };
@@ -2447,7 +2447,7 @@ public partial class MainWindow : Window
     private void OnTimeStretch(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null || d.Doc.Length == 0) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
         var dlg = new ParamDialog("Time Stretch (keeps pitch)", "Apply", null, null, 0,
             new ParamDialog.SliderSpec("New length", 50, 200, 100, v => $"{v:0} %", 1)) { Owner = this };
         if (dlg.ShowDialog() != true) return;
@@ -2464,7 +2464,7 @@ public partial class MainWindow : Window
     private void OnPitchShift(object sender, RoutedEventArgs e)
     {
         var d = Doc;
-        if (d == null || d.Doc.Length == 0) return;
+        if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
         var dlg = new ParamDialog("Pitch Shift (keeps duration)", "Apply", null, null, 0,
             new ParamDialog.SliderSpec("Semitones", -12, 12, 0, v => $"{v:+0;-0;0} st", 1),
             new ParamDialog.SliderSpec("Cents", -100, 100, 0, v => $"{v:+0;-0;0} ¢", 1)) { Owner = this };

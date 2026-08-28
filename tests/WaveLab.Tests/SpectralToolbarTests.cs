@@ -398,6 +398,33 @@ public sealed class SpectralToolbarTests(ITestOutputHelper output)
         Assert.False(vm.IsLogarithmicScale);
     }
 
+    /// <summary>
+    /// The View menu carries the same three choices as checkable items, and a click flips the
+    /// tick off before the command runs; their binding is one-way, so only the view model can put
+    /// it back. Choosing the scale already in force is a no-op everywhere else and must still
+    /// announce the checked states, or the item sits unticked beside the scale it names.
+    /// </summary>
+    [Fact]
+    public void ChoosingTheScaleAlreadyInForceStillAnnouncesTheTicks()
+    {
+        var vm = new MainViewModel { ActiveDocument = Document() };
+        vm.UseLogarithmicScaleCommand.Execute(null);
+
+        var raised = new List<string>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
+
+        vm.UseLogarithmicScaleCommand.Execute(null);
+
+        Assert.True(vm.IsLogarithmicScale);
+        foreach (string name in new[]
+                 {
+                     nameof(vm.IsLinearScale), nameof(vm.IsLogarithmicScale), nameof(vm.IsConstantQScale),
+                 })
+        {
+            Assert.Contains(name, raised);
+        }
+    }
+
     /// <summary>A width that means nothing is not a width, and must not hide anything.</summary>
     [Fact]
     public void AnUnmeasuredWidthLeavesTheBarAsItWas()

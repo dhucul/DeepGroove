@@ -310,7 +310,7 @@
                     <MenuItem Header="VST3 Plugins…" Click="OnManageVst3"/>
                 </MenuItem>
                 <MenuItem Header="_Help">
-                    <MenuItem Header="Deep Groove Help..." InputGestureText="F1"
+                    <MenuItem Header="Deep Groove Help…" InputGestureText="F1"
                               Command="{x:Static ApplicationCommands.Help}"/>
                     <MenuItem Header="Recording and Level Assistant" Tag="recording-levels" Click="OnHelpTopic"/>
                     <MenuItem Header="Keyboard and Mouse Shortcuts" Tag="shortcuts" Click="OnHelpTopic"/>

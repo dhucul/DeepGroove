@@ -2,6 +2,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -202,12 +203,38 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         MatchLoudnessCommand = new RelayCommand(
             () => RequestMatchLoudnessDialog?.Invoke(), () => AudioDocuments.Any());
         AboutCommand = new RelayCommand(() => MessageBox.Show(
-            "Deep Groove 2.0\n\nAudio editor and mastering suite.\nWAV/AIFF · MP3/FLAC/AAC import & export\nEffects rack · restoration · EBU R128 metering\nWASAPI playback and recording",
+            $"Deep Groove {AppVersion}\n\nAudio editor and mastering suite.\nWAV/AIFF · MP3/FLAC/AAC import & export\nEffects rack · restoration · EBU R128 metering\nWASAPI playback and recording",
             "About Deep Groove", MessageBoxButton.OK, MessageBoxImage.Information));
 
         // Last, because it refreshes the command it has just been given: the recent list has
         // exactly one way in, so nothing can add a path and leave Clear looking at a stale count.
         SyncRecentFiles();
+    }
+
+    /// <summary>
+    /// The version this build actually carries, read off the assembly rather than written down.
+    /// </summary>
+    /// <remarks>
+    /// About said "2.0" for thirty-five releases because the number lived in a string literal and
+    /// the release bump only ever touched the csproj; reading it here means the two cannot part
+    /// company again. <c>InformationalVersion</c> is <c>2.0.35+&lt;commit&gt;</c> once the SDK
+    /// stamps the source revision onto it, and that suffix is build provenance rather than
+    /// something to show someone, so it is cut. Falls back to the three-part assembly version,
+    /// and then to nothing: a name with no number after it is honest, a stale number is not.
+    /// </remarks>
+    private static string AppVersion { get; } = ResolveAppVersion();
+
+    private static string ResolveAppVersion()
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        string? stamped = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(stamped))
+        {
+            int plus = stamped.IndexOf('+');
+            return plus < 0 ? stamped : stamped[..plus];
+        }
+        return assembly.GetName().Version?.ToString(3) ?? "";
     }
 
     public PlaybackEngine Engine { get; }
@@ -732,11 +759,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         get => _spectralScale;
         set
         {
-            if (!Set(ref _spectralScale, value)) return;
+            bool changed = Set(ref _spectralScale, value);
+
+            // Announced even when the scale did not move. The three View menu items are
+            // IsCheckable, so a click flips the tick locally before the command runs, and their
+            // binding is one-way: only the source can put it back. Choosing the scale already in
+            // force is a no-op everywhere else, and used to leave that item sitting unticked
+            // beside the scale it names until some later change happened to speak up.
             Raise(nameof(IsLinearScale));
             Raise(nameof(IsLogarithmicScale));
             Raise(nameof(IsConstantQScale));
-            Raise(nameof(ShowsBinsPerOctave));
+            if (changed) Raise(nameof(ShowsBinsPerOctave));
         }
     }
 
@@ -1367,6 +1400,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async void CloseTab(TabViewModel? tab)
     {
+        // The tab's own × button names the tab it sits on; the File menu item and Ctrl+W name
+        // nothing and mean "the one in front". Resolve that here, against the active *tab* rather
+        // than the active document: _active is null whenever a montage is in front, so falling back
+        // to it below would have sent the montage down the document path and closed nothing at all.
+        tab ??= _activeTab;
+
         // A montage has no samples, no autosave and no marker sidecar, so the document close path
         // has nothing to do for it: it is asked about unsaved work and then simply removed.
         if (tab is MontageViewModel montage) { CloseMontageTab(montage); return; }

@@ -1,5 +1,6 @@
 using System.Threading;
 using WaveLab.Audio;
+using WaveLab.Audio.Montage;
 using WaveLab.Util;
 using WaveLab.ViewModels;
 using Xunit;
@@ -7,7 +8,8 @@ using Xunit;
 namespace WaveLab.Tests;
 
 /// <summary>
-/// Close All Files, which a CD import is the reason for: one disc opens a tab per track.
+/// Closing tabs: Close All Files, which a CD import is the reason for — one disc opens a tab per
+/// track — and Close File, which names no tab and so has to mean whichever one is in front.
 /// </summary>
 /// <remarks>
 /// In the shared UI thread rather than a bare STA one, because closing a tab awaits a marker flush
@@ -86,5 +88,34 @@ public sealed class CloseAllTests : IDisposable
         });
 
         Assert.Null(active);
+    }
+
+    /// <summary>
+    /// Close File and Ctrl+W pass no tab, so the command has to resolve "the one in front" itself.
+    /// A montage is in front without any document behind it, and falling back to the active
+    /// document rather than the active tab used to leave the item enabled over a montage it could
+    /// not close — and, worse, aimed at an audio tab the user was not looking at.
+    /// </summary>
+    [Fact]
+    public void CloseFileClosesTheMontageInFrontRatherThanNothing()
+    {
+        (bool available, int remaining, bool audioSurvived) = Wpf.Run(() =>
+        {
+            using var viewModel = new MainViewModel();
+            viewModel.AddDocument(Track(1));
+            viewModel.AddMontage(new MontageDocument(48_000, 2) { Title = "Side A" });
+            Assert.IsType<MontageViewModel>(viewModel.ActiveTab);
+
+            bool canClose = viewModel.CloseTabCommand.CanExecute(null);
+            viewModel.CloseTabCommand.Execute(null);
+            Wpf.Pump();
+
+            return (canClose, viewModel.Documents.Count,
+                viewModel.Documents.SingleOrDefault() is DocumentViewModel);
+        });
+
+        Assert.True(available);
+        Assert.Equal(1, remaining);
+        Assert.True(audioSurvived);
     }
 }
