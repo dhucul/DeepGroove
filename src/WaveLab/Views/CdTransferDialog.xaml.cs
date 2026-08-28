@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
@@ -158,6 +158,13 @@ public partial class CdTransferDialog : Window
     private bool _syncingRack;
     private double _gapSeconds;
     private bool _applyingGap;
+
+    /// <summary>
+    /// Whether the gap may only be added. Set for a programme assembled from separate files, whose
+    /// heads and tails are finished decisions rather than the record's own quiet — see
+    /// <see cref="CdTransfer.WithEvenPregaps"/> for why the two cases cannot share one rule.
+    /// </summary>
+    private bool _addOnlyGap;
     private float[]? _envelope;
 
     /// <summary>
@@ -166,7 +173,14 @@ public partial class CdTransferDialog : Window
     /// at, are the ones on screen now rather than whichever ones happened to be set before the
     /// window appeared.
     /// </summary>
-    public static CdTransferDialog ShowFor(DocumentViewModel document, MainViewModel main, Window? owner)
+    /// <param name="evenPregapSeconds">
+    /// A gap to arrive with, for a programme assembled from separate files. It also says that those
+    /// files are finished masters, so the gap adds silence and never trims a head or a tail back to
+    /// make room for it. Null is the transfer case: a side cut into tracks, arriving with no gap
+    /// because the record's own quiet is already sitting between the songs.
+    /// </param>
+    public static CdTransferDialog ShowFor(DocumentViewModel document, MainViewModel main, Window? owner,
+        double? evenPregapSeconds = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(main);
@@ -177,7 +191,7 @@ public partial class CdTransferDialog : Window
             return existing;
         }
 
-        var dialog = new CdTransferDialog(document, main) { Owner = owner };
+        var dialog = new CdTransferDialog(document, main, evenPregapSeconds) { Owner = owner };
         dialog.Closed += (_, _) =>
         {
             if (OpenDialogs.TryGetValue(document, out CdTransferDialog? registered) &&
@@ -193,7 +207,8 @@ public partial class CdTransferDialog : Window
         return dialog;
     }
 
-    public CdTransferDialog(DocumentViewModel document, MainViewModel main)
+    public CdTransferDialog(DocumentViewModel document, MainViewModel main,
+        double? evenPregapSeconds = null)
     {
         InitializeComponent();
         _document = document;
@@ -207,6 +222,22 @@ public partial class CdTransferDialog : Window
             ReplaceTracks(regionTracks.Select(item => item.Plan).ToList(),
                 regionTracks.Select(item => item.Source).ToList());
         ApplyDeliverable();
+
+        // A gap the caller already knows the answer to, put on screen and into the plan before the
+        // window is ever shown. The box defaults to 0 because a transferred side arrives with the
+        // record's quiet still between its songs; a set of separate files arrives with nothing
+        // between them at all, and leaving that to be discovered produced a disc whose every track
+        // ran hard into the next.
+        if (evenPregapSeconds is { } seed)
+        {
+            _addOnlyGap = true;
+            _gapSeconds = CdTransfer.SnapGapSeconds(seed);
+            gapBox.Text = $"{_gapSeconds:0.###}";
+            _applyingGap = true;
+            try { ApplyGapToRows(PlanWithGap(_gapSeconds)); }
+            finally { _applyingGap = false; }
+            UpdatePlan();
+        }
 
         // Everything this window shows is a view of state the main window can still change while it
         // is open. Each subscription keeps one of those in step; all three come off again on close.
@@ -344,15 +375,25 @@ public partial class CdTransferDialog : Window
     private bool Ddp => ddpBtn.IsChecked == true;
 
     /// <summary>
-    /// The two buttons are one choice, so checking either unchecks the other. A pair of
-    /// <c>ToggleButton</c>s rather than a combo because the choice changes what half the dialog
-    /// means, and a two-item combo hides that behind a click.
+    /// Whether the burner package is written as one continuous WAV rather than one file per track.
+    /// The disc is identical either way; what differs is whether the cue sheet's INDEX times are
+    /// measured from each file's own start or from the start of the disc.
+    /// </summary>
+    private bool ImageCue => imageCueBtn.IsChecked == true;
+
+    /// <summary>
+    /// The three buttons are one choice, so checking any unchecks the others. <c>ToggleButton</c>s
+    /// rather than a combo because the choice changes what half the dialog means, and a combo hides
+    /// that behind a click.
     /// </summary>
     private void OnDeliverableChanged(object sender, RoutedEventArgs e)
     {
-        bool ddp = ReferenceEquals(sender, ddpBtn);
-        ddpBtn.IsChecked = ddp;
-        wavCueBtn.IsChecked = !ddp;
+        // Each segment is re-checked from the sender rather than toggled, which is also what makes
+        // clicking the checked one a no-op: WPF has already unchecked it by the time Click arrives,
+        // and this puts it back.
+        wavCueBtn.IsChecked = ReferenceEquals(sender, wavCueBtn);
+        imageCueBtn.IsChecked = ReferenceEquals(sender, imageCueBtn);
+        ddpBtn.IsChecked = ReferenceEquals(sender, ddpBtn);
         ApplyDeliverable();
     }
 
@@ -367,10 +408,14 @@ public partial class CdTransferDialog : Window
         discPerformer.IsEnabled = !_busy;
         discUpc.IsEnabled = !_busy && ddp;
         importIsrcBtn.IsEnabled = autoNumberBtn.IsEnabled = !_busy && ddp;
-        exportBtn.Content = ddp ? "Export DDP Image Set…" : "Export CD Package…";
+        exportBtn.Content = ddp ? "Export DDP Image Set…"
+            : ImageCue ? "Export CD Image…"
+            : "Export CD Package…";
         deliverableHint.Text = ddp
             ? "PQ sheet, CD-TEXT, catalogue numbers and a checksum, for a pressing plant."
-            : "Sector-aligned 16-bit WAVs and a cue sheet, for a disc burner. Catalogue fields do not apply.";
+            : ImageCue
+                ? "One continuous 16-bit WAV and a cue sheet whose INDEX times run across the disc. Catalogue fields do not apply."
+                : "One sector-aligned 16-bit WAV per track, and a cue sheet indexing each from its own start. Catalogue fields do not apply.";
         UpdatePlan();
     }
 
@@ -591,14 +636,33 @@ public partial class CdTransferDialog : Window
     {
         if (_gapSeconds <= 0 || _applyingGap || _tracks.Count == 0) return;
         _applyingGap = true;
-        try
-        {
-            var trimmed = CdTransfer.ApplyGaps(
-                _document.Doc.Channels.ToArray(), _document.Doc.SampleRate, CurrentPlan(),
-                _gapSeconds, thresholdSlider.Value, Envelope());
-            for (int i = 0; i < _tracks.Count && i < trimmed.Count; i++) _tracks[i].SetPlan(trimmed[i]);
-        }
+        try { ApplyGapToRows(PlanWithGap(_gapSeconds)); }
         finally { _applyingGap = false; }
+    }
+
+    /// <summary>
+    /// The plan this window's gap setting implies, by whichever of the two rules applies to the
+    /// audio underneath it. Which one that is was decided when the window opened, by the caller that
+    /// knew where the audio came from — a transferred side, or a set of separate files.
+    /// </summary>
+    private List<CdTrackPlan> PlanWithGap(double seconds) => _addOnlyGap
+        ? CdTransfer.WithEvenPregaps(CurrentPlan(), seconds)
+        : CdTransfer.ApplyGaps(
+            _document.Doc.Channels.ToArray(), _document.Doc.SampleRate, CurrentPlan(),
+            seconds, thresholdSlider.Value, Envelope());
+
+    /// <summary>Puts a gap pass onto the rows, and says how many track boundaries it moved.</summary>
+    private int ApplyGapToRows(IReadOnlyList<CdTrackPlan> planned)
+    {
+        int moved = 0;
+        for (int i = 0; i < _tracks.Count && i < planned.Count; i++)
+        {
+            if (planned[i].SourceStart != _tracks[i].Plan.SourceStart ||
+                planned[i].SourceEnd != _tracks[i].Plan.SourceEnd)
+                moved++;
+            _tracks[i].SetPlan(planned[i]);
+        }
+        return moved;
     }
 
     /// <summary>
@@ -639,27 +703,13 @@ public partial class CdTransferDialog : Window
         if (_tracks.Count == 0) { _gapSeconds = seconds; return; }
 
         _applyingGap = true;
-        List<CdTrackPlan> trimmed;
-        try
-        {
-            trimmed = CdTransfer.ApplyGaps(
-                _document.Doc.Channels.ToArray(), _document.Doc.SampleRate, CurrentPlan(),
-                seconds, thresholdSlider.Value, Envelope());
-        }
+        int moved;
+        try { moved = ApplyGapToRows(PlanWithGap(seconds)); }
         finally { _applyingGap = false; }
-
-        int moved = 0;
-        for (int i = 0; i < _tracks.Count && i < trimmed.Count; i++)
-        {
-            if (trimmed[i].SourceStart != _tracks[i].Plan.SourceStart ||
-                trimmed[i].SourceEnd != _tracks[i].Plan.SourceEnd)
-                moved++;
-            _tracks[i].SetPlan(trimmed[i]);
-        }
 
         _gapSeconds = seconds;
         UpdatePlan();
-        statusText.Text = CdTransfer.DescribeGap(seconds, _tracks.Count, moved);
+        statusText.Text = CdTransfer.DescribeGap(seconds, _tracks.Count, moved, !_addOnlyGap);
     }
 
     /// <summary>
@@ -1226,11 +1276,14 @@ public partial class CdTransferDialog : Window
         }
 
         bool ddp = Ddp;
+        bool imageCue = ImageCue;
         var picker = new OpenFolderDialog
         {
             Title = ddp
                 ? "Choose a new or empty folder for the DDP image set"
-                : "Choose a new or empty folder for the CD package",
+                : imageCue
+                    ? "Choose a new or empty folder for the CD image and cue sheet"
+                    : "Choose a new or empty folder for the CD package",
         };
         if (picker.ShowDialog(this) != true) return;
 
@@ -1268,9 +1321,12 @@ public partial class CdTransferDialog : Window
             var progress = new Progress<CdPackageProgress>(p =>
             {
                 progressBar.Value = packageStart + p.Fraction * (1 - packageStart);
-                statusText.Text = p.CompletedTracks >= p.TotalTracks
+                statusText.Text =
+                    p.CompletedTracks >= p.TotalTracks
+                        && p.CurrentTrack != CdPackageProgress.WritingImageStage
                     ? "CD package complete."
-                    : p.CurrentTrack == "Converting continuous master"
+                    : p.CurrentTrack is CdPackageProgress.ConvertingStage
+                                     or CdPackageProgress.WritingImageStage
                         ? $"{p.CurrentTrack} - {p.Fraction:P0}"
                         : $"Preparing {p.CurrentTrack} - {Math.Min(p.CompletedTracks + 1, p.TotalTracks)} of {p.TotalTracks}";
             });
@@ -1285,6 +1341,17 @@ public partial class CdTransferDialog : Window
                     "audio plus its PQ descriptor, CD-TEXT and checksum. Send the whole folder to the plant.\n\n" +
                     $"IMAGE.DAT MD5  {image.ImageMd5}",
                     image.Folder);
+            }
+            else if (imageCue)
+            {
+                var result = await CdTransfer.ExportImageAsync(exportSource, plan, picker.FolderName,
+                    discTitle.Text, discPerformer.Text, progress, token);
+                progressBar.Value = 1;
+                InfoDialog.Show(this, "CD Image Ready",
+                    $"Wrote the whole programme as one 16-bit WAV of {new FileInfo(result.WaveFiles[0]).Length / (1024.0 * 1024):0.0} MB " +
+                    $"and a CUE sheet indexing {plan.Count} track(s) by their position on the disc. " +
+                    "Open the CUE file in your preferred disc-burning application.",
+                    result.CueFile);
             }
             else
             {
@@ -1375,7 +1442,7 @@ public partial class CdTransferDialog : Window
         discPerformer.IsEnabled = !busy;
         discUpc.IsEnabled = !busy && Ddp;
         importIsrcBtn.IsEnabled = autoNumberBtn.IsEnabled = !busy && Ddp;
-        wavCueBtn.IsEnabled = ddpBtn.IsEnabled = !busy;
+        wavCueBtn.IsEnabled = imageCueBtn.IsEnabled = ddpBtn.IsEnabled = !busy;
         thresholdSlider.IsEnabled = !busy;
         gapBox.IsEnabled = !busy;
         analyzeBtn.IsEnabled = !busy;

@@ -8,6 +8,7 @@ using Microsoft.Win32;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;
+using WaveLab.Audio.Montage;
 using WaveLab.Audio.Vst3;
 using WaveLab.Help;
 using WaveLab.Util;
@@ -663,6 +664,102 @@ public partial class MainWindow : Window
     {
         if (Doc == null) return;
         CdTransferDialog.ShowFor(Doc, _vm, this);
+    }
+
+    /// <summary>
+    /// A disc from a set of finished files, without arranging anything first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The packager cuts from one continuous programme, and rendering a montage was for a long time
+    /// the only way to get several files into one. That put the plainest case there is — a running
+    /// order of finished masters — through a window built for positioning and crossfading clips,
+    /// which asks about neither the running order nor the gap and hands on a plan carrying no gap at
+    /// all. The reported result was a cue sheet whose every track read <c>INDEX 01 00:00:00</c>,
+    /// which is what "no gap anywhere" looks like written down, and nothing along that path had said
+    /// so or offered to be otherwise.
+    /// </para>
+    /// <para>
+    /// So: choose files, get a disc laid out with two seconds between every pair, and arrange the
+    /// order in the window that already has ▲ and ▼ for it. Needs no open document, which is why it
+    /// lives on File rather than beside the transfer tools on Restore.
+    /// </para>
+    /// </remarks>
+    private async void OnPrepareCdFromFiles(object sender, RoutedEventArgs e)
+    {
+        // The overlay covers the document area, not the menu bar, so this stays clickable while a
+        // load is in flight. Two of them racing would each clear LongOperationRunning as they
+        // finished, and the close guard would stop covering the one still decoding.
+        if (LongOperationRunning) return;
+
+        var picker = new OpenFileDialog
+        {
+            Title = "Choose the files to put on the disc",
+            Filter = AudioImporter.OpenFilter,
+            Multiselect = true,
+        };
+        if (picker.ShowDialog(this) != true) return;
+
+        // Sorted by name rather than taken in the order the picker hands them back, which is the
+        // order they were clicked in and not something the user can see afterwards. Named tracks
+        // sort into the order their names imply; anything else is arranged with ▲ and ▼.
+        string[] paths = [.. picker.FileNames.OrderBy(path => path, StringComparer.CurrentCultureIgnoreCase)];
+
+        try
+        {
+            LongOperationRunning = true;
+
+            // Loading resamples — onto the CD's own clock, once, here — so it runs off the UI
+            // thread, behind the overlay rather than behind a frozen window. An album side is
+            // seconds of decoding and a boxed set is minutes of it, and until the work is hosted
+            // there is nothing to watch it on and no way to abandon it.
+            CdTransfer.CdAssembly? loaded = null;
+            await _vm.Progress.RunBlockingAsync("Building the CD programme",
+                $"Reading {paths.Length} file(s) onto 44.1 kHz stereo",
+                async (progress, token) => loaded = await Task.Run(() =>
+                {
+                    var files = new List<(string Name, float[][] Channels)>(paths.Length);
+                    for (int i = 0; i < paths.Length; i++)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        MontageSource source = MontageSource.Load(
+                            paths[i], CdTransfer.CdSampleRate, CdTransfer.CdChannels, token,
+                            SubProgress.Slice(progress, i, paths.Length));
+                        files.Add((source.Name, source.Channels));
+                    }
+                    return CdTransfer.Assemble(files, CdTransfer.CdSampleRate, cancellationToken: token);
+                }, token));
+
+            if (loaded is not { } assembled) return;
+            _vm.AddDocument(assembled.Document);
+            if (_vm.ActiveDocument is not { } document) return;
+
+            int order = 1;
+            foreach (CdTrackPlan plan in assembled.Tracks)
+                document.Regions.Add(new NamedRegion
+                {
+                    Name = plan.Title,
+                    Start = plan.SourceStart,
+                    End = plan.SourceEnd,
+                    CdTrackOrder = order++,
+                });
+            document.NotifyMarkersChanged();
+
+            CdTransferDialog.ShowFor(document, _vm, this, CdTransfer.DefaultGapSeconds);
+            _vm.ReportAction(
+                $"{paths.Length} file(s) laid end to end as one programme, one CD track each, with " +
+                $"{CdTransfer.DefaultGapSeconds:0.###} s between every pair. Prepare Audio CD is open: " +
+                "check the order, change the gap if you want a different one, then Export.");
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction("Building the CD programme was cancelled; nothing was opened.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Audio CD from files", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { LongOperationRunning = false; }
     }
 
     private void OnVinylWorkflow(object sender, RoutedEventArgs e)

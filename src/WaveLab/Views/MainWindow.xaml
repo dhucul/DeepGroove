@@ -121,6 +121,7 @@
                     <MenuItem Header="Open…" InputGestureText="Ctrl+O" Command="{Binding OpenCommand}"/>
                     <MenuItem Header="Open As Bit Depth…" Click="OnOpenAsBitDepth"/>
                     <MenuItem Header="Extract Audio CD…" Click="OnExtractAudioCd"/>
+                    <MenuItem Header="Audio CD from Files…" Click="OnPrepareCdFromFiles"/>
                     <MenuItem Header="Save" InputGestureText="Ctrl+S" Command="{Binding SaveCommand}"/>
                     <MenuItem Header="Save As…" InputGestureText="Ctrl+Shift+S" Command="{Binding SaveAsCommand}"/>
                     <MenuItem Header="Export…" InputGestureText="Ctrl+E" Command="{Binding ExportCommand}"/>

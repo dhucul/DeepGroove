@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls.Primitives;
 using Microsoft.Win32;
 using WaveLab.Audio;
@@ -214,12 +214,23 @@ public partial class MainWindow
                         });
                     }
                     document.NotifyMarkersChanged();
+
+                    // A montage's clips are finished files laid on a lane, so the CD window's gap
+                    // adds silence and never trims a clip back to make room for it. How much:
+                    // nothing where clips overlap, because a crossfaded programme is deliberately
+                    // continuous and a gap would undo the fade that was arranged; otherwise the two
+                    // seconds a disc normally has between songs. Arriving with no gap at all is what
+                    // sent a running order of four separate songs to a cue sheet whose every track
+                    // read INDEX 01 00:00:00.
+                    double gap = (result?.Crossfades ?? 0) > 0 ? 0 : CdTransfer.DefaultGapSeconds;
+
                     // Names the tab and says where the writing happens: neither destination writes
                     // anything itself, and the folder is asked for by the CD window's Export.
                     _vm.ReportAction(
-                        $"Rendered into a new tab, \"{document.Title}\", with one region per clip. " +
+                        $"Rendered into a new tab, \"{document.Title}\", with one region per clip" +
+                        (gap > 0 ? $" and {gap:0.###} s between every pair" : "") + ". " +
                         "Prepare Audio CD is open; its Export button writes the package." + measured);
-                    CdTransferDialog.ShowFor(document, _vm, this);
+                    CdTransferDialog.ShowFor(document, _vm, this, gap);
                 }
                 break;
             }

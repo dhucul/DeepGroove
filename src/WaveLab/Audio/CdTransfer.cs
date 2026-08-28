@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Text;
 using WaveLab.Audio.Dsp;
@@ -45,6 +45,18 @@ public sealed record CdPackageProgress(
     string CurrentTrack,
     double? OverallFraction = null)
 {
+    /// <summary>
+    /// The two stages that are not a per-track step, named rather than spelled out at each site.
+    /// </summary>
+    /// <remarks>
+    /// A caller wording these differently — <c>CdTransferDialog</c> does, because "Preparing
+    /// Writing the image - 10 of 10" describes nothing — has to recognise them, and comparing a
+    /// literal it keeps its own copy of makes a rename here silently change its behaviour rather
+    /// than fail to build.
+    /// </remarks>
+    public const string ConvertingStage = "Converting continuous master";
+    public const string WritingImageStage = "Writing the image";
+
     public double Fraction => Math.Clamp(
         OverallFraction ?? (TotalTracks > 0 ? (double)CompletedTracks / TotalTracks : 0), 0, 1);
 }
@@ -117,6 +129,25 @@ public static class CdTransfer
         int SourceBitDepth,
         int EditVersion,
         int Length);
+
+    /// <summary>
+    /// The document's stable channel-array references and metadata, captured on the caller's thread
+    /// before any background work is scheduled.
+    /// </summary>
+    /// <remarks>
+    /// An <see cref="AudioDocument"/> edit replaces those arrays rather than mutating them, so an
+    /// edit landing mid-export cannot mix two versions of the file into one deliverable. Every
+    /// exporter here takes its snapshot the same way, which is why this is one method and not three.
+    /// </remarks>
+    private static SourceSnapshot Snapshot(AudioDocument document)
+    {
+        var channels = document.Channels.ToArray();
+        int length = document.Length;
+        if (channels.Any(c => c.Length != length))
+            throw new InvalidOperationException("The document channels do not have matching lengths.");
+        return new SourceSnapshot(channels, document.SampleRate, document.SourceBitDepth,
+            document.EditVersion, length);
+    }
 
     private sealed record PreparedTrack(CdTrackPlan Plan, string Title, int Start, int End, int PregapSamples)
     {
@@ -204,6 +235,33 @@ public static class CdTransfer
     /// <summary>What a CD normally leaves between two songs.</summary>
     public const double DefaultGapSeconds = 2;
     public const double MaximumGapSeconds = 10;
+
+    /// <summary>
+    /// The pregap alone: every track but the first carries <paramref name="gapSeconds"/> of silence
+    /// ahead of it, and no boundary moves.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ApplyGaps"/> takes the record's own quiet off both ends of each split before
+    /// putting the gap back, because a side cut into tracks carries an uneven amount of that quiet
+    /// and evening it out is the whole point of the control there.
+    /// </para>
+    /// <para>
+    /// A set of separately mastered files has no such quiet to reclaim. Each head and tail is a
+    /// decision somebody already made — a count-in, a fade, a held chord — and trimming one back to
+    /// the first sample above a threshold would edit a finished master to make room for silence the
+    /// pregap is going to supply anyway. So this path adds and never subtracts.
+    /// </para>
+    /// </remarks>
+    public static List<CdTrackPlan> WithEvenPregaps(IReadOnlyList<CdTrackPlan> tracks, double gapSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(tracks);
+        double gap = SnapGapSeconds(gapSeconds);
+        var result = new List<CdTrackPlan>(tracks.Count);
+        for (int i = 0; i < tracks.Count; i++)
+            result.Add(tracks[i] with { PregapSeconds = i == 0 ? 0 : gap });
+        return result;
+    }
 
     /// <summary>
     /// Trim each split back to the music either side of it and declare a fixed gap, so the silence
@@ -354,10 +412,21 @@ public static class CdTransfer
             MidpointRounding.AwayFromZero) / DdpImage.FramesPerSecond;
 
     /// <summary>What setting a gap did, in the plain voice the rest of this window reports in.</summary>
-    public static string DescribeGap(double seconds, int tracks, int trimmed)
+    /// <param name="trims">
+    /// False where the gap may only be added — a programme assembled from separate files. Saying
+    /// "nothing needed trimming" there would describe a pass that was never going to trim anything.
+    /// </param>
+    public static string DescribeGap(double seconds, int tracks, int trimmed, bool trims = true)
     {
         if (seconds <= 0)
-            return "Gap removed. The quiet between tracks is whatever the record left there.";
+            return trims
+                ? "Gap removed. The quiet between tracks is whatever the record left there."
+                : "Gap removed. Each track runs straight into the one before it.";
+
+        if (!trims)
+            return $"{seconds:0.###} s of silence ahead of every track but the first. Nothing is " +
+                   "trimmed - each file keeps its own opening and ending. Choosing a track still " +
+                   "starts on the music.";
 
         string ends = trimmed switch
         {
@@ -641,6 +710,95 @@ public static class CdTransfer
     private static string Span(double seconds) =>
         seconds < 60 ? $"{seconds:0.0} s" : TimeFormat.Compact(seconds);
 
+    // ── a disc assembled from separate files ─────────────────────
+
+    /// <summary>One continuous programme built from separate files, and the track it came from.</summary>
+    /// <param name="Document">The files laid end to end, ready for the CD window and the packager.</param>
+    /// <param name="Tracks">One track per file, in the order given, each carrying the pregap asked for.</param>
+    public sealed record CdAssembly(AudioDocument Document, IReadOnlyList<CdTrackPlan> Tracks);
+
+    /// <summary>
+    /// Lay separately mastered files end to end as one CD programme, one track each.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The packager cuts a disc from a single continuous programme — that is what keeps a gapless
+    /// transition gapless and what a DDP image has to be — so a set of files has to become one
+    /// before anything else can happen to it. Doing that here, rather than by arranging clips on a
+    /// montage lane, is the difference between stating a running order and building one: nothing
+    /// overlaps, nothing needs positioning, and the boundaries are exactly the file boundaries.
+    /// </para>
+    /// <para>
+    /// <b>The gap is declared, not written into the programme.</b> The packager puts real silence
+    /// ahead of each track when it writes the files, so baking it in here would give every gap
+    /// twice over. Declaring it also keeps it editable: the number stays visible in the CD window
+    /// and changing it costs nothing, where inserted silence would have to be found and removed.
+    /// </para>
+    /// </remarks>
+    /// <param name="files">
+    /// Each file's name and its audio, already on <paramref name="sampleRate"/> and a common channel
+    /// count — <see cref="Montage.MontageSource"/> is what brings a file onto both.
+    /// </param>
+    /// <param name="gapSeconds">Silence ahead of every track but the first.</param>
+    public static CdAssembly Assemble(
+        IReadOnlyList<(string Name, float[][] Channels)> files,
+        int sampleRate,
+        double gapSeconds = DefaultGapSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+        if (files.Count == 0) throw new ArgumentException("Choose at least one file.", nameof(files));
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+
+        int channelCount = files[0].Channels.Length;
+        if (channelCount == 0) throw new ArgumentException("The first file has no channels.", nameof(files));
+
+        long total = 0;
+        for (int i = 0; i < files.Count; i++)
+        {
+            float[][] channels = files[i].Channels;
+            if (channels.Length != channelCount)
+                throw new ArgumentException(
+                    $"\"{files[i].Name}\" has {channels.Length} channel(s) where the first file has " +
+                    $"{channelCount}. Bring every file onto one channel layout first.", nameof(files));
+            for (int c = 1; c < channels.Length; c++)
+                if (channels[c].Length != channels[0].Length)
+                    throw new ArgumentException(
+                        $"\"{files[i].Name}\" has channels of different lengths.", nameof(files));
+            // Refused here rather than left to Validate, which can only say "Track 03 covers no
+            // audio - check its SOURCE IN and SOURCE OUT" about a row the user never drew.
+            if (channels[0].Length == 0)
+                throw new ArgumentException($"\"{files[i].Name}\" holds no audio.", nameof(files));
+            total += channels[0].Length;
+        }
+        if (total > int.MaxValue)
+            throw new ArgumentException("Those files are too long to hold as one programme.", nameof(files));
+
+        var programme = new float[channelCount][];
+        for (int c = 0; c < channelCount; c++) programme[c] = new float[(int)total];
+
+        var tracks = new List<CdTrackPlan>(files.Count);
+        int at = 0;
+        for (int i = 0; i < files.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            float[][] channels = files[i].Channels;
+            int length = channels.Length > 0 ? channels[0].Length : 0;
+            for (int c = 0; c < channelCount; c++)
+                Array.Copy(channels[c], 0, programme[c], at, length);
+
+            string title = string.IsNullOrWhiteSpace(files[i].Name) ? $"Track {i + 1:00}" : files[i].Name.Trim();
+            tracks.Add(new CdTrackPlan(at, at + length, title));
+            at += length;
+        }
+
+        var document = new AudioDocument(programme, sampleRate, sourceBitDepth: 32)
+        {
+            Title = "Audio CD.wav",
+        };
+        return new CdAssembly(document, WithEvenPregaps(tracks, gapSeconds));
+    }
+
     public static List<CdTrackPlan> FromRegions(IEnumerable<NamedRegion> regions, int documentLength)
     {
         return FromRegionsWithSources(regions, documentLength)
@@ -746,12 +904,7 @@ public static class CdTransfer
         if (string.IsNullOrWhiteSpace(outputFolder))
             throw new ArgumentException("Choose an output folder.", nameof(outputFolder));
 
-        var channels = document.Channels.ToArray();
-        int length = document.Length;
-        if (channels.Any(c => c.Length != length))
-            throw new InvalidOperationException("The document channels do not have matching lengths.");
-        var snapshot = new SourceSnapshot(channels, document.SampleRate, document.SourceBitDepth,
-            document.EditVersion, length);
+        SourceSnapshot snapshot = Snapshot(document);
         var plans = orderedTracks.ToArray();
         string folder = Path.GetFullPath(outputFolder.Trim());
         string title = string.IsNullOrWhiteSpace(discTitle) ? "Audio CD" : discTitle.Trim();
@@ -897,6 +1050,208 @@ public static class CdTransfer
         }
     }
 
+    // ── the same disc as one image ───────────────────────────────
+
+    /// <summary>
+    /// The same programme as a single continuous WAV plus a cue sheet whose INDEX times run across
+    /// the whole disc.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This describes exactly the disc <see cref="ExportPackageAsync"/> describes, written the other
+    /// way round. There, each track is its own <c>FILE</c> and its INDEX times are measured from the
+    /// start of that file, so every track with a pregap reads <c>INDEX 00 00:00:00</c> /
+    /// <c>INDEX 01 00:02:00</c> — identical all the way down the sheet, because each file is measured
+    /// from its own zero. Here there is one <c>FILE</c> and the times are absolute positions on the
+    /// disc, so they climb.
+    /// </para>
+    /// <para>
+    /// Both forms are valid and most burners read both. The reason to have this one is the burners
+    /// that do not: a parser that handles the single <c>FILE</c> it has always seen from a ripper and
+    /// gives up on the second one. It is also the form to hand anyone who wants to check a running
+    /// order by reading it, since the numbers are the times a player will show.
+    /// </para>
+    /// <para>
+    /// <b>Cue times carry no lead-in.</b> A PQ sheet offsets every track by the two seconds the
+    /// plant's timeline begins with (see <see cref="PqSheet"/>); a cue sheet does not, because the
+    /// burner adds the lead-in itself and a sheet that pre-counted it would place every track two
+    /// seconds late.
+    /// </para>
+    /// </remarks>
+    public static Task<CdPackageResult> ExportImageAsync(
+        AudioDocument document,
+        IReadOnlyList<CdTrackPlan> orderedTracks,
+        string outputFolder,
+        string discTitle,
+        string? discPerformer = null,
+        IProgress<CdPackageProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(orderedTracks);
+        if (string.IsNullOrWhiteSpace(outputFolder))
+            throw new ArgumentException("Choose an output folder.", nameof(outputFolder));
+
+        SourceSnapshot snapshot = Snapshot(document);
+        var plans = orderedTracks.ToArray();
+        string folder = Path.GetFullPath(outputFolder.Trim());
+        string title = string.IsNullOrWhiteSpace(discTitle) ? "Audio CD" : discTitle.Trim();
+        string performer = discPerformer?.Trim() ?? string.Empty;
+
+        return Task.Run(() => ExportImage(snapshot, plans, folder, title, performer, progress, cancellationToken),
+            cancellationToken);
+    }
+
+    private static CdPackageResult ExportImage(
+        SourceSnapshot source,
+        IReadOnlyList<CdTrackPlan> orderedTracks,
+        string outputFolder,
+        string discTitle,
+        string discPerformer,
+        IProgress<CdPackageProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var issues = Validate(orderedTracks, source.SampleRate, source.Length);
+        var errors = issues.Where(i => i.Severity == CdPlanIssueSeverity.Error).Select(i => i.Message).ToList();
+        if (errors.Count > 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
+
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(outputFolder);
+        if (Directory.EnumerateFileSystemEntries(outputFolder).Any())
+            throw new IOException("The CD image folder must be empty. Choose a new or empty folder so existing files cannot be overwritten.");
+
+        string safeDiscTitle = SafeName(discTitle);
+        var prepared = PrepareTrackBoundaries(orderedTracks, source.SampleRate, source.Length);
+        string imageName = safeDiscTitle + ".wav";
+        string finalImagePath = Path.Combine(outputFolder, imageName);
+        string finalCuePath = Path.Combine(outputFolder, safeDiscTitle + ".cue");
+        if (File.Exists(finalImagePath) || File.Exists(finalCuePath))
+            throw new IOException("One or more package files already exist in the selected folder.");
+
+        string stageFolder = Path.Combine(outputFolder, ".wavelab-cd-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stageFolder);
+        var published = new List<string>();
+        try
+        {
+            float[][] continuous = PrepareContinuous(source, prepared.Count, progress, cancellationToken);
+            bool dither = !IsExact16BitPcm(continuous, cancellationToken);
+            (float[][] image, string cueText) =
+                BuildImage(continuous, prepared, imageName, discTitle, discPerformer, progress, cancellationToken);
+
+            // Only a resampled programme is this method's to release: at 44.1 kHz — which is every
+            // document CdTransfer.Assemble produces — PrepareContinuous returns the document's own
+            // arrays, which the snapshot holds for the duration either way, so this frees nothing.
+            // Peak is therefore the image alongside the programme, the same cost ExportDdp pays for
+            // materialising every track before it writes any.
+            continuous = [];
+
+            string stageImagePath = Path.Combine(stageFolder, imageName);
+            var output = new AudioDocument(image, CdSampleRate, CdBitDepth)
+            {
+                Title = imageName,
+                FilePath = stageImagePath,
+            };
+            var wavProgress = progress == null ? null : new CallbackProgress<double>(fraction =>
+                progress.Report(new CdPackageProgress(prepared.Count, prepared.Count,
+                    CdPackageProgress.WritingImageStage, 0.8 + 0.2 * fraction)));
+            WavCodec.Save(output, stageImagePath, CdBitDepth, dither, cancellationToken, wavProgress);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            string stageCuePath = Path.Combine(stageFolder, safeDiscTitle + ".cue");
+            File.WriteAllText(stageCuePath, cueText, new UTF8Encoding(false));
+
+            // Both files are complete before either final name becomes visible, so a cue sheet naming
+            // an image that is not beside it yet is never on disk.
+            File.Move(stageImagePath, finalImagePath, overwrite: false);
+            published.Add(finalImagePath);
+            File.Move(stageCuePath, finalCuePath, overwrite: false);
+            published.Add(finalCuePath);
+
+            progress?.Report(new CdPackageProgress(prepared.Count, prepared.Count, "Complete", 1));
+            return new CdPackageResult(outputFolder, finalCuePath, [finalImagePath]);
+        }
+        catch
+        {
+            foreach (string path in published)
+            {
+                try { File.Delete(path); }
+                catch { /* Preserve the original export failure. */ }
+            }
+            throw;
+        }
+        finally
+        {
+            try { if (Directory.Exists(stageFolder)) Directory.Delete(stageFolder, recursive: true); }
+            catch { /* A stale uniquely-named staging folder is safer than deleting user files. */ }
+        }
+    }
+
+    /// <summary>
+    /// Lays the arranged tracks into one image and writes the sheet that indexes it, in a single
+    /// pass so the two cannot come to describe different positions.
+    /// </summary>
+    /// <remarks>
+    /// Every pregap is silence the allocation already provides: a new array is zeroed, so the gap is
+    /// written by leaving a hole and stepping past it. Track boundaries are whole sectors by the time
+    /// <see cref="PrepareTrackBoundaries"/> has run — that is what <see cref="MapBoundary"/> is for —
+    /// so a track's position in the image converts to a cue timecode by division alone, with nothing
+    /// left over to round away.
+    /// </remarks>
+    private static (float[][] Image, string Cue) BuildImage(
+        float[][] continuous,
+        IReadOnlyList<PreparedTrack> prepared,
+        string imageName,
+        string discTitle,
+        string discPerformer,
+        IProgress<CdPackageProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        long total = prepared.Sum(track => (long)track.Occupies);
+        if (total > int.MaxValue)
+            throw new InvalidOperationException("The CD program exceeds the supported sample count.");
+
+        var image = new float[continuous.Length][];
+        for (int c = 0; c < image.Length; c++) image[c] = new float[(int)total];
+
+        var cue = new StringBuilder();
+        cue.AppendLine($"TITLE \"{CueEscape(discTitle)}\"");
+        if (discPerformer.Length > 0)
+            cue.AppendLine($"PERFORMER \"{CueEscape(discPerformer)}\"");
+        cue.AppendLine($"FILE \"{CueEscape(imageName)}\" WAVE");
+
+        int at = 0;
+        for (int i = 0; i < prepared.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            PreparedTrack track = prepared[i];
+            progress?.Report(new CdPackageProgress(i, prepared.Count, track.Title,
+                0.2 + 0.6 * i / Math.Max(1, prepared.Count)));
+
+            int music = at + track.PregapSamples;
+            for (int c = 0; c < image.Length; c++)
+            {
+                int available = Math.Clamp(continuous[c].Length - track.Start, 0, track.Length);
+                if (available > 0) Array.Copy(continuous[c], track.Start, image[c], music, available);
+                // The rest of the track's sectors, and all of its pregap, are the zeroes it was
+                // allocated with.
+            }
+
+            int frame = at / CdAudioFormat.FramesPerSector;
+            cue.AppendLine($"  TRACK {i + 1:00} AUDIO");
+            cue.AppendLine($"    TITLE \"{CueEscape(track.Title)}\"");
+            if (!string.IsNullOrWhiteSpace(track.Plan.Performer))
+                cue.AppendLine($"    PERFORMER \"{CueEscape(track.Plan.Performer.Trim())}\"");
+            // Where the gap starts and where the music does, both as positions on the disc. Written
+            // only when there is a gap, which is the rule the per-file sheet follows too: a lone
+            // INDEX 00 sitting at the same place as INDEX 01 is noise in either form.
+            if (track.PregapFrames > 0) cue.AppendLine($"    INDEX 00 {DdpImage.Timecode(frame)}");
+            cue.AppendLine($"    INDEX 01 {DdpImage.Timecode(frame + track.PregapFrames)}");
+
+            at += track.Occupies;
+        }
+        return (image, cue.ToString());
+    }
+
     /// <summary>
     /// Where each track lands on the disc once the plan is sector-aligned: the timing a PQ sheet
     /// states, and the only honest thing to show a user arranging a DDP.
@@ -941,10 +1296,10 @@ public static class CdTransfer
         float[][] continuous = ToStereo(source.Channels, cancellationToken);
         if (source.SampleRate == CdSampleRate) return continuous;
 
-        progress?.Report(new CdPackageProgress(0, trackCount, "Converting continuous master", 0));
+        progress?.Report(new CdPackageProgress(0, trackCount, CdPackageProgress.ConvertingStage, 0));
         var srcProgress = progress == null ? null : new CallbackProgress<double>(fraction =>
             progress.Report(new CdPackageProgress(0, trackCount,
-                "Converting continuous master", fraction * 0.2)));
+                CdPackageProgress.ConvertingStage, fraction * 0.2)));
         return Resampler.Resample(continuous, source.SampleRate, CdSampleRate,
             cancellationToken, srcProgress);
     }
@@ -973,12 +1328,7 @@ public static class CdTransfer
         if (string.IsNullOrWhiteSpace(outputFolder))
             throw new ArgumentException("Choose an output folder.", nameof(outputFolder));
 
-        var channels = document.Channels.ToArray();
-        int length = document.Length;
-        if (channels.Any(c => c.Length != length))
-            throw new InvalidOperationException("The document channels do not have matching lengths.");
-        var snapshot = new SourceSnapshot(channels, document.SampleRate, document.SourceBitDepth,
-            document.EditVersion, length);
+        SourceSnapshot snapshot = Snapshot(document);
         var plans = orderedTracks.ToArray();
         string folder = Path.GetFullPath(outputFolder.Trim());
 
@@ -1028,7 +1378,8 @@ public static class CdTransfer
 
             Directory.CreateDirectory(stageFolder);
             var imageProgress = progress == null ? null : new CallbackProgress<double>(fraction =>
-                progress.Report(new CdPackageProgress(prepared.Count, prepared.Count, "Writing the image",
+                progress.Report(new CdPackageProgress(prepared.Count, prepared.Count,
+                    CdPackageProgress.WritingImageStage,
                     0.7 + 0.3 * fraction)));
             DdpResult staged = DdpImage.Write(stageFolder, audio, info, disc, CdSampleRate,
                 cancellationToken, imageProgress);

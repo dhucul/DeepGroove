@@ -2288,6 +2288,110 @@ readout coverage would have reached it. The rack path is the one thing untested 
 needs both a finished analysis and playback — so the snapshot now following a bypass the user works
 themselves rests on inspection.
 
+## Four separate songs, and a cue sheet that had no gap in it anywhere
+
+Reported as: add several files to a montage, Render & Prepare CD, and the resulting cue sheet reads
+`INDEX 01 00:00:00` on every track — four songs butted hard against each other with no countdown
+between any pair. Followed by the sentence that matters more than the defect: *"if I did anything
+wrong then it is not clear what this montage is supposed to do."*
+
+Nothing along that path was broken. Each piece did what it says:
+
+- `MontageRenderDialog.TrackPlan()` builds `CdTrackPlan(start, end, name)` and leaves `PregapSeconds`
+  at its default of 0. The montage has no gap control, because a montage is an arrangement tool and
+  the space between two clips is a position, not a pregap.
+- `CdTransferDialog`'s `GAP` box starts at `0`, and `_gapSeconds` with it, so `ApplyGaps` never runs
+  unless the user types a number. Zero is right for the case that window was built for: a
+  **transferred side** arrives with the record's own quiet already sitting between its songs.
+- `ExportPackage` writes `INDEX 00` only when `PregapFrames > 0`, which is correct — a lone `INDEX 00`
+  at the same place as `INDEX 01` is noise in the sheet.
+
+So the composition of three correct behaviours was a disc nobody would want, reachable only through a
+window that asks about neither the running order nor the gap. **The montage was the only way to get
+several files into the one continuous programme the packager cuts from**, which is what put the
+plainest case there is through the most specialised tool in the app.
+
+### The two gap rules are different arithmetic, not a different default
+
+`CdTransfer.ApplyGaps` trims each split back to its music before declaring the gap, because a side cut
+into tracks carries an uneven amount of the record's quiet — three seconds on one side, six on the
+other — and evening that out is a subtraction before it is an addition. Run it over separately
+mastered files and it eats their fades: a head or tail below the threshold is *reclaimed*, and there
+was nothing there to reclaim. `CdTransfer.WithEvenPregaps` is the other rule — add the pregap, move no
+boundary — and which one applies is decided once, by whoever opened the window and knew where the
+audio came from (`CdTransferDialog._addOnlyGap`, set from the `evenPregapSeconds` parameter on
+`ShowFor`). `DescribeGap` takes a `trims` flag for the same reason: "nothing needed trimming" would
+describe a pass that was never going to trim anything.
+
+### The front door
+
+`File ▸ Audio CD from Files…` (`MainWindow.OnPrepareCdFromFiles`) is the plain case said plainly:
+choose files, they load onto the CD's own clock once through `MontageSource.Load`, `CdTransfer.Assemble`
+lays them end to end as one programme with one `CdTrackPlan` each, and the CD window opens with two
+seconds already between every pair. It is on **File**, not beside the transfer tools on Restore,
+because Restore is gated on `HasAudioDocument` and this needs no open document. Order comes from
+sorting the picker's names — `OpenFileDialog.FileNames` hands back click order, which is not something
+the user can see afterwards — and is rearranged with the ▲ ▼ the CD window already has.
+
+**The gap is declared, never baked into the programme.** `ExportPackage` writes the silence itself
+(`WithPregap`) into each track's file, so inserting it in `Assemble` too would give every gap twice
+over. `Assemble` therefore returns a document whose length is exactly the sum of its files;
+`CdFromFilesTests.TheProgrammeItselfHoldsNoGap` pins that.
+
+The montage handoff was fixed the same way rather than left as the odd one out: it now passes
+`DefaultGapSeconds`, or `0` where clips overlap, since a crossfaded programme is deliberately
+continuous and a gap would undo the fade that was arranged.
+
+
+## "Why are all the indexes the same?"
+
+Asked of a correct cue sheet, and the right question to ask of it. In the WAV+CUE package every track
+is its own `FILE`, and a cue sheet's INDEX times are measured **from the start of the file the `TRACK`
+sits under** — not from the start of the disc. So with an even pregap, every track after the first
+reads the identical pair:
+
+```
+FILE "02 - Born In North Van.wav" WAVE
+  TRACK 02 AUDIO
+    INDEX 00 00:00:00
+    INDEX 01 00:02:00
+```
+
+Ten tracks, ten identical stanzas, because each file is measured from its own zero. Nothing is wrong
+and every burner that reads multi-`FILE` sheets lays the disc out correctly. But it reads as a
+stuck column, and there is no way to tell from the sheet alone that it is not one.
+
+### So both forms are written now
+
+`CdTransfer.ExportImageAsync` writes the same disc as one continuous WAV with a single `FILE` line and
+absolute INDEX times, which climb. The DELIVERABLE row in `CdTransferDialog` is three segments —
+**WAV + CUE**, **Image + CUE**, **DDP 2.00 image set** — and `OnDeliverableChanged` re-checks the
+clicked one so a second click cannot leave the row with no answer in it.
+
+`CdImageTests.TheImageAndThePerTrackPackageAreTheSameDisc` is the test that matters: it exports the
+same document and plan both ways and asserts that laying the package's per-track files end to end
+reproduces the image sample for sample, pregaps and sector padding included. If the two forms ever
+drift, that is what catches it — no assertion about timecode text could.
+
+### Three things the image path must not get wrong
+
+- **No lead-in in a cue sheet.** `PqSheet` offsets every track by `LeadInFrames` because a plant's
+  timeline starts there; a cue sheet must not, because the burner adds the lead-in itself. Pre-counting
+  it would place every track two seconds late.
+- **The pregap is the hole, not a copy.** A new `float[]` is zeroed, so `BuildImage` writes a gap by
+  stepping past it. It never allocates or copies silence.
+- **Sector alignment is what makes the timecode exact.** `MapBoundary` returns whole sectors and
+  `PregapSamples` is a sector multiple, so `Occupies` is too, and a position in the image converts to
+  `MM:SS:FF` by integer division with nothing left to round. If a boundary ever stops being sector
+  aligned, the cue times go wrong silently rather than failing.
+
+Memory: `BuildImage` holds the whole programme twice for the length of the copy — `continuous` is
+released (`continuous = []`) before `WavCodec.Save` allocates. That peak is what the DDP path already
+pays, since `ExportDdp` materialises every track before writing any. A streaming WAV writer would
+remove it from both; `WavCodec` has no such API today, and adding one is the only way to fix it
+properly.
+
+
 ## Gotchas
 
 - **A dialog that vetoes its own close while busy must re-issue it.** `CdTransferDialog`,

@@ -63,7 +63,10 @@
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                         <ToggleButton x:Name="wavCueBtn" Style="{StaticResource SegmentButton}" Height="30"
                                       Content="WAV + CUE" IsChecked="True" Click="OnDeliverableChanged"
-                                      ToolTip="A burner-ready package: sector-aligned 16-bit WAVs and a cue sheet."/>
+                                      ToolTip="A burner-ready package: one sector-aligned 16-bit WAV per track, and a cue sheet whose INDEX times are measured from the start of each file - so every track with a pregap reads the same 00:00:00 / 00:02:00."/>
+                        <ToggleButton x:Name="imageCueBtn" Style="{StaticResource SegmentButton}" Height="30" Margin="6,0,0,0"
+                                      Content="Image + CUE" Click="OnDeliverableChanged"
+                                      ToolTip="The same disc as one continuous WAV, with a cue sheet whose INDEX times are positions on the disc and climb down the sheet. The form a ripper produces, and what a burner that reads only one FILE line needs."/>
                         <ToggleButton x:Name="ddpBtn" Style="{StaticResource SegmentButton}" Height="30" Margin="6,0,0,0"
                                       Content="DDP 2.00 image set" Click="OnDeliverableChanged"
                                       ToolTip="What a pressing plant takes: PQ sheet, CD-TEXT, catalogue numbers and a checksum."/>

@@ -488,7 +488,8 @@ public sealed class CdStatusRenderProbe(ITestOutputHelper output) : IDisposable
                 Wpf.Pump();
                 foreach (string name in
                     (string[])["thresholdSlider", "thresholdText", "trackCountBox", "findTracksBtn",
-                               "analyzeBtn", "gapBox", "wavCueBtn", "ddpBtn", "importIsrcBtn", "autoNumberBtn"])
+                               "analyzeBtn", "gapBox", "wavCueBtn", "imageCueBtn", "ddpBtn", "importIsrcBtn",
+                               "autoNumberBtn"])
                 {
                     var element = (FrameworkElement)window.FindName(name)!;
                     double given = element.ActualWidth;
