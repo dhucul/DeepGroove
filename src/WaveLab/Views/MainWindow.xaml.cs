@@ -913,8 +913,15 @@ public partial class MainWindow : Window
                 applied = true;
                 if (!keepRemoved) return;
                 // After the commit, so a tool that declines to edit leaves nothing behind either.
-                residualOpened?.Invoke(
-                    await CaptureRemovedAsync(d, channels, output, start, undoName, token));
+                //
+                // Two statements, and it has to stay that way. Written as
+                // residualOpened?.Invoke(await CaptureRemovedAsync(...)) the null-conditional
+                // short-circuits the whole expression when no callback was passed -- the argument
+                // with it -- so the residual was never built at all. Only Remove Crackle passes
+                // one; Reduce Noise, Remove Clicks and Remove Hum reported the repair they had
+                // made and silently kept nothing, which is what the option is for.
+                bool opened = await CaptureRemovedAsync(d, channels, output, start, undoName, token);
+                residualOpened?.Invoke(opened);
             });
         }
         catch (OperationCanceledException)
