@@ -115,6 +115,19 @@ public static class Decrackle
         return new DecrackleReport(repaired + fallbacks, replaced, fallbacks);
     }
 
+    /// <summary>Measures crackle without changing the supplied samples.</summary>
+    public static DecrackleReport Analyze(float[] samples, DecrackleOptions options = default,
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        if (options.Order == 0) options = DecrackleOptions.Default;
+
+        List<(int Start, int End)> candidates = Detect(samples, options, cancellationToken,
+            new SubProgress(progress, 0, 0.8));
+        return Classify(samples, candidates, samples.Length, cancellationToken,
+            new SubProgress(progress, 0.8, 0.2)).Report;
+    }
+
     // ── detection ────────────────────────────────────────────────
 
     /// <summary>
@@ -354,17 +367,10 @@ public static class Decrackle
 
         // Classify every candidate: musical transients pass through unmodified.
         progress?.Report(0.50);
-        int rejected = 0;
-        var accepted = new List<(int, int)>(candidates.Count);
-        for (int i = 0; i < candidates.Count; i++)
-        {
-            if ((i & 0x3F) == 0) cancellationToken.ThrowIfCancellationRequested();
-            var (start, end) = candidates[i];
-            if (IsMusicalTransient(side, start, end, n))
-                rejected++;
-            else
-                accepted.Add((start, end));
-        }
+        var classification = Classify(side, candidates, n, cancellationToken,
+            new SubProgress(progress, 0.50, 0.05));
+        List<(int Start, int End)> accepted = classification.Accepted;
+        int rejected = classification.Report.Rejected;
 
         if (accepted.Count == 0)
         {
@@ -400,6 +406,61 @@ public static class Decrackle
 
         progress?.Report(1);
         return new DecrackleReport(repaired + fallbacks, replaced, fallbacks, rejected);
+    }
+
+    /// <summary>Measures stereo surface crackle without changing either channel.</summary>
+    public static DecrackleReport AnalyzeStereo(float[] left, float[] right,
+        DecrackleOptions options = default,
+        CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        if (options.Order == 0) options = DecrackleOptions.Default;
+        int n = Math.Min(left.Length, right.Length);
+        if (n < BlockLengthFor(options)) return DecrackleReport.None;
+
+        var side = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+            side[i] = (left[i] - right[i]) * 0.5f;
+        }
+
+        List<(int Start, int End)> candidates = Detect(side, options, cancellationToken,
+            new SubProgress(progress, 0, 0.8));
+        return Classify(side, candidates, n, cancellationToken,
+            new SubProgress(progress, 0.8, 0.2)).Report;
+    }
+
+    private static (List<(int Start, int End)> Accepted, DecrackleReport Report) Classify(
+        float[] samples, List<(int Start, int End)> candidates, int length,
+        CancellationToken cancellationToken, IProgress<double>? progress)
+    {
+        int rejected = 0;
+        long acceptedSamples = 0;
+        var accepted = new List<(int, int)>(candidates.Count);
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            if ((i & 0x3F) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                progress?.Report(i / (double)Math.Max(1, candidates.Count));
+            }
+
+            var (start, end) = candidates[i];
+            if (IsMusicalTransient(samples, start, end, length))
+                rejected++;
+            else
+            {
+                accepted.Add((start, end));
+                acceptedSamples += end - start;
+            }
+        }
+
+        progress?.Report(1);
+        return (accepted,
+            new DecrackleReport(accepted.Count, acceptedSamples, 0, rejected));
     }
 
     // ── musical transient classifier ───────────────────────────────
@@ -442,20 +503,24 @@ public static class Decrackle
 
         // ── 1. Crest factor: peak / RMS within the span ──
         double peak = 0, sumSq = 0;
-        for (int i = start; i <= end; i++)
+        // Candidate ranges are end-exclusive everywhere else in this class: Repair replaces
+        // [start, end), and SamplesReplaced is end - start. Keep the classifier on that same
+        // range rather than including the first clean right-hand anchor, which can dominate the
+        // RMS and peak of a two- or three-sample defect.
+        for (int i = start; i < end; i++)
         {
             double abs = Math.Abs(side[i]);
             if (abs > peak) peak = abs;
             sumSq += side[i] * (double)side[i];
         }
-        double rms = Math.Sqrt(sumSq / (span + 1));
+        double rms = Math.Sqrt(sumSq / span);
         double crestFactor = rms > 1e-12 ? peak / rms : 1.0;
         double crestScore = Math.Clamp((crestFactor - 2.5) / 7.0, 0.0, 1.0);
 
         // ── 2. Temporal asymmetry: where the peak sits ──
         int peakIndex = start;
         double peakAbs = Math.Abs(side[start]);
-        for (int i = start + 1; i <= end; i++)
+        for (int i = start + 1; i < end; i++)
         {
             double abs = Math.Abs(side[i]);
             if (abs > peakAbs) { peakAbs = abs; peakIndex = i; }
@@ -474,7 +539,7 @@ public static class Decrackle
         // ──
         int margin = Math.Min(span * 4, 24);
         int beforeStart = Math.Max(1, start - margin);
-        int afterEnd = Math.Min(length - 1, end + margin);
+        int afterEnd = Math.Min(length, end + margin);
         double neighborEnergy = 0;
         int neighborCount = 0;
         for (int i = beforeStart; i < start; i++)
@@ -482,7 +547,7 @@ public static class Decrackle
             neighborEnergy += side[i] * (double)side[i];
             neighborCount++;
         }
-        for (int i = end + 1; i <= afterEnd; i++)
+        for (int i = end; i < afterEnd; i++)
         {
             neighborEnergy += side[i] * (double)side[i];
             neighborCount++;
@@ -497,7 +562,12 @@ public static class Decrackle
             (Math.Log10(Math.Max(isolation, 0.1)) + 0.7) / 2.0, 0.0, 1.0);
 
         // ── Combined verdict ──
-        double crackleScore = (crestScore + asymmetryScore + isolationScore) / 3.0;
+        // Crest and isolation rise with crackle likelihood. Asymmetry is the opposite: an
+        // off-centre peak is the fast-attack/slow-decay or slow-attack/fast-release shape of
+        // music. The previous formula added asymmetry directly and therefore made the exact
+        // musical evidence described above count *for* crackle.
+        double symmetryScore = 1.0 - asymmetryScore;
+        double crackleScore = (crestScore + symmetryScore + isolationScore) / 3.0;
         return crackleScore < 0.35;
     }
 }

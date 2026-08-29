@@ -11,13 +11,6 @@ public sealed class CdAudioService : ICdAudioService
 {
     private const int SectorsPerRead = 16;
 
-    /// <summary>
-    /// Sectors separating two sessions of a CD-Extra / Enhanced disc: session 1's
-    /// lead-out (90 s), session 2's lead-in (60 s) and the following track's
-    /// pregap (2 s). None of it belongs to the audio track that precedes it.
-    /// </summary>
-    private const int SessionGapSectors = 11_400;
-
     private readonly ICdAudioPlatform _platform;
 
     public CdAudioService()
@@ -104,7 +97,8 @@ public sealed class CdAudioService : ICdAudioService
         string devicePath,
         IEnumerable<int>? trackNumbers = null,
         IProgress<CdAudioExtractionProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool applyDeEmphasis = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(devicePath);
         var requestedNumbers = trackNumbers?.Distinct().ToArray();
@@ -154,7 +148,13 @@ public sealed class CdAudioService : ICdAudioService
                         cancellationToken,
                         devicePath);
 
-                    imports.Add(new CdAudioTrackImport(identity, track, document));
+                    bool deEmphasized = applyDeEmphasis && track.PreEmphasis;
+                    if (deEmphasized)
+                    {
+                        ApplyCdDeEmphasis(document.Channels, document.SampleRate);
+                        document.Title += " (de-emphasized)";
+                    }
+                    imports.Add(new CdAudioTrackImport(identity, track, document, deEmphasized));
                     completedSectors += track.SectorCount;
                 }
 
@@ -209,6 +209,7 @@ public sealed class CdAudioService : ICdAudioService
         }
 
         var raw = new byte[SectorsPerRead * CdAudioFormat.BytesPerSector];
+        var verification = new byte[raw.Length];
         int sectorsRead = 0;
         int destinationFrame = 0;
 
@@ -218,11 +219,13 @@ public sealed class CdAudioService : ICdAudioService
             int batchSectors = Math.Min(SectorsPerRead, track.SectorCount - sectorsRead);
             int expectedBytes = checked(batchSectors * CdAudioFormat.BytesPerSector);
             int startSector = checked(track.StartSector + sectorsRead);
-            int bytesRead = ReadAudioSectorsWithRetry(
+            int bytesRead = ReadVerifiedAudioSectors(
                 reader,
                 startSector,
                 batchSectors,
                 raw,
+                verification,
+                devicePath,
                 cancellationToken);
 
             if (bytesRead != expectedBytes)
@@ -256,6 +259,48 @@ public sealed class CdAudioService : ICdAudioService
         };
         document.MarkUnsaved();
         return document;
+    }
+
+    private static int ReadVerifiedAudioSectors(
+        ICdAudioDevice reader,
+        int startSector,
+        int sectorCount,
+        byte[] destination,
+        byte[] verification,
+        string devicePath,
+        CancellationToken cancellationToken)
+    {
+        const int maximumVerifiedReads = 5;
+        int expectedBytes = checked(sectorCount * CdAudioFormat.BytesPerSector);
+        var candidates = new List<byte[]>();
+
+        for (int read = 0; read < maximumVerifiedReads; read++)
+        {
+            byte[] buffer = read == 0 ? destination : verification;
+            int bytesRead = ReadAudioSectorsWithRetry(
+                reader, startSector, sectorCount, buffer, cancellationToken);
+            if (bytesRead != expectedBytes)
+                continue;
+
+            foreach (byte[] candidate in candidates)
+            {
+                if (!buffer.AsSpan(0, expectedBytes).SequenceEqual(candidate))
+                    continue;
+                if (!ReferenceEquals(buffer, destination))
+                    Buffer.BlockCopy(buffer, 0, destination, 0, expectedBytes);
+                return expectedBytes;
+            }
+
+            var snapshot = new byte[expectedBytes];
+            Buffer.BlockCopy(buffer, 0, snapshot, 0, expectedBytes);
+            candidates.Add(snapshot);
+        }
+
+        throw new CdAudioException(
+            CdAudioFailureReason.ReadFailed,
+            $"Repeated reads of sectors {startSector:N0}–{startSector + sectorCount - 1:N0} " +
+            "did not agree. The track was not imported with unverified audio.",
+            devicePath);
     }
 
     private static int ReadAudioSectorsWithRetry(
@@ -325,6 +370,36 @@ public sealed class CdAudioService : ICdAudioService
             destination[0][destinationFrame + frame] = left / 32768f;
             destination[1][destinationFrame + frame] = right / 32768f;
             sourceOffset += 4;
+        }
+    }
+
+    /// <summary>Applies the Red Book 50/15 µs playback de-emphasis curve in place.</summary>
+    internal static void ApplyCdDeEmphasis(IReadOnlyList<float[]> channels, int sampleRate)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+
+        const double numeratorTimeConstant = 15e-6;
+        const double denominatorTimeConstant = 50e-6;
+        double bilinear = 2.0 * sampleRate;
+        double a0 = 1.0 + denominatorTimeConstant * bilinear;
+        double b0 = (1.0 + numeratorTimeConstant * bilinear) / a0;
+        double b1 = (1.0 - numeratorTimeConstant * bilinear) / a0;
+        double a1 = (1.0 - denominatorTimeConstant * bilinear) / a0;
+
+        foreach (float[] samples in channels)
+        {
+            if (samples.Length == 0) continue;
+            double previousInput = samples[0];
+            double previousOutput = samples[0];
+            for (int i = 1; i < samples.Length; i++)
+            {
+                double input = samples[i];
+                double output = b0 * input + b1 * previousInput - a1 * previousOutput;
+                samples[i] = (float)output;
+                previousInput = input;
+                previousOutput = output;
+            }
         }
     }
 
@@ -403,16 +478,22 @@ public sealed class CdAudioService : ICdAudioService
             if (current.StartSector < 0 || next.StartSector <= current.StartSector)
                 throw InvalidToc(device.DevicePath, $"Track {number:00} has an invalid sector range.");
 
-            // An audio track followed by a data track is the session boundary of a
-            // CD-Extra / Enhanced disc: the sectors between them are lead-out,
-            // lead-in and pregap, not audio. Charging them to the audio track makes
-            // ExtractTrack read past the programme, which the drive rejects.
             int endSector = next.StartSector;
             if (!current.IsData && next.IsData && !next.IsLeadOut)
             {
-                endSector = next.StartSector - SessionGapSectors;
-                if (endSector <= current.StartSector)
-                    throw InvalidToc(device.DevicePath, $"Track {number:00} has an invalid sector range.");
+                CdAudioSession? currentSession = toc.Sessions.FirstOrDefault(session =>
+                    number >= session.FirstTrackNumber && number <= session.LastTrackNumber);
+                CdAudioSession? nextSession = toc.Sessions.FirstOrDefault(session =>
+                    next.TrackNumber >= session.FirstTrackNumber &&
+                    next.TrackNumber <= session.LastTrackNumber);
+                if (currentSession != null && nextSession != null &&
+                    currentSession.Number != nextSession.Number)
+                {
+                    endSector = currentSession.LeadOutSector;
+                    if (endSector <= current.StartSector || endSector > next.StartSector)
+                        throw InvalidToc(device.DevicePath,
+                            $"Track {number:00} has an invalid session lead-out.");
+                }
             }
 
             tracks.Add(new CdAudioTrack(
@@ -444,7 +525,8 @@ public sealed class CdAudioService : ICdAudioService
     {
         bool same = original.FirstTrackNumber == current.FirstTrackNumber &&
                     original.LastTrackNumber == current.LastTrackNumber &&
-                    original.Entries.SequenceEqual(current.Entries);
+                    original.Entries.SequenceEqual(current.Entries) &&
+                    original.Sessions.SequenceEqual(current.Sessions);
         if (!same)
         {
             throw new CdAudioException(

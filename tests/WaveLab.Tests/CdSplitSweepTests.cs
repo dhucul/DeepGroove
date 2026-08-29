@@ -120,7 +120,9 @@ public sealed class CdSplitSweepTests(ITestOutputHelper output)
     public void ASideWithAShallowGapCarriesASecondAnswer()
     {
         CdSplitSweep sweep = Sweep();
-        CdSplitCandidate four = Assert.Single(sweep.Candidates, c => c.Tracks == 4);
+        CdSplitCandidate four = sweep.Candidates
+            .Where(c => c.Tracks == 4)
+            .MaxBy(c => c.HighestDb - c.LowestDb)!;
 
         // It exists only at the loud end, where -34 dBFS finally counts as quiet.
         Assert.True(four.LowestDb > sweep.Best!.HighestDb,
@@ -214,12 +216,13 @@ public sealed class CdSplitSweepTests(ITestOutputHelper output)
     public void MeasuringTheEnvelopeOnceGivesTheSameSilencesAsMeasuringItEveryTime()
     {
         float[][] side = Side();
-        float[] envelope = Restoration.BlockPeaks(side, Rate);
+        float[] envelope = Restoration.BlockActivity(side, Rate);
         Assert.Equal((side[0].Length + Restoration.SilenceBlock - 1) / Restoration.SilenceBlock, envelope.Length);
 
         for (double db = -70; db <= -25; db++)
         {
-            var direct = Restoration.DetectSilences(side, Rate, db, 1250);
+            var direct = Restoration.DetectSilences(
+                Restoration.BlockActivity(side, Rate), side[0].Length, Rate, db, 1250);
             var reused = Restoration.DetectSilences(envelope, side[0].Length, Rate, db, 1250);
             Assert.Equal(direct, reused);
         }
@@ -284,5 +287,55 @@ public sealed class CdSplitSweepTests(ITestOutputHelper output)
         Assert.Null(sweep.Best);
         Assert.Equal("No gaps found at any setting. The songs may run together, or the quiet " +
             "between them may be too short.", CdTransfer.DescribeSweep(sweep, null));
+    }
+
+    [Fact]
+    public void OneClickInsideAQuietGapDoesNotHideTheGap()
+    {
+        int frames = 70 * Rate;
+        var channel = Enumerable.Repeat(0.2f, frames).ToArray();
+        Array.Clear(channel, 30 * Rate, 2 * Rate);
+        channel[31 * Rate] = 1.0f;
+
+        List<CdTrackPlan> tracks = CdTransfer.SuggestTracks(
+            [channel, (float[])channel.Clone()], Rate,
+            silenceThresholdDb: -45, minimumSilenceSeconds: 1.25,
+            minimumTrackSeconds: 20);
+
+        Assert.Equal(2, tracks.Count);
+        Assert.InRange(tracks[0].SourceEnd / (double)Rate, 30.5, 31.5);
+    }
+
+    [Fact]
+    public void ARequestedTrackCountCanRetainLegalShortTracks()
+    {
+        int frames = 70 * Rate;
+        var channel = Enumerable.Repeat(0.2f, frames).ToArray();
+        Array.Clear(channel, 6 * Rate, 2 * Rate);
+        Array.Clear(channel, 38 * Rate, 2 * Rate);
+
+        CdSplitSweep sweep = CdTransfer.SweepTracks(
+            [channel, (float[])channel.Clone()], Rate, targetTracks: 3);
+
+        Assert.Equal(3, sweep.Best?.Tracks);
+        Assert.InRange(sweep.Best!.Boundaries[1] / (double)Rate,
+            CdTransfer.MinimumTrackSeconds, CdTransfer.AutoSplitMinimumTrackSeconds - 0.1);
+    }
+
+    [Fact]
+    public void BoundarySelectionChoosesTheStrongerCompatibleGapGlobally()
+    {
+        int frames = 100 * Rate;
+        var channel = Enumerable.Repeat(0.2f, frames).ToArray();
+        Array.Clear(channel, (int)(19.5 * Rate), Rate);
+        Array.Clear(channel, 34 * Rate, 6 * Rate);
+
+        List<CdTrackPlan> tracks = CdTransfer.SuggestTracks(
+            [channel, (float[])channel.Clone()], Rate,
+            silenceThresholdDb: -45, minimumSilenceSeconds: 0.6,
+            minimumTrackSeconds: 20);
+
+        Assert.Equal(2, tracks.Count);
+        Assert.InRange(tracks[0].SourceEnd / (double)Rate, 36, 38);
     }
 }

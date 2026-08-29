@@ -18,45 +18,69 @@ public static partial class Restoration
         if (count <= 0 || count > sampleCount - start)
             throw new ArgumentOutOfRangeException(nameof(count));
 
+        return LearnNoiseProfile(channels, [(start, count)], cancellationToken);
+    }
+
+    /// <summary>
+    /// Learns one robust shared noise spectrum from several quiet regions. Channel spectra are
+    /// measured before they are combined, so uncorrelated stereo hiss is not understated by 3 dB
+    /// and anti-phase vertical noise cannot disappear in a mono fold-down.
+    /// </summary>
+    internal static float[] LearnNoiseProfile(IReadOnlyList<float[]> channels,
+        IReadOnlyList<(int Start, int Count)> regions,
+        CancellationToken cancellationToken = default)
+    {
+        int sampleCount = ValidateRestorationChannels(channels);
+        if (channels.Count == 0)
+            throw new ArgumentException("At least one audio channel is required.", nameof(channels));
+        ArgumentNullException.ThrowIfNull(regions);
+        if (regions.Count == 0)
+            throw new ArgumentException("At least one noise region is required.", nameof(regions));
+        foreach ((int regionStart, int regionCount) in regions)
+        {
+            if (regionStart < 0 || regionStart > sampleCount)
+                throw new ArgumentOutOfRangeException(nameof(regions));
+            if (regionCount <= 0 || regionCount > sampleCount - regionStart)
+                throw new ArgumentOutOfRangeException(nameof(regions));
+        }
+
         var window = Fft.HannWindow(NrFftSize);
         var profile = new double[NrFftSize / 2];
         var re = new float[NrFftSize];
         var im = new float[NrFftSize];
         int frames = 0;
 
-        for (int pos = start; pos + NrFftSize <= start + count; pos += NrHop)
+        void AccumulateFrame(int regionStart, int available, int windowOffset)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Array.Clear(im);
-            for (int i = 0; i < NrFftSize; i++)
+            foreach (float[] channel in channels)
             {
-                float mono = 0;
-                foreach (var ch in channels) mono += ch[pos + i];
-                re[i] = mono / channels.Count * window[i];
+                Array.Clear(re);
+                Array.Clear(im);
+                for (int i = 0; i < available; i++)
+                {
+                    int windowIndex = windowOffset + i;
+                    re[windowIndex] = channel[regionStart + i] * window[windowIndex];
+                }
+                Fft.Forward(re, im);
+                for (int bin = 0; bin < profile.Length; bin++)
+                    profile[bin] += Math.Sqrt(re[bin] * re[bin] + im[bin] * im[bin]) /
+                                    channels.Count;
             }
-            Fft.Forward(re, im);
-            for (int b = 0; b < profile.Length; b++)
-                profile[b] += Math.Sqrt(re[b] * re[b] + im[b] * im[b]);
             frames++;
         }
 
-        if (frames == 0)
+        foreach ((int regionStart, int regionCount) in regions)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            Array.Clear(re);
-            Array.Clear(im);
-            int windowOffset = (NrFftSize - count) / 2;
-            for (int i = 0; i < count; i++)
+            int regionFrames = 0;
+            for (int pos = regionStart; pos + NrFftSize <= regionStart + regionCount; pos += NrHop)
             {
-                float mono = 0;
-                foreach (var channel in channels) mono += channel[start + i];
-                int windowIndex = windowOffset + i;
-                re[windowIndex] = mono / channels.Count * window[windowIndex];
+                AccumulateFrame(pos, NrFftSize, 0);
+                regionFrames++;
             }
-            Fft.Forward(re, im);
-            for (int bin = 0; bin < profile.Length; bin++)
-                profile[bin] = Math.Sqrt(re[bin] * re[bin] + im[bin] * im[bin]);
-            frames = 1;
+
+            if (regionFrames == 0)
+                AccumulateFrame(regionStart, regionCount, (NrFftSize - regionCount) / 2);
         }
 
         var result = new float[profile.Length];
@@ -348,6 +372,17 @@ public static partial class Restoration
         // other bin was gated.
         int bins = NrFftSize / 2 + 1;
 
+        // A stereo image should not breathe differently on its two sides. Measure one mask from
+        // the mean channel magnitude and apply it to every channel in the same frame. Besides
+        // preserving image position, this makes the shared profile learned above mean the same
+        // thing during analysis and reduction.
+        if (data.Length > 1)
+        {
+            ReduceNoiseLinked(data, profile, floorGain, thresholdMul, window, bins,
+                cancellationToken);
+            return;
+        }
+
         var stft = NoiseReductionStft(window);
 
         foreach (var channel in data)
@@ -366,9 +401,12 @@ public static partial class Restoration
                     float target = mag > gate * 2 ? 1f
                         : mag > gate ? (float)(floorGain + (1 - floorGain) * ((mag - gate) / gate))
                         : floorGain;
+                    // Open quickly when programme arrives, close slowly when it leaves. The old
+                    // direction did the reverse and held the first frames of an attack under the
+                    // previous noise-floor gain.
                     smooth[b] = target < smooth[b]
-                        ? 0.6f * smooth[b] + 0.4f * target
-                        : 0.85f * smooth[b] + 0.15f * target;
+                        ? 0.85f * smooth[b] + 0.15f * target
+                        : 0.5f * smooth[b] + 0.5f * target;
                 }
 
                 // Median of three across frequency, which removes isolated gain spikes — the
@@ -389,6 +427,110 @@ public static partial class Restoration
                     im[b] *= smooth[b];
                 }
             }, cancellationToken);
+        }
+    }
+
+    private static void ReduceNoiseLinked(float[][] data, float[] profile, float floorGain,
+        double thresholdMul, float[] window, int bins, CancellationToken cancellationToken)
+    {
+        int channels = data.Length;
+        int length = data[0].Length;
+        if (length == 0) return;
+
+        var frames = new float[channels][];
+        var real = new float[channels][];
+        var imaginary = new float[channels][];
+        var ring = new float[channels][];
+        for (int channel = 0; channel < channels; channel++)
+        {
+            frames[channel] = new float[NrFftSize];
+            real[channel] = new float[bins];
+            imaginary[channel] = new float[bins];
+            ring[channel] = new float[NrFftSize];
+        }
+        var weights = new float[NrFftSize];
+        var smooth = Enumerable.Repeat(1f, bins).ToArray();
+        int nextOutput = 0;
+
+        for (int start = 0; start < length; start += NrHop)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            for (int channel = 0; channel < channels; channel++)
+            {
+                float[] frame = frames[channel];
+                float[] source = data[channel];
+                for (int i = 0; i < NrFftSize; i++)
+                {
+                    int sample = start + i;
+                    frame[i] = sample < length ? source[sample] * window[i] : 0f;
+                }
+                Fft.RealForward(frame, real[channel], imaginary[channel]);
+            }
+
+            for (int bin = 0; bin < bins; bin++)
+            {
+                double magnitude = 0;
+                for (int channel = 0; channel < channels; channel++)
+                {
+                    double re = real[channel][bin];
+                    double im = imaginary[channel][bin];
+                    magnitude += Math.Sqrt(re * re + im * im);
+                }
+                magnitude /= channels;
+                double gate = profile[Math.Min(bin, profile.Length - 1)] * thresholdMul;
+                float target = magnitude > gate * 2 ? 1f
+                    : magnitude > gate ? (float)(floorGain + (1 - floorGain) *
+                        ((magnitude - gate) / gate))
+                    : floorGain;
+                smooth[bin] = target < smooth[bin]
+                    ? 0.85f * smooth[bin] + 0.15f * target
+                    : 0.5f * smooth[bin] + 0.5f * target;
+            }
+
+            float previous = smooth[0];
+            for (int bin = 1; bin < bins - 1; bin++)
+            {
+                float a = previous, middle = smooth[bin], c = smooth[bin + 1];
+                previous = smooth[bin];
+                float low = Math.Min(a, Math.Min(middle, c));
+                float high = Math.Max(a, Math.Max(middle, c));
+                smooth[bin] = a + middle + c - low - high;
+            }
+
+            for (int channel = 0; channel < channels; channel++)
+            {
+                for (int bin = 0; bin < bins; bin++)
+                {
+                    real[channel][bin] *= smooth[bin];
+                    imaginary[channel][bin] *= smooth[bin];
+                }
+                Fft.RealInverse(real[channel], imaginary[channel], frames[channel]);
+            }
+
+            for (int i = 0; i < NrFftSize && start + i < length; i++)
+            {
+                int slot = (start + i) % NrFftSize;
+                float weight = window[i] * window[i];
+                weights[slot] += weight;
+                for (int channel = 0; channel < channels; channel++)
+                    ring[channel][slot] += frames[channel][i] * window[i];
+            }
+
+            int finalizedThrough = Math.Min(length, start + NrHop);
+            while (nextOutput < finalizedThrough)
+            {
+                int slot = nextOutput % NrFftSize;
+                for (int channel = 0; channel < channels; channel++)
+                {
+                    float original = data[channel][nextOutput];
+                    data[channel][nextOutput] = weights[slot] > 1e-6f
+                        ? ring[channel][slot] / weights[slot]
+                        : original;
+                    ring[channel][slot] = 0f;
+                }
+                weights[slot] = 0f;
+                nextOutput++;
+            }
         }
     }
 
@@ -425,6 +567,19 @@ public static partial class Restoration
     public static void RemoveHum(float[][] data, int sampleRate, double baseFreq, int harmonics,
         double q, double strength, CancellationToken cancellationToken = default)
     {
+        int count = Math.Clamp(harmonics, 0, 30);
+        int mask = count == 0 ? 0 : (1 << count) - 1;
+        RemoveHum(data, sampleRate, baseFreq, harmonics, mask, q, strength, cancellationToken);
+    }
+
+    /// <summary>
+    /// Removes only the harmonics supported by analysis. Bit zero represents the fundamental;
+    /// absent intermediate partials are left untouched instead of receiving speculative notches.
+    /// </summary>
+    public static void RemoveHum(float[][] data, int sampleRate, double baseFreq, int harmonics,
+        int harmonicMask, double q, double strength,
+        CancellationToken cancellationToken = default)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         float amount = (float)Math.Clamp(strength, 0.0, 1.0);
         if (amount <= 0f) return;
@@ -435,6 +590,7 @@ public static partial class Restoration
             for (int h = 1; h <= harmonics; h++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if ((harmonicMask & (1 << (h - 1))) == 0) continue;
                 double f = baseFreq * h;
                 if (f >= sampleRate * 0.48) break;
                 var notch = Biquad.Notch(sampleRate, f, q);
@@ -609,6 +765,36 @@ public static partial class Restoration
             peaks[block] = peak;
         }
         return peaks;
+    }
+
+    /// <summary>
+    /// A robust programme-activity envelope: the 75th-percentile absolute sample in each block.
+    /// Sparse clicks and crackle therefore cannot turn an otherwise quiet CD gap into programme.
+    /// </summary>
+    public static float[] BlockActivity(
+        IReadOnlyList<float[]> channels, int sampleRate,
+        CancellationToken cancellationToken = default)
+    {
+        int n = ValidateRestorationChannels(channels, sampleRate);
+        if (n == 0) return [];
+
+        var activity = new float[(n + SilenceBlock - 1) / SilenceBlock];
+        var scratch = new float[SilenceBlock];
+        for (int pos = 0, block = 0; pos < n; pos += SilenceBlock, block++)
+        {
+            if ((pos & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+            int count = Math.Min(SilenceBlock, n - pos);
+            for (int i = 0; i < count; i++)
+            {
+                float value = 0;
+                foreach (float[] channel in channels)
+                    value = Math.Max(value, Math.Abs(channel[pos + i]));
+                scratch[i] = value;
+            }
+            Array.Sort(scratch, 0, count);
+            activity[block] = scratch[Math.Clamp((int)Math.Floor((count - 1) * 0.75), 0, count - 1)];
+        }
+        return activity;
     }
 
     /// <summary>

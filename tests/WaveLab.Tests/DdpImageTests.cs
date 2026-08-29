@@ -103,6 +103,24 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
         Assert.Equal(0x00, image[3]);
     }
 
+    [Fact]
+    public void ProcessedSamplesAreDitheredBeforeTheDdpWordLengthReduction()
+    {
+        int frames = DdpImage.SamplesPerFrame * 4;
+        float value = 0.25f / 32768f; // one quarter of a 16-bit LSB: undithered this is always zero
+        float[][] track = [Enumerable.Repeat(value, frames).ToArray(), new float[frames]];
+
+        DdpImage.Write(_directory, [track], [new DdpTrackInfo("One")],
+            new DdpDiscInfo("Disc"), Rate);
+        byte[] image = File.ReadAllBytes(Path.Combine(_directory, "IMAGE.DAT"));
+
+        var leftWords = new HashSet<short>();
+        for (int offset = 0; offset < image.Length; offset += 4)
+            leftWords.Add((short)(image[offset] << 8 | image[offset + 1]));
+        Assert.Contains((short)0, leftWords);
+        Assert.Contains(leftWords, word => word != 0);
+    }
+
     /// <summary>
     /// Every track must begin on a CD frame. A track that does not fill its last frame pushes
     /// everything after it off the grid, which a CD cannot represent.
@@ -231,6 +249,14 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
         float[][] mono = [new float[1_000]];
         Assert.Throws<ArgumentException>(() =>
             DdpImage.Write(_directory, [mono], [new DdpTrackInfo("t")], new DdpDiscInfo("d"), Rate));
+    }
+
+    [Fact]
+    public void UnequalStereoChannelLengthsAreRejectedRatherThanTruncated()
+    {
+        float[][] uneven = [new float[1_000], new float[999]];
+        Assert.Throws<ArgumentException>(() =>
+            DdpImage.Write(_directory, [uneven], [new DdpTrackInfo("t")], new DdpDiscInfo("d"), Rate));
     }
 
     [Fact]

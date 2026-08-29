@@ -496,31 +496,17 @@ public static partial class Restoration
 
             if (automatic)
             {
-                float positivePeak = 0f;
-                float negativePeak = 0f;
-                for (int i = 0; i < samples.Length; i++)
-                {
-                    if (samples[i] > positivePeak) positivePeak = samples[i];
-                    float negativeMagnitude = -samples[i];
-                    if (negativeMagnitude > negativePeak) negativePeak = negativeMagnitude;
-                }
-
-                if (positivePeak >= minimumPeak)
-                {
-                    float tolerance = Math.Max(2e-7f, positivePeak * (float)relativeTolerance);
-                    ScanClippedRuns(samples, channelIndex, ClipPolarity.Positive,
-                        positivePeak - tolerance, positivePeak, tolerance, true,
-                        automaticMinimumRun, maximumGap, minimumConfidence, events,
-                        cancellationToken);
-                }
-                if (negativePeak >= minimumPeak)
-                {
-                    float tolerance = Math.Max(2e-7f, negativePeak * (float)relativeTolerance);
-                    ScanClippedRuns(samples, channelIndex, ClipPolarity.Negative,
-                        negativePeak - tolerance, negativePeak, tolerance, true,
-                        automaticMinimumRun, maximumGap, minimumConfidence, events,
-                        cancellationToken);
-                }
+                // A transfer can contain several clipping rails: gain changes, edits, or two
+                // converters can put genuine flat tops at different amplitudes. Looking only at
+                // the channel's absolute maximum hides every lower rail. Walk the signal once and
+                // seed candidates from local near-equal pairs, then validate each with the same
+                // shoulder/flatness tests used previously.
+                ScanAutomaticClippedRuns(samples, channelIndex, ClipPolarity.Positive,
+                    minimumPeak, relativeTolerance, automaticMinimumRun, maximumGap,
+                    minimumConfidence, events, cancellationToken);
+                ScanAutomaticClippedRuns(samples, channelIndex, ClipPolarity.Negative,
+                    minimumPeak, relativeTolerance, automaticMinimumRun, maximumGap,
+                    minimumConfidence, events, cancellationToken);
             }
             else
             {
@@ -1385,6 +1371,73 @@ public static partial class Restoration
                 TryCreateClippedPeakEvent(samples, channel, start, end, peakSample,
                     polarity, threshold, Math.Max(plateauLevel, observedPeak), tolerance,
                     automatic, minimumRun, out var clippedEvent) &&
+                clippedEvent.Confidence >= minimumConfidence)
+            {
+                destination.Add(clippedEvent);
+            }
+            i = Math.Max(i + 1, end);
+        }
+    }
+
+    private static void ScanAutomaticClippedRuns(float[] samples, int channel,
+        ClipPolarity polarity, float minimumPeak, double relativeTolerance,
+        int minimumRun, int maximumGap, double minimumConfidence,
+        List<ClippedPeakEvent> destination, CancellationToken cancellationToken)
+    {
+        float sign = polarity == ClipPolarity.Positive ? 1f : -1f;
+        int i = 1;
+        while (i < samples.Length - 2)
+        {
+            if ((i & 16383) == 0) cancellationToken.ThrowIfCancellationRequested();
+            float first = samples[i] * sign;
+            float second = samples[i + 1] * sign;
+            float seedLevel = Math.Max(first, second);
+            float tolerance = Math.Max(2e-7f, seedLevel * (float)relativeTolerance);
+            double equalityTolerance = Math.Max(1e-8, tolerance * 0.12);
+            if (first < minimumPeak || second < minimumPeak ||
+                Math.Abs(first - second) > equalityTolerance)
+            {
+                i++;
+                continue;
+            }
+
+            int start = i;
+            int lastHigh = i + 1;
+            int highCount = 2;
+            int peakSample = first >= second ? i : i + 1;
+            float observedPeak = seedLevel;
+            double levelSum = first + second;
+            int j = i + 2;
+            while (j < samples.Length - 1)
+            {
+                float signedSample = samples[j] * sign;
+                float runningLevel = (float)(levelSum / highCount);
+                if (signedSample >= minimumPeak &&
+                    Math.Abs(signedSample - runningLevel) <= tolerance * 1.5f)
+                {
+                    lastHigh = j;
+                    highCount++;
+                    levelSum += signedSample;
+                    if (signedSample > observedPeak)
+                    {
+                        observedPeak = signedSample;
+                        peakSample = j;
+                    }
+                }
+                else if (j - lastHigh > maximumGap)
+                {
+                    break;
+                }
+                j++;
+            }
+
+            int end = lastHigh + 1;
+            float plateauLevel = Math.Max(observedPeak, (float)(levelSum / highCount));
+            tolerance = Math.Max(2e-7f, plateauLevel * (float)relativeTolerance);
+            if (highCount >= minimumRun && end < samples.Length &&
+                TryCreateClippedPeakEvent(samples, channel, start, end, peakSample,
+                    polarity, plateauLevel - tolerance, plateauLevel, tolerance,
+                    true, minimumRun, out var clippedEvent) &&
                 clippedEvent.Confidence >= minimumConfidence)
             {
                 destination.Add(clippedEvent);

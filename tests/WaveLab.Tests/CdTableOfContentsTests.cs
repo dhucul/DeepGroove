@@ -11,9 +11,9 @@ namespace WaveLab.Tests;
 /// <para>
 /// The case that forced the inference is a CD-Extra disc: an audio session, then a data session.
 /// The sectors between the last audio track and the data track are session 1's lead-out, session
-/// 2's lead-in and the following pregap — 11,400 of them, and not one is audio. Charged to the
-/// audio track they make the extractor read past the programme, which the drive rejects; taken
-/// off, the track ends where the music does.
+/// 2's lead-in and the following pregap — 11,400 of them on this fixture, and not one is audio.
+/// The full TOC gives session 1's exact lead-out; using that boundary keeps the extractor out of
+/// these sectors without assuming every mixed-mode disc has the same layout.
 /// </para>
 /// <para>
 /// <see cref="ICdAudioDevice"/> is the seam that lets any of this be exercised without a disc in a
@@ -50,12 +50,20 @@ public sealed class CdTableOfContentsTests
     private static CdAudioTableOfContents Toc(params CdAudioTocEntry[] entries) =>
         new(1, entries.Count(entry => entry.TrackNumber != LeadOutTrackNumber), entries);
 
-    /// <summary>Two audio tracks, then a data track: the disc the gap rule was written for.</summary>
-    private static CdAudioTableOfContents CdExtraToc() => Toc(
-        Track(1, Track1Start, AudioControl),
-        Track(2, Track2Start, AudioControl),
-        Track(3, DataStart, DataControl),
-        Track(LeadOutTrackNumber, LeadOutStart, AudioControl));
+    private static CdAudioTableOfContents TocWithSessions(
+        CdAudioTocEntry[] entries, params CdAudioSession[] sessions) =>
+        new(1, entries.Count(entry => entry.TrackNumber != LeadOutTrackNumber), entries, sessions);
+
+    /// <summary>Two audio tracks, then a data track in a second full-TOC session.</summary>
+    private static CdAudioTableOfContents CdExtraToc() => TocWithSessions(
+        [
+            Track(1, Track1Start, AudioControl),
+            Track(2, Track2Start, AudioControl),
+            Track(3, DataStart, DataControl),
+            Track(LeadOutTrackNumber, LeadOutStart, AudioControl),
+        ],
+        new CdAudioSession(1, 1, 2, Track2EndAfterGap),
+        new CdAudioSession(2, 3, 3, LeadOutStart));
 
     /// <summary>A sample value unique to its sector, so a decoded document can be traced back to one.</summary>
     private static short SampleForSector(int sector) => (short)(sector % 8_000);
@@ -66,16 +74,20 @@ public sealed class CdTableOfContentsTests
     /// </summary>
     private sealed class FakeDevice(CdAudioTableOfContents toc) : ICdAudioDevice
     {
+        private int _readSerial;
         public List<(int Start, int Count)> Reads { get; } = [];
+        public bool NeverRepeatReadData { get; set; }
 
         public CdAudioTableOfContents ReadTableOfContents() => toc;
 
         public int ReadAudioSectors(int startSector, int sectorCount, byte[] destination)
         {
             Reads.Add((startSector, sectorCount));
+            int serial = ++_readSerial;
             for (int s = 0; s < sectorCount; s++)
             {
-                short sample = SampleForSector(startSector + s);
+                short sample = (short)(SampleForSector(startSector + s) +
+                    (NeverRepeatReadData ? serial : 0));
                 int offset = s * CdAudioFormat.BytesPerSector;
                 for (int i = 0; i < CdAudioFormat.BytesPerSector; i += 2)
                 {
@@ -166,20 +178,19 @@ public sealed class CdTableOfContentsTests
     }
 
     /// <summary>
-    /// Subtracting the gap from a track shorter than the gap would leave it ending before it
-    /// began. A negative range is not a short track; it is a TOC nobody can act on.
+    /// Without full-session data the safe choice is to preserve the range stated by the standard
+    /// TOC. Guessing a fixed inter-session gap could remove legal audio.
     /// </summary>
     [Fact]
-    public async Task AnAudioTrackShorterThanTheGapIsRejectedRatherThanInverted()
+    public async Task MissingSessionDataNeverShortensTheDeclaredAudioRange()
     {
         var (service, _) = DriveWith(Toc(
             Track(1, Track1Start, AudioControl),
             Track(2, SessionGapSectors, DataControl),
             Track(LeadOutTrackNumber, LeadOutStart, AudioControl)));
 
-        var failure = await Assert.ThrowsAsync<CdAudioException>(() => service.ReadDiscAsync(DevicePath));
-
-        Assert.Equal(CdAudioFailureReason.InvalidTableOfContents, failure.Reason);
+        CdAudioDisc disc = await service.ReadDiscAsync(DevicePath);
+        Assert.Equal(SessionGapSectors - Track1Start, disc.Tracks[0].SectorCount);
     }
 
     /// <summary>
@@ -197,16 +208,20 @@ public sealed class CdTableOfContentsTests
         var import = Assert.Single(imports);
         int sectors = Track2EndAfterGap - Track2Start;
 
-        // Every sector of the track, in order, once, and not one sector further.
+        // Every sector of the track, in order, is read twice for verification, and not one sector
+        // further. Each adjacent pair must describe the same raw-read batch.
         int expectedStart = Track2Start;
-        foreach ((int start, int count) in platform.Device.Reads)
+        Assert.Equal(0, platform.Device.Reads.Count % 2);
+        for (int i = 0; i < platform.Device.Reads.Count; i += 2)
         {
+            (int start, int count) = platform.Device.Reads[i];
+            Assert.Equal(platform.Device.Reads[i], platform.Device.Reads[i + 1]);
             Assert.Equal(expectedStart, start);
             Assert.InRange(count, 1, 16);
             expectedStart += count;
         }
         Assert.Equal(Track2EndAfterGap, expectedStart);
-        Assert.Equal(sectors, platform.Device.Reads.Sum(read => read.Count));
+        Assert.Equal(sectors * 2, platform.Device.Reads.Sum(read => read.Count));
 
         // And the samples are the ones those sectors hold, so the range was not merely the right
         // length but in the right place.
@@ -217,27 +232,88 @@ public sealed class CdTableOfContentsTests
     }
 
     /// <summary>
-    /// The known cost of the rule, pinned so that it is a decision rather than a surprise.
+    /// A data-last single-session disc must retain every sector before the data track.
     /// </summary>
     /// <remarks>
-    /// A single-session disc whose data track sits last — rare, but legal — produces the same
-    /// table of contents as the CD-Extra disc above, and there is nothing in that TOC to tell the
-    /// two apart. So on that disc the audio track before the data track loses 11,400 sectors that
-    /// were music. Telling them apart needs the full-TOC session data that
-    /// <see cref="ICdAudioDevice"/> does not expose; if it ever does, this is the test that says
-    /// what changes.
+    /// The full TOC identifies both tracks as belonging to session 1, so the data track's start is
+    /// the exact end of the audio track. No guessed CD-Extra subtraction is permitted.
     /// </remarks>
     [Fact]
-    public async Task ADataTrackLastOnASingleSessionDiscCostsTheAudioBeforeIt()
+    public async Task ADataTrackLastOnASingleSessionDiscPreservesTheAudioBeforeIt()
     {
-        var (service, _) = DriveWith(CdExtraToc());
+        var toc = TocWithSessions(
+            [
+                Track(1, Track1Start, AudioControl),
+                Track(2, Track2Start, AudioControl),
+                Track(3, DataStart, DataControl),
+                Track(LeadOutTrackNumber, LeadOutStart, AudioControl),
+            ],
+            new CdAudioSession(1, 1, 3, LeadOutStart));
+        var (service, _) = DriveWith(toc);
 
         var disc = await service.ReadDiscAsync(DevicePath);
 
         int reported = disc.Tracks[1].SectorCount;
         int onTheDisc = DataStart - Track2Start;
 
-        Assert.Equal(SessionGapSectors, onTheDisc - reported);
-        Assert.Equal(152, (onTheDisc - reported) / CdAudioFormat.SectorsPerSecond);
+        Assert.Equal(onTheDisc, reported);
+    }
+
+    [Fact]
+    public void FullTocParsingReturnsExactSessionLeadOuts()
+    {
+        byte[] Descriptor(int session, int point, int pMinute, int pSecond = 0, int pFrame = 0)
+        {
+            var value = new byte[11];
+            value[0] = (byte)session;
+            value[3] = (byte)point;
+            value[8] = (byte)pMinute;
+            value[9] = (byte)pSecond;
+            value[10] = (byte)pFrame;
+            return value;
+        }
+
+        byte[][] descriptors =
+        [
+            Descriptor(1, 0xA0, 1),
+            Descriptor(1, 0xA1, 2),
+            Descriptor(1, 0xA2, 0, 10, 0), // absolute 750, logical sector 600
+            Descriptor(2, 0xA0, 3),
+            Descriptor(2, 0xA1, 3),
+            Descriptor(2, 0xA2, 6, 42, 0), // absolute 30,150, logical sector 30,000
+        ];
+        int bytes = 4 + descriptors.Length * 11;
+        var buffer = new byte[bytes];
+        int payloadLength = bytes - 2;
+        buffer[0] = (byte)(payloadLength >> 8);
+        buffer[1] = (byte)payloadLength;
+        buffer[2] = 1;
+        buffer[3] = 2;
+        for (int i = 0; i < descriptors.Length; i++)
+            Buffer.BlockCopy(descriptors[i], 0, buffer, 4 + i * 11, 11);
+
+        IReadOnlyList<CdAudioSession> sessions =
+            WindowsCdAudioDevice.ParseFullTableOfContents(buffer, bytes);
+
+        Assert.Equal(
+            [new CdAudioSession(1, 1, 2, 600), new CdAudioSession(2, 3, 3, 30_000)],
+            sessions);
+    }
+
+    [Fact]
+    public async Task ExtractionRefusesRawReadsThatNeverVerify()
+    {
+        CdAudioTableOfContents toc = Toc(
+            Track(1, 150, AudioControl),
+            Track(LeadOutTrackNumber, 151, AudioControl));
+        var (service, platform) = DriveWith(toc);
+        platform.Device.NeverRepeatReadData = true;
+
+        CdAudioException failure = await Assert.ThrowsAsync<CdAudioException>(
+            () => service.ExtractTracksAsync(DevicePath, [1]));
+
+        Assert.Equal(CdAudioFailureReason.ReadFailed, failure.Reason);
+        Assert.Contains("did not agree", failure.Message, StringComparison.Ordinal);
+        Assert.Equal(5, platform.Device.Reads.Count);
     }
 }

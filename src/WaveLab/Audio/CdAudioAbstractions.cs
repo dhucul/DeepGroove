@@ -10,22 +10,32 @@ public sealed record CdAudioTocEntry(
     public bool IsData => (Control & 0x04) != 0;
 }
 
+/// <summary>One complete session reported by the drive's full TOC.</summary>
+public sealed record CdAudioSession(
+    int Number,
+    int FirstTrackNumber,
+    int LastTrackNumber,
+    int LeadOutSector);
+
 /// <summary>Low-level table of contents, including the 0xAA lead-out entry.</summary>
 public sealed class CdAudioTableOfContents
 {
     public CdAudioTableOfContents(
         int firstTrackNumber,
         int lastTrackNumber,
-        IEnumerable<CdAudioTocEntry> entries)
+        IEnumerable<CdAudioTocEntry> entries,
+        IEnumerable<CdAudioSession>? sessions = null)
     {
         FirstTrackNumber = firstTrackNumber;
         LastTrackNumber = lastTrackNumber;
         Entries = entries?.ToArray() ?? throw new ArgumentNullException(nameof(entries));
+        Sessions = sessions?.OrderBy(session => session.Number).ToArray() ?? [];
     }
 
     public int FirstTrackNumber { get; }
     public int LastTrackNumber { get; }
     public IReadOnlyList<CdAudioTocEntry> Entries { get; }
+    public IReadOnlyList<CdAudioSession> Sessions { get; }
 }
 
 /// <summary>
@@ -83,5 +93,6 @@ public interface ICdAudioService
         string devicePath,
         IEnumerable<int>? trackNumbers = null,
         IProgress<CdAudioExtractionProgress>? progress = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        bool applyDeEmphasis = true);
 }

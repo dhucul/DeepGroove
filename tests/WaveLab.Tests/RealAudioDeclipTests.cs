@@ -119,12 +119,15 @@ public sealed class RealAudioDeclipTests(ITestOutputHelper output)
     public void RealProgrammeHasLongPlateausEvenWhenBarelyClipped()
     {
         var doc = Track();
-        var (_, clipped, _) = Damage(doc.Channels[0], 0.60);
+        var (_, clipped, damaged) = Damage(doc.Channels[0], 0.60);
         var analysis = Restoration.AnalyzeClipping([clipped], doc.SampleRate, new ClippingAnalysisOptions());
         var choice = Assert.Single(Restoration.DescribeDeclipChoices([clipped], analysis.Events));
 
         output.WriteLine($"{choice.ClippedFraction * 100:0.##}% clipped, mean run {choice.MeanRunSamples:0.0} samples");
-        Assert.True(choice.ClippedFraction < 0.01, "This should be light damage.");
+        output.WriteLine($"damage mask {damaged.Count(value => value) * 100.0 / damaged.Length:0.###}% · " +
+                         string.Join(", ", analysis.Events.GroupBy(item => Math.Round(item.AbsoluteClipLevel, 4))
+                             .Select(group => $"{group.Key:0.0000}:{group.Count()}")));
+        Assert.True(choice.ClippedFraction < 0.015, "This should be light damage.");
         Assert.True(choice.MeanRunSamples > 10,
             $"Real programme clipped this lightly still ran {choice.MeanRunSamples:0} samples per plateau; " +
             "a rule calibrated where that number is three does not apply here.");

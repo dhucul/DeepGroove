@@ -1,6 +1,7 @@
 ﻿using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using WaveLab.Audio.Dsp;
 
 namespace WaveLab.Audio;
 
@@ -149,7 +150,8 @@ public static class DdpImage
     /// </summary>
     public static DdpResult Write(string folder, IReadOnlyList<float[][]> tracks,
         IReadOnlyList<DdpTrackInfo> info, DdpDiscInfo disc, int sampleRate,
-        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null,
+        bool? dither = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(folder);
         ArgumentNullException.ThrowIfNull(tracks);
@@ -160,6 +162,15 @@ public static class DdpImage
         if (tracks.Count > 99) throw new ArgumentException("A CD holds at most 99 tracks.", nameof(tracks));
         if (info.Count != tracks.Count)
             throw new ArgumentException("Every track needs its own information.", nameof(info));
+        for (int t = 0; t < tracks.Count; t++)
+        {
+            float[][] track = tracks[t];
+            if (track is not { Length: 2 } || track[0] is null || track[1] is null)
+                throw new ArgumentException($"Track {t + 1} is not stereo.", nameof(tracks));
+            if (track[0].Length != track[1].Length)
+                throw new ArgumentException(
+                    $"Track {t + 1} has channels of different lengths.", nameof(tracks));
+        }
 
         Directory.CreateDirectory(folder);
         var written = new List<string>();
@@ -167,6 +178,10 @@ public static class DdpImage
         string imagePath = Path.Combine(folder, "IMAGE.DAT");
         var starts = new int[tracks.Count];
         long total = 0;
+        bool applyDither = dither ?? NeedsDither(tracks, cancellationToken);
+        var quantizer = applyDither
+            ? new Dither(DitherKind.FlatTpdf, 16, 2, sampleRate, autoBlank: true)
+            : null;
 
         string md5;
         using (var stream = new FileStream(imagePath, FileMode.Create, FileAccess.Write, FileShare.None,
@@ -180,11 +195,8 @@ public static class DdpImage
                 progress?.Report((double)t / tracks.Count);
 
                 float[][] track = tracks[t];
-                if (track.Length != 2)
-                    throw new ArgumentException($"Track {t + 1} is not stereo.", nameof(tracks));
-
                 starts[t] = (int)(total / (SamplesPerFrame * 4L));
-                total += WriteTrack(crypto, track, cancellationToken);
+                total += WriteTrack(crypto, track, quantizer, cancellationToken);
             }
 
             crypto.FlushFinalBlock();
@@ -206,7 +218,8 @@ public static class DdpImage
     /// <summary>
     /// Writes one track as interleaved big-endian 16-bit, padded to a whole CD frame.
     /// </summary>
-    private static long WriteTrack(Stream stream, float[][] track, CancellationToken cancellationToken)
+    private static long WriteTrack(Stream stream, float[][] track, Dither? quantizer,
+        CancellationToken cancellationToken)
     {
         int frames = Math.Min(track[0].Length, track[1].Length);
 
@@ -226,7 +239,9 @@ public static class DdpImage
                 {
                     float sample = index < frames ? track[c][index] : 0f;
                     if (!float.IsFinite(sample)) sample = 0f;
-                    int value = Math.Clamp((int)Math.Round(Math.Clamp(sample, -1f, 1f) * 32768.0),
+                    double quantized = quantizer?.Process(c, Math.Clamp(sample, -1f, 1f))
+                        ?? Math.Clamp(sample, -1f, 1f);
+                    int value = Math.Clamp((int)Math.Round(quantized * 32768.0),
                         short.MinValue, short.MaxValue);
 
                     // Big-endian: CD-DA byte order, the opposite of a WAV's.
@@ -238,6 +253,28 @@ public static class DdpImage
         }
 
         return (long)padded * 4;
+    }
+
+    private static bool NeedsDither(IReadOnlyList<float[][]> tracks,
+        CancellationToken cancellationToken)
+    {
+        foreach (float[][] track in tracks)
+        {
+            foreach (float[] channel in track)
+            {
+                for (int i = 0; i < channel.Length; i++)
+                {
+                    if ((i & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
+                    float sample = channel[i];
+                    if (!float.IsFinite(sample)) return true;
+                    double scaled = sample * 32768.0;
+                    if (scaled < short.MinValue || scaled > short.MaxValue ||
+                        scaled != Math.Truncate(scaled))
+                        return true;
+                }
+            }
+        }
+        return false;
     }
 
     // ── the descriptor files ─────────────────────────────────────

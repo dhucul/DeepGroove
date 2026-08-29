@@ -33,7 +33,9 @@ public partial class CdImportDialog : Window
         public TrackRow(CdAudioTrack track) => Track = track;
         public CdAudioTrack Track { get; }
         public bool Selected { get => _selected; set => Set(ref _selected, value); }
-        public string Name => $"Track {Track.Number:00}";
+        public string Name => Track.PreEmphasis
+            ? $"Track {Track.Number:00} · pre-emphasis"
+            : $"Track {Track.Number:00}";
         public string StartText => TimeFormat.Position((long)Track.StartSector * CdAudioFormat.FramesPerSector, CdAudioFormat.SampleRate);
         public string DurationText => TimeFormat.Compact(Track.Duration.TotalSeconds);
     }
@@ -110,6 +112,9 @@ public partial class CdImportDialog : Window
                 };
                 _tracks.Add(row);
             }
+        deEmphasis.Visibility = _tracks.Any(row => row.Track.PreEmphasis)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         UpdateSelectionSummary();
     }
 
@@ -142,7 +147,8 @@ public partial class CdImportDialog : Window
                 statusText.Text = $"Extracting track {p.TrackNumber:00} · {p.TrackFraction:P0} · overall {p.TotalFraction:P0}";
             });
             Imports = await _service.ExtractTracksAsync(
-                drive.Drive.Device.DevicePath, selected, progress, _operation.Token);
+                drive.Drive.Device.DevicePath, selected, progress, _operation.Token,
+                applyDeEmphasis: deEmphasis.IsChecked == true);
             progressBar.Value = 1;
             _allowClose = true;
             DialogResult = true;

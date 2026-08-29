@@ -168,33 +168,34 @@ public sealed class RestorationRecommendationsTests
     }
 
     /// <summary>
-    /// De-crackle rides on the click analysis, which is weaker evidence than the other stages have
-    /// and is pinned here so that it stays visible rather than becoming folklore.
+    /// De-crackle is driven by its own dense residual population, not by an isolated click.
     /// </summary>
     [Fact]
-    public void DecrackleFollowsWhetherImpulsesWereFoundAtAll()
+    public void DecrackleRequiresIndependentDenseCrackleEvidence()
     {
         ClickEvent[] events =
         [
             new(0, 2, 4, 3, ImpulseDefectKind.Click, 0.86f, 0.72f, 0.8f, 0.1f),
         ];
 
-        RestorationRecommendations.Settings withDamage = RestorationRecommendations.Create(
+        RestorationRecommendations.Settings clickOnly = RestorationRecommendations.Create(
             new ClickAnalysisResult(events, SampleRate * 10, 2, SampleRate),
             new ClippingAnalysisResult([], SampleRate * 10, 2, SampleRate, true),
             Cleanup(humEnabled: false, noiseEnabled: false));
-        RestorationRecommendations.Settings clean = RestorationRecommendations.Create(
+        RestorationRecommendations.Settings measured = RestorationRecommendations.Create(
             new ClickAnalysisResult([], SampleRate * 10, 2, SampleRate),
             new ClippingAnalysisResult([], SampleRate * 10, 2, SampleRate, true),
-            Cleanup(humEnabled: false, noiseEnabled: false));
+            Cleanup(humEnabled: false, noiseEnabled: false),
+            new RestorationRecommendations.CrackleEvidence(
+                new DecrackleReport(6, 18, 0, 4), SampleRate * 10, SampleRate));
 
-        Assert.True(withDamage.Decrackle);
-        Assert.False(clean.Decrackle);
+        Assert.False(clickOnly.Decrackle);
+        Assert.True(measured.Decrackle);
 
         // Never recommended below 3.0: measured, 2.5 deviations repairs twice as many samples and
         // leaves more audible ticks than 3.5 does.
-        Assert.Equal(RestorationRecommendations.DefaultDecrackleThreshold, withDamage.DecrackleThreshold);
-        Assert.True(withDamage.DecrackleThreshold >= 3.0);
+        Assert.Equal(RestorationRecommendations.DefaultDecrackleThreshold, measured.DecrackleThreshold);
+        Assert.True(measured.DecrackleThreshold >= 3.0);
     }
 
     private static CleanupAnalysisResult Cleanup(bool humEnabled, bool noiseEnabled,

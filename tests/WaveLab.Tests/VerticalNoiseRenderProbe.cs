@@ -61,7 +61,8 @@ public sealed class VerticalNoiseRenderProbe(ITestOutputHelper output)
                 sideLine = RestorationWorkbenchDialog.DescribeSideLevel(
                     enabled: true, analysed: true, stereo: true, sideToMidDb: -11.0, level: 0.25);
                 crackleLine = RestorationWorkbenchDialog.DescribeCrackle(
-                    enabled: true, analysed: true, impulsesFound: 123_456, threshold: 2.0);
+                    enabled: true, analysed: true, events: 61_728, candidates: 123_456,
+                    secondsAnalyzed: 12, threshold: 2.0);
 
                 workbench.sideEvidenceText.Text = sideLine;
                 workbench.decrackleEvidenceText.Text = crackleLine;

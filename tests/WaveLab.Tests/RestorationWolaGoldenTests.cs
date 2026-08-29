@@ -40,6 +40,13 @@ namespace WaveLab.Tests;
 /// the largest at index 5000 (−0.0840 → −0.1256), not uniformly across the file the way a windowing
 /// or normalization change would.
 /// </para>
+/// <para>
+/// <b>Re-pinned three times.</b> Stereo reduction now derives one shared mask from both channels,
+/// and the temporal gate opens quickly while closing slowly. This intentionally preserves image
+/// position and stops the previous noise-floor mask from dulling the first frames of an attack.
+/// The separate regression in <c>AlgorithmReviewRegressionTests</c> pins the stereo-ratio invariant;
+/// these figures pin the resulting signal path.
+/// </para>
 /// </remarks>
 public sealed class RestorationWolaGoldenTests
 {
@@ -104,10 +111,10 @@ public sealed class RestorationWolaGoldenTests
 
         Restoration.ReduceNoise(data, profile, 12.0, 3.0);
 
-        AssertMatches(data[0], 0.243446539, 0.510588348,
-            [0.017721303, 0.001224617, -0.015552527, -0.009724485, 0.010914816, -0.125619190, 0.332124900, 0.028351136]);
-        AssertMatches(data[1], 0.215556570, 0.459699750,
-            [0.019493433, 0.001093167, -0.018318154, -0.011852648, 0.011492296, -0.103531080, 0.296009930, 0.024763105]);
+        AssertMatches(data[0], 0.247777649, 0.514013112,
+            [0.017721303, 0.001224617, -0.020409824, -0.013289983, 0.016345974, -0.107935830, 0.330877960, 0.040992476]);
+        AssertMatches(data[1], 0.223048479, 0.465499371,
+            [0.019493433, 0.001093167, -0.022780024, -0.015105492, 0.017256634, -0.096524395, 0.296273470, 0.036765087]);
     }
 
     /// <summary>

@@ -11,7 +11,7 @@ namespace WaveLab.Tests;
 /// <remarks>
 /// These two lines carry more weight than the readouts already here, because both cards can decide
 /// to do something large. The side control can discard a whole channel of a stereo file, and
-/// de-crackle turns itself on from evidence that is not a measurement of crackle. A control that
+/// de-crackle turns itself on from a prediction-residual measurement. A control that
 /// acts on a reason the user cannot see is one they cannot overrule.
 /// </remarks>
 public sealed class VerticalNoiseReadoutTests(ITestOutputHelper output)
@@ -20,9 +20,10 @@ public sealed class VerticalNoiseReadoutTests(ITestOutputHelper output)
         bool analysed = true, bool stereo = true) =>
         RestorationWorkbenchDialog.DescribeSideLevel(enabled, analysed, stereo, sideToMidDb, level);
 
-    private static string Crackle(int impulses, double threshold = 3.5, bool enabled = true,
+    private static string Crackle(int events, double threshold = 3.5, bool enabled = true,
         bool analysed = true) =>
-        RestorationWorkbenchDialog.DescribeCrackle(enabled, analysed, impulses, threshold);
+        RestorationWorkbenchDialog.DescribeCrackle(
+            enabled, analysed, events, events * 2, 12, threshold);
 
     // ── the side control ─────────────────────────────────────────
 
@@ -194,8 +195,7 @@ public sealed class VerticalNoiseReadoutTests(ITestOutputHelper output)
     // ── the crackle card ─────────────────────────────────────────
 
     /// <summary>
-    /// The evidence is weaker here than on any other card and the line has to admit it: nothing
-    /// measures crackle, which sits below the click detector's reach by definition.
+    /// The line names the independent measurement and the classifier's accepted population.
     /// </summary>
     [Fact]
     public void TheCrackleLineNamesTheEvidenceAndItsLimit()
@@ -203,16 +203,16 @@ public sealed class VerticalNoiseReadoutTests(ITestOutputHelper output)
         string line = Crackle(1_284);
         output.WriteLine(line);
 
-        Assert.Contains("1,284 impulses", line);
-        Assert.Contains("not counted", line);
+        Assert.Contains("accepted 1,284 of 2,568 candidates", line);
+        Assert.Contains("per second", line);
     }
 
     [Fact]
-    public void WithNoImpulsesItSaysThereIsNoEvidence()
+    public void WithNoCandidatesItSaysSo()
     {
         string line = Crackle(0);
         output.WriteLine(line);
-        Assert.Contains("No impulses were found", line);
+        Assert.Contains("found no candidates", line);
     }
 
     /// <summary>
@@ -237,6 +237,6 @@ public sealed class VerticalNoiseReadoutTests(ITestOutputHelper output)
     {
         string line = Crackle(500, enabled: false);
         output.WriteLine(line);
-        Assert.Equal("This card is switched off.", line);
+        Assert.StartsWith("This card is switched off.", line);
     }
 }

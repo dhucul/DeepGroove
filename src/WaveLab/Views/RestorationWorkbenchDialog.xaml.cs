@@ -34,6 +34,7 @@ public partial class RestorationWorkbenchDialog : Window
         double HumAmount,
         double HumFrequency,
         int HumHarmonics,
+        int HumHarmonicMask,
         double HumQ,
         bool RemoveSubsonic,
         double SubsonicCutoffHz,
@@ -115,6 +116,7 @@ public partial class RestorationWorkbenchDialog : Window
     private ClickAnalysisResult? _clickAnalysis;
     private ClippingAnalysisResult? _clippingAnalysis;
     private RestorationRecommendations.Settings? _analysisRecommendations;
+    private int _recommendedHumHarmonicMask = 0x0F;
     private RestorationSettings? _previewWetCacheSettings;
     private float[][]? _previewWetCache;
     private double _analyzedClickSensitivity = double.NaN;
@@ -346,7 +348,8 @@ public partial class RestorationWorkbenchDialog : Window
         _sideToMidDb = null;
         _rumbleEvidence = null;
         _rumbleConfidence = 0;
-        _impulsesFound = 0;
+        _crackleReport = DecrackleReport.None;
+        _crackleSamplesAnalyzed = 0;
         _previewWetCacheSettings = null;
         _previewWetCache = null;
         _previewStarted = false;
@@ -410,10 +413,14 @@ public partial class RestorationWorkbenchDialog : Window
                         PreserveTransients = true,
                     }, operation.Token, clickProgress);
 
-                var clipProgress = new DspProgressAdapter(progress, 0.74, 0.19);
+                var clipProgress = new DspProgressAdapter(progress, 0.74, 0.18);
                 var clipping = Restoration.AnalyzeClipping(_sourceReferences, _sampleRate,
                     new ClippingAnalysisOptions(), operation.Token, clipProgress);
-                var recommendations = RestorationRecommendations.Create(clicks, clipping, cleanup);
+                progress.Report(new OperationProgress("Measuring surface crackle independently…", 0.92));
+                RestorationRecommendations.CrackleEvidence crackle = AnalyzeCrackleEvidence(
+                    _sourceReferences, _sampleRate, operation.Token);
+                var recommendations = RestorationRecommendations.Create(
+                    clicks, clipping, cleanup, crackle);
                 if (Math.Abs(recommendations.ClickSensitivity -
                              RestorationRecommendations.ExploratoryClickSensitivity) > 0.001)
                 {
@@ -427,14 +434,14 @@ public partial class RestorationWorkbenchDialog : Window
                             PreserveTransients = true,
                         }, operation.Token,
                         new DspProgressAdapter(progress, 0.94, 0.05));
-                    recommendations = RestorationRecommendations.Create(clicks, clipping, cleanup) with
+                    recommendations = RestorationRecommendations.Create(clicks, clipping, cleanup, crackle) with
                     {
                         ClickSensitivity = recommendations.ClickSensitivity,
                     };
                 }
                 operation.Token.ThrowIfCancellationRequested();
                 return (Source: source, Noise: noise, Clicks: clicks, Clipping: clipping,
-                    Recommendations: recommendations, Cleanup: cleanup);
+                    Recommendations: recommendations, Cleanup: cleanup, Crackle: crackle);
             }, operation.Token);
 
             if (!IsCurrent(operation)) return;
@@ -452,7 +459,8 @@ public partial class RestorationWorkbenchDialog : Window
                 .FirstOrDefault(item => item.TypeId == "filter");
             _rumbleEvidence = rumble?.Evidence;
             _rumbleConfidence = rumble?.Confidence ?? 0;
-            _impulsesFound = prepared.Clicks.Events.Count;
+            _crackleReport = prepared.Crackle.Report;
+            _crackleSamplesAnalyzed = prepared.Crackle.SamplesAnalyzed;
             _clickAnalysis = prepared.Clicks;
             _clippingAnalysis = prepared.Clipping;
             _analyzedClickSensitivity = prepared.Recommendations.ClickSensitivity;
@@ -904,19 +912,10 @@ public partial class RestorationWorkbenchDialog : Window
         }
         at += step;
 
-        // Then the vertical noise, and before the repairers rather than after them. Collapsing the
-        // side is what turns one anti-phase tick into a single coherent event that one interpolator
-        // can remove - left in place, each channel's model sees a different realisation of it and
-        // summing the repaired channels back reconstitutes what the other one still holds.
-        if (SideStageRuns(settings.Bypass, settings.ReduceSide, settings.SideLevel))
-        {
-            progress.Report(new OperationProgress(settings.SideLevel <= 0
-                ? "Discarding the side signal and its vertical surface noise…"
-                : $"Reducing the side signal to {settings.SideLevel:P0}…", at));
-            Restoration.ScaleSide(work, settings.SideLevel, cancellationToken);
-        }
-        at += step;
-
+        // Declipping runs before any mid/side mix. Scaling the side blends both input channels into
+        // both outputs: a plateau present in only one channel would otherwise be copied into the
+        // other, while the event plan still named only the original channel. It also changes the
+        // shoulders and rail height the reconstruction was analysed from.
         if (!settings.Bypass && settings.Declip && settings.DeclipStrength > 0)
         {
             progress.Report(new OperationProgress("Reconstructing clipped peaks…", at));
@@ -942,9 +941,6 @@ public partial class RestorationWorkbenchDialog : Window
         }
         at += step;
 
-        // After click repair, and after the side collapse above, which is the ordering the
-        // measurement is about: on the un-collapsed stereo file this stage moves almost nothing.
-        //
         // <b>It is also, by a wide margin, the most expensive stage in this chain.</b> Measured on
         // five real transfers it runs at 0.19 to 0.36x realtime - 34 to 68 seconds for a three
         // minute side, against 142-190 ms for the high-pass and about 20 ms for the side scale -
@@ -960,10 +956,9 @@ public partial class RestorationWorkbenchDialog : Window
 
             if (work.Length == 2)
             {
-                // Stereo: run detection in the side (L−R) signal where 78% of crackle
-                // lives, and classify candidates against a musical-transient model so
-                // cymbals and sibilance are left alone. The mid signal is never seen
-                // by the detector.
+                // Stereo: run detection in the side (L−R) signal where most vertical crackle
+                // lives, before the side control can attenuate or completely erase that evidence.
+                // The mid signal is never seen by the detector.
                 Decrackle.ProcessStereo(work[0], work[1],
                     DecrackleOptions.Default with { Threshold = settings.DecrackleThreshold },
                     cancellationToken,
@@ -988,12 +983,27 @@ public partial class RestorationWorkbenchDialog : Window
         }
         at += step;
 
+        // Reduce vertical noise after the repairers have consumed the original channel geometry.
+        // The linked click repair already reconstructs coincident events on both channels, while
+        // ProcessStereo above repairs the coherent side event directly; neither needs a preliminary
+        // stereo collapse. Keeping the mix here also prevents one-channel clipping from being
+        // spread into the nominally clean channel before declipping.
+        if (SideStageRuns(settings.Bypass, settings.ReduceSide, settings.SideLevel))
+        {
+            progress.Report(new OperationProgress(settings.SideLevel <= 0
+                ? "Discarding the side signal and its vertical surface noise…"
+                : $"Reducing the side signal to {settings.SideLevel:P0}…", at));
+            Restoration.ScaleSide(work, settings.SideLevel, cancellationToken);
+        }
+        at += step;
+
         if (!settings.Bypass && settings.RemoveHum && settings.HumAmount > 0)
         {
             progress.Report(new OperationProgress(
                 $"Removing {settings.HumFrequency:0} Hz hum and harmonics at {settings.HumAmount:P0}…", at));
             Restoration.RemoveHum(work, _sampleRate, settings.HumFrequency,
-                settings.HumHarmonics, settings.HumQ, settings.HumAmount, cancellationToken);
+                settings.HumHarmonics, settings.HumHarmonicMask, settings.HumQ,
+                settings.HumAmount, cancellationToken);
         }
         at += step;
 
@@ -1132,34 +1142,106 @@ public partial class RestorationWorkbenchDialog : Window
         }
 
         double rollingEnergy = 0;
+        int rollingNonZero = 0;
         for (int i = 0; i < windowLength; i++)
         {
             if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
-            rollingEnergy += EnergyAt(source, i);
+            double energy = EnergyAt(source, i);
+            rollingEnergy += energy;
+            if (energy > 1e-20) rollingNonZero++;
         }
-        double quietestEnergy = rollingEnergy;
-        int quietestStart = 0;
+        var candidates = new List<(double Energy, int Start)>();
+        void Consider(int candidateStart)
+        {
+            // Digital black and heavily zero-gated edits are not a noise floor. Requiring five per
+            // cent real samples follows the cleanup analyzer's existing zero-ratio guard while
+            // still admitting extremely quiet analogue lead-in and run-out groove.
+            if (rollingNonZero >= Math.Max(1, windowLength / 20) && rollingEnergy > 1e-20 * windowLength)
+                candidates.Add((rollingEnergy, candidateStart));
+        }
+        Consider(0);
         int previousStart = 0;
         for (int start = hop; start + windowLength <= sampleCount; start += hop)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            for (int i = previousStart; i < start; i++) rollingEnergy -= EnergyAt(source, i);
+            for (int i = previousStart; i < start; i++)
+            {
+                double energy = EnergyAt(source, i);
+                rollingEnergy -= energy;
+                if (energy > 1e-20) rollingNonZero--;
+            }
             int previousEnd = previousStart + windowLength;
             int nextEnd = start + windowLength;
-            for (int i = previousEnd; i < nextEnd; i++) rollingEnergy += EnergyAt(source, i);
-            if (rollingEnergy < quietestEnergy)
+            for (int i = previousEnd; i < nextEnd; i++)
             {
-                quietestEnergy = rollingEnergy;
-                quietestStart = start;
+                double energy = EnergyAt(source, i);
+                rollingEnergy += energy;
+                if (energy > 1e-20) rollingNonZero++;
             }
+            Consider(start);
             previousStart = start;
         }
 
-        var profile = Restoration.LearnNoiseProfile(source, quietestStart, windowLength,
-            cancellationToken);
+        if (candidates.Count == 0) return new NoiseProfileResult(null, 0, true);
+
+        // Several separated quiet passages are harder for a held note, fade or edit to fool than
+        // one absolute minimum. Keep the four quietest windows that do not substantially overlap.
+        var selected = new List<(int Start, int Count)>();
+        foreach ((double _, int candidateStart) in candidates.OrderBy(item => item.Energy))
+        {
+            if (selected.Any(item => Math.Abs(item.Start - candidateStart) < windowLength / 2))
+                continue;
+            selected.Add((candidateStart, windowLength));
+            if (selected.Count == 4) break;
+        }
+        int quietestStart = selected[0].Start;
+        var profile = Restoration.LearnNoiseProfile(source, selected, cancellationToken);
         return profile.Any(value => value > 0)
             ? new NoiseProfileResult(profile, quietestStart, true)
             : new NoiseProfileResult(null, quietestStart, true);
+    }
+
+    private static RestorationRecommendations.CrackleEvidence AnalyzeCrackleEvidence(
+        float[][] source, int sampleRate, CancellationToken cancellationToken)
+    {
+        int minimum = Decrackle.BlockLengthFor(DecrackleOptions.Default);
+        if (source.Length == 0 || source[0].Length < minimum)
+            return new RestorationRecommendations.CrackleEvidence(
+                DecrackleReport.None, 0, sampleRate);
+
+        int length = source.Min(channel => channel.Length);
+        int window = Math.Min(length, checked(sampleRate * 4));
+        int[] proposedStarts = length <= checked(sampleRate * 12)
+            ? [0]
+            :
+            [
+                Math.Clamp(length / 10 - window / 2, 0, length - window),
+                Math.Clamp(length / 2 - window / 2, 0, length - window),
+                Math.Clamp(length * 9 / 10 - window / 2, 0, length - window),
+            ];
+
+        int events = 0, rejected = 0, fallbacks = 0, samplesAnalyzed = 0;
+        long replaced = 0;
+        foreach (int start in proposedStarts.Distinct())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            float[][] segment = start == 0 && window == length
+                ? source
+                : CopyChannels(source, start, window, cancellationToken);
+            DecrackleReport report = segment.Length >= 2
+                ? Decrackle.AnalyzeStereo(segment[0], segment[1],
+                    cancellationToken: cancellationToken)
+                : Decrackle.Analyze(segment[0], cancellationToken: cancellationToken);
+            events += report.Events;
+            rejected += report.Rejected;
+            fallbacks += report.Fallbacks;
+            replaced += report.SamplesReplaced;
+            samplesAnalyzed += window;
+        }
+
+        return new RestorationRecommendations.CrackleEvidence(
+            new DecrackleReport(events, replaced, fallbacks, rejected),
+            samplesAnalyzed, sampleRate);
     }
 
     private void ApplyAnalysisRecommendations(RestorationRecommendations.Settings recommendations)
@@ -1178,8 +1260,10 @@ public partial class RestorationWorkbenchDialog : Window
             noiseSensitivity.Value = recommendations.NoiseSensitivityDb;
             humEnabled.IsChecked = recommendations.RemoveHum;
             humStrength.Value = recommendations.HumAmount * 100;
-            humFrequency.SelectedIndex = recommendations.HumFrequency == 50 ? 0 : 1;
+            humFrequency.SelectedIndex = -1;
+            humFrequency.Text = $"{recommendations.HumFrequency:0.0} Hz";
             humHarmonics.Value = recommendations.HumHarmonics;
+            _recommendedHumHarmonicMask = recommendations.HumHarmonicMask;
             humQ.Value = recommendations.HumQ;
             subsonicEnabled.IsChecked = recommendations.HighPass;
             subsonicCutoff.Value = recommendations.HighPassCutoffHz;
@@ -1430,8 +1514,9 @@ public partial class RestorationWorkbenchDialog : Window
     private string? _rumbleEvidence;
     private double _rumbleConfidence;
 
-    /// <summary>Whether the click analysis found impulses — the evidence de-crackle rides on.</summary>
-    private int _impulsesFound;
+    /// <summary>Independent prediction-residual crackle evidence over representative passages.</summary>
+    private DecrackleReport _crackleReport;
+    private int _crackleSamplesAnalyzed;
 
     /// <summary>
     /// Says what the side control will do and the measurement that decided how far it may go.
@@ -1496,29 +1581,26 @@ public partial class RestorationWorkbenchDialog : Window
     }
 
     /// <summary>
-    /// Says what the de-crackle recommendation was made from, because it is weaker evidence than
-    /// the other stages have.
+    /// Says what the de-crackle recommendation was made from.
     /// </summary>
     /// <remarks>
-    /// Every other card on this dialog is switched on by a measurement of the thing it removes.
-    /// This one is not: crackle sits below the click detector's reach by definition, so nothing
-    /// here counts it, and the recommendation rides on impulses having been found at all. <b>Saying
-    /// so is the point of the line</b> — a control that turns itself on for a reason the user
-    /// cannot see is one they cannot judge.
+    /// Crackle sits below the click detector's reach, so this reports the separate prediction-
+    /// residual measurement rather than using isolated clicks as a proxy.
     /// </remarks>
-    internal static string DescribeCrackle(bool enabled, bool analysed, int impulsesFound,
-        double threshold)
+    internal static string DescribeCrackle(bool enabled, bool analysed, int events,
+        int candidates, double secondsAnalyzed, double threshold)
     {
         if (!analysed) return "Run analysis to see what this went on.";
-        if (!enabled) return "This card is switched off.";
-
-        string basis = impulsesFound > 0
-            ? $"Recommended because the click analysis found {impulsesFound:N0} impulses, so the surface sheds them; the crackle below that is not counted."
-            : "No impulses were found, so there is no evidence of a shedding surface here.";
+        double density = secondsAnalyzed > 0 ? events / secondsAnalyzed : 0;
+        string status = enabled ? "Removing surface crackle." : "This card is switched off.";
+        string basis = candidates > 0
+            ? $" The crackle analysis accepted {events:N0} of {candidates:N0} candidates"
+              + $" ({density:0.0} per second) in representative passages."
+            : " The crackle analysis found no candidates in the representative passages.";
         string caution = threshold < 3.0
             ? " Below 3.0σ this repairs twice as many samples for a worse result — measured, 2.5σ left more audible ticks than 3.5σ did."
             : "";
-        return $"{basis}{caution}";
+        return $"{status}{basis}{caution}";
     }
 
     private void UpdateVerticalNoiseReadouts()
@@ -1530,7 +1612,9 @@ public partial class RestorationWorkbenchDialog : Window
         sideEvidenceText.Text = DescribeSideLevel(verticalEnabled.IsChecked == true, analysed,
             stereo, _sideToMidDb ?? 0, sideLevel.Value / 100.0, WholeDocumentRange);
         decrackleEvidenceText.Text = DescribeCrackle(decrackleEnabled.IsChecked == true, analysed,
-            _impulsesFound, decrackleThreshold.Value);
+            _crackleReport.Events, _crackleReport.Candidates,
+            _sampleRate > 0 ? _crackleSamplesAnalyzed / (double)_sampleRate : 0,
+            decrackleThreshold.Value);
         subsonicEvidenceText.Text = !analysed
             ? "Run analysis to measure the subsonic band."
             : subsonicEnabled.IsChecked != true
@@ -1635,7 +1719,28 @@ public partial class RestorationWorkbenchDialog : Window
             : $"Chose sparse on {sparse.Count} channels and peaks on {peaks.Count}.";
     }
 
-    private RestorationSettings CaptureSettings() => new(
+    private double SelectedHumFrequency()
+    {
+        string text = humFrequency.Text?.Replace("Hz", "", StringComparison.OrdinalIgnoreCase).Trim()
+                      ?? string.Empty;
+        bool parsed = double.TryParse(text, System.Globalization.NumberStyles.Float,
+                          System.Globalization.CultureInfo.CurrentCulture, out double frequency) ||
+                      double.TryParse(text, System.Globalization.NumberStyles.Float,
+                          System.Globalization.CultureInfo.InvariantCulture, out frequency);
+        return parsed
+            ? Math.Clamp(frequency, 45, 65)
+            : humFrequency.SelectedIndex == 0 ? 50.0 : 60.0;
+    }
+
+    private RestorationSettings CaptureSettings()
+    {
+        int harmonicCount = (int)Math.Round(humHarmonics.Value);
+        int contiguousMask = (1 << harmonicCount) - 1;
+        int harmonicMask = presetCombo.SelectedIndex == 4
+            ? _recommendedHumHarmonicMask & contiguousMask
+            : contiguousMask;
+        if (harmonicMask == 0) harmonicMask = 1;
+        return new(
         clickEnabled.IsChecked == true,
         clickSensitivity.Value,
         clickStrength.Value / 100.0,
@@ -1648,8 +1753,9 @@ public partial class RestorationWorkbenchDialog : Window
         noiseSensitivity.Value,
         humEnabled.IsChecked == true,
         humStrength.Value / 100.0,
-        humFrequency.SelectedIndex == 0 ? 50.0 : 60.0,
-        (int)Math.Round(humHarmonics.Value),
+        SelectedHumFrequency(),
+        harmonicCount,
+        harmonicMask,
         humQ.Value,
         subsonicEnabled.IsChecked == true,
         subsonicCutoff.Value,
@@ -1659,6 +1765,7 @@ public partial class RestorationWorkbenchDialog : Window
         decrackleThreshold.Value,
         globalMix.Value / 100.0,
         bypassCheck.IsChecked == true);
+    }
 
     /// <summary>The clipping analysis the method readout describes, so the two cannot disagree.</summary>
     private ClippingAnalysisResult? _analysisForReadout;
@@ -1888,11 +1995,6 @@ public partial class RestorationWorkbenchDialog : Window
                 new DspProgressAdapter(progress, 0.02, 0.94)), operation.Token);
             if (!IsCurrent(operation)) return;
             UpdateAnalysisSummary(analyses);
-            // The crackle card's recommendation rides on this count, so it has to follow the
-            // analysis that actually ran. Set only in OnLoaded, it kept quoting the first pass
-            // while the header showed the second - a readout disagreeing with its own analysis,
-            // which is the thing every readout in this dialog is arranged to prevent.
-            _impulsesFound = analyses.Clicks.Events.Count;
             UpdateVerticalNoiseReadouts();
             statusText.Text = "Analysis refreshed · press Preview to audition the current settings.";
             progressBar.Value = 1;

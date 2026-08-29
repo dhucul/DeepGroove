@@ -776,7 +776,7 @@ public partial class CdTransferDialog : Window
     /// audio each time.
     /// </remarks>
     private float[] Envelope() =>
-        _envelope ??= Restoration.BlockPeaks(_document.Doc.Channels.ToArray(), _document.Doc.SampleRate);
+        _envelope ??= Restoration.BlockActivity(_document.Doc.Channels.ToArray(), _document.Doc.SampleRate);
 
     /// <summary>Whichever of the two moved further from where it was, sign kept.</summary>
     private static int FurthestMove(int worst, int candidate) =>

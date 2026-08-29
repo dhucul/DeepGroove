@@ -25,6 +25,7 @@ internal static class RestorationRecommendations
         double HumAmount,
         double HumFrequency,
         int HumHarmonics,
+        int HumHarmonicMask,
         double HumQ,
         bool HighPass,
         double HighPassCutoffHz,
@@ -54,10 +55,14 @@ internal static class RestorationRecommendations
     /// <summary>The de-crackle threshold in robust deviations, matching the Restore menu default.</summary>
     internal const double DefaultDecrackleThreshold = 3.5;
 
+    internal readonly record struct CrackleEvidence(
+        DecrackleReport Report, int SamplesAnalyzed, int SampleRate);
+
     internal static Settings Create(
         ClickAnalysisResult clicks,
         ClippingAnalysisResult clipping,
-        CleanupAnalysisResult cleanup)
+        CleanupAnalysisResult cleanup,
+        CrackleEvidence? crackleEvidence = null)
     {
         ArgumentNullException.ThrowIfNull(clicks);
         ArgumentNullException.ThrowIfNull(clipping);
@@ -126,12 +131,17 @@ internal static class RestorationRecommendations
         double sigmoid = 1.0 / (1.0 + Math.Exp(-5.0 * (x - 0.55)));
         double sideLevel = Quantize(Math.Clamp(0.20 + 0.80 * sigmoid, 0.20, 1.0), 0.05);
 
-        // De-crackle rides on the same evidence as click repair: impulses found means a surface
-        // that sheds them, and crackle is the population below the click detector's reach rather
-        // than a different defect. <b>This is weaker evidence than the other four stages have</b> -
-        // a proper crackle-density measurement would be the honest trigger and is not built - so the
-        // card names what it went on and the control stays where the user can turn it off.
-        bool decrackle = clicks.Events.Count > 0;
+        // Unlike isolated clicks, surface crackle is a dense population. Recommend this stage only
+        // from its own prediction-residual measurement, and require both a useful event density and
+        // a reasonable classifier acceptance rate. A single loud click is not crackle evidence.
+        DecrackleReport crackle = crackleEvidence?.Report ?? DecrackleReport.None;
+        double crackleDensity = crackleEvidence is { SamplesAnalyzed: > 0, SampleRate: > 0 } evidence
+            ? crackle.Density(evidence.SampleRate, evidence.SamplesAnalyzed)
+            : 0;
+        double acceptanceRate = crackle.Candidates > 0
+            ? crackle.Events / (double)crackle.Candidates
+            : 0;
+        bool decrackle = crackle.Events >= 3 && crackleDensity >= 0.25 && acceptanceRate >= 0.20;
 
         return new Settings(
             clicks.Events.Count > 0,
@@ -145,8 +155,11 @@ internal static class RestorationRecommendations
             Quantize(Math.Clamp(2.5 + noiseReduction * 0.35, 2.5, 8.0), 0.5),
             removeHum,
             Math.Clamp(Param(hum, "amount", 0.65), 0, 1),
-            Math.Abs(Param(hum, "frequency", 60) - 50) < 5 ? 50 : 60,
+            Math.Clamp(Param(hum, "frequency", 60), 45, 65),
             (int)Math.Round(Math.Clamp(Param(hum, "harmonics", 4), 1, 8)),
+            (int)Math.Round(Math.Clamp(Param(hum, "harmonicMask",
+                (1 << (int)Math.Round(Math.Clamp(Param(hum, "harmonics", 4), 1, 8))) - 1),
+                1, 0xFF)),
             Math.Clamp(Param(hum, "q", 35), 8, 60),
             removeSubsonic,
             highPassCutoff,

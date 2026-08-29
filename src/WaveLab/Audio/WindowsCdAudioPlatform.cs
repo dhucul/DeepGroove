@@ -80,7 +80,7 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
     private const int ErrorIoPending = 997;
     private const int ErrorOperationAborted = 995;
     private const int CookedSectorBytes = 2_048;
-    private const int MaximumTocBytes = 4 + (100 * 8);
+    private const int MaximumTocBytes = 8_192;
     private static readonly TimeSpan DeviceIoTimeout = TimeSpan.FromSeconds(15);
 
     private readonly SafeFileHandle _handle;
@@ -132,7 +132,32 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
             "read the CD table of contents",
             cancellationToken);
 
-        return ParseTableOfContents(buffer, bytesReturned);
+        CdAudioTableOfContents standard = ParseTableOfContents(buffer, bytesReturned);
+
+        // The standard TOC has track starts but no session boundaries. Ask for the full TOC as a
+        // second, optional capability so an audio track followed by data can be ended at session
+        // 1's real lead-out rather than by subtracting a fixed 152 seconds. Older drives that do
+        // not implement format 2 retain the standard TOC; preserving the whole stated track is
+        // safer than silently removing legal single-session audio.
+        try
+        {
+            Array.Clear(buffer);
+            request.FormatAndMsf = 0x82; // format 2 (full TOC), MSF addresses
+            bytesReturned = InvokeIoControl(
+                IoctlCdromReadTocEx,
+                request,
+                buffer,
+                buffer.Length,
+                "read the CD session table of contents",
+                cancellationToken);
+            IReadOnlyList<CdAudioSession> sessions = ParseFullTableOfContents(buffer, bytesReturned);
+            return new CdAudioTableOfContents(
+                standard.FirstTrackNumber, standard.LastTrackNumber, standard.Entries, sessions);
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidDataException)
+        {
+            return standard;
+        }
     }
 
     public int ReadAudioSectors(int startSector, int sectorCount, byte[] destination) =>
@@ -683,6 +708,62 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
         }
 
         return new CdAudioTableOfContents(firstTrack, lastTrack, entries);
+    }
+
+    internal static IReadOnlyList<CdAudioSession> ParseFullTableOfContents(
+        byte[] buffer, int bytesReturned)
+    {
+        if (bytesReturned < 4)
+            throw InvalidToc("The drive returned a truncated full CD table of contents.");
+        int tocLength = buffer[0] << 8 | buffer[1];
+        int meaningfulBytes = tocLength + 2;
+        if (tocLength < 2 || meaningfulBytes > bytesReturned || meaningfulBytes > buffer.Length)
+            throw InvalidToc("The drive returned a truncated full CD table of contents.");
+        if ((meaningfulBytes - 4) % 11 != 0)
+            throw InvalidToc("The drive returned a misaligned full CD table of contents.");
+
+        var first = new Dictionary<int, int>();
+        var last = new Dictionary<int, int>();
+        var leadOut = new Dictionary<int, int>();
+        for (int offset = 4; offset < meaningfulBytes; offset += 11)
+        {
+            int session = buffer[offset];
+            int point = buffer[offset + 3];
+            int minute = buffer[offset + 8];
+            int second = buffer[offset + 9];
+            int frame = buffer[offset + 10];
+            if (session <= 0) continue;
+
+            switch (point)
+            {
+                case 0xA0:
+                    first[session] = minute;
+                    break;
+                case 0xA1:
+                    last[session] = minute;
+                    break;
+                case 0xA2:
+                    if (second >= 60 || frame >= CdAudioFormat.SectorsPerSecond)
+                        throw InvalidToc("The drive returned an invalid session lead-out address.");
+                    int absolute = checked((minute * 60 + second) *
+                        CdAudioFormat.SectorsPerSecond + frame);
+                    leadOut[session] = absolute - 2 * CdAudioFormat.SectorsPerSecond;
+                    break;
+            }
+        }
+
+        var sessions = new List<CdAudioSession>();
+        foreach ((int number, int firstTrack) in first.OrderBy(item => item.Key))
+        {
+            if (!last.TryGetValue(number, out int lastTrack) ||
+                !leadOut.TryGetValue(number, out int endSector) ||
+                firstTrack is < 1 or > 99 || lastTrack < firstTrack || lastTrack > 99)
+                continue;
+            sessions.Add(new CdAudioSession(number, firstTrack, lastTrack, endSector));
+        }
+        if (sessions.Count == 0)
+            throw InvalidToc("The drive returned no complete sessions in the full CD table of contents.");
+        return sessions;
     }
 
     private static InvalidDataException InvalidToc(string message) => new(message);

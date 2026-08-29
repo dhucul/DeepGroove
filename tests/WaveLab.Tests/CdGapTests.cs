@@ -249,14 +249,14 @@ public sealed class CdGapTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// The trim reads a block envelope rather than every sample, because it is reached from
+    /// The trim reads a robust block envelope rather than every sample, because it is reached from
     /// <c>RefreshOrder</c> and so runs on the dispatcher on every arrow press — and a track with no
-    /// music above the threshold made it walk the whole track. It has to give the same answer to
-    /// the sample, and it does: a block's entry is the largest magnitude in it, so a block under
-    /// the threshold cannot hide a sample at or above one.
+    /// music above the threshold made it walk the whole track. On ordinary sustained programme it
+    /// still refines the answer to the same sample as a direct walk; a separate split regression
+    /// pins the intentional exception for isolated clicks in a quiet gap.
     /// </summary>
     [Fact]
-    public void TheEnvelopeSearchFindsExactlyWhatWalkingEverySampleWould()
+    public void TheEnvelopeSearchRefinesSustainedProgrammeToTheExactSample()
     {
         float[][] side = Side();
         double threshold = Math.Pow(10, -45 / 20.0);
@@ -314,7 +314,7 @@ public sealed class CdGapTests(ITestOutputHelper output)
     /// A review asked for a guard here, on the grounds that the length is read off channel 0 and
     /// every channel is then indexed to it. Writing one showed it was already covered: measuring
     /// the envelope is the first thing that touches the audio, and
-    /// <c>Restoration.BlockPeaks</c> validates. A guard no test could tell the presence of is dead
+    /// <c>Restoration.BlockActivity</c> validates. A guard no test could tell the presence of is dead
     /// weight, so this pins the behaviour instead of duplicating the check.
     /// </remarks>
     [Fact]

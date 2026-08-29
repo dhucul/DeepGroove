@@ -32,6 +32,7 @@ public static class CleanupAnalyzer
     private readonly record struct HumEstimate(
         double Frequency,
         int Harmonics,
+        int HarmonicMask,
         double Q,
         double Amount,
         double AverageExcessDb,
@@ -554,7 +555,7 @@ public static class CleanupAnalyzer
         CancellationToken cancellationToken)
     {
         if (spectral.ProgramPower.Length == 0)
-            return new HumEstimate(60, 1, 40, 0, 0, 0, false);
+            return new HumEstimate(60, 1, 1, 40, 0, 0, 0, false);
 
         var candidates = new List<(double Frequency, double Score, int Supported,
             int HighestHarmonic, int HarmonicMask, double Excess)>();
@@ -621,7 +622,7 @@ public static class CleanupAnalyzer
         double q = Math.Clamp(28 + bestExcess * 1.35, 25, 65);
         double amount = detected ? Quantize(Math.Clamp((bestExcess - 3) / 20, 0.35, 0.9), 0.05) : 0;
         return new HumEstimate(Quantize(bestFrequency, 0.1), Math.Clamp(bestHighestHarmonic, 1, 8),
-            Math.Round(q), amount, bestExcess, confidence, detected);
+            bestHarmonicMask, Math.Round(q), amount, bestExcess, confidence, detected);
     }
 
     /// <summary>
@@ -845,6 +846,7 @@ public static class CleanupAnalyzer
         state.Enabled = hum.Detected;
         Set(state, "frequency", hum.Frequency);
         Set(state, "harmonics", hum.Harmonics);
+        Set(state, "harmonicMask", hum.HarmonicMask);
         Set(state, "q", hum.Q);
         Set(state, "amount", hum.Amount);
     }

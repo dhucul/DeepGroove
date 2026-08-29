@@ -189,9 +189,9 @@ public static class CdTransfer
             throw new ArgumentException("All source channels must have the same length.", nameof(channels));
 
         cancellationToken.ThrowIfCancellationRequested();
+        float[] activity = Restoration.BlockActivity(channels, sampleRate, cancellationToken);
         var silences = Restoration.DetectSilences(
-            channels, sampleRate, silenceThresholdDb, minimumSilenceSeconds * 1000,
-            cancellationToken);
+            activity, length, sampleRate, silenceThresholdDb, minimumSilenceSeconds * 1000);
 
         return PlansFrom(BoundariesFrom(
             silences, length, MinimumTrackSamples(minimumTrackSeconds, sampleRate), cancellationToken));
@@ -207,18 +207,97 @@ public static class CdTransfer
     /// </summary>
     private static List<int> BoundariesFrom(
         IReadOnlyList<(int Start, int End)> silences, int length, int minimumTrack,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, int? desiredTracks = null)
     {
-        var boundaries = new List<int> { 0 };
-        foreach (var (start, end) in silences)
+        var candidates = silences
+            .Select(gap => (Position: gap.Start + (gap.End - gap.Start) / 2,
+                Weight: (double)(gap.End - gap.Start)))
+            .Where(item => item.Position >= minimumTrack && length - item.Position >= minimumTrack)
+            .OrderBy(item => item.Position)
+            .ToArray();
+        if (candidates.Length == 0) return [0, length];
+
+        var predecessorCount = new int[candidates.Length];
+        int predecessor = 0;
+        for (int i = 0; i < candidates.Length; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            int boundary = start + (end - start) / 2;
-            if (boundary - boundaries[^1] < minimumTrack) continue;
-            if (length - boundary < minimumTrack) continue;
-            boundaries.Add(boundary);
+            while (predecessor < i &&
+                   candidates[predecessor].Position <= candidates[i].Position - minimumTrack)
+                predecessor++;
+            predecessorCount[i] = predecessor;
         }
-        boundaries.Add(length);
+
+        int requestedSplits = Math.Max(0, (desiredTracks ?? 0) - 1);
+        if (desiredTracks.HasValue && requestedSplits <= candidates.Length)
+        {
+            const double impossible = double.NegativeInfinity;
+            var score = new double[requestedSplits + 1, candidates.Length + 1];
+            var take = new bool[requestedSplits + 1, candidates.Length + 1];
+            for (int count = 1; count <= requestedSplits; count++) score[count, 0] = impossible;
+
+            for (int count = 1; count <= requestedSplits; count++)
+            {
+                for (int considered = 1; considered <= candidates.Length; considered++)
+                {
+                    double skip = score[count, considered - 1];
+                    double prior = score[count - 1, predecessorCount[considered - 1]];
+                    double choose = double.IsNegativeInfinity(prior)
+                        ? impossible
+                        : prior + candidates[considered - 1].Weight;
+                    if (choose > skip)
+                    {
+                        score[count, considered] = choose;
+                        take[count, considered] = true;
+                    }
+                    else score[count, considered] = skip;
+                }
+            }
+
+            if (!double.IsNegativeInfinity(score[requestedSplits, candidates.Length]))
+            {
+                var selected = new List<int>(requestedSplits);
+                int count = requestedSplits, considered = candidates.Length;
+                while (count > 0 && considered > 0)
+                {
+                    if (!take[count, considered]) { considered--; continue; }
+                    int candidate = considered - 1;
+                    selected.Add(candidates[candidate].Position);
+                    considered = predecessorCount[candidate];
+                    count--;
+                }
+                selected.Reverse();
+                return [0, .. selected, length];
+            }
+        }
+
+        // Weighted interval selection finds the strongest compatible set globally. A long, clean
+        // gap later in the side can now beat an early marginal gap instead of being discarded by
+        // the order in which the scan happened to encounter them.
+        var best = new double[candidates.Length + 1];
+        var chosen = new bool[candidates.Length + 1];
+        for (int considered = 1; considered <= candidates.Length; considered++)
+        {
+            double choose = candidates[considered - 1].Weight +
+                            best[predecessorCount[considered - 1]];
+            if (choose > best[considered - 1])
+            {
+                best[considered] = choose;
+                chosen[considered] = true;
+            }
+            else best[considered] = best[considered - 1];
+        }
+
+        var boundaries = new List<int> { length };
+        for (int considered = candidates.Length; considered > 0;)
+        {
+            if (!chosen[considered]) { considered--; continue; }
+            int candidate = considered - 1;
+            boundaries.Add(candidates[candidate].Position);
+            considered = predecessorCount[candidate];
+        }
+        boundaries.Add(0);
+        boundaries.Reverse();
         return boundaries;
     }
 
@@ -264,8 +343,8 @@ public static class CdTransfer
     }
 
     /// <summary>
-    /// Trim each split back to the music either side of it and declare a fixed gap, so the silence
-    /// between every pair of tracks is the same length whatever the record did.
+    /// Trim each split back to sustained music either side of it and declare a fixed gap, so the
+    /// silence between every pair of tracks is the same length whatever the record did.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -276,9 +355,11 @@ public static class CdTransfer
     /// makes every gap the same.
     /// </para>
     /// <para>
-    /// <b>Nothing above the threshold is ever trimmed</b>, so a fade is only shortened where it has
-    /// already fallen below the level the user called quiet — inaudible by that definition. A track
-    /// with nothing above the threshold anywhere is left exactly as it is rather than collapsed.
+    /// Activity is measured with a robust block percentile so one isolated tick or crackle grain in
+    /// a gap cannot preserve seconds of otherwise empty groove. Once a block contains sustained
+    /// activity, its first or last above-threshold sample is retained, so fades are still refined
+    /// to the sample rather than to a block boundary. A track with no sustained activity anywhere
+    /// is left exactly as it is rather than collapsed.
     /// </para>
     /// <para>
     /// The first track's head and the last track's tail are untouched. This sets what is
@@ -317,14 +398,14 @@ public static class CdTransfer
         int length = channels[0].Length;
         double threshold = Math.Pow(10, quietBelowDb / 20.0);
 
-        // Searched through the block envelope rather than sample by sample. The scan runs inward
+        // Searched through the robust block envelope rather than sample by sample. The scan runs inward
         // from a track end until it meets music, so a track holding nothing above the threshold - a
         // run-out, a quiet interlude - makes it walk the whole track, and RefreshOrder calls this
         // on every arrow press. A stale envelope of the wrong length is rebuilt, not trusted.
         int blocks = (length + Restoration.SilenceBlock - 1) / Restoration.SilenceBlock;
         float[] envelope = blockPeaks is { } given && given.Length == blocks
             ? given
-            : Restoration.BlockPeaks(channels, sampleRate, cancellationToken);
+            : Restoration.BlockActivity(channels, sampleRate, cancellationToken);
 
         for (int i = 0; i < result.Count; i++)
         {
@@ -352,10 +433,8 @@ public static class CdTransfer
     /// The first sample at or above <paramref name="threshold"/>, or <paramref name="to"/>.
     /// </summary>
     /// <remarks>
-    /// Exact despite reading the envelope first: a block's entry is the largest magnitude in it, so
-    /// a block under the threshold cannot hold a sample at or above one. Only a block that clears
-    /// it is read sample by sample, which makes this a walk over a two-hundred-and-fifty-sixth of
-    /// the audio plus one block.
+    /// A robust block first establishes sustained activity, then that block is refined sample by
+    /// sample. Sparse defects in otherwise quiet blocks are deliberately ignored.
     /// </remarks>
     private static int FirstAbove(
         IReadOnlyList<float[]> channels, float[] envelope, int from, int to, double threshold,
@@ -455,7 +534,7 @@ public static class CdTransfer
     /// One track is the <i>absence</i> of a finding, so a split that survives only a setting or two
     /// is not evidence of one.
     /// </summary>
-    public const double MinimumPlateauDb = 3;
+    public const double MinimumPlateauDb = 4;
 
     /// <summary>Tried only when nothing at all is found at <see cref="DefaultMinimumGapSeconds"/>.</summary>
     internal const double RelaxedMinimumGapSeconds = 0.6;
@@ -479,7 +558,7 @@ public static class CdTransfer
     /// agree, and that is a property the program can measure and the user cannot see.
     /// </para>
     /// <para>
-    /// The sweep is affordable because <see cref="Restoration.BlockPeaks"/> is the whole cost of a
+    /// The sweep is affordable because <see cref="Restoration.BlockActivity"/> is the whole cost of a
     /// silence pass and none of it depends on the threshold: the envelope is measured once and
     /// forty-six thresholds are run against it.
     /// </para>
@@ -503,8 +582,9 @@ public static class CdTransfer
         if (channels.Any(c => c.Length != length))
             throw new ArgumentException("All source channels must have the same length.", nameof(channels));
 
-        float[] envelope = Restoration.BlockPeaks(channels, sampleRate, cancellationToken);
-        var candidates = Plateaus(envelope, length, sampleRate, DefaultMinimumGapSeconds, cancellationToken);
+        float[] envelope = Restoration.BlockActivity(channels, sampleRate, cancellationToken);
+        var candidates = Plateaus(envelope, length, sampleRate, DefaultMinimumGapSeconds,
+            targetTracks, cancellationToken);
         bool relaxed = false;
 
         // Nothing at any setting usually means the quiet between the songs is shorter than the gap
@@ -512,7 +592,8 @@ public static class CdTransfer
         // nearly free, and it is the difference between an answer and a dead end.
         if (!candidates.Any(c => c.Tracks > 1))
         {
-            var shorter = Plateaus(envelope, length, sampleRate, RelaxedMinimumGapSeconds, cancellationToken);
+            var shorter = Plateaus(envelope, length, sampleRate, RelaxedMinimumGapSeconds,
+                targetTracks, cancellationToken);
             if (shorter.Any(c => c.Tracks > 1)) { candidates = shorter; relaxed = true; }
         }
 
@@ -524,10 +605,11 @@ public static class CdTransfer
 
     /// <summary>Every run of thresholds that agrees about where the tracks are.</summary>
     private static List<CdSplitCandidate> Plateaus(
-        float[] envelope, int length, int sampleRate, double minimumGapSeconds,
+        float[] envelope, int length, int sampleRate, double minimumGapSeconds, int? targetTracks,
         CancellationToken cancellationToken)
     {
-        int minimumTrack = MinimumTrackSamples(AutoSplitMinimumTrackSeconds, sampleRate);
+        int minimumTrack = MinimumTrackSamples(
+            targetTracks.HasValue ? MinimumTrackSeconds : AutoSplitMinimumTrackSeconds, sampleRate);
         int tolerance = Math.Max(1, (int)Math.Round(PlateauToleranceSeconds * sampleRate));
         var result = new List<CdSplitCandidate>();
 
@@ -553,7 +635,8 @@ public static class CdTransfer
             cancellationToken.ThrowIfCancellationRequested();
             var silences = Restoration.DetectSilences(
                 envelope, length, sampleRate, db, minimumGapSeconds * 1000);
-            List<int> boundaries = BoundariesFrom(silences, length, minimumTrack, cancellationToken);
+            List<int> boundaries = BoundariesFrom(
+                silences, length, minimumTrack, cancellationToken, targetTracks);
 
             // Compared against the run's *first* answer rather than the previous one, so a slow
             // drift over many settings cannot creep past the tolerance a step at a time.
@@ -610,7 +693,7 @@ public static class CdTransfer
             return reachable.Length == 0
                 ? NoGaps
                 : $"This side splits into {Counts(reachable)} tracks, never {want}. " +
-                  $"Add the missing ones with Split - tracks under {AutoSplitMinimumTrackSeconds:0} s are merged.";
+                  $"Add the missing ones with Split - a CD track must run at least {MinimumTrackSeconds:0} s.";
         }
 
         if (sweep.Best is not { } best || best.Tracks <= 1) return NoGaps;
@@ -1359,6 +1442,7 @@ public static class CdTransfer
         try
         {
             float[][] continuous = PrepareContinuous(source, prepared.Count, progress, cancellationToken);
+            bool dither = !IsExact16BitPcm(continuous, cancellationToken);
 
             var audio = new List<float[][]>(prepared.Count);
             var info = new List<DdpTrackInfo>(prepared.Count);
@@ -1382,7 +1466,7 @@ public static class CdTransfer
                     CdPackageProgress.WritingImageStage,
                     0.7 + 0.3 * fraction)));
             DdpResult staged = DdpImage.Write(stageFolder, audio, info, disc, CdSampleRate,
-                cancellationToken, imageProgress);
+                cancellationToken, imageProgress, dither);
 
             // Nothing takes its final name until every file is complete, so an interrupted export
             // cannot leave a folder that looks like a deliverable.

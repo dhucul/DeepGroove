@@ -23,7 +23,7 @@
                 <StackPanel Orientation="Horizontal">
                     <Ellipse Width="9" Height="9" Fill="{StaticResource Accent}" VerticalAlignment="Center"/>
                     <TextBlock Text="Extract Audio CD" Margin="10,0,0,0" FontSize="14" FontWeight="SemiBold"/>
-                    <TextBlock Text="44.1 kHz · stereo · lossless" Margin="14,2,0,0" FontSize="10.5"
+                    <TextBlock Text="44.1 kHz · stereo · verified reads" Margin="14,2,0,0" FontSize="10.5"
                                Foreground="{StaticResource Faint}"/>
                 </StackPanel>
             </Border>
@@ -104,6 +104,10 @@
                     <CheckBox x:Name="selectAll" Content="Select all audio tracks" IsChecked="True" Click="OnSelectAll"/>
                     <TextBlock x:Name="summaryText" HorizontalAlignment="Right" Foreground="{StaticResource Muted}"/>
                 </Grid>
+                <CheckBox x:Name="deEmphasis" Margin="0,8,0,0" IsChecked="True"
+                          Content="Apply CD de-emphasis to tracks flagged by the disc"
+                          Visibility="Collapsed"
+                          ToolTip="Restores the intended tonal balance of pre-emphasized CDs. Untick for bit-exact raw samples."/>
                 <ProgressBar x:Name="progressBar" Height="6" Minimum="0" Maximum="1" Margin="0,12,0,0"
                              Foreground="{StaticResource Accent}" Background="{StaticResource Panel3}" Value="0"/>
                 <TextBlock x:Name="statusText" Text="Scanning optical drives…" Margin="0,8,0,0"

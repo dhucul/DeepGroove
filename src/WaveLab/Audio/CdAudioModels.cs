@@ -40,6 +40,7 @@ public sealed record CdAudioTrack(
     public long FrameCount => (long)SectorCount * CdAudioFormat.FramesPerSector;
     public TimeSpan Duration => TimeSpan.FromSeconds(SectorCount / (double)CdAudioFormat.SectorsPerSecond);
     public bool IsAudio => Kind == CdTrackKind.Audio;
+    public bool PreEmphasis => IsAudio && (Control & 0x01) != 0;
 }
 
 /// <summary>An immutable snapshot of an audio disc's table of contents.</summary>
@@ -100,13 +101,14 @@ public sealed record CdAudioExtractionProgress(
 }
 
 /// <summary>
-/// An imported track and its source provenance. The document contains stereo,
-/// 44.1 kHz samples decoded losslessly from 16-bit CD-DA sectors.
+/// An imported track and its source provenance. The document contains stereo 44.1 kHz samples
+/// decoded from verified 16-bit CD-DA sectors, optionally with the flagged playback de-emphasis.
 /// </summary>
 public sealed record CdAudioTrackImport(
     CdAudioDeviceIdentity SourceDevice,
     CdAudioTrack SourceTrack,
-    AudioDocument Document);
+    AudioDocument Document,
+    bool DeEmphasisApplied = false);
 
 public enum CdAudioFailureReason
 {
