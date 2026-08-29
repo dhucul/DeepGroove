@@ -172,6 +172,37 @@ public sealed class DocumentViewModelTests
         Assert.True(vm.Cursor < vm.Doc.Length, $"the cursor was left at {vm.Cursor} in a 1000 sample document.");
     }
 
+    [Fact]
+    public void InsertionAtAnAnchorUsesTheSameBoundaryForMarkersAndRegions()
+    {
+        var vm = CreateDocument(length: 1_000);
+        vm.SetCursor(100, clearSelection: true);
+        vm.Markers.Add(new Marker { Name = "Boundary", Position = 100 });
+        vm.Regions.Add(new NamedRegion { Name = "Following", Start = 100, End = 200 });
+
+        vm.Doc.ReplaceRange(100, 0, [new float[25]], "Insert");
+
+        Assert.Equal(100, vm.Cursor);
+        Assert.Equal(100, Assert.Single(vm.Markers).Position);
+        NamedRegion region = Assert.Single(vm.Regions);
+        Assert.Equal(100, region.Start);
+        Assert.Equal(225, region.End);
+    }
+
+    [Fact]
+    public void RecoveryMetadataReplacesAnOlderSidecarSnapshotWithoutSchedulingASave()
+    {
+        var vm = CreateDocument(length: 1_000);
+        vm.Markers.Add(new Marker { Name = "Old", Position = 10 });
+
+        vm.RestoreAutosavedMarkers(
+            [new Marker { Name = "Recovered", Position = 150 }],
+            [new NamedRegion { Name = "Recovered region", Start = 100, End = 300 }]);
+
+        Assert.Equal("Recovered", Assert.Single(vm.Markers).Name);
+        Assert.Equal((100, 300), (Assert.Single(vm.Regions).Start, Assert.Single(vm.Regions).End));
+    }
+
     private static DocumentViewModel CreateDocument(int length) =>
         new(new AudioDocument([new float[length]], 48_000, 32));
 }

@@ -140,6 +140,12 @@ public sealed class Vst3Catalogue
                 + "No plugin has been judged by it.");
         }
 
+        // Discovery is the source of truth for this refresh. Keeping a cached success after the
+        // bundle was uninstalled leaves a selectable plugin that can never be opened.
+        var discovered = paths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (string missing in _results.Keys.Where(path => !discovered.Contains(path)).ToList())
+            _results.Remove(missing);
+
         for (int i = 0; i < paths.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();

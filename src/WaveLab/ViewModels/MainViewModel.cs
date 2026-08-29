@@ -65,7 +65,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _autosaveTimer;
     private TimeSpan _lastPlaybackRenderTime = TimeSpan.MinValue;
     private DateTime? _lastAutosave;
-    private readonly Dictionary<Guid, int> _autosavedVersions = [];
+    private readonly Dictionary<Guid, (int Audio, int Markers)> _autosavedVersions = [];
     private readonly HashSet<Guid> _savesInFlight = [];
     private readonly HashSet<Task> _saveOperations = [];
     private readonly HashSet<Task> _openOperations = [];
@@ -74,7 +74,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly Dictionary<Guid, string> _saveFailures = [];
     private Task _autosaveTask = Task.CompletedTask;
     private bool _startupLoaded;
+    private bool _preserveRecoveryOnExit;
     private bool _shuttingDown;
+    private bool _closeAllRunning;
     private bool _editOperationRunning;
     private bool _documentOperationRunning;
     private readonly Process _process = Process.GetCurrentProcess();
@@ -111,12 +113,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _autosaveTimer.Start();
 
         OpenCommand = new RelayCommand(Open);
-        SaveCommand = new RelayCommand(Save, () => !_documentOperationRunning && _active != null);
-        SaveAsCommand = new RelayCommand(SaveAs, () => !_documentOperationRunning && _active != null);
+        SaveCommand = new RelayCommand(Save,
+            () => !_documentOperationRunning && !_closeAllRunning && _active != null);
+        SaveAsCommand = new RelayCommand(SaveAs,
+            () => !_documentOperationRunning && !_closeAllRunning && _active != null);
         CloseTabCommand = new RelayCommand<TabViewModel>(CloseTab,
-            tab => !_documentOperationRunning && (tab != null ? Documents.Contains(tab) : _activeTab != null));
+            tab => !_documentOperationRunning && !_closeAllRunning
+                && (tab != null ? Documents.Contains(tab) : _activeTab != null));
         CloseAllCommand = new RelayCommand(CloseAll,
-            () => !_documentOperationRunning && Documents.Count > 0);
+            () => !_documentOperationRunning && !_closeAllRunning && Documents.Count > 0);
         ExitCommand = new RelayCommand(() => Application.Current.MainWindow?.Close());
 
         UndoCommand = new RelayCommand(Undo,
@@ -170,9 +175,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AddMarkerCommand = new RelayCommand(() => WithDoc(d => d.AddMarker(
             d.HasSelection ? d.SelStart
             : IsPlaying && ReferenceEquals(d, _playbackDocument) ? d.PlayheadSample
-            : d.Cursor)), () => HasAudioDocument);
+            : d.Cursor)), () => CanMutateDocument && HasAudioDocument);
         AddRegionCommand = new RelayCommand(() => WithDoc(d => d.AddRegionFromSelection()),
-            () => _active?.HasSelection == true);
+            () => CanMutateDocument && _active?.HasSelection == true);
         PrevMarkerCommand = new RelayCommand(() => WithDoc(d => d.JumpToNextMarker(forward: false)),
             () => _active?.Markers.Count > 0);
         NextMarkerCommand = new RelayCommand(() => WithDoc(d => d.JumpToNextMarker(forward: true)),
@@ -182,7 +187,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             d.Markers.Clear();
             d.Regions.Clear();
             d.NotifyMarkersChanged();
-        }), () => _active is { } d && (d.Markers.Count > 0 || d.Regions.Count > 0));
+        }), () => CanMutateDocument && _active is { } d && (d.Markers.Count > 0 || d.Regions.Count > 0));
         SmoothEditCommand = new RelayCommand(SmoothEditPoints, () => CanMutateAudio);
 
         ShowWaveformCommand = new RelayCommand(() => EditorView = EditorViewMode.Waveform);
@@ -304,7 +309,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// </para>
     /// </remarks>
     public bool IsDocumentOperationRunning => _documentOperationRunning;
-    private bool CanMutateDocument => !_editOperationRunning && !_documentOperationRunning;
+    private bool CanMutateDocument => !_editOperationRunning && !_documentOperationRunning && !_closeAllRunning;
     private bool CanMutateAudio => CanMutateDocument && HasAudioDocument;
 
     /// <summary>Told by the shell as a long document operation starts and finishes.</summary>
@@ -1117,13 +1122,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (dlg.ShowDialog() == true) OpenFiles(dlg.FileNames);
     }
 
-    public void AddDocument(AudioDocument doc, PeakStore? prebuiltPeaks = null, bool activate = true)
+    public DocumentViewModel AddDocument(AudioDocument doc, PeakStore? prebuiltPeaks = null, bool activate = true)
     {
         var vm = new DocumentViewModel(doc, prebuiltPeaks);
         Documents.Add(vm);
         // A workspace with documents and no selection is not a state anything else here handles,
         // so the first tab always activates whatever the caller asked for.
         if (activate || ActiveTab == null) ActiveTab = vm;
+        return vm;
     }
 
     /// <summary>Opens a montage in its own tab and makes it the active one.</summary>
@@ -1275,6 +1281,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// <summary>The markers as they stand, copied on the UI thread before any background save.</summary>
     private static List<Marker> MarkerSnapshot(DocumentViewModel d) =>
         [.. d.Markers.Select(m => new Marker { Name = m.Name, Position = m.Position })];
+
+    private static List<NamedRegion> RegionSnapshot(DocumentViewModel d) =>
+        [.. d.Regions.Select(region => new NamedRegion
+        {
+            Name = region.Name,
+            Start = region.Start,
+            End = region.End,
+            CdTrackOrder = region.CdTrackOrder,
+        })];
 
     private async void Save()
     {
@@ -1438,95 +1453,135 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// Close every open tab, asking once rather than once per file.
     /// </summary>
     /// <remarks>
-    /// One prompt covering all of them, all or nothing, which is the bargain batch convert already
-    /// makes for the same reason: a CD import opens a tab per track, and a dozen separate "close
-    /// anyway?" boxes is not a question, it is an obstacle. Files are taken in a snapshot because
-    /// closing mutates the collection, and one at a time because each close still has real work to
-    /// do — flushing markers, releasing playback, clearing autosave.
+    /// One prompt covering all of them, all or nothing. All fallible work is completed before the
+    /// collection is touched, so a failed marker flush cannot leave half the original tabs open.
     /// </remarks>
     private async void CloseAll()
+    {
+        if (_closeAllRunning) return;
+        Task operation = CloseAllAsync();
+        _tabCloseOperations.Add(operation);
+        try { await operation; }
+        finally { _tabCloseOperations.Remove(operation); }
+    }
+
+    private async Task CloseAllAsync()
     {
         var tabs = Documents.ToList();
         if (tabs.Count == 0) return;
 
-        int dirty = tabs.Count(tab => tab.IsDirty);
-        if (dirty > 0 && MessageBox.Show(
-                dirty == 1
-                    ? "One open file has unsaved changes. Close everything anyway?"
-                    : $"{dirty} open files have unsaved changes. Close everything anyway?",
-                "Close all files", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-            return;
-
-        foreach (TabViewModel tab in tabs)
+        _closeAllRunning = true;
+        RefreshEditCommandStates();
+        try
         {
-            if (!Documents.Contains(tab)) continue;
-            if (tab is MontageViewModel montage) { CloseMontageTab(montage, prompt: false); continue; }
-            if (tab is not DocumentViewModel document) continue;
+            var audio = tabs.OfType<DocumentViewModel>().ToList();
+            if (audio.Any(document => _savesInFlight.Contains(document.Doc.SessionId)))
+            {
+                MessageBox.Show("Wait for file saves to finish before closing all tabs.", "Save in progress",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
 
-            var operation = CloseTabAsync(document, prompt: false);
-            _tabCloseOperations.Add(operation);
-            try { await operation; }
-            finally { _tabCloseOperations.Remove(operation); }
+            int dirty = tabs.Count(tab => tab.IsDirty);
+            if (dirty > 0 && MessageBox.Show(
+                    dirty == 1
+                        ? "One open file has unsaved changes. Close everything anyway?"
+                        : $"{dirty} open files have unsaved changes. Close everything anyway?",
+                    "Close all files", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                return;
+
+            try { await Task.WhenAll(audio.Select(document => document.FlushMarkersAsync())); }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Marker metadata could not be saved, so no tabs were closed:\n" + ex.Message,
+                    "Close all files", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Commit only after every close has passed its fallible preflight.
+            ActiveTab = null;
+            foreach (DocumentViewModel document in audio)
+            {
+                if (ReferenceEquals(document, _playbackDocument)) ReleasePlayback();
+                if (ReferenceEquals(document, _seekDocument))
+                {
+                    _seekDocument = null;
+                    _resumeAfterSeek = false;
+                }
+                AutosaveService.Remove(document.Doc.SessionId);
+                _autosavedVersions.Remove(document.Doc.SessionId);
+                _saveFailures.Remove(document.Doc.SessionId);
+                document.Unhook();
+            }
+            foreach (TabViewModel tab in tabs) Documents.Remove(tab);
+
+            ReportAction(tabs.Count == 1 ? "File closed." : $"{tabs.Count} files closed.");
         }
-
-        ReportAction(tabs.Count == 1 ? "File closed." : $"{tabs.Count} files closed.");
+        finally
+        {
+            _closeAllRunning = false;
+            RefreshEditCommandStates();
+        }
     }
 
-    private void CloseMontageTab(MontageViewModel montage, bool prompt = true)
+    private bool CloseMontageTab(MontageViewModel montage, bool prompt = true)
     {
         if (prompt && montage.IsDirty && MessageBox.Show(
                 $"“{montage.Title}” has unsaved changes. Close it anyway?", "Close montage",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-            return;
+            return false;
 
         int index = Documents.IndexOf(montage);
-        Documents.Remove(montage);
+        if (index < 0) return false;
+        Documents.RemoveAt(index);
         if (ReferenceEquals(_activeTab, montage))
             ActiveTab = Documents.Count > 0 ? Documents[Math.Clamp(index, 0, Documents.Count - 1)] : null;
+        return true;
     }
 
-    private async Task CloseTabAsync(DocumentViewModel? vm, bool prompt = true)
+    private async Task<bool> CloseTabAsync(DocumentViewModel? vm, bool prompt = true)
     {
         vm ??= _active;
-        if (vm == null || !Documents.Contains(vm)) return;
-        if (_tabsClosing.Contains(vm.Doc.SessionId)) return;
+        if (vm == null || !Documents.Contains(vm)) return false;
+        if (_tabsClosing.Contains(vm.Doc.SessionId)) return false;
         if (_savesInFlight.Contains(vm.Doc.SessionId))
         {
             MessageBox.Show("Wait for this file's save to finish before closing its tab.", "Save in progress",
                 MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
+            return false;
         }
         if (prompt && vm.IsDirty &&
             MessageBox.Show($"{vm.Doc.Title} has unsaved changes. Close anyway?", "Unsaved changes",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-            return;
-        if (!_tabsClosing.Add(vm.Doc.SessionId)) return;
+            return false;
+        if (!_tabsClosing.Add(vm.Doc.SessionId)) return false;
         try
         {
-        if (ReferenceEquals(vm, _playbackDocument)) ReleasePlayback();
-        if (ReferenceEquals(vm, _seekDocument))
-        {
-            _seekDocument = null;
-            _resumeAfterSeek = false;
-        }
-        try { await vm.FlushMarkersAsync(); }
-        catch (Exception ex)
-        {
-            MessageBox.Show("Marker metadata could not be saved, so the tab was left open:\n" + ex.Message,
-                "Close file", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-        AutosaveService.Remove(vm.Doc.SessionId);
-        _autosavedVersions.Remove(vm.Doc.SessionId);
-        _saveFailures.Remove(vm.Doc.SessionId);
-        vm.Unhook();
-        int idx = Documents.IndexOf(vm);
-        Documents.Remove(vm);
+            try { await vm.FlushMarkersAsync(); }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Marker metadata could not be saved, so the tab was left open:\n" + ex.Message,
+                    "Close file", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+            if (ReferenceEquals(vm, _playbackDocument)) ReleasePlayback();
+            if (ReferenceEquals(vm, _seekDocument))
+            {
+                _seekDocument = null;
+                _resumeAfterSeek = false;
+            }
+            AutosaveService.Remove(vm.Doc.SessionId);
+            _autosavedVersions.Remove(vm.Doc.SessionId);
+            _saveFailures.Remove(vm.Doc.SessionId);
+            vm.Unhook();
+            int idx = Documents.IndexOf(vm);
+            Documents.Remove(vm);
 
-        // The neighbour in *tab* order, whatever kind it is — closing a file should land on the tab
-        // next to it, not skip past a montage to find another file.
-        if (ReferenceEquals(_activeTab, vm))
-            ActiveTab = Documents.Count > 0 ? Documents[Math.Clamp(idx, 0, Documents.Count - 1)] : null;
+            // The neighbour in *tab* order, whatever kind it is — closing a file should land on the tab
+            // next to it, not skip past a montage to find another file.
+            if (ReferenceEquals(_activeTab, vm))
+                ActiveTab = Documents.Count > 0 ? Documents[Math.Clamp(idx, 0, Documents.Count - 1)] : null;
+            return true;
         }
         finally { _tabsClosing.Remove(vm.Doc.SessionId); }
     }
@@ -2337,6 +2392,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         document != null
         && !_editOperationRunning
         && !_documentOperationRunning
+        && !_closeAllRunning
         && Documents.Contains(document);
 
     private void RefreshEditCommandStates()
@@ -2572,27 +2628,33 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         // skip documents whose content hasn't changed since the last autosave
         var dirty = AudioDocuments.Where(d => d.IsDirty && d.Doc.Length > 0
-            && _autosavedVersions.GetValueOrDefault(d.Doc.SessionId, -1) != d.Doc.EditVersion).ToList();
+            && (!_autosavedVersions.TryGetValue(d.Doc.SessionId, out var savedVersion)
+                || savedVersion != (d.Doc.EditVersion, d.MarkersVersion))).ToList();
         if (dirty.Count == 0) { Raise(nameof(StatusAutosave)); return; }
 
-        // snapshot channel-array references (splicing replaces arrays, so refs are point-in-time consistent)
-        var snapshots = dirty.Select(d => (snap: SnapshotDoc(d.Doc), d.Doc.SessionId)).ToList();
+        // Snapshot audio references and metadata together on the UI thread. Marker-only edits on a
+        // pathless generated document must advance recovery even when its audio version did not.
+        var snapshots = dirty.Select(d => new AutosaveService.DocumentSnapshot(
+            SnapshotDoc(d.Doc), d.Doc.SessionId, MarkerSnapshot(d), RegionSnapshot(d))).ToList();
 
-        var versions = dirty.Select(d => (Id: d.Doc.SessionId, Version: d.Doc.EditVersion)).ToList();
+        var versions = dirty.Select(d =>
+            (Id: d.Doc.SessionId, Audio: d.Doc.EditVersion, Markers: d.MarkersVersion)).ToList();
         _autosaveTask = Task.Run(() =>
         {
-            int saved = AutosaveService.RunNow(snapshots.Select(s2 => (s2.snap, s2.SessionId)));
+            int saved = AutosaveService.RunNow(snapshots);
             // only record versions as autosaved if the whole batch made it to disk —
             // a failed write retries on the next tick instead of silently going stale
             if (saved == versions.Count)
                 Application.Current?.Dispatcher.BeginInvoke(() =>
                 {
                     _lastAutosave = DateTime.Now;
-                    foreach (var (id, version) in versions)
+                    foreach (var (id, audioVersion, markersVersion) in versions)
                     {
                         var document = AudioDocuments.FirstOrDefault(d => d.Doc.SessionId == id);
-                        if (document != null && document.Doc.EditVersion == version)
-                            _autosavedVersions[id] = version;
+                        if (document != null
+                            && document.Doc.EditVersion == audioVersion
+                            && document.MarkersVersion == markersVersion)
+                            _autosavedVersions[id] = (audioVersion, markersVersion);
                     }
                 });
         });
@@ -2613,8 +2675,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     $"Deep Groove didn't shut down cleanly last time. Recover unsaved work?\n\n{names}",
                     "Crash recovery", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
-                var recoveredKeys = new List<string>();
-                var recoveredDocuments = new List<AudioDocument>();
+                _preserveRecoveryOnExit = true;
+                var recoveredEntries = new List<AutosaveService.Entry>();
+                var recoveredDocuments = new List<DocumentViewModel>();
                 var failures = new List<string>();
                 foreach (var entry in recoverable)
                 {
@@ -2636,9 +2699,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                             : entry.Title.Replace(" •", "").Trim();
                         doc.Title = recoveredTitle + " (recovered)";
                         doc.MarkUnsaved();
-                        AddDocument(doc, peaks);
-                        recoveredKeys.Add(entry.ManifestKey);
-                        recoveredDocuments.Add(doc);
+                        DocumentViewModel recovered = AddDocument(doc, peaks);
+                        recovered.RestoreAutosavedMarkers(entry.Markers, entry.Regions);
+                        recoveredEntries.Add(entry);
+                        recoveredDocuments.Add(recovered);
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex) { failures.Add($"{entry.Title}: {ex.Message}"); }
@@ -2646,16 +2710,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 if (recoveredDocuments.Count > 0)
                 {
                     var replacementSnapshots = recoveredDocuments
-                        .Select(doc => (SnapshotDoc(doc), doc.SessionId)).ToList();
+                        .Select(document => new AutosaveService.DocumentSnapshot(
+                            SnapshotDoc(document.Doc), document.Doc.SessionId,
+                            MarkerSnapshot(document), RegionSnapshot(document))).ToList();
                     int published = await Task.Run(
                         () => AutosaveService.RunNow(replacementSnapshots, cancellationToken),
                         cancellationToken);
                     if (published == replacementSnapshots.Count)
                     {
-                        AutosaveService.RemoveRecoverable(recoveredKeys);
-                        foreach (var doc in recoveredDocuments)
-                            _autosavedVersions[doc.SessionId] = doc.EditVersion;
-                        _lastAutosave = DateTime.Now;
+                        if (AutosaveService.RemoveRecoverable(recoveredEntries))
+                        {
+                            foreach (DocumentViewModel document in recoveredDocuments)
+                                _autosavedVersions[document.Doc.SessionId] =
+                                    (document.Doc.EditVersion, document.MarkersVersion);
+                            _lastAutosave = DateTime.Now;
+                            _preserveRecoveryOnExit = recoveredEntries.Count != recoverable.Count;
+                        }
+                        else failures.Add("Original recovery files could not be retired after replacement snapshots were secured.");
                     }
                     else failures.Add("Recovered documents could not be re-secured in autosave; original recovery files were retained.");
                 }
@@ -2663,9 +2734,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     MessageBox.Show("Some recovery work could not be completed; original recovery files were retained:\n\n"
                         + string.Join("\n", failures), "Crash recovery", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
-            else if (!AutosaveService.ClearAll())
-                MessageBox.Show("Recovery files could not be discarded and may be offered again next launch.",
-                    "Crash recovery", MessageBoxButton.OK, MessageBoxImage.Warning);
+            else
+            {
+                _preserveRecoveryOnExit = !AutosaveService.ClearRecoverable();
+                if (_preserveRecoveryOnExit)
+                    MessageBox.Show("Recovery files could not be discarded and may be offered again next launch.",
+                        "Crash recovery", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
 
         if (args.Length > 0)
@@ -2707,7 +2782,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 AudioDocuments.Where(d => d.Doc.FilePath != null).Select(d => d.Doc.FilePath!).ToList();
             if (!AppSettings.Instance.Save())
                 throw new IOException("Settings could not be saved: " + AppSettings.Instance.LastSaveError);
-            if (!AutosaveService.ClearAll())
+            if (!_preserveRecoveryOnExit && !AutosaveService.ClearAll())
                 throw new IOException("Autosave recovery files could not be cleared.");
         }
         catch (Exception ex) { failure = ex; }

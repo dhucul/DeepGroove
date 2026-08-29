@@ -349,6 +349,24 @@ public sealed class Vst3Tests(ITestOutputHelper output) : IDisposable
         Assert.Empty(catalogue.Results);
     }
 
+    [Fact]
+    public async Task RefreshPrunesCachedPluginsThatDiscoveryNoLongerFinds()
+    {
+        string removed = Path.Combine(_directory, "Removed.vst3");
+        var catalogue = new Vst3Catalogue();
+        catalogue.Record(new Vst3ScanResult
+        {
+            Path = removed,
+            Name = "Removed",
+            Outcome = Vst3ScanOutcome.Usable,
+        });
+
+        int scanned = await catalogue.RefreshAsync([_directory]);
+
+        Assert.Equal(0, scanned);
+        Assert.Empty(catalogue.Results);
+    }
+
     /// <summary>
     /// The scan runs as this same executable with an argument, so the code the scanner exercises is
     /// the code the host will use rather than a parallel copy of it.

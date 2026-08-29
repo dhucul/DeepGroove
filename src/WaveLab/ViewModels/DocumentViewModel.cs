@@ -229,6 +229,46 @@ public sealed class DocumentViewModel : TabViewModel
         }
     }
 
+    /// <summary>
+    /// Replaces marker metadata from an autosave manifest without writing it back to the original
+    /// file's sidecar. Recovery metadata is newer than that sidecar and must win, but the recovered
+    /// tab remains unsaved until the user explicitly chooses a destination.
+    /// </summary>
+    internal void RestoreAutosavedMarkers(
+        IReadOnlyList<Marker>? markers,
+        IReadOnlyList<NamedRegion>? regions)
+    {
+        if (markers == null && regions == null) return; // legacy manifest: keep file/RIFF metadata
+
+        Markers.Clear();
+        Regions.Clear();
+        foreach (Marker marker in markers ?? [])
+        {
+            if (marker == null) continue;
+            Markers.Add(new Marker
+            {
+                Name = SafeName(marker.Name, "Marker"),
+                Position = Math.Clamp(marker.Position, 0, Doc.Length),
+            });
+        }
+        foreach (NamedRegion region in regions ?? [])
+        {
+            if (region == null) continue;
+            int regionStart = Math.Clamp(region.Start, 0, Doc.Length);
+            int regionEnd = Math.Clamp(region.End, 0, Doc.Length);
+            if (regionEnd <= regionStart) continue;
+            Regions.Add(new NamedRegion
+            {
+                Name = SafeName(region.Name, "Region"),
+                Start = regionStart,
+                End = regionEnd,
+                CdTrackOrder = region.CdTrackOrder is > 0 ? region.CdTrackOrder : null,
+            });
+        }
+        _markersVersion++;
+        Raise(nameof(MarkersVersion));
+    }
+
     public async Task FlushMarkersAsync()
     {
         bool retried = false;
@@ -499,7 +539,9 @@ public sealed class DocumentViewModel : TabViewModel
         int mappedSelectionStart = HasSelection ? MapEditAnchor(_selStart, start, removed, inserted) : -1;
         int mappedSelectionEnd = HasSelection ? MapEditAnchor(_selEnd, start, removed, inserted) : -1;
 
-        // keep markers/regions anchored through splices
+        // Keep every timeline anchor on the same boundary convention. In particular, an insertion
+        // exactly at an anchor leaves that anchor before the new material instead of moving marker,
+        // region, selection and CD-plan boundaries in different directions.
         int delta = inserted - removed;
         // A same-length replacement changes samples but not the timeline. Only a
         // true length-changing splice should move or collapse anchored metadata.
@@ -508,18 +550,17 @@ public sealed class DocumentViewModel : TabViewModel
             bool changed = false;
             foreach (var m in Markers)
             {
-                if (m.Position >= start + removed) { m.Position += delta; changed = true; }
-                else if (m.Position > start) { m.Position = start; changed = true; }
+                int mapped = Math.Clamp(MapEditAnchor(m.Position, start, removed, inserted), 0, Doc.Length);
+                if (mapped != m.Position) { m.Position = mapped; changed = true; }
             }
             foreach (var r in Regions)
             {
-                if (r.Start >= start + removed) { r.Start += delta; r.End += delta; changed = true; }
-                else if (r.End > start)
-                {
-                    r.Start = Math.Min(r.Start, start);
-                    r.End = Math.Max(start, r.End + (r.End >= start + removed ? delta : start - r.End));
-                    changed = true;
-                }
+                int mappedStart = Math.Clamp(MapEditAnchor(r.Start, start, removed, inserted), 0, Doc.Length);
+                int mappedEnd = Math.Clamp(MapEditAnchor(r.End, start, removed, inserted), 0, Doc.Length);
+                if (mappedStart == r.Start && mappedEnd == r.End) continue;
+                r.Start = mappedStart;
+                r.End = mappedEnd;
+                changed = true;
             }
             for (int i = Regions.Count - 1; i >= 0; i--)
             {

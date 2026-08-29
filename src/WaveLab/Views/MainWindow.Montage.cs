@@ -123,7 +123,7 @@ public partial class MainWindow
 
     private async void OnMontageAddClip(object sender, RoutedEventArgs e)
     {
-        if (_vm.ActiveMontage is not { } vm) return;
+        if (LongOperationRunning || _vm.ActiveMontage is not { } vm) return;
 
         var picker = new OpenFileDialog
         {
@@ -137,15 +137,28 @@ public partial class MainWindow
         MontageDocument montage = vm.Montage;
         try
         {
-            // Loading resamples, so it runs off the UI thread. The clips are placed afterwards, on
-            // the UI thread, because the lane is bound to the collection they go into.
-            var loaded = await Task.Run(() =>
+            LongOperationRunning = true;
+            List<MontageSource>? loaded = null;
+            await _vm.Progress.RunBlockingAsync("Adding montage clips",
+                $"Reading {paths.Length} file(s) onto the montage clock",
+                async (progress, token) => loaded = await Task.Run(() =>
+                {
+                    var sources = new List<MontageSource>(paths.Length);
+                    for (int i = 0; i < paths.Length; i++)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        sources.Add(MontageSource.Load(paths[i], montage.SampleRate,
+                            montage.ChannelCount, token, SubProgress.Slice(progress, i, paths.Length)));
+                    }
+                    return sources;
+                }, token));
+
+            if (loaded == null) return;
+            if (!_vm.Documents.Contains(vm))
             {
-                var sources = new List<MontageSource>();
-                foreach (string path in paths)
-                    sources.Add(MontageSource.Load(path, montage.SampleRate, montage.ChannelCount));
-                return sources;
-            });
+                _vm.ReportAction("Adding clips was abandoned because the target montage was closed.");
+                return;
+            }
 
             foreach (MontageSource source in loaded)
             {
@@ -161,10 +174,15 @@ public partial class MainWindow
                 ? $"Added {loaded.Count} clip(s)."
                 : $"Added {loaded.Count} clip(s); {resampled} were brought onto the montage's rate.");
         }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction("Adding montage clips was cancelled; the montage was unchanged.");
+        }
         catch (Exception ex)
         {
             MessageBox.Show(ex.Message, "Add clip", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+        finally { LongOperationRunning = false; }
     }
 
     private void OnMontageRender(object sender, RoutedEventArgs e)
