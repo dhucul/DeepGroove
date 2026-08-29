@@ -203,6 +203,13 @@ public static class RecordingCurves
     {
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
         if (taps < 16) throw new ArgumentOutOfRangeException(nameof(taps));
+        // The IEC amendment is a replay-only rumble high-pass. Its inverse has unbounded gain at
+        // DC, so presenting it as a recording pre-emphasis is both historically wrong and capable
+        // of turning a trace of offset or subsonic energy into an enormous signal.
+        if (direction == CurveDirection.Record && spec.RumbleUs > 0)
+            throw new ArgumentException(
+                "A recording curve cannot invert a playback-only rumble high-pass.",
+                nameof(direction));
 
         taps = Fft.NextPowerOfTwo(taps);
         int size = taps * 4;

@@ -536,6 +536,17 @@ and it is worth much less than the ceiling suggested — but what it is worth is
   document for an edit that changed nothing. It returns `null` now. That path has no card to carry a
   readout, so the one case that needs explaining gets an `InfoDialog` naming the measured figure; a
   tool that declines silently is indistinguishable from one that failed.
+- **That plain path now carries the progress token through both its whole-range benefit scan and
+  its spectral reduction.** Both DSP calls were cancellable, but the menu handler chose the legacy
+  two-argument range delegate and discarded the token, so Cancel left a long side running until the
+  entire pass finished.
+- **Restore ▸ Remove Hum is analysis-led like the workbench and rack.** It no longer starts from a
+  full-strength 60 Hz bank with four speculative consecutive notches. The selected range is measured
+  first; clean audio is declined, and a positive result carries the measured fundamental, exact
+  supported-partial mask, Q and bounded amount into the same offline remover. Drifting-hum and
+  wow/flutter guide selection measure every channel and choose the strongest or most reliable one,
+  while their correction remains linked across channels. Measured operations also carry the source
+  edit version through confirmation, so an old result cannot land on same-length newer audio.
 - **The line also ignored the card’s own Enabled switch**, so a switched-off card still reported
   “Applying 2.3 dB” for a stage that would not run. The switch is now the first thing it reports.
 - **Wrapping costs about 14 px of card height and that is the right trade.** The hum caption becomes

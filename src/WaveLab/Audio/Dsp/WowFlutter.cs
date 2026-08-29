@@ -135,6 +135,47 @@ public readonly record struct WowFlutterReport(
 public static class WowFlutter
 {
     /// <summary>
+    /// Smallest fraction of believable analysis blocks allowed to drive a resampling pass.
+    /// Below this there is enough information to report that measurement failed, not enough to
+    /// rewrite the time base between the few places that happened to correlate.
+    /// </summary>
+    public const double MinimumCorrectionConfidence = 0.20;
+
+    /// <summary>
+    /// Measures every channel and keeps the most reliable guide. The resulting time map is still
+    /// shared by all channels so stereo alignment cannot move, but a quiet or bandwidth-limited
+    /// left channel no longer vetoes useful evidence on the right.
+    /// </summary>
+    public static (double[] Ratio, int Hop, WowFlutterReport Report) Measure(
+        IReadOnlyList<float[]> channels, int sampleRate, WowFlutterOptions options = default,
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (channels.Count == 0) return ([], 0, WowFlutterReport.None);
+
+        (double[] Ratio, int Hop, WowFlutterReport Report) best =
+            ([], 0, WowFlutterReport.None);
+        for (int channel = 0; channel < channels.Count; channel++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            IProgress<double>? slice = progress == null
+                ? null
+                : new SubProgress(progress, channel / (double)channels.Count,
+                    1.0 / channels.Count);
+            var candidate = Measure(channels[channel], sampleRate, options,
+                cancellationToken, slice);
+            if (!candidate.Report.Found) continue;
+            if (!best.Report.Found || candidate.Report.Confidence > best.Report.Confidence ||
+                (Math.Abs(candidate.Report.Confidence - best.Report.Confidence) < 1e-12 &&
+                 candidate.Report.Blocks > best.Report.Blocks))
+                best = candidate;
+        }
+        progress?.Report(1);
+        return best;
+    }
+
+    /// <summary>
     /// The speed ratio at each block relative to the running average, and the report describing it.
     /// </summary>
     public static (double[] Ratio, int Hop, WowFlutterReport Report) Measure(float[] samples,
@@ -341,7 +382,7 @@ public static class WowFlutter
         ArgumentNullException.ThrowIfNull(channels);
         if (channels.Length == 0 || channels[0].Length == 0) return WowFlutterReport.None;
 
-        var measured = Measure(channels[0], sampleRate, options, cancellationToken,
+        var measured = Measure(channels, sampleRate, options, cancellationToken,
             new SubProgress(progress, 0, 0.4));
         return Correct(channels, measured, cancellationToken, new SubProgress(progress, 0.4, 0.6));
     }
@@ -365,7 +406,8 @@ public static class WowFlutter
         if (channels.Length == 0 || channels[0].Length == 0) return WowFlutterReport.None;
 
         var (ratio, hop, report) = measured;
-        if (!report.Found || ratio.Length == 0) return report;
+        if (!report.Found || ratio.Length == 0 || report.Confidence < MinimumCorrectionConfidence)
+            return report;
 
         for (int c = 0; c < channels.Length; c++)
         {

@@ -108,4 +108,43 @@ public sealed class KeepRemovedResidualTests(ITestOutputHelper output) : IDispos
         Assert.Equal(2, titles.Length);
         Assert.Contains(titles, title => title.Contains("removed", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void AMeasuredWholeFileToolCannotApplyToSameLengthNewerAudio()
+    {
+        AppSettings.AppDataDir = _sandbox;
+
+        Wpf.Run(() =>
+        {
+            var window = new MainWindow();
+            var viewModel = (MainViewModel)typeof(MainWindow)
+                .GetField("_vm", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .GetValue(window)!;
+            viewModel.AddDocument(Clicky());
+            DocumentViewModel target = viewModel.ActiveDocument!;
+            int measuredAt = target.Doc.EditVersion;
+
+            float[][] oneFrame = target.Doc.Channels.Select(_ => new float[1]).ToArray();
+            target.Doc.ReplaceRange(0, 1, oneFrame, "Intervening edit");
+
+            MethodInfo runner = typeof(MainWindow)
+                .GetMethods(BindingFlags.NonPublic | BindingFlags.Instance)
+                .Single(method => method.Name == "RunWholeFileTool" &&
+                                  method.GetParameters().Length == 6);
+            bool transformed = false;
+            Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform =
+                (data, _, _, _) =>
+                {
+                    transformed = true;
+                    return data;
+                };
+
+            var run = (Task<bool>)runner.Invoke(window,
+                ["Measured repair", null, transform, target, false, measuredAt])!;
+
+            Assert.True(run.IsCompleted);
+            Assert.False(run.Result);
+            Assert.False(transformed);
+        });
+    }
 }

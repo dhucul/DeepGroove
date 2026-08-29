@@ -176,6 +176,25 @@ public sealed class AzimuthTests(ITestOutputHelper output)
         Assert.Equal(0, estimate.Windows);
     }
 
+    [Fact]
+    public void OneUsableWindowDoesNotClaimMatureConfidence()
+    {
+        var (left, right) = Pair(0.75);
+        int size = Options.WindowSize;
+
+        AzimuthEstimate estimate = Azimuth.Estimate(
+            left.AsSpan(0, size).ToArray(), right.AsSpan(0, size).ToArray(), Rate, Options);
+
+        Assert.Equal(1, estimate.Windows);
+        Assert.InRange(estimate.Confidence, 0, 0.2);
+    }
+
+    [Fact]
+    public void DefaultSearchStaysInsideAPlausibleStylusOffset()
+    {
+        Assert.Equal(0.5, Options.MaximumDelayMs);
+    }
+
     // ── correction ───────────────────────────────────────────────
 
     /// <summary>

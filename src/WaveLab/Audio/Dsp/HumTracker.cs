@@ -76,6 +76,32 @@ public readonly record struct HumReport(double StartHz, double MeanHz, double Dr
 /// </remarks>
 public static class HumTracker
 {
+    /// <summary>
+    /// Measures every channel and returns the strongest supported hum family. A pickup fault may
+    /// be almost entirely on one groove wall, so the first channel cannot decide whether a stereo
+    /// transfer is eligible for repair.
+    /// </summary>
+    public static HumReport Measure(IReadOnlyList<float[]> channels, int sampleRate,
+        HumTrackOptions options = default, CancellationToken cancellationToken = default,
+        IProgress<double>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (channels.Count == 0) return HumReport.None;
+
+        progress?.Report(0);
+        HumReport strongest = HumReport.None;
+        for (int channel = 0; channel < channels.Count; channel++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            HumReport candidate = Measure(channels[channel], sampleRate, options, cancellationToken);
+            if (candidate.Found && (!strongest.Found || candidate.LevelDb > strongest.LevelDb))
+                strongest = candidate;
+            progress?.Report((channel + 1.0) / channels.Count);
+        }
+        return strongest;
+    }
+
     /// <summary>Measures the hum without changing anything.</summary>
     public static HumReport Measure(float[] samples, int sampleRate, HumTrackOptions options = default,
         CancellationToken cancellationToken = default)

@@ -159,6 +159,22 @@ public sealed class WowFlutterTests(ITestOutputHelper output)
             $"a chord change registered as {report.PeakPercent:0.000}% of speed error");
     }
 
+    [Fact]
+    public void StereoMeasurementUsesTheChannelWithTheReliableSpeedGuide()
+    {
+        const double depth = 0.006;
+        float[] warped = AddWow(Programme(), depth, 1.5);
+
+        var measured = WowFlutter.Measure([new float[Length], warped], Rate, Options);
+
+        output.WriteLine($"chosen guide: {measured.Report.RmsPercent:0.000}% rms, " +
+                         $"{measured.Report.Confidence:P0} confidence");
+        Assert.True(measured.Report.Found);
+        Assert.True(measured.Report.Confidence > 0.2);
+        Assert.Equal(depth * 100 / Math.Sqrt(2), measured.Report.RmsPercent,
+            depth * 100 * 0.5);
+    }
+
     // ── correction ───────────────────────────────────────────────
 
     /// <summary>
@@ -279,6 +295,22 @@ public sealed class WowFlutterTests(ITestOutputHelper output)
         double residual = Residual(steady, channels[0]);
         output.WriteLine($"steady material after a correction pass: {residual:0.0} dB");
         Assert.True(residual > 20, $"steady material was disturbed down to {residual:0.0} dB");
+    }
+
+    [Fact]
+    public void AnUnreliableMeasuredMapCannotResampleTheAudio()
+    {
+        float[] original = Programme(Length);
+        var channels = new[] { (float[])original.Clone() };
+        var measured = (
+            Ratio: Enumerable.Repeat(1.01, 16).ToArray(),
+            Hop: 1024,
+            Report: new WowFlutterReport(1, 0.5, 16,
+                WowFlutter.MinimumCorrectionConfidence - 0.01));
+
+        WowFlutter.Correct(channels, measured);
+
+        Assert.Equal(original, channels[0]);
     }
 
     // ── degenerate input ─────────────────────────────────────────

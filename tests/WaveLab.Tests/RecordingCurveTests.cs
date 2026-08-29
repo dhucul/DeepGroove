@@ -320,6 +320,17 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
         }
     }
 
+    [Fact]
+    public void APlaybackOnlyRumbleHighPassCannotBeInvertedAsARecordingCurve()
+    {
+        RecordingCurveSpec iec = RecordingCurves.Spec(RecordingCurve.RiaaIec);
+
+        ArgumentException error = Assert.Throws<ArgumentException>(() =>
+            RecordingCurves.Design(iec, Rate, CurveDirection.Record, CurvePhase.Minimum));
+
+        Assert.Equal("direction", error.ParamName);
+    }
+
     // ── degenerate input ─────────────────────────────────────────
 
     [Fact]

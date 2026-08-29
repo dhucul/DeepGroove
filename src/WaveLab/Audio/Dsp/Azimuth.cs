@@ -21,14 +21,16 @@ public readonly record struct AzimuthEstimate(
 /// <param name="MinimumLevel">Windows quieter than this contribute nothing.</param>
 public readonly record struct AzimuthOptions(
     int WindowSize = 16384,
-    double MaximumDelayMs = 5,
+    double MaximumDelayMs = 0.5,
     int Windows = 64,
     double MinimumLevel = 1e-4)
 {
     /// <remarks>Spelled out rather than <c>new()</c>, which zero-initialises a record struct.</remarks>
     public static AzimuthOptions Default { get; } = new(
         WindowSize: 16384,
-        MaximumDelayMs: 5,
+        // A stylus geometry error is sub-millisecond. A wider search starts finding intentional
+        // stereo-production delays and calling them cartridge alignment.
+        MaximumDelayMs: 0.5,
         Windows: 64,
         MinimumLevel: 1e-4);
 }
@@ -121,10 +123,13 @@ public static class Azimuth
         double median = Median(estimates);
         double spread = MedianAbsoluteDeviation(estimates, median);
 
-        // Confidence is how tightly the windows agree, in samples. A spread under a tenth of a
-        // sample is as good as it gets; beyond about four samples the windows are not measuring the
-        // same thing at all and the answer should not be trusted.
-        double confidence = Math.Clamp(1 - (spread - 0.1) / 4.0, 0, 1);
+        // Confidence needs both agreement and enough independent evidence. With agreement alone a
+        // single usable window has zero spread and therefore claims perfect confidence, even though
+        // there is no second observation to agree with it. Eight windows is enough for the median
+        // and its spread to be meaningful; longer sides usually contribute several times that.
+        double agreement = Math.Clamp(1 - (spread - 0.1) / 4.0, 0, 1);
+        double coverage = Math.Clamp(estimates.Count / 8.0, 0, 1);
+        double confidence = agreement * coverage;
         return new AzimuthEstimate(median, confidence, estimates.Count, spread);
     }
 

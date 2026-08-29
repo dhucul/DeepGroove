@@ -110,6 +110,19 @@ public sealed class HumTrackerTests(ITestOutputHelper output)
         Assert.True(report.LevelDb < -40, $"clean material reported hum at {report.LevelDb:0.0} dB");
     }
 
+    [Fact]
+    public void StereoMeasurementDoesNotLetAQuietLeftChannelVetoRightChannelHum()
+    {
+        float[] right = AddHum(Programme(), 60.0, 60.0);
+
+        HumReport report = HumTracker.Measure([new float[Length], right], Rate, Options);
+
+        output.WriteLine($"right-channel hum measured at {report.MeanHz:0.000} Hz, " +
+                         $"{report.LevelDb:0.0} dB against programme");
+        Assert.True(report.Found);
+        Assert.Equal(60.0, report.MeanHz, 0.05);
+    }
+
     // ── removal ──────────────────────────────────────────────────
 
     /// <summary>The headline: the hum and its partials come off, at a steady frequency.</summary>

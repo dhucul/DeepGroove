@@ -1313,7 +1313,7 @@ public partial class MainWindow : Window
                 "Following the spectrum along a log-frequency axis", async (progress, token) =>
                 {
                     measured = await Task.Run(
-                        () => WowFlutter.Measure(channels[0], rate, WowFlutterOptions.Default,
+                        () => WowFlutter.Measure(channels, rate, WowFlutterOptions.Default,
                             token, progress), token);
                 });
         }
@@ -1335,6 +1335,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (report.Confidence < WowFlutter.MinimumCorrectionConfidence)
+        {
+            MessageBox.Show(
+                $"Only {report.Confidence:P0} of the transfer could be measured reliably. " +
+                "That is not enough evidence to rewrite its time base, so nothing was changed.",
+                "Correct wow and flutter", MessageBoxButton.OK, MessageBoxImage.Information);
+            _vm.ReportAction($"Wow and flutter measurement rejected · {report.Confidence:P0} confidence.");
+            return;
+        }
+
         string verdict = report.RmsPercent switch
         {
             < 0.05 => "That is at the floor of what this can measure; there is probably nothing to correct.",
@@ -1348,7 +1358,8 @@ public partial class MainWindow : Window
 
         if (MessageBox.Show(
                 $"Speed variation measures {report.RmsPercent:0.000}% rms, peaking at " +
-                $"{report.PeakPercent:0.000}%.\n\n{verdict}\n\n{reach}\n\nStraighten the time base?",
+                $"{report.PeakPercent:0.000}%. {report.Confidence:P0} of the analysis blocks " +
+                $"were reliable.\n\n{verdict}\n\n{reach}\n\nStraighten the time base?",
                 "Correct wow and flutter", MessageBoxButton.YesNo, MessageBoxImage.Question)
             != MessageBoxResult.Yes)
         {
@@ -1371,10 +1382,9 @@ public partial class MainWindow : Window
     /// Measures the hum's fundamental, reports it, then follows and subtracts it.
     /// </summary>
     /// <remarks>
-    /// Separate from <c>Remove Hum…</c>, which is the real-time notch bank. This one follows a
-    /// fundamental that moves and subtracts an estimate of each partial rather than notching, so it
-    /// leaves the music at those frequencies alone — but it is an offline pass over the whole file,
-    /// not something that can run on the audio thread.
+    /// Separate from <c>Remove Hum…</c>, which analyzes once and applies a fixed offline notch bank
+    /// to the supported partials. This one follows a fundamental that moves and subtracts an estimate
+    /// of each partial rather than notching, so it leaves the music at those frequencies alone.
     /// </remarks>
     private async void OnTrackHum(object sender, RoutedEventArgs e)
     {
@@ -1383,6 +1393,7 @@ public partial class MainWindow : Window
 
         float[][] channels = d.Doc.Channels.ToArray();
         int rate = d.Doc.SampleRate;
+        int measuredAt = d.Doc.EditVersion;
         var report = HumReport.None;
 
         LongOperationRunning = true;
@@ -1392,7 +1403,8 @@ public partial class MainWindow : Window
                 async (progress, token) =>
                 {
                     report = await Task.Run(
-                        () => HumTracker.Measure(channels[0], rate, HumTrackOptions.Default, token), token);
+                        () => HumTracker.Measure(channels, rate, HumTrackOptions.Default, token,
+                            progress), token);
                 });
         }
         catch (OperationCanceledException) { _vm.ReportAction("Hum measurement cancelled."); return; }
@@ -1443,7 +1455,7 @@ public partial class MainWindow : Window
                         SubProgress.Slice(progress, c, working.Length));
                 }
                 return working;
-            }, d, keepRemoved);
+            }, d, keepRemoved, measuredAtVersion: measuredAt);
     }
 
     // ── surface crackle ──────────────────────────────────────────
@@ -1549,6 +1561,23 @@ public partial class MainWindow : Window
         var direction = choices[1] == 1 ? CurveDirection.Record : CurveDirection.Playback;
         var phase = choices[2] == 1 ? CurvePhase.Linear : CurvePhase.Minimum;
 
+        if (direction == CurveDirection.Record && spec.RumbleUs > 0)
+        {
+            InfoDialog.Show(this, "Disc equalisation curve",
+                "The IEC rumble amendment is a playback-only high-pass. Reversing it would apply " +
+                "extreme gain near DC, so this combination cannot be applied.");
+            return;
+        }
+
+        if (direction == CurveDirection.Playback && MessageBox.Show(
+                "Playback de-emphasis is correct only for a flat cartridge transfer. If this audio " +
+                "was recorded through a normal phono preamp, its replay curve is already present " +
+                "and applying it again will severely change the tonal balance. The bass lift can " +
+                "also use substantial headroom.\n\nApply this curve?",
+                "Disc equalisation curve", MessageBoxButton.YesNo, MessageBoxImage.Warning,
+                MessageBoxResult.No) != MessageBoxResult.Yes)
+            return;
+
         string verb = direction == CurveDirection.Playback ? "De-emphasis" : "Pre-emphasis";
         _ = RunWholeFileTool($"{verb} · {spec.Name}",
             $"{phase} phase · {RecordingCurves.DefaultTaps} taps",
@@ -1628,6 +1657,15 @@ public partial class MainWindow : Window
             ? "\n\nThat is small enough to be inaudible; there is probably nothing to correct."
             : "";
 
+        if (estimate.Confidence <= 0.4 || Math.Abs(estimate.Microseconds(rate)) < 5)
+        {
+            InfoDialog.Show(this, "Correct stylus azimuth",
+                $"{lead}\n\n{trust}{worth}\n\nNothing was changed.");
+            _vm.ReportAction($"Azimuth measured at {estimate.Microseconds(rate):0.0} µs · " +
+                             "insufficient evidence or benefit to correct.");
+            return;
+        }
+
         if (MessageBox.Show($"{lead}\n\n{trust}{worth}\n\nCorrect it?", "Correct stylus azimuth",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
         {
@@ -1661,11 +1699,18 @@ public partial class MainWindow : Window
         Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
         DocumentViewModel target, bool keepRemoved = false, int? measuredAtVersion = null)
     {
-        if (LongOperationRunning || target.Doc.Length == 0) return false;
+        if (LongOperationRunning || target.Doc.Length == 0 || !_vm.Documents.Contains(target))
+            return false;
 
         float[][] channels = target.Doc.Channels.ToArray();
         int rate = target.Doc.SampleRate;
         int length = target.Doc.Length;
+        int sourceVersion = target.Doc.EditVersion;
+        if (measuredAtVersion is { } measuredAt && sourceVersion != measuredAt)
+        {
+            _vm.ReportAction($"{undoName} abandoned · the document changed after it was measured.");
+            return false;
+        }
         LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         bool applied = false;
@@ -1682,10 +1727,11 @@ public partial class MainWindow : Window
                     return transform(working, rate, progress, token);
                 }, token);
 
-                if (output == null || length != target.Doc.Length) return;
-                if (measuredAtVersion is { } expected && target.Doc.EditVersion != expected)
+                if (output == null) return;
+                if (!_vm.Documents.Contains(target) || length != target.Doc.Length ||
+                    target.Doc.EditVersion != sourceVersion)
                 {
-                    _vm.ReportAction($"{undoName} abandoned · the document changed after it was measured.");
+                    _vm.ReportAction($"{undoName} abandoned · the source changed while processing.");
                     return;
                 }
                 _vm.PrepareForDocumentEdit(target);
@@ -2156,14 +2202,14 @@ public partial class MainWindow : Window
             AppSettings.Instance.NoiseDepthCeilingDb);
 
         double? chosen = null, floor = null;
-        await RunRangeTool("Reduce Noise", (data, _) =>
+        await RunRangeTool("Reduce Noise", null, (data, _, _, token) =>
         {
             // The depth follows how much noise there is to remove rather than the slider alone.
             // Measured, a fixed depth comes out worse than leaving the audio alone on 46 of 108
             // corpus cells; this takes that to 15. See Restoration.SuggestReductionDepthDb.
             // One ceiling for both calls: the estimate says "no reading" in the ceiling's own
             // units, so a pair taken under two of them is not a pair.
-            floor = Restoration.EstimateNoiseToProgrammeDb(data, sampleRate, ceiling);
+            floor = Restoration.EstimateNoiseToProgrammeDb(data, sampleRate, ceiling, token);
             double depth = Restoration.SuggestReductionDepthDb(floor.Value, reduction, ceiling);
             chosen = depth;
 
@@ -2171,7 +2217,7 @@ public partial class MainWindow : Window
             // costs an undo step and a dirty document for an edit that changed nothing.
             if (depth <= 0) return null;
 
-            Restoration.ReduceNoise(data, profile, depth, sensitivity);
+            Restoration.ReduceNoise(data, profile, depth, sensitivity, token);
             return data;
         }, d, keepRemoved);
 
@@ -2219,23 +2265,101 @@ public partial class MainWindow : Window
             $"{repaired} click(s) repaired. Undo with Ctrl+Z if it went too far.");
     }
 
-    private void OnRemoveHum(object sender, RoutedEventArgs e)
+    private async void OnRemoveHum(object sender, RoutedEventArgs e)
     {
         var d = Doc;
         if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
-        var dlg = new ParamDialog("Remove Hum", "Apply", null, null, 0,
-            new ParamDialog.SliderSpec("Fundamental", 45, 65, 60, v => $"{v:0.0} Hz", 0.1),
-            new ParamDialog.SliderSpec("Harmonics", 1, 8, 4, v => $"{v:0}", 1),
-            new ParamDialog.SliderSpec("Notch width (Q)", 10, 60, 30, v => $"Q {v:0}")) { Owner = this };
+
+        var (start, count) = d.EditRange();
+        float[][] channels = d.Doc.Channels.ToArray();
+        int sampleRate = d.Doc.SampleRate;
+        int measuredAt = d.Doc.EditVersion;
+        CleanupAnalysisResult? analysis = null;
+
+        LongOperationRunning = true;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            await _vm.Progress.RunBlockingAsync("Analyzing hum",
+                "Looking for a persistent 45–65 Hz harmonic family", async (_, token) =>
+                {
+                    analysis = await Task.Run(() =>
+                    {
+                        var selected = channels
+                            .Select(channel => channel.AsSpan(start, count).ToArray())
+                            .ToArray();
+                        return CleanupAnalyzer.Analyze(selected, sampleRate,
+                            CleanupProfile.VinylCleanup, token);
+                    }, token);
+                });
+        }
+        catch (OperationCanceledException)
+        {
+            _vm.ReportAction("Hum analysis cancelled · document unchanged.");
+            return;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Analyzing hum", MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+            LongOperationRunning = false;
+        }
+
+        if (!_vm.Documents.Contains(d) || d.Doc.EditVersion != measuredAt)
+        {
+            _vm.ReportAction("Remove Hum abandoned · the source changed while it was analyzed.");
+            return;
+        }
+
+        EffectFactory.EffectState hum = analysis!.RecommendedPreset.Effects
+            .Single(effect => effect.TypeId == "dehum");
+        CleanupRecommendation recommendation = analysis.Recommendations
+            .Single(item => item.TypeId == "dehum");
+        if (!hum.Enabled)
+        {
+            InfoDialog.Show(this, "Remove Hum", $"{recommendation.Evidence}\n\nNothing was changed.");
+            return;
+        }
+
+        double baseFreq = hum.Params["frequency"];
+        int harmonics = (int)Math.Round(hum.Params["harmonics"]);
+        int harmonicMask = (int)Math.Round(hum.Params["harmonicMask"]);
+        double q = hum.Params["q"];
+        double analyzedAmount = Math.Clamp(hum.Params["amount"], 0, 1);
+        int supported = Enumerable.Range(0, harmonics)
+            .Count(harmonic => (harmonicMask & (1 << harmonic)) != 0);
+
+        var dlg = new ParamDialog(
+            $"Remove analyzed hum — {baseFreq:0.0} Hz, {supported} supported partials",
+            "Remove", null, null, 0,
+            new ParamDialog.SliderSpec("Amount", 0, 100, analyzedAmount * 100,
+                value => $"{value:0}%", 1))
+        {
+            Owner = this,
+        };
         AddKeepRemoved(dlg, d);
         if (dlg.ShowDialog() != true) return;
         bool keepRemoved = ReadKeepRemoved(dlg);
-        double baseFreq = dlg.Values[0];
-        int harmonics = (int)dlg.Values[1];
-        double q = dlg.Values[2];
-        _ = RunRangeTool("Remove Hum", (data, sr) =>
+        double amount = dlg.Values[0] / 100.0;
+        if (amount <= 0)
         {
-            Restoration.RemoveHum(data, sr, baseFreq, harmonics, q);
+            _vm.ReportAction("Remove Hum unchanged · amount is zero.");
+            return;
+        }
+        if (!_vm.Documents.Contains(d) || d.Doc.EditVersion != measuredAt)
+        {
+            _vm.ReportAction("Remove Hum abandoned · the source changed after it was analyzed.");
+            return;
+        }
+
+        await RunRangeTool("Remove Hum", null, (data, sr, _, token) =>
+        {
+            Restoration.RemoveHum(data, sr, baseFreq, harmonics, harmonicMask, q, amount, token);
             return data;
         }, d, keepRemoved);
     }

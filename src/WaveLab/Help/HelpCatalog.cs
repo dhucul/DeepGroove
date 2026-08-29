@@ -138,7 +138,7 @@ public static class HelpCatalog
             Section("Clicks and declipping",
                 "Click repair detects short impulsive defects and reconstructs them from nearby audio. Sensitivity changes what is detected; strength changes repair amount. Declip attempts to reconstruct repeated flattened peaks and needs headroom. Aggressive settings can soften real percussion, so use the preview and start gently."),
             Section("Noise and hum",
-                "Learn Noise Profile from Selection captures a representative noise-only passage for later reduction. Reduce Noise uses that profile or automatic analysis. Noise reduction amount controls attenuation and sensitivity controls detection. Hum Removal notches 50 or 60 Hz and selected harmonics; use the frequency matching local mains power."),
+                "Learn Noise Profile from Selection captures a representative noise-only passage for later reduction. Reduce Noise uses that profile, measures whether reduction would help, and leaves the audio unchanged when the floor is already safely below the programme. Remove Hum first analyzes the chosen range, then offers only the persistent fundamental and supported partials it found. Track and Remove Drifting Hum follows a moving fundamental independently in each channel and subtracts its estimate instead of cutting fixed notches."),
             Section("Preview and apply",
                 "A/B Preview compares dry and processed audio without editing the source. Wet/dry mix and Bypass help detect artifacts. Apply commits one undoable edit to the selection or file. Keep an untouched source recording until restoration choices are approved."),
             Section("Keep what was removed",
