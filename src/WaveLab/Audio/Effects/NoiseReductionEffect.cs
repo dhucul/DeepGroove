@@ -33,12 +33,21 @@ public sealed class NoiseReductionEffect : EffectBase
     private double _hissGain = 1;
     private double _reductionReadout;
 
-    // Learned noise profile (channel 0)
+    // Learned shared noise profile. Two buffers let the audio thread learn into the spare and
+    // publish the finished profile atomically without allocating or exposing a half-written frame.
     private double[] _noiseProfile = [];
+    private double[] _learningProfile = [];
+    private double[] _spareProfile = [];
     private int _noiseProfileFrames;
+    private int _learningProfileFrames;
+    private int _profileSampleRate;
     private bool _learning;
-    private float[] _learnBuf = [];
+    private int _learningActive;
+    private float[][] _learnBuf = [];
     private int _learnPos;
+    private double[]? _pendingProfile;
+    private int _pendingProfileFrames;
+    private int _pendingProfileSampleRate;
 
     // Spectral subtraction state (per channel, WOLA streaming)
     private float[] _window = [];
@@ -46,7 +55,9 @@ public sealed class NoiseReductionEffect : EffectBase
     private double _olaNorm;
     private float[][] _specIn = [];      // input rings (FftSize per channel)
     private float[][] _specOla = [];     // OLA accumulators (OlaLength per channel)
-    private double[][] _specSmooth = []; // per-channel per-bin gain smoothing
+    private double[] _specSmooth = [];   // one linked mask for every channel
+    private float[][] _specRe = [];
+    private float[][] _specIm = [];
     private int _specInPos;              // shared input ring position
     private int _specInFilled;           // valid samples in the rings (≤ FftSize)
     private int _specSinceFrame;         // input samples since the last processed frame
@@ -54,7 +65,7 @@ public sealed class NoiseReductionEffect : EffectBase
     private int _specOlaRead;            // shared OLA read position
     private int _specOlaWrite;           // shared OLA frame-start position
     private int _specPipelineDelay;      // countdown before reconstructed output is read
-    private int _spectralActive;         // bool as int (Volatile): drives LatencySamples
+    private bool _spectralWasActive;
 
     private float[] _fftRe = [];
     private float[] _fftIm = [];
@@ -66,14 +77,43 @@ public sealed class NoiseReductionEffect : EffectBase
 
     // The spectral path delays the signal by one analysis frame plus one hop;
     // report it only while subtraction is actually running so renders stay aligned.
-    public override int LatencySamples => Volatile.Read(ref _spectralActive) != 0 ? FftSize + HopSize : 0;
+    public override int LatencySamples =>
+        GetParam("spectral") > 0.5 && Volatile.Read(ref _learningActive) == 0 &&
+        Volatile.Read(ref _noiseProfileFrames) > 10
+            ? FftSize + HopSize
+            : 0;
 
 
     protected override void OnConfigure()
     {
+        double[] previousProfile = Volatile.Read(ref _noiseProfile);
+        int previousFrames = Volatile.Read(ref _noiseProfileFrames);
+        int previousRate = Volatile.Read(ref _profileSampleRate);
+
         _hissLowPass = new double[ChannelCount];
-        _noiseProfile = new double[FftSize / 2 + 1];
-        _learnBuf = new float[FftSize];
+        var profileA = new double[FftSize / 2 + 1];
+        var profileB = new double[FftSize / 2 + 1];
+        double[]? retained = _pendingProfileSampleRate == SampleRate ? _pendingProfile
+            : previousRate == SampleRate ? previousProfile
+            : null;
+        int retainedFrames = _pendingProfileSampleRate == SampleRate ? _pendingProfileFrames
+            : previousRate == SampleRate ? previousFrames
+            : 0;
+        if (retained is { Length: > 0 } && retained.Length == profileA.Length)
+            Array.Copy(retained, profileA, retained.Length);
+        else retainedFrames = 0;
+        Volatile.Write(ref _noiseProfile, profileA);
+        _learningProfile = profileB;
+        _spareProfile = profileB;
+        Volatile.Write(ref _noiseProfileFrames, retainedFrames);
+        Volatile.Write(ref _profileSampleRate, retainedFrames > 0 ? SampleRate : 0);
+        _pendingProfile = null;
+        _pendingProfileFrames = 0;
+        _pendingProfileSampleRate = 0;
+
+        _learnBuf = new float[ChannelCount][];
+        for (int channel = 0; channel < ChannelCount; channel++)
+            _learnBuf[channel] = new float[FftSize];
         _window = Fft.HannWindow(FftSize);
         _windowSum = 0;
         foreach (float w in _window) _windowSum += w;
@@ -88,12 +128,15 @@ public sealed class NoiseReductionEffect : EffectBase
 
         _specIn = new float[ChannelCount][];
         _specOla = new float[ChannelCount][];
-        _specSmooth = new double[ChannelCount][];
+        _specSmooth = new double[FftSize / 2 + 1];
+        _specRe = new float[ChannelCount][];
+        _specIm = new float[ChannelCount][];
         for (int c = 0; c < ChannelCount; c++)
         {
             _specIn[c] = new float[FftSize];
             _specOla[c] = new float[OlaLength];
-            _specSmooth[c] = new double[FftSize / 2 + 1];
+            _specRe[c] = new float[FftSize];
+            _specIm[c] = new float[FftSize];
         }
         _fftRe = new float[FftSize];
         _fftIm = new float[FftSize];
@@ -104,20 +147,19 @@ public sealed class NoiseReductionEffect : EffectBase
     private void ResetSpectralState()
     {
         ResetStreamState();
-        Array.Clear(_noiseProfile);
-        _noiseProfileFrames = 0;
         _learning = false;
-        Volatile.Write(ref _spectralActive, 0);
+        Volatile.Write(ref _learningActive, 0);
+        _spectralWasActive = false;
     }
 
     /// <summary>Streaming state only: rings, OLA accumulators, positions, pipeline delay.</summary>
     private void ResetStreamState()
     {
-        Array.Clear(_learnBuf);
+        foreach (float[] channel in _learnBuf) Array.Clear(channel);
         _learnPos = 0;
         foreach (var ring in _specIn) Array.Clear(ring);
         foreach (var ola in _specOla) Array.Clear(ola);
-        foreach (var sm in _specSmooth) Array.Clear(sm);
+        Array.Fill(_specSmooth, 1.0);
         _specInPos = 0;
         _specInFilled = 0;
         _specSinceFrame = 0;
@@ -125,6 +167,34 @@ public sealed class NoiseReductionEffect : EffectBase
         _specOlaRead = 0;
         _specOlaWrite = 0;
         _specPipelineDelay = FftSize + HopSize;
+    }
+
+    private void ResetSpectralPipeline()
+    {
+        foreach (float[] ring in _specIn) Array.Clear(ring);
+        foreach (float[] ola in _specOla) Array.Clear(ola);
+        Array.Fill(_specSmooth, 1.0);
+        _specInPos = 0;
+        _specInFilled = 0;
+        _specSinceFrame = 0;
+        _specPrimed = false;
+        _specOlaRead = 0;
+        _specOlaWrite = 0;
+        _specPipelineDelay = FftSize + HopSize;
+    }
+
+    /// <summary>Copies content-specific learned state into a new rack instance for A/B or render.</summary>
+    internal void CopyLearnedProfileFrom(NoiseReductionEffect source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (Volatile.Read(ref source._learningActive) != 0) return;
+        double[] profile = Volatile.Read(ref source._noiseProfile);
+        int frames = Volatile.Read(ref source._noiseProfileFrames);
+        int rate = Volatile.Read(ref source._profileSampleRate);
+        if (frames <= 0 || rate <= 0 || profile.Length == 0) return;
+        _pendingProfile = (double[])profile.Clone();
+        _pendingProfileFrames = frames;
+        _pendingProfileSampleRate = rate;
     }
 
     public override void ResetState()
@@ -163,24 +233,39 @@ public sealed class NoiseReductionEffect : EffectBase
         if (learnRequested && !_learning)
         {
             _learning = true;
-            Array.Clear(_noiseProfile);
-            Array.Clear(_learnBuf);
+            Volatile.Write(ref _learningActive, 1);
+            _learningProfile = _spareProfile;
+            Array.Clear(_learningProfile);
+            foreach (float[] channel in _learnBuf) Array.Clear(channel);
             _learnPos = 0;
-            _noiseProfileFrames = 0;
+            _learningProfileFrames = 0;
+            ResetSpectralPipeline();
         }
         else if (!learnRequested && _learning)
         {
             _learning = false;
             // Normalize noise profile
-            if (_noiseProfileFrames > 0)
+            if (_learningProfileFrames > 0)
             {
-                for (int i = 0; i < _noiseProfile.Length; i++)
-                    _noiseProfile[i] /= _noiseProfileFrames;
+                for (int i = 0; i < _learningProfile.Length; i++)
+                    _learningProfile[i] /= _learningProfileFrames;
+                double[] oldProfile = Volatile.Read(ref _noiseProfile);
+                Volatile.Write(ref _noiseProfile, _learningProfile);
+                _spareProfile = oldProfile;
+                Volatile.Write(ref _noiseProfileFrames, _learningProfileFrames);
+                Volatile.Write(ref _profileSampleRate, SampleRate);
             }
+            Volatile.Write(ref _learningActive, 0);
+            ResetSpectralPipeline();
         }
 
-        bool spectralActive = spectralEnabled && !_learning && _noiseProfileFrames > 10;
-        Volatile.Write(ref _spectralActive, spectralActive ? 1 : 0);
+        bool spectralActive = spectralEnabled && !_learning &&
+                              Volatile.Read(ref _noiseProfileFrames) > 10;
+        if (spectralActive != _spectralWasActive)
+        {
+            ResetSpectralPipeline();
+            _spectralWasActive = spectralActive;
+        }
 
         // Fully-reduced gains are block constants: computing them per frame cost a
         // Math.Pow apiece. The readout tracks the linear minimum and converts once.
@@ -193,6 +278,24 @@ public sealed class NoiseReductionEffect : EffectBase
         for (int frame = 0; frame < frames; frame++)
         {
             int index = offset + frame * ChannelCount;
+
+            // Learn the unprocessed input and keep each channel separate until magnitudes are
+            // measured. A mono fold-down can cancel vertical noise, and learning after the
+            // broadband stage teaches the spectral stage a fingerprint this effect already altered.
+            if (_learning)
+            {
+                for (int channel = 0; channel < ChannelCount; channel++)
+                    _learnBuf[channel][_learnPos] = buffer[index + channel];
+                if (++_learnPos >= FftSize)
+                {
+                    AccumulateNoiseProfileFrame();
+                    for (int channel = 0; channel < ChannelCount; channel++)
+                        Array.Copy(_learnBuf[channel], HopSize, _learnBuf[channel], 0,
+                            FftSize - HopSize);
+                    _learnPos = FftSize - HopSize;
+                }
+            }
+
             double peak = 0;
             for (int channel = 0; channel < ChannelCount; channel++)
                 peak = Math.Max(peak, Math.Abs(buffer[index + channel]));
@@ -249,21 +352,8 @@ public sealed class NoiseReductionEffect : EffectBase
                 {
                     _specPrimed = true;
                     _specSinceFrame = 0;
-                    for (int channel = 0; channel < ChannelCount; channel++)
-                        ProcessSpectralFrame(channel, smoothingFactor);
+                    ProcessSpectralFrame(smoothingFactor);
                     _specOlaWrite = (_specOlaWrite + HopSize) % OlaLength;
-                }
-            }
-
-            else if (_learning)
-            {
-                // Accumulate the noise fingerprint from channel 0
-                _learnBuf[_learnPos++] = buffer[index];
-                if (_learnPos >= FftSize)
-                {
-                    AccumulateNoiseProfileFrame();
-                    Array.Copy(_learnBuf, HopSize, _learnBuf, 0, FftSize - HopSize);
-                    _learnPos = FftSize - HopSize;
                 }
             }
         }
@@ -274,62 +364,77 @@ public sealed class NoiseReductionEffect : EffectBase
     /// <summary>Window + FFT one input frame and fold its magnitudes into the profile.</summary>
     private void AccumulateNoiseProfileFrame()
     {
-        for (int i = 0; i < FftSize; i++)
+        for (int channel = 0; channel < ChannelCount; channel++)
         {
-            _fftRe[i] = _learnBuf[i] * _window[i];
-            _fftIm[i] = 0;
-        }
-        Fft.Forward(_fftRe, _fftIm);
+            for (int i = 0; i < FftSize; i++)
+            {
+                _fftRe[i] = _learnBuf[channel][i] * _window[i];
+                _fftIm[i] = 0;
+            }
+            Fft.Forward(_fftRe, _fftIm);
 
-        double norm = 2.0 / _windowSum;
-        for (int bin = 0; bin <= FftSize / 2; bin++)
-            _noiseProfile[bin] += Math.Sqrt(_fftRe[bin] * _fftRe[bin] + _fftIm[bin] * _fftIm[bin]) * norm;
-        _noiseProfileFrames++;
+            double norm = 2.0 / _windowSum / ChannelCount;
+            for (int bin = 0; bin <= FftSize / 2; bin++)
+                _learningProfile[bin] += Math.Sqrt(
+                    _fftRe[bin] * _fftRe[bin] + _fftIm[bin] * _fftIm[bin]) * norm;
+        }
+        _learningProfileFrames++;
     }
 
-    /// <summary>Spectral-subtract one frame of one channel and overlap-add the result.</summary>
-    private void ProcessSpectralFrame(int channel, double smoothing)
+    /// <summary>Build one shared spectral mask, apply it to every channel, and overlap-add.</summary>
+    private void ProcessSpectralFrame(double smoothing)
     {
-        float[] ring = _specIn[channel];
-        for (int i = 0; i < FftSize; i++)
+        for (int channel = 0; channel < ChannelCount; channel++)
         {
-            _fftRe[i] = ring[(_specInPos - FftSize + i + FftSize) % FftSize] * _window[i];
-            _fftIm[i] = 0;
+            float[] ring = _specIn[channel];
+            float[] re = _specRe[channel], im = _specIm[channel];
+            for (int i = 0; i < FftSize; i++)
+            {
+                re[i] = ring[(_specInPos - FftSize + i + FftSize) % FftSize] * _window[i];
+                im[i] = 0;
+            }
+            Fft.Forward(re, im);
         }
-        Fft.Forward(_fftRe, _fftIm);
 
         double norm = 2.0 / _windowSum;
-        double[] smooth = _specSmooth[channel];
+        double[] profile = Volatile.Read(ref _noiseProfile);
         int bins = FftSize / 2;
         for (int bin = 0; bin <= bins; bin++)
         {
-            double mag = Math.Sqrt(_fftRe[bin] * _fftRe[bin] + _fftIm[bin] * _fftIm[bin]) * norm;
-            double noiseEstimate = _noiseProfile[bin] * Oversubtract;
+            double mag = 0;
+            for (int channel = 0; channel < ChannelCount; channel++)
+                mag += Math.Sqrt(_specRe[channel][bin] * _specRe[channel][bin] +
+                                 _specIm[channel][bin] * _specIm[channel][bin]) * norm /
+                       ChannelCount;
+            double noiseEstimate = profile[bin] * Oversubtract;
             double targetGain = mag > noiseEstimate
                 ? (mag - noiseEstimate) / mag
                 : 0.01; // −40 dB floor
 
-            smooth[bin] = smoothing * smooth[bin] + (1 - smoothing) * targetGain;
-            float g = (float)smooth[bin];
-            _fftRe[bin] *= g;
-            _fftIm[bin] *= g;
-
-            // Mirror bin (conjugate symmetry keeps the output real)
-            if (bin > 0 && bin < bins)
+            _specSmooth[bin] = smoothing * _specSmooth[bin] + (1 - smoothing) * targetGain;
+            float g = (float)_specSmooth[bin];
+            for (int channel = 0; channel < ChannelCount; channel++)
             {
-                int mirror = FftSize - bin;
-                _fftRe[mirror] *= g;
-                _fftIm[mirror] *= g;
+                _specRe[channel][bin] *= g;
+                _specIm[channel][bin] *= g;
+                if (bin > 0 && bin < bins)
+                {
+                    int mirror = FftSize - bin;
+                    _specRe[channel][mirror] *= g;
+                    _specIm[channel][mirror] *= g;
+                }
             }
         }
 
-        Inverse(_fftRe, _fftIm);
-
-        // Synthesis window + overlap-add
-        float[] ola = _specOla[channel];
         float normFactor = (float)(1.0 / _olaNorm);
-        for (int i = 0; i < FftSize; i++)
-            ola[(_specOlaWrite + i) % OlaLength] += _fftRe[i] * _window[i] * normFactor;
+        for (int channel = 0; channel < ChannelCount; channel++)
+        {
+            Inverse(_specRe[channel], _specIm[channel]);
+            float[] ola = _specOla[channel];
+            for (int i = 0; i < FftSize; i++)
+                ola[(_specOlaWrite + i) % OlaLength] +=
+                    _specRe[channel][i] * _window[i] * normFactor;
+        }
     }
 
     /// <summary>Real-input inverse FFT via the conjugate-symmetry trick.</summary>

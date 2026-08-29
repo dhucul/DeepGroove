@@ -41,7 +41,7 @@ public sealed class DynamicEqEffect : EffectBase
 
     private StateVariableFilter[] _band = [];
     private StateVariableFilter[] _detector = [];
-    private double[] _envelope = [];
+    private double _envelope;
     private DynamicParameters _parameters = new(300, 1.2, 0, 0.1, 1, 0.99, 0.999, SvfMode.Peaking);
     private double _reduction;
 
@@ -66,7 +66,6 @@ public sealed class DynamicEqEffect : EffectBase
     {
         _band = new StateVariableFilter[ChannelCount];
         _detector = new StateVariableFilter[ChannelCount];
-        _envelope = new double[ChannelCount];
         OnParamsChanged();
 
         var parameters = Volatile.Read(ref _parameters);
@@ -105,40 +104,48 @@ public sealed class DynamicEqEffect : EffectBase
             _band[c].Reset();
             _detector[c].Reset();
         }
-        Array.Clear(_envelope);
+        _envelope = 0;
         Volatile.Write(ref _reduction, 0);
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
         var parameters = Volatile.Read(ref _parameters);
-        if (_band.Length != ChannelCount || _envelope.Length != ChannelCount) return;
+        if (_band.Length != ChannelCount || _detector.Length != ChannelCount) return;
 
         double worst = 0;
-        for (int i = offset; i < offset + count; i++)
+        int frames = count / ChannelCount;
+        for (int frame = 0; frame < frames; frame++)
         {
-            int c = (i - offset) % ChannelCount;
-            float x = buffer[i];
-
-            // The detector hears only the range this band covers.
-            float sensed = _detector[c].Process(x);
-            double magnitude = Math.Abs(sensed);
-            double coefficient = magnitude > _envelope[c] ? parameters.Attack : parameters.Release;
-            _envelope[c] = magnitude + coefficient * (_envelope[c] - magnitude);
+            int index = offset + frame * ChannelCount;
+            double magnitude = 0;
+            for (int channel = 0; channel < ChannelCount; channel++)
+            {
+                // The detector hears only the range this band covers. Link its result across the
+                // frame so a resonance on one side cannot pull the stereo image toward the other.
+                float sensed = _detector[channel].Process(buffer[index + channel]);
+                magnitude = Math.Max(magnitude, Math.Abs(sensed));
+            }
+            double coefficient = magnitude > _envelope ? parameters.Attack : parameters.Release;
+            _envelope = magnitude + coefficient * (_envelope - magnitude);
 
             // How far above threshold, in dB, scaled by how much of it to act on.
-            double over = _envelope[c] > parameters.Threshold && parameters.Threshold > 0
-                ? 20 * Math.Log10(_envelope[c] / parameters.Threshold)
+            double over = _envelope > parameters.Threshold && parameters.Threshold > 0
+                ? 20 * Math.Log10(_envelope / parameters.Threshold)
                 : 0;
             double gain = Math.Clamp(over * parameters.Amount, 0, Math.Abs(parameters.RangeDb))
                         * Math.Sign(parameters.RangeDb);
 
             if (Math.Abs(gain) > Math.Abs(worst)) worst = gain;
 
-            // Retuned every sample. That is affordable here and impossible with a biquad: this is
+            // Retuned every frame. That is affordable here and impossible with a biquad: this is
             // what the topology-preserving structure buys.
-            _band[c].Set(parameters.Mode, SampleRate, parameters.Frequency, parameters.Q, gain);
-            buffer[i] = _band[c].Process(x);
+            for (int channel = 0; channel < ChannelCount; channel++)
+            {
+                _band[channel].Set(
+                    parameters.Mode, SampleRate, parameters.Frequency, parameters.Q, gain);
+                buffer[index + channel] = _band[channel].Process(buffer[index + channel]);
+            }
         }
 
         Volatile.Write(ref _reduction, worst);

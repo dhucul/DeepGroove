@@ -87,7 +87,7 @@ public sealed class ReverbEffect : EffectBase
     private DelayLine[] _fdnLines = [];
     private OnePoleLp[] _fdnFilters = [];
     private DelayLine[] _erLines = [];
-    private DelayLine _preDelayLine = new();
+    private DelayLine[] _preDelayLines = [];
     private double _modPhase;
     private ReverbParameters _parameters = new(0.5f, 0.4f, 1f, 0.25f, 0.02f, 0.3f, 0.5f, 0.0015f, 2);
 
@@ -119,7 +119,12 @@ public sealed class ReverbEffect : EffectBase
             _erLines[i] = new DelayLine { Buf = new float[Math.Max(4, (int)(ErDelaysMs[i] * SampleRate / 1000.0))] };
 
 
-        _preDelayLine = new DelayLine { Buf = new float[Math.Max(4, (int)(SampleRate * 0.15))] };
+        int preDelayLength = Math.Max(4, (int)(SampleRate * 0.15));
+        _preDelayLines =
+        [
+            new DelayLine { Buf = new float[preDelayLength] },
+            new DelayLine { Buf = new float[preDelayLength] },
+        ];
         _fdnOut = new float[FdnSize];
         _fdnIn = new float[FdnSize];
         _modPhase = 0;
@@ -146,8 +151,7 @@ public sealed class ReverbEffect : EffectBase
         foreach (var line in _fdnLines) { Array.Clear(line.Buf); line.Pos = 0; }
         foreach (var f in _fdnFilters) f.State = 0;
         foreach (var line in _erLines) { Array.Clear(line.Buf); line.Pos = 0; }
-        Array.Clear(_preDelayLine.Buf);
-        _preDelayLine.Pos = 0;
+        foreach (DelayLine line in _preDelayLines) { Array.Clear(line.Buf); line.Pos = 0; }
         Array.Clear(_fdnOut);
         Array.Clear(_fdnIn);
         _modPhase = 0;
@@ -167,7 +171,8 @@ public sealed class ReverbEffect : EffectBase
         float dampCoeff = 0.05f + (1 - parameters.Damp) * 0.95f;
         float modRate = parameters.ModRate;
         float modDepthSamples = parameters.ModDepthSec * SampleRate;
-        int preDelaySamples = Math.Min((int)(parameters.PreDelaySec * SampleRate), _preDelayLine.Buf.Length - 1);
+        int preDelaySamples = Math.Min(
+            (int)(parameters.PreDelaySec * SampleRate), _preDelayLines[0].Buf.Length - 1);
 
         // Room-type scaling factors
         double rtScale = parameters.RoomType switch
@@ -190,24 +195,29 @@ public sealed class ReverbEffect : EffectBase
         {
             int idx = offset + f * channels;
 
-            // Mono input sum
-            float input = 0;
-            for (int c = 0; c < channels; c++)
-                input += buffer[idx + c];
-            input /= channels;
+            // Preserve the first stereo pair through the excitation path. Folding L+R to mono
+            // before the network made a vertical/anti-phase recording produce no wet signal.
+            float inputLeft = buffer[idx];
+            float inputRight = channels > 1 ? buffer[idx + 1] : inputLeft;
 
-            // --- Pre-delay: offset read from the ring ---
-            int preLen = _preDelayLine.Buf.Length;
-            _preDelayLine.Buf[_preDelayLine.Pos] = input * 0.5f;
-            int preRead = (_preDelayLine.Pos - preDelaySamples + preLen) % preLen;
-            float preDelayed = _preDelayLine.Buf[preRead];
-            _preDelayLine.Pos = (_preDelayLine.Pos + 1) % preLen;
+            // --- Pre-delay: independent L/R rings with a shared position ---
+            int preLen = _preDelayLines[0].Buf.Length;
+            int prePosition = _preDelayLines[0].Pos;
+            _preDelayLines[0].Buf[prePosition] = inputLeft * 0.5f;
+            _preDelayLines[1].Buf[prePosition] = inputRight * 0.5f;
+            int preRead = (prePosition - preDelaySamples + preLen) % preLen;
+            float preDelayedLeft = _preDelayLines[0].Buf[preRead];
+            float preDelayedRight = _preDelayLines[1].Buf[preRead];
+            prePosition = (prePosition + 1) % preLen;
+            _preDelayLines[0].Pos = prePosition;
+            _preDelayLines[1].Pos = prePosition;
 
             // --- Early reflections ---
             float erOut = 0;
             for (int i = 0; i < FdnSize; i++)
             {
-                float er = _erLines[i].Process(preDelayed * (0.3f / FdnSize));
+                float source = (i & 1) == 0 ? preDelayedLeft : preDelayedRight;
+                float er = _erLines[i].Process(source * (0.3f / FdnSize));
                 erOut += er * (1.0f - i * 0.08f); // decaying ER pattern
             }
 
@@ -259,7 +269,8 @@ public sealed class ReverbEffect : EffectBase
             float sizeFeedback = parameters.Size * 0.95f;
             for (int i = 0; i < FdnSize; i++)
             {
-                float drive = preDelayed * fdnInputGain + fdnIn[i] * sizeFeedback;
+                float source = (i & 1) == 0 ? preDelayedLeft : preDelayedRight;
+                float drive = source * fdnInputGain + fdnIn[i] * sizeFeedback;
                 _fdnLines[i].Buf[_fdnLines[i].Pos] = drive;
                 _fdnLines[i].Pos = (_fdnLines[i].Pos + 1) % _fdnLines[i].Buf.Length;
             }

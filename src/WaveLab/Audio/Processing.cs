@@ -185,14 +185,22 @@ public static class Processing
                 break;
             case 4: // S-Curve
             {
-                double s = 1.0 / (1.0 + Math.Exp(-12 * (t - 0.5)));
+                // Normalize the logistic to its finite interval. The raw curve is still about
+                // 0.25% open at t=0 and 0.25% shy of unity at t=1, which leaves a discontinuity
+                // at either end when the neighbouring audio is digital silence.
+                double low = 1.0 / (1.0 + Math.Exp(6));
+                double high = 1.0 / (1.0 + Math.Exp(-6));
+                double raw = 1.0 / (1.0 + Math.Exp(-12 * (t - 0.5)));
+                double s = (raw - low) / (high - low);
                 g = from + (to - from) * s;
                 break;
             }
-            default: // Equal-power (sine-squared)
+            default: // Equal-power (sine/cosine amplitude law)
             {
                 double curve = from + (to - from) * t;
-                g = Math.Sin(curve * Math.PI / 2) * Math.Sin(curve * Math.PI / 2);
+                // Squaring this sine made the midpoint -6.02 dB. Equal-power fades meet at
+                // -3.01 dB, because their squared amplitudes — their powers — sum to one.
+                g = Math.Sin(curve * Math.PI / 2);
                 break;
             }
         }

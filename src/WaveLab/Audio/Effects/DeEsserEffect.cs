@@ -40,6 +40,8 @@ public sealed class DeEsserEffect : EffectBase
     private Stft? _stft;
     private float[][] _input = [];
     private float[][] _output = [];
+    private float[] _guide = [];
+    private double[] _frameGains = [];
     private DeEsserParameters _parameters = new(5_000, 0.03, 0.3, 0.5);
     private double _reduction;
 
@@ -49,8 +51,11 @@ public sealed class DeEsserEffect : EffectBase
     public override string DisplayName => "De-Esser";
     public override IReadOnlyList<EffectParam> Params => P;
 
-    /// <summary>A frame of lookahead, which offline rendering compensates for.</summary>
-    public override int LatencySamples => FftSize;
+    /// <summary>
+    /// The block transform uses padded analysis frames and writes each reconstructed sample back at
+    /// its original index. It has spectral context, but no stream delay for the rack to compensate.
+    /// </summary>
+    public override int LatencySamples => 0;
 
     public override string Readout
     {
@@ -71,6 +76,8 @@ public sealed class DeEsserEffect : EffectBase
             _input[c] = new float[FftSize * 4];
             _output[c] = new float[FftSize * 4];
         }
+        _guide = new float[FftSize * 4];
+        _frameGains = new double[64];
         OnParamsChanged();
     }
 
@@ -109,9 +116,52 @@ public sealed class DeEsserEffect : EffectBase
             for (int f = 0; f < frames; f++) _input[c][f] = buffer[offset + f * ChannelCount + c];
         }
 
+        if (_guide.Length < frames) _guide = new float[frames];
+        for (int frame = 0; frame < frames; frame++)
+        {
+            float selected = 0;
+            for (int channel = 0; channel < ChannelCount; channel++)
+            {
+                float sample = _input[channel][frame];
+                if (Math.Abs(sample) > Math.Abs(selected)) selected = sample;
+            }
+            _guide[frame] = selected;
+        }
+
         double worst = 0;
         int bins = FftSize / 2 + 1;
         int fromBin = Math.Clamp((int)(parameters.FromHz * FftSize / SampleRate), 1, bins - 1);
+
+        int spectralFrames = stft.FrameCount(frames);
+        if (_frameGains.Length < spectralFrames) _frameGains = new double[spectralFrames];
+        Array.Fill(_frameGains, 1.0, 0, spectralFrames);
+
+        // Decide once from a guide that cannot cancel anti-phase stereo, then use the same
+        // frame gain on every channel. Independent decisions made sibilants pull the image toward
+        // whichever side happened not to trigger.
+        stft.Analyze(_guide.AsSpan(0, frames), (frameIndex, start, re, im) =>
+        {
+            double sibilant = 0, total = 0;
+            for (int b = 1; b < bins; b++)
+            {
+                double power = (double)re[b] * re[b] + (double)im[b] * im[b];
+                total += power;
+                if (b >= fromBin) sibilant += power;
+            }
+            if (total <= 1e-20) return;
+
+            double share = sibilant / total;
+            double crossings = ZeroCrossingRate(_guide, start, FftSize, frames);
+            double sibilance = share * crossings;
+            double level = Math.Sqrt(sibilant / bins);
+            if (level < parameters.Threshold || sibilance < 0.08) return;
+
+            double strength = Math.Clamp((sibilance - 0.08) / 0.25, 0, 1)
+                            * Math.Clamp(level / Math.Max(parameters.Threshold, 1e-9) - 1, 0, 1);
+            double gain = 1 - (1 - parameters.Floor) * strength;
+            _frameGains[frameIndex] = gain;
+            worst = Math.Max(worst, -20 * Math.Log10(Math.Max(gain, 1e-9)));
+        });
 
         for (int c = 0; c < ChannelCount; c++)
         {
@@ -122,29 +172,10 @@ public sealed class DeEsserEffect : EffectBase
 
             stft.Process(source.AsSpan(0, frames), destination, (_, start, re, im) =>
             {
-                double sibilant = 0, total = 0;
-                for (int b = 1; b < bins; b++)
-                {
-                    double power = (double)re[b] * re[b] + (double)im[b] * im[b];
-                    total += power;
-                    if (b >= fromBin) sibilant += power;
-                }
-                if (total <= 1e-20) return;
-
-                double share = sibilant / total;
-                double crossings = ZeroCrossingRate(source, start, FftSize, frames);
-
-                // Both tests, multiplied: energy up top without the noisiness is a bright vowel or a
-                // cymbal, and noisiness without the energy is not sibilance at all.
-                double sibilance = share * crossings;
-                double level = Math.Sqrt(sibilant / bins);
-                if (level < parameters.Threshold || sibilance < 0.08) return;
-
-                double strength = Math.Clamp((sibilance - 0.08) / 0.25, 0, 1)
-                                * Math.Clamp(level / Math.Max(parameters.Threshold, 1e-9) - 1, 0, 1);
-                double gain = 1 - (1 - parameters.Floor) * strength;
-                double reduction = -20 * Math.Log10(Math.Max(gain, 1e-9));
-                if (reduction > worst) worst = reduction;
+                int frameIndex = (start + (FftSize - Hop)) / Hop;
+                if ((uint)frameIndex >= (uint)spectralFrames) return;
+                double gain = _frameGains[frameIndex];
+                if (gain >= 1) return;
 
                 for (int b = fromBin; b < bins; b++)
                 {

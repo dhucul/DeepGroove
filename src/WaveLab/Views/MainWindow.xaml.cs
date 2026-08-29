@@ -1479,7 +1479,16 @@ public partial class MainWindow : Window
         _ = RunRangeTool("Remove Crackle", $"{options.Threshold:0.0}σ residual threshold",
             (data, sampleRate, progress, token) =>
             {
-                int events = 0, fallbacks = 0;
+                if (data.Length == 2)
+                {
+                    // Stereo groove noise is vertical. Repair one coherent side signal and rebuild
+                    // both channels together, rather than making two unrelated decisions that can
+                    // reappear when the channels are later summed.
+                    report = Decrackle.ProcessStereo(data[0], data[1], options, token, progress);
+                    return report.Events > 0 ? data : null;
+                }
+
+                int events = 0, fallbacks = 0, rejected = 0;
                 long replaced = 0;
                 for (int c = 0; c < data.Length; c++)
                 {
@@ -1487,10 +1496,11 @@ public partial class MainWindow : Window
                         SubProgress.Slice(progress, c, data.Length));
                     events += channel.Events;
                     fallbacks += channel.Fallbacks;
+                    rejected += channel.Rejected;
                     replaced += channel.SamplesReplaced;
                 }
-                report = new DecrackleReport(events, replaced, fallbacks);
-                return data;
+                report = new DecrackleReport(events, replaced, fallbacks, rejected);
+                return events > 0 ? data : null;
             }, d, keepRemoved, opened => residualOpened = opened).ContinueWith(task =>
             {
                 if (!task.Result) return;
@@ -2189,9 +2199,11 @@ public partial class MainWindow : Window
         bool keepRemoved = ReadKeepRemoved(dlg);
         double sensitivity = dlg.Values[0];
         int repaired = -1;
-        bool completed = await RunRangeTool("Remove Clicks", (data, sampleRate) =>
+        bool completed = await RunRangeTool("Remove Clicks", null,
+            (data, sampleRate, _, token) =>
         {
-            repaired = Restoration.RemoveClicks(data, sampleRate, sensitivity);
+            repaired = Restoration.RemoveClicks(data, sampleRate, sensitivity,
+                cancellationToken: token);
             // A no-op should not allocate an album-sized undo entry or mark the
             // document dirty merely so the UI can report that nothing was found.
             return repaired > 0 ? data : null;
@@ -2211,15 +2223,16 @@ public partial class MainWindow : Window
     {
         var d = Doc;
         if (LongOperationRunning || d == null || d.Doc.Length == 0) return;
-        var dlg = new ParamDialog("Remove Hum", "Apply", "Mains frequency", ["50 Hz (Europe)", "60 Hz (Americas)"], 1,
+        var dlg = new ParamDialog("Remove Hum", "Apply", null, null, 0,
+            new ParamDialog.SliderSpec("Fundamental", 45, 65, 60, v => $"{v:0.0} Hz", 0.1),
             new ParamDialog.SliderSpec("Harmonics", 1, 8, 4, v => $"{v:0}", 1),
             new ParamDialog.SliderSpec("Notch width (Q)", 10, 60, 30, v => $"Q {v:0}")) { Owner = this };
         AddKeepRemoved(dlg, d);
         if (dlg.ShowDialog() != true) return;
         bool keepRemoved = ReadKeepRemoved(dlg);
-        double baseFreq = dlg.ComboIndex == 0 ? 50 : 60;
-        int harmonics = (int)dlg.Values[0];
-        double q = dlg.Values[1];
+        double baseFreq = dlg.Values[0];
+        int harmonics = (int)dlg.Values[1];
+        double q = dlg.Values[2];
         _ = RunRangeTool("Remove Hum", (data, sr) =>
         {
             Restoration.RemoveHum(data, sr, baseFreq, harmonics, q);
@@ -2313,7 +2326,7 @@ public partial class MainWindow : Window
             List<(int Start, int End)>? found = null;
             await _vm.Progress.RunBlockingAsync("Detecting silences", "Scanning the file for quiet gaps",
                 async (_, token) => found = await Task.Run(() => Restoration.DetectSilences(
-                    channels, sampleRate, threshold, minimumLength), token));
+                    channels, sampleRate, threshold, minimumLength, token), token));
             return found;
         }
         catch (OperationCanceledException)
@@ -2579,14 +2592,23 @@ public partial class MainWindow : Window
             await _vm.Progress.RunBlockingAsync("Detecting pitch", "YIN over the selection",
                 async (_, token) => result = await Task.Run(() =>
                 {
-                    var mono = new float[count];
-                    for (int i = 0; i < count; i++)
+                    // A mono fold-down can erase an anti-phase or strongly side-weighted tone.
+                    // Select the most energetic real channel as the pitch guide instead.
+                    int guideChannel = 0;
+                    double guideEnergy = double.NegativeInfinity;
+                    for (int c = 0; c < chCount; c++)
                     {
-                        float v = 0;
-                        for (int c = 0; c < chCount; c++) v += chans[c][start + i];
-                        mono[i] = v / chCount;
+                        double energy = 0;
+                        for (int i = 0; i < count; i++)
+                        {
+                            if ((i & 0xFFFF) == 0) token.ThrowIfCancellationRequested();
+                            double sample = chans[c][start + i];
+                            energy += sample * sample;
+                        }
+                        if (energy > guideEnergy) { guideEnergy = energy; guideChannel = c; }
                     }
-                    return PitchDetect.Detect(mono, sampleRate);
+                    var guide = chans[guideChannel].AsSpan(start, count).ToArray();
+                    return PitchDetect.Detect(guide, sampleRate, token);
                 }, token));
             InfoDialog.Show(this, "Tuner",
                 result.Frequency > 0
@@ -2617,7 +2639,7 @@ public partial class MainWindow : Window
             double bpm = 0, confidence = 0;
             await _vm.Progress.RunBlockingAsync("Detecting tempo", "Onset autocorrelation",
                 async (_, token) => (bpm, confidence) =
-                    await Task.Run(() => TempoDetect.Detect(chans, sampleRate), token));
+                    await Task.Run(() => TempoDetect.Detect(chans, sampleRate, token), token));
             InfoDialog.Show(this, "Tempo Detection",
                 bpm > 0 ? $"Confidence {confidence:P0}. Half/double-time ({bpm / 2:0.#} / {bpm * 2:0.#} BPM) may also fit."
                         : "No clear tempo found — the material may be too sparse or rubato.",

@@ -31,8 +31,8 @@ public sealed class TransientShaperEffect : EffectBase
         new("output", "OUTPUT", -12, 12, 0, EffectParam.Db1),
     ];
 
-    private double[] _fast = [];
-    private double[] _slow = [];
+    private double _fast;
+    private double _slow;
     private ShaperParameters _parameters = new(0, 0, 0.9, 0.99, 1);
     private double _applied;
 
@@ -54,8 +54,6 @@ public sealed class TransientShaperEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        _fast = new double[ChannelCount];
-        _slow = new double[ChannelCount];
         OnParamsChanged();
     }
 
@@ -74,42 +72,45 @@ public sealed class TransientShaperEffect : EffectBase
 
     public override void ResetState()
     {
-        Array.Clear(_fast);
-        Array.Clear(_slow);
+        _fast = 0;
+        _slow = 0;
         Volatile.Write(ref _applied, 0);
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
         var parameters = Volatile.Read(ref _parameters);
-        if (_fast.Length != ChannelCount || _slow.Length != ChannelCount) return;
         if (parameters.AttackDb == 0 && parameters.SustainDb == 0 && parameters.Output == 1) return;
 
         double peak = 0;
-        for (int i = offset; i < offset + count; i++)
+        int frames = count / ChannelCount;
+        for (int frame = 0; frame < frames; frame++)
         {
-            int c = (i - offset) % ChannelCount;
-            float x = buffer[i];
-            double magnitude = Math.Abs(x);
+            int index = offset + frame * ChannelCount;
+            double magnitude = 0;
+            for (int channel = 0; channel < ChannelCount; channel++)
+                magnitude = Math.Max(magnitude, Math.Abs(buffer[index + channel]));
 
             // The fast follower rises instantly; the slow one has to rise at its own rate too. If
             // both jump on the way up they are equal at every attack, their difference is zero
             // exactly where the attack is, and the effect does nothing at all — measured, it moved
             // a struck note by a factor of 1.00.
-            _fast[c] = magnitude > _fast[c]
+            _fast = magnitude > _fast
                 ? magnitude
-                : magnitude + parameters.FastCoefficient * (_fast[c] - magnitude);
-            _slow[c] = magnitude + parameters.SlowCoefficient * (_slow[c] - magnitude);
+                : magnitude + parameters.FastCoefficient * (_fast - magnitude);
+            _slow = magnitude + parameters.SlowCoefficient * (_slow - magnitude);
 
             // In decibels, so a transient at -40 is shaped exactly as one at -6.
-            double difference = 20 * Math.Log10(Math.Max(_fast[c], 1e-9) / Math.Max(_slow[c], 1e-9));
+            double difference = 20 * Math.Log10(Math.Max(_fast, 1e-9) / Math.Max(_slow, 1e-9));
 
             double gainDb = difference > 0
                 ? parameters.AttackDb * Math.Min(1, difference / 6.0)
                 : parameters.SustainDb * Math.Min(1, -difference / 6.0);
 
             if (Math.Abs(gainDb) > Math.Abs(peak)) peak = gainDb;
-            buffer[i] = (float)(x * Math.Pow(10, gainDb / 20.0)) * parameters.Output;
+            float gain = (float)Math.Pow(10, gainDb / 20.0) * parameters.Output;
+            for (int channel = 0; channel < ChannelCount; channel++)
+                buffer[index + channel] *= gain;
         }
 
         Volatile.Write(ref _applied, peak);

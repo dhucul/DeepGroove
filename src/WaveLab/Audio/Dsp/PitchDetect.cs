@@ -5,8 +5,11 @@ public static class PitchDetect
 {
     private static readonly string[] NoteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
-    public static (double Frequency, double Confidence) Detect(float[] mono, int sampleRate)
+    public static (double Frequency, double Confidence) Detect(float[] mono, int sampleRate,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(mono);
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
         const int window = 4096;
         int tauMax = Math.Min(window / 2, sampleRate / 50);   // down to 50 Hz
         int tauMin = Math.Max(2, sampleRate / 1500);          // up to 1.5 kHz
@@ -18,11 +21,15 @@ public static class PitchDetect
         var diff = new double[tauMax];
         var cmnd = new double[tauMax];
 
-        for (int start = 0; start + window * 2 <= mono.Length; start += window)
+        for (int start = 0; start + window + tauMax <= mono.Length; start += window)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Array.Clear(diff);
-            for (int tau = tauMin; tau < tauMax; tau++)
+            // CMND is defined over every lag from one through tau. Leaving the lags below tauMin
+            // as zero made its denominator too small and biased the first usable octaves upward.
+            for (int tau = 1; tau < tauMax; tau++)
             {
+                if ((tau & 31) == 0) cancellationToken.ThrowIfCancellationRequested();
                 double sum = 0;
                 for (int i = 0; i < window; i += 2) // stride 2 for speed
                 {

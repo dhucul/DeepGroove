@@ -49,9 +49,10 @@ public sealed class MultibandCompressorEffect : EffectBase
     ];
 
     private Crossover? _crossover;
-    private double[][] _envelope = [];       // [band][channel]
-    private double[][] _crest = [];          // [band][channel] — slow mean square, for the release rule
-    private double[][] _peak = [];           // [band][channel] — fast peak, ditto
+    private double[] _envelope = [];
+    private double[] _crest = [];             // slow mean square, for the release rule
+    private double[] _peak = [];              // fast peak, ditto
+    private float[][] _bands = [];            // [channel][band] split scratch
     private BandParameters _parameters = BandParameters.Silent;
     private double _reduction;
 
@@ -78,18 +79,14 @@ public sealed class MultibandCompressorEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        _envelope = Allocate();
-        _crest = Allocate();
-        _peak = Allocate();
+        _envelope = new double[BandCount];
+        _crest = new double[BandCount];
+        _peak = new double[BandCount];
+        _bands = new float[ChannelCount][];
+        for (int channel = 0; channel < ChannelCount; channel++)
+            _bands[channel] = new float[BandCount];
         OnParamsChanged();
         RebuildCrossover();
-    }
-
-    private double[][] Allocate()
-    {
-        var result = new double[BandCount][];
-        for (int b = 0; b < BandCount; b++) result[b] = new double[ChannelCount];
-        return result;
     }
 
     private void RebuildCrossover()
@@ -140,9 +137,9 @@ public sealed class MultibandCompressorEffect : EffectBase
 
     public override void ResetState()
     {
-        foreach (double[] band in _envelope) Array.Clear(band);
-        foreach (double[] band in _crest) Array.Clear(band);
-        foreach (double[] band in _peak) Array.Clear(band);
+        Array.Clear(_envelope);
+        Array.Clear(_crest);
+        Array.Clear(_peak);
         Volatile.Read(ref _crossover)?.Reset();
         Volatile.Write(ref _reduction, 0);
     }
@@ -152,9 +149,7 @@ public sealed class MultibandCompressorEffect : EffectBase
         Crossover? crossover = Volatile.Read(ref _crossover);
         var parameters = Volatile.Read(ref _parameters);
         if (crossover == null || crossover.Bands != BandCount) return;
-        if (_envelope.Length != BandCount || _envelope[0].Length != ChannelCount) return;
-
-        Span<float> bands = stackalloc float[BandCount];
+        if (_envelope.Length != BandCount || _bands.Length != ChannelCount) return;
 
         // Tracked as a gain and converted once, rather than a logarithm per band per
         // sample for a readout that updates at screen rate. Maximising -20*log10(g) is
@@ -173,38 +168,49 @@ public sealed class MultibandCompressorEffect : EffectBase
                 parameters.Release, 1.0 + 7.0 * i / (releaseTableSize - 1));
         }
 
-        int c = 0;
-        for (int i = offset; i < offset + count; i++)
+        Span<double> gains = stackalloc double[BandCount];
+        int frames = count / ChannelCount;
+        for (int frame = 0; frame < frames; frame++)
         {
-            crossover.ProcessSample(c, buffer[i], bands);
+            int index = offset + frame * ChannelCount;
+            for (int channel = 0; channel < ChannelCount; channel++)
+                crossover.ProcessSample(channel, buffer[index + channel], _bands[channel]);
 
-            float sum = 0;
             for (int b = 0; b < BandCount; b++)
             {
-                double magnitude = Math.Abs(bands[b]);
+                // Link each band's gain across the frame. Independent channel envelopes make a
+                // kick or resonance on one side steer the stereo image every time it compresses.
+                double magnitude = 0;
+                for (int channel = 0; channel < ChannelCount; channel++)
+                    magnitude = Math.Max(magnitude, Math.Abs(_bands[channel][b]));
 
                 // Two more followers per band, purely to measure how peaky it is.
-                _peak[b][c] = Math.Max(magnitude, magnitude + 0.999 * (_peak[b][c] - magnitude));
-                _crest[b][c] = magnitude * magnitude + 0.9999 * (_crest[b][c] - magnitude * magnitude);
+                _peak[b] = Math.Max(magnitude, magnitude + 0.999 * (_peak[b] - magnitude));
+                _crest[b] = magnitude * magnitude + 0.9999 * (_crest[b] - magnitude * magnitude);
 
                 double crest = Math.Clamp(
-                    _peak[b][c] / Math.Sqrt(Math.Max(_crest[b][c], 1e-12)), 1.0, 8.0);
+                    _peak[b] / Math.Sqrt(Math.Max(_crest[b], 1e-12)), 1.0, 8.0);
                 double position = (crest - 1.0) / 7.0 * (releaseTableSize - 1);
                 int lower = (int)position;
                 int upper = Math.Min(lower + 1, releaseTableSize - 1);
                 double release = releaseTable[lower]
                     + (releaseTable[upper] - releaseTable[lower]) * (position - lower);
 
-                double coefficient = magnitude > _envelope[b][c] ? parameters.Attack : release;
-                _envelope[b][c] = magnitude + coefficient * (_envelope[b][c] - magnitude);
+                double coefficient = magnitude > _envelope[b] ? parameters.Attack : release;
+                _envelope[b] = magnitude + coefficient * (_envelope[b] - magnitude);
 
-                double gain = GainFor(_envelope[b][c], parameters);
+                double gain = GainFor(_envelope[b], parameters);
+                gains[b] = gain;
                 if (gain < quietest) quietest = gain;
-
-                sum += (float)(bands[b] * gain) * parameters.MakeUp[b];
             }
-            buffer[i] = sum;
-            if (++c == ChannelCount) c = 0;
+
+            for (int channel = 0; channel < ChannelCount; channel++)
+            {
+                float sum = 0;
+                for (int band = 0; band < BandCount; band++)
+                    sum += (float)(_bands[channel][band] * gains[band]) * parameters.MakeUp[band];
+                buffer[index + channel] = sum;
+            }
         }
 
         Volatile.Write(ref _reduction, quietest < 1 ? -20 * Math.Log10(quietest) : 0);

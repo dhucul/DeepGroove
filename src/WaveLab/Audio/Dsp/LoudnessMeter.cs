@@ -6,7 +6,7 @@
 /// </summary>
 public sealed class LoudnessMeter
 {
-    private const int TruePeakTapsPerPhase = 12;
+    internal const int TruePeakTapsPerPhase = 12;
 
     // ITU-R BS.1770 Annex 2: order-48, four-phase FIR interpolator. The
     // coefficients are arranged by output phase and then by input-sample delay.
@@ -276,14 +276,23 @@ public sealed class LoudnessMeter
     }
 
     private void MeasureTruePeak(float[] delay)
+        => ObserveTruePeak(InterpolatedTruePeak(delay));
+
+    /// <summary>
+    /// Highest four-phase BS.1770 interpolated magnitude for one full history window. Shared by
+    /// processors that must enforce a true-peak ceiling rather than a sample-peak approximation.
+    /// </summary>
+    internal static double InterpolatedTruePeak(ReadOnlySpan<float> delay)
     {
+        double peak = 0;
         foreach (double[] phase in TruePeakPhaseCoefficients)
         {
             double interpolated = 0;
             for (int tap = 0; tap < TruePeakTapsPerPhase; tap++)
                 interpolated += phase[tap] * delay[tap];
-            ObserveTruePeak(Math.Abs(interpolated));
+            peak = Math.Max(peak, Math.Abs(interpolated));
         }
+        return peak;
     }
 
     /// <summary>Appends one block loudness value, dropping the oldest when the ring is full.</summary>

@@ -31,10 +31,11 @@ public sealed class SaturationEffect : EffectBase
     private Biquad[] _tone = [];   // audio-thread state only
     private BiquadCoefficients _toneCoefficients = BiquadCoefficients.Identity;
     private double _toneCutoff = double.NaN;
-    private SaturationParameters _parameters = new(1f, 1f, 1f, 0, true);
-    private Oversampler? _sampler;
+    private SaturationParameters _parameters = new(1f, 1f, 1f, 0, 2);
+    private Oversampler?[] _samplers = [];
 
-    private sealed record SaturationParameters(float Drive, float Compensation, float Mix, int Curve, bool Oversample);
+    private sealed record SaturationParameters(
+        float Drive, float Compensation, float Mix, int Curve, int OversamplingFactor);
 
     public override string TypeId => "saturation";
     public override string DisplayName => "Saturation";
@@ -49,8 +50,9 @@ public sealed class SaturationEffect : EffectBase
     {
         get
         {
-            Oversampler? sampler = Volatile.Read(ref _sampler);
-            return sampler is { Factor: > 1 } && Volatile.Read(ref _parameters).Oversample
+            var parameters = Volatile.Read(ref _parameters);
+            Oversampler? sampler = SamplerFor(parameters.OversamplingFactor);
+            return sampler is { Factor: > 1 }
                 ? sampler.LatencySamples
                 : 0;
         }
@@ -58,7 +60,15 @@ public sealed class SaturationEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        Volatile.Write(ref _sampler, new Oversampler(FactorFromParam(), ChannelCount));
+        // Parameter changes cannot allocate or replace one live processor from the audio callback.
+        // Keep one prepared state bank for every offered factor and switch between them atomically.
+        _samplers =
+        [
+            null,
+            new Oversampler(2, ChannelCount),
+            new Oversampler(4, ChannelCount),
+            new Oversampler(8, ChannelCount),
+        ];
         // The bank is allocated here and nowhere else. Sizing it from the parameter path meant
         // the thread moving TONE could hand the audio thread a freshly-zeroed array.
         _tone = new Biquad[ChannelCount];
@@ -93,7 +103,7 @@ public sealed class SaturationEffect : EffectBase
             (float)(1.0 / Math.Pow(10, driveDb * compFactor / 20.0)),
             (float)GetParam("mix"),
             curve,
-            oversample));
+            oversample ? FactorFromParam() : 1));
 
         double cutoff = EffectiveToneCutoff();
         if (cutoff != Volatile.Read(ref _toneCutoff)) RebuildTone(cutoff);
@@ -117,7 +127,7 @@ public sealed class SaturationEffect : EffectBase
     public override void ResetState()
     {
         for (int c = 0; c < _tone.Length; c++) _tone[c].Reset();
-        Volatile.Read(ref _sampler)?.Reset();
+        foreach (Oversampler? sampler in _samplers) sampler?.Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
@@ -131,8 +141,8 @@ public sealed class SaturationEffect : EffectBase
         float mix = parameters.Mix;
         float dry = 1 - mix;
         int curve = parameters.Curve;
-        Oversampler? sampler = Volatile.Read(ref _sampler);
-        bool oversample = parameters.Oversample;
+        Oversampler? sampler = SamplerFor(parameters.OversamplingFactor);
+        bool oversample = sampler is { Factor: > 1 };
 
         // Allocated once for the block, not once per sample: this runs on the audio thread.
         Span<float> high = stackalloc float[MaximumFactor];
@@ -164,6 +174,12 @@ public sealed class SaturationEffect : EffectBase
             shaped = tone[c].Process(shaped);
             buffer[i] = x * dry + shaped * mix;
         }
+    }
+
+    private Oversampler? SamplerFor(int factor)
+    {
+        int index = factor switch { 2 => 1, 4 => 2, 8 => 3, _ => 0 };
+        return index < _samplers.Length ? _samplers[index] : null;
     }
 
     private static float ShapeSample(float x, int curve)

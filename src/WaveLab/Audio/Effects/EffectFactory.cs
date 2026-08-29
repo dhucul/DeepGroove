@@ -200,6 +200,8 @@ public static class EffectFactory
         // is the whole picture and the parameters are the part expressible as numbers.
         if (source is IEffectState from && copy is IEffectState to) to.RestoreStateText(from.SaveStateText());
         foreach (var p in source.Params) copy.SetParam(p.Key, source.GetParam(p.Key));
+        if (source is NoiseReductionEffect sourceNoise && copy is NoiseReductionEffect copyNoise)
+            copyNoise.CopyLearnedProfileFrom(sourceNoise);
         return copy;
     }
 

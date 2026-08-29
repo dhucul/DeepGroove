@@ -56,6 +56,7 @@ public partial class StatisticsDialog : Window
         var dc = new double[channels];
         var clipped = new long[channels];
         var invalid = new long[channels];
+        var valid = new long[channels];
         const float clipLevel = 0.999969f; // ~0 dBFS for 16-bit-origin material
 
         for (int c = 0; c < channels; c++)
@@ -69,6 +70,7 @@ public partial class StatisticsDialog : Window
                 if ((i & 0xffff) == 0) token.ThrowIfCancellationRequested();
                 float v = data[i];
                 if (!float.IsFinite(v)) { invalid[c]++; continue; }
+                valid[c]++;
                 double a = Math.Abs(v);
                 if (a > p) p = a;
                 sq += v * v;
@@ -77,7 +79,7 @@ public partial class StatisticsDialog : Window
             }
             peak[c] = p;
             sumSq[c] = sq;
-            dc[c] = frames > 0 ? sum / frames : 0;
+            dc[c] = valid[c] > 0 ? sum / valid[c] : 0;
             clipped[c] = clip;
         }
 
@@ -107,15 +109,15 @@ public partial class StatisticsDialog : Window
         result.Add(new Row("", channels == 1 ? "MONO" : "LEFT", stereo ? "RIGHT" : ""));
         result.Add(new Row("Peak", Db(peak[0]), stereo ? Db(peak[1]) : ""));
         result.Add(new Row("RMS (whole file)",
-            $"{20 * Math.Log10(Math.Max(1e-7, Math.Sqrt(sumSq[0] / Math.Max(1, frames)))):0.0} dB",
-            stereo ? $"{20 * Math.Log10(Math.Max(1e-7, Math.Sqrt(sumSq[1] / Math.Max(1, frames)))):0.0} dB" : ""));
+            $"{20 * Math.Log10(Math.Max(1e-7, Math.Sqrt(sumSq[0] / Math.Max(1, valid[0])))):0.0} dB",
+            stereo ? $"{20 * Math.Log10(Math.Max(1e-7, Math.Sqrt(sumSq[1] / Math.Max(1, valid[1])))):0.0} dB" : ""));
         result.Add(new Row("DC offset", $"{dc[0] * 100:0.0000} %", stereo ? $"{dc[1] * 100:0.0000} %" : ""));
         result.Add(new Row("Clipped samples", clipped[0].ToString("N0"), stereo ? clipped[1].ToString("N0") : ""));
         if (invalid.Any(count => count > 0))
             result.Add(new Row("Invalid samples", invalid[0].ToString("N0"), stereo ? invalid[1].ToString("N0") : ""));
         for (int c = 2; c < channels; c++)
         {
-            string rms = $"{20 * Math.Log10(Math.Max(1e-7, Math.Sqrt(sumSq[c] / Math.Max(1, frames)))):0.0} dB";
+            string rms = $"{20 * Math.Log10(Math.Max(1e-7, Math.Sqrt(sumSq[c] / Math.Max(1, valid[c])))):0.0} dB";
             result.Add(new Row($"Channel {c + 1}", Db(peak[c]),
                 $"RMS {rms} · DC {dc[c] * 100:0.0000}% · {clipped[c]:N0} clipped · {invalid[c]:N0} invalid"));
         }

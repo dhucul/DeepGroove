@@ -42,14 +42,24 @@ public static class TimeStretch
         double anaHop = synHop / factor;
         int search = Math.Max(16, (int)(sampleRate * 0.008));     // ±8 ms
 
-        // Keep only the real mono guide; correlation treats indices beyond its end as zero.
-        var guide = new float[n];
-        for (int i = 0; i < n; i++)
+        // Correlate against one real channel rather than a mono fold-down. A vertical or
+        // deliberately anti-phase stereo signal sums to zero, which made every candidate tie and
+        // sent the search to its earliest position on every frame. The most energetic channel is
+        // the most reliable timing guide and the same decisions are still applied to all channels.
+        int guideChannel = 0;
+        double guideEnergy = double.NegativeInfinity;
+        for (int channel = 0; channel < chCount; channel++)
         {
-            float v = 0;
-            for (int c = 0; c < chCount; c++) v += channels[c][i];
-            guide[i] = v / chCount;
+            double energy = 0;
+            float[] source = channels[channel];
+            for (int i = 0; i < n; i++)
+            {
+                if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                if (float.IsFinite(source[i])) energy += source[i] * (double)source[i];
+            }
+            if (energy > guideEnergy) { guideEnergy = energy; guideChannel = channel; }
         }
+        var guide = (float[])channels[guideChannel].Clone();
 
         double roundedTargetLength = Math.Round(n * factor);
         if (roundedTargetLength > Array.MaxLength)
@@ -91,16 +101,24 @@ public static class TimeStretch
             if (!first)
             {
                 double bestScore = double.NegativeInfinity;
+                double referenceEnergy = 0;
+                for (int i = 0; i < overlap; i += 8)
+                    referenceEnergy += overlapGuide[i] * (double)overlapGuide[i];
                 int lo = Math.Max(0, ideal - search);
                 int hi = ideal + search;
                 for (int cand = lo; cand <= hi; cand += 4)
                 {
-                    double score = 0;
+                    double score = 0, candidateEnergy = 0;
                     for (int i = 0; i < overlap; i += 8)
                     {
                         int guideIndex = cand + i;
-                        if (guideIndex < n) score += overlapGuide[i] * guide[guideIndex];
+                        if (guideIndex >= n) continue;
+                        double sample = guide[guideIndex];
+                        score += overlapGuide[i] * sample;
+                        candidateEnergy += sample * sample;
                     }
+                    double normalizer = Math.Sqrt(referenceEnergy * candidateEnergy);
+                    score = normalizer > 1e-15 ? score / normalizer : double.NegativeInfinity;
                     if (score > bestScore) { bestScore = score; best = cand; }
                 }
             }

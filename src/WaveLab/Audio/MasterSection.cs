@@ -618,8 +618,12 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         progress?.Report(0);
         IAudioEffect[] enabledEffects;
+        bool processMidSide;
         lock (_chainLock)
+        {
             enabledEffects = _rackEnabled ? _chain.Where(f => f.Enabled).ToArray() : [];
+            processMidSide = _rackEnabled && _msMode && data.Length >= 2;
+        }
 
         // Its own instances, not the live rack's: see CloneForOfflineRender.
         var chain = new List<IAudioEffect>(enabledEffects.Length);
@@ -651,7 +655,9 @@ public sealed class MasterSection : ISampleProvider, IDisposable
                     for (int c = 0; c < channels; c++)
                         interleaved[f * channels + c] = srcF < frames ? sourceData[c][srcF] : 0f;
                 }
+                if (processMidSide) ConvertToMidSide(interleaved, n, channels);
                 foreach (var fx in chain) fx.Process(interleaved, 0, n * channels);
+                if (processMidSide) ConvertFromMidSide(interleaved, n, channels);
                 for (int f = 0; f < n; f++, outFrame++)
                 {
                     if (outFrame < 0 || outFrame >= frames) continue;
@@ -698,8 +704,12 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         progress?.Report(0);
         IAudioEffect[] enabledEffects;
+        bool processMidSide;
         lock (_chainLock)
+        {
             enabledEffects = _rackEnabled ? _chain.Where(effect => effect.Enabled).ToArray() : [];
+            processMidSide = _rackEnabled && _msMode && data.Length >= 2;
+        }
 
         // Its own instances, not the live rack's: see CloneForOfflineRender.
         var chain = new List<IAudioEffect>(enabledEffects.Length);
@@ -751,8 +761,10 @@ public sealed class MasterSection : ISampleProvider, IDisposable
                     }
                 }
 
+                if (processMidSide) ConvertToMidSide(interleaved, framesInBlock, channels);
                 foreach (var effect in chain)
                     effect.Process(interleaved, 0, framesInBlock * channels);
+                if (processMidSide) ConvertFromMidSide(interleaved, framesInBlock, channels);
 
                 int outputFrame = processStart - latency;
                 for (int frame = 0; frame < framesInBlock; frame++, outputFrame++)
@@ -770,6 +782,28 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         {
             // Same contract as ProcessOffline: the clones are this render's to release.
             Retire(chain);
+        }
+    }
+
+    private static void ConvertToMidSide(float[] interleaved, int frames, int channels)
+    {
+        for (int frame = 0; frame < frames; frame++)
+        {
+            int index = frame * channels;
+            float left = interleaved[index], right = interleaved[index + 1];
+            interleaved[index] = (left + right) * 0.5f;
+            interleaved[index + 1] = (left - right) * 0.5f;
+        }
+    }
+
+    private static void ConvertFromMidSide(float[] interleaved, int frames, int channels)
+    {
+        for (int frame = 0; frame < frames; frame++)
+        {
+            int index = frame * channels;
+            float mid = interleaved[index], side = interleaved[index + 1];
+            interleaved[index] = mid + side;
+            interleaved[index + 1] = mid - side;
         }
     }
 

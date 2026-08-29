@@ -9,8 +9,8 @@ namespace WaveLab.Audio.Effects;
 /// </summary>
 public sealed class LevelNormalizerEffect : EffectBase
 {
-    private const int ControlIntervalFrames = 32;
-    private const int LufsIntegrationFrames = 3840; // ~80ms at 48kHz for short-term
+    private const double ControlIntervalSeconds = 0.08;
+    private const double LoudnessHistorySeconds = 3.2;
     private const double LufsCalibrationOffset = -0.691; // ITU-R BS.1770 absolute constant
 
     private static readonly EffectParam[] P =
@@ -29,11 +29,14 @@ public sealed class LevelNormalizerEffect : EffectBase
     private double _targetGain = 1;
     private double _gainReadoutDb;
     private int _controlCountdown;
+    private int _controlIntervalFrames;
     private double _intervalPeak; // highest true-peak estimate since the last control update
     private double[] _lufsHistory = [];
     private int _lufsHistoryPos;
     private double _integratedLoudness;
-    private float[] _prevSample = []; // per channel: inter-sample estimates must not bleed across L/R
+    private bool _hasIntegratedMeasurement;
+    private float[][] _truePeakDelay = [];
+    private int[] _truePeakHistory = [];
     private Biquad[] _kStage1 = [];   // K-weighting pre-filter (shelf)
     private Biquad[] _kStage2 = [];   // K-weighting RLB high-pass
 
@@ -44,18 +47,22 @@ public sealed class LevelNormalizerEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        _lufsHistory = new double[48]; // ~2 seconds of short-term measurements
+        _controlIntervalFrames = Math.Max(1, (int)Math.Round(SampleRate * ControlIntervalSeconds));
+        _lufsHistory = new double[Math.Max(4,
+            (int)Math.Ceiling(LoudnessHistorySeconds / ControlIntervalSeconds))];
         // Empty slots must read as silence: 0 would pass the noise-floor gate as
         // 0 LUFS and drag the integrated measurement to full scale at startup.
         Array.Fill(_lufsHistory, -100.0);
         _lufsHistoryPos = 0;
         _integratedLoudness = -18;
 
-        _prevSample = new float[ChannelCount];
+        _truePeakDelay = new float[ChannelCount][];
+        _truePeakHistory = new int[ChannelCount];
         _kStage1 = new Biquad[ChannelCount];
         _kStage2 = new Biquad[ChannelCount];
         for (int c = 0; c < ChannelCount; c++)
         {
+            _truePeakDelay[c] = new float[LoudnessMeter.TruePeakTapsPerPhase];
             // Same K-weighting as the EBU R128 loudness meter:
             // high shelf +4 dB @ ~1.68 kHz, then high-pass @ ~38 Hz.
             _kStage1[c] = Biquad.HighShelf(SampleRate, 1681.97, 3.99982, 1.0);
@@ -69,9 +76,11 @@ public sealed class LevelNormalizerEffect : EffectBase
         _currentGain = 1;
         _targetGain = 1;
         _gainReadoutDb = 0;
-        _controlCountdown = 0;
+        _controlCountdown = Math.Max(0, _controlIntervalFrames - 1);
         _intervalPeak = 0;
-        Array.Clear(_prevSample);
+        _hasIntegratedMeasurement = false;
+        foreach (float[] history in _truePeakDelay) Array.Clear(history);
+        Array.Clear(_truePeakHistory);
         Array.Fill(_lufsHistory, -100.0); // silence, not 0 LUFS (see OnConfigure)
         _lufsHistoryPos = 0;
 
@@ -85,7 +94,7 @@ public sealed class LevelNormalizerEffect : EffectBase
     public override void Process(float[] buffer, int offset, int count)
     {
         int frames = count / ChannelCount;
-        if (frames <= 0 || _prevSample.Length != ChannelCount) return;
+        if (frames <= 0 || _truePeakDelay.Length != ChannelCount) return;
 
         double detectorCoefficient = Math.Exp(-1.0 / (SampleRate * 0.10));
         double responseSeconds = GetParam("response") / 1000.0;
@@ -97,7 +106,6 @@ public sealed class LevelNormalizerEffect : EffectBase
         double noiseFloorDb = GetParam("gate");
         double maxGainChangePerSec = GetParam("maxGainChange");
         double truePeakLimitDb = GetParam("truePeakLimit");
-        double truePeakLimit = Math.Pow(10, truePeakLimitDb / 20.0);
 
         // Max gain change per frame (the gain is updated once per frame,
         // and there are SampleRate frames per second — independent of channel count).
@@ -122,24 +130,28 @@ public sealed class LevelNormalizerEffect : EffectBase
                 double a = Math.Abs(sample);
                 if (a > framePeak) framePeak = a;
 
-                // True-peak check: inter-sample peak against this channel's previous sample
-                double midSample = (sample + _prevSample[channel]) * 0.5;
-                double midAbs = Math.Abs(midSample);
-                if (midAbs > framePeak) framePeak = midAbs;
-                _prevSample[channel] = (float)sample;
+                // A midpoint is a convex combination and can never exceed either endpoint, so it
+                // cannot detect an inter-sample peak. Use the same four-phase BS.1770 FIR as the
+                // meters and limiter.
+                float[] history = _truePeakDelay[channel];
+                for (int tap = history.Length - 1; tap > 0; tap--) history[tap] = history[tap - 1];
+                history[0] = (float)sample;
+                if (_truePeakHistory[channel] < history.Length) _truePeakHistory[channel]++;
+                if (_truePeakHistory[channel] == history.Length)
+                    framePeak = Math.Max(framePeak, LoudnessMeter.InterpolatedTruePeak(history));
             }
             power /= ChannelCount;
 
             _meanSquare = detectorCoefficient * _meanSquare + (1 - detectorCoefficient) * power;
 
             // Accumulate across the control interval: reading framePeak only inside
-            // the update below would discard 31 of every 32 peaks, including the
+            // the update below would discard almost every peak, including the
             // transients the ceiling exists to catch.
             if (framePeak > _intervalPeak) _intervalPeak = framePeak;
 
             if (_controlCountdown-- <= 0)
             {
-                _controlCountdown = ControlIntervalFrames - 1;
+                _controlCountdown = _controlIntervalFrames - 1;
 
                 // K-weighted loudness in LUFS (absolute-gated scale)
                 double kWeightedDb = 10 * Math.Log10(Math.Max(1e-12, _meanSquare)) + LufsCalibrationOffset;
@@ -160,7 +172,17 @@ public sealed class LevelNormalizerEffect : EffectBase
                     }
                 }
                 double shortTermLoudness = stCount > 0 ? stSum / stCount : kWeightedDb;
-                _integratedLoudness = 0.995 * _integratedLoudness + 0.005 * shortTermLoudness;
+                if (!_hasIntegratedMeasurement)
+                {
+                    _integratedLoudness = shortTermLoudness;
+                    _hasIntegratedMeasurement = true;
+                }
+                else
+                {
+                    // One update every 80 ms: this gives the running estimate a several-second
+                    // memory without making startup depend on the arbitrary -18 LUFS seed.
+                    _integratedLoudness = 0.98 * _integratedLoudness + 0.02 * shortTermLoudness;
+                }
 
                 // Use integrated loudness for gain target (more stable)
                 double effectiveLevel = _integratedLoudness;
@@ -182,12 +204,13 @@ public sealed class LevelNormalizerEffect : EffectBase
             }
 
             // Gain change limiting
-            double requestedGain = _targetGain;
-            double clampedGain = Math.Clamp(requestedGain / Math.Max(1e-9, _currentGain), minRatio, maxRatio)
-                * _currentGain;
-
-            double smoothing = clampedGain < _currentGain ? reduceCoefficient : increaseCoefficient;
-            _currentGain = smoothing * _currentGain + (1 - smoothing) * clampedGain;
+            double smoothing = _targetGain < _currentGain ? reduceCoefficient : increaseCoefficient;
+            double smoothedGain = smoothing * _currentGain + (1 - smoothing) * _targetGain;
+            // Smooth toward the target first, then cap the movement. Capping the target to one
+            // frame and smoothing that tiny step again made the gain effectively immobile.
+            double stepRatio = Math.Clamp(
+                smoothedGain / Math.Max(1e-9, _currentGain), minRatio, maxRatio);
+            _currentGain *= stepRatio;
             float gain = (float)_currentGain;
             for (int channel = 0; channel < ChannelCount; channel++)
                 buffer[index + channel] *= gain;

@@ -194,41 +194,68 @@ public sealed class ChannelBalanceEffect : EffectBase
             int n = Math.Min(left.Length, right.Length);
             if (n == 0) return;
 
-            double leftEnergy = 0, rightEnergy = 0;
-            for (int i = 0; i < n; i++)
-            {
-                leftEnergy += left[i] * left[i];
-                rightEnergy += right[i] * right[i];
-            }
-            double normalizer = Math.Sqrt(Math.Max(1e-12, leftEnergy * rightEnergy));
-
             int maxLag = Math.Min(Math.Max(1, (int)(SampleRate * 0.005)), n - 1);
-            double bestCorr = 0;
-            int bestLag = 0;
-            for (int lag = -maxLag; lag <= maxLag; lag += 2)
-            {
-                double corr = 0;
-                int start = Math.Max(0, -lag);
-                int end = Math.Min(n, n - lag);
-                for (int i = start; i < end; i++)
-                    corr += left[i] * right[i + lag];
-                corr /= normalizer;
-                if (corr > bestCorr)
-                {
-                    bestCorr = corr;
-                    bestLag = lag;
-                }
-            }
+            (double alignment, double confidence) = EstimateAlignment(left, right, maxLag);
 
-            // corr peaks at lag = -d when right leads left by d samples, and the
-            // alignment control delays right for positive values — hence the sign.
-            Volatile.Write(ref _bestAlignment, -bestLag);
-            Volatile.Write(ref _alignmentConfidence, Math.Clamp(bestCorr, 0, 1));
+            Volatile.Write(ref _bestAlignment, alignment);
+            Volatile.Write(ref _alignmentConfidence, confidence);
         }
         finally
         {
             Volatile.Write(ref _analysisBusy, 0);
         }
+    }
+
+    /// <summary>Energy-normalised lag estimate, refined between integer samples.</summary>
+    internal static (double Alignment, double Confidence) EstimateAlignment(
+        double[] left, double[] right, int maximumLag)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        int n = Math.Min(left.Length, right.Length);
+        if (n < 2) return (0, 0);
+        int maxLag = Math.Clamp(maximumLag, 1, n - 1);
+
+        double CorrelationAt(int lag)
+        {
+            double product = 0, leftEnergy = 0, rightEnergy = 0;
+            int start = Math.Max(0, -lag);
+            int end = Math.Min(n, n - lag);
+            for (int i = start; i < end; i++)
+            {
+                double a = left[i], b = right[i + lag];
+                product += a * b;
+                leftEnergy += a * a;
+                rightEnergy += b * b;
+            }
+            double normalizer = Math.Sqrt(leftEnergy * rightEnergy);
+            return normalizer > 1e-12 ? product / normalizer : 0;
+        }
+
+        double bestCorrelation = 0;
+        int bestLag = 0;
+        for (int lag = -maxLag; lag <= maxLag; lag++)
+        {
+            double correlation = CorrelationAt(lag);
+            if (correlation <= bestCorrelation) continue;
+            bestCorrelation = correlation;
+            bestLag = lag;
+        }
+
+        double refinedLag = bestLag;
+        if (bestLag > -maxLag && bestLag < maxLag)
+        {
+            double before = CorrelationAt(bestLag - 1);
+            double centre = bestCorrelation;
+            double after = CorrelationAt(bestLag + 1);
+            double curvature = before - 2 * centre + after;
+            if (Math.Abs(curvature) > 1e-12)
+                refinedLag += Math.Clamp(0.5 * (before - after) / curvature, -1, 1);
+        }
+
+        // Correlation peaks at lag = -d when right leads left by d samples, while the alignment
+        // control delays right for positive values—hence the sign.
+        return (-refinedLag, Math.Clamp(bestCorrelation, 0, 1));
     }
 
     private static void GetBalanceGains(double balanceDb, out double left, out double right)

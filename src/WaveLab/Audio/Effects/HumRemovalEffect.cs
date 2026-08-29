@@ -41,6 +41,8 @@ public sealed class HumRemovalEffect : EffectBase
     private double _fundamentalConfidence;
     private double[] _harmonicEnergy = [];
     private double[] _harmonicSmoothing = [];
+    private float[] _frameInput = [];
+    private float[] _frameFiltered = [];
 
     // Detection probes: each mains candidate with its first two harmonics, then three frequencies
     // that are harmonics of neither, which measure what the programme alone is doing.
@@ -65,6 +67,8 @@ public sealed class HumRemovalEffect : EffectBase
     {
         _harmonicEnergy = new double[MaxHarmonics];
         _harmonicSmoothing = new double[MaxHarmonics];
+        _frameInput = new float[ChannelCount];
+        _frameFiltered = new float[ChannelCount];
 
         // The bank is allocated here and nowhere else, always sized for the maximum harmonic count
         // so its shape is fixed: the audio thread owns it, and the detector retunes it from inside
@@ -79,8 +83,8 @@ public sealed class HumRemovalEffect : EffectBase
         // The detector's accumulators, allocated here for the same reason the bank is: it runs on
         // the audio thread and may allocate nothing there.
         _probeCoefficient = new double[ProbeFrequencies.Length];
-        _probeS1 = new double[ProbeFrequencies.Length];
-        _probeS2 = new double[ProbeFrequencies.Length];
+        _probeS1 = new double[ProbeFrequencies.Length * ChannelCount];
+        _probeS2 = new double[ProbeFrequencies.Length * ChannelCount];
         for (int probe = 0; probe < ProbeFrequencies.Length; probe++)
             _probeCoefficient[probe] = 2 * Math.Cos(2 * Math.PI * ProbeFrequencies[probe] / SampleRate);
 
@@ -169,46 +173,54 @@ public sealed class HumRemovalEffect : EffectBase
 
         int active = Math.Min(_activeHarmonics, notches[0].Length);
 
-        for (int i = 0; i < count; i++)
+        int frames = count / ChannelCount;
+        for (int frame = 0; frame < frames; frame++)
         {
-            int channel = i % ChannelCount;
-            int index = offset + i;
-            float input = buffer[index];
-            float filtered = input;
+            int index = offset + frame * ChannelCount;
+            for (int channel = 0; channel < ChannelCount; channel++)
+            {
+                float input = buffer[index + channel];
+                _frameInput[channel] = input;
+                _frameFiltered[channel] = input;
+            }
 
             for (int harmonic = 0; harmonic < active; harmonic++)
             {
-                // Blend against what entered this stage, never the raw input:
-                // mixing `input` back in would re-inject the hum the earlier
-                // notches already removed.
-                float pre = filtered;
-                float notchOut = notches[channel][harmonic].Process(pre);
-
                 // Dynamic depth: reduce notch depth when harmonic has significant energy
-                // (likely musical content, not hum)
+                // (likely musical content, not hum). Measure once across the complete frame and
+                // apply one depth to every channel: channel-by-channel decisions move a centred
+                // sound sideways whenever one side happens to be louder.
+                double depth = 1.0;
                 if (dynamic && harmonic < _harmonicEnergy.Length)
                 {
-                    double energy = Math.Abs(pre);
+                    double energy = 0;
+                    for (int channel = 0; channel < ChannelCount; channel++)
+                        energy = Math.Max(energy, Math.Abs(_frameFiltered[channel]));
                     _harmonicEnergy[harmonic] = 0.95 * _harmonicEnergy[harmonic] + 0.05 * energy;
                     _harmonicSmoothing[harmonic] = 0.9 * _harmonicSmoothing[harmonic] + 0.1 * _harmonicEnergy[harmonic];
 
                     // The global AMOUNT is applied once, after the bank; this stage
                     // only decides how deep its own notch goes.
-                    double depth = 1.0;
                     if (_harmonicSmoothing[harmonic] > 0.01)
                     {
                         // Reduce notch depth when sustained energy is present
                         double reduction = Math.Clamp(_harmonicSmoothing[harmonic] * 20, 0, 1);
                         depth = 1 - reduction * 0.7;
                     }
-                    filtered = (float)(pre * (1 - depth) + notchOut * depth);
                 }
-                else
+
+                for (int channel = 0; channel < ChannelCount; channel++)
                 {
-                    filtered = notchOut;
+                    // Blend against what entered this stage, never the raw input: mixing the raw
+                    // sample back in would re-inject hum removed by the earlier notches.
+                    float pre = _frameFiltered[channel];
+                    float notchOut = notches[channel][harmonic].Process(pre);
+                    _frameFiltered[channel] = (float)(pre * (1 - depth) + notchOut * depth);
                 }
             }
-            buffer[index] = input * dry + filtered * amount;
+
+            for (int channel = 0; channel < ChannelCount; channel++)
+                buffer[index + channel] = _frameInput[channel] * dry + _frameFiltered[channel] * amount;
         }
     }
 
@@ -242,17 +254,25 @@ public sealed class HumRemovalEffect : EffectBase
     /// </remarks>
     private void DetectFundamental(float[] buffer, int offset, int count)
     {
-        if (_probeS1.Length != ProbeFrequencies.Length) return;
+        if (_probeS1.Length != ProbeFrequencies.Length * ChannelCount) return;
 
         int frames = count / ChannelCount;
         for (int f = 0; f < frames; f++)
         {
-            double x = buffer[offset + f * ChannelCount];
-            for (int probe = 0; probe < ProbeFrequencies.Length; probe++)
+            int index = offset + f * ChannelCount;
+            for (int channel = 0; channel < ChannelCount; channel++)
             {
-                double s0 = x + _probeCoefficient[probe] * _probeS1[probe] - _probeS2[probe];
-                _probeS2[probe] = _probeS1[probe];
-                _probeS1[probe] = s0;
+                // Keep the channels separate through the linear Goertzel accumulators and combine
+                // their powers only at the end of the window. A mono fold-down cancels vertical
+                // hum; selecting a channel sample-by-sample creates switching products in music.
+                double x = buffer[index + channel];
+                int state = channel * ProbeFrequencies.Length;
+                for (int probe = 0; probe < ProbeFrequencies.Length; probe++, state++)
+                {
+                    double s0 = x + _probeCoefficient[probe] * _probeS1[state] - _probeS2[state];
+                    _probeS2[state] = _probeS1[state];
+                    _probeS1[state] = s0;
+                }
             }
 
             if (++_windowFilled >= _windowFrames) CompleteDetectionWindow();
@@ -333,8 +353,14 @@ public sealed class HumRemovalEffect : EffectBase
 
     private double PowerAt(int probe)
     {
-        double scale = 1.0 / ((double)_windowFrames * _windowFrames);
-        return (_probeS1[probe] * _probeS1[probe] + _probeS2[probe] * _probeS2[probe]
-                - _probeCoefficient[probe] * _probeS1[probe] * _probeS2[probe]) * scale;
+        double power = 0;
+        for (int channel = 0; channel < ChannelCount; channel++)
+        {
+            int state = channel * ProbeFrequencies.Length + probe;
+            power += _probeS1[state] * _probeS1[state] + _probeS2[state] * _probeS2[state]
+                   - _probeCoefficient[probe] * _probeS1[state] * _probeS2[state];
+        }
+        double scale = 1.0 / ((double)_windowFrames * _windowFrames * ChannelCount);
+        return power * scale;
     }
 }
