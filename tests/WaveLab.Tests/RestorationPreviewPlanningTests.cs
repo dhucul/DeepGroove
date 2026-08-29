@@ -8,8 +8,7 @@ namespace WaveLab.Tests;
 /// The bounded lead-in a restoration preview runs before the audible range.
 /// </summary>
 /// <remarks>
-/// This had no test at all until the subsonic high-pass needed a term in it, which is worth
-/// stating: every stage added to the workbench either has state or has a grid, and the way that
+/// Every stage added to the workbench either has state, a grid, or finite look-around, and the way that
 /// shows up is a preview that disagrees with the render it is previewing — a thump at the boundary,
 /// or a different answer about what is a defect. Neither reads as a lead-in fault.
 /// </remarks>
@@ -29,53 +28,19 @@ public sealed class RestorationPreviewPlanningTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// The high-pass needs more lead-in than the flat fallback pad ever gave it, and that is the
-    /// gap this term closes: with hum and noise both off, the preview used to fall back to
-    /// <c>max(NrFftSize * 2, rate / 10)</c> — 4,410 samples at 44.1 kHz.
-    /// </summary>
-    [Theory]
-    [InlineData(20.0)]
-    [InlineData(30.0)]
-    [InlineData(60.0)]
-    public void TheHighPassAsksForMoreLeadInThanTheOldFlatPad(double cutoffHz)
-    {
-        var plan = RestorationPreviewPlanning.Create(Rate * 30, Rate,
-            removeHum: false, humFrequency: 50, humQ: 35, reduceNoise: false,
-            removeSubsonic: true, subsonicCutoff: cutoffHz);
-
-        output.WriteLine($"{cutoffHz:0} Hz wants {plan.WarmupSamples} samples " +
-                         $"({plan.WarmupSamples / (double)Rate:0.000} s); the old pad was 4410");
-        Assert.True(plan.WarmupSamples > 4_410,
-            $"{cutoffHz:0} Hz asked for only {plan.WarmupSamples} samples");
-    }
-
-    /// <summary>A lower corner is a slower pole, so it needs longer.</summary>
-    [Fact]
-    public void ALowerCutoffNeedsALongerLeadIn()
-    {
-        int low = RestorationPreviewPlanning.Create(Rate * 30, Rate, false, 50, 35, false,
-            removeSubsonic: true, subsonicCutoff: 20).WarmupSamples;
-        int high = RestorationPreviewPlanning.Create(Rate * 30, Rate, false, 50, 35, false,
-            removeSubsonic: true, subsonicCutoff: 60).WarmupSamples;
-
-        output.WriteLine($"20 Hz {low} samples, 60 Hz {high}");
-        Assert.True(low > high);
-    }
-
-    /// <summary>
-    /// The claim the term is made of, end to end: filtering from the planned start leaves the
-    /// audible range indistinguishable from a whole-file pass, and the flat pad it replaced does
-    /// not. Measured against the filter itself rather than against the pole arithmetic that chose
-    /// the number, which would only be checking one formula against itself.
+    /// The zero-phase high-pass has finite look-around rather than IIR state. The declared context
+    /// copied on both sides of a preview must therefore match a whole-file render.
     /// </summary>
     [Fact]
-    public void StartingAtThePlannedLeadInMatchesAWholeFilePass()
+    public void OrdinaryPreviewPaddingContainsTheWholeHighPassResponse()
     {
         const int previewStart = Rate * 4;
         const int previewLength = Rate / 2;
         const double cutoff = 30;
+        int padding = Math.Max(Restoration.NrFftSize * 2,
+            Restoration.SubsonicLookaroundSamples(Rate));
 
-        var whole = new float[previewStart + previewLength];
+        var whole = new float[previewStart + previewLength + Rate];
         var random = new Random(7);
         for (int i = 0; i < whole.Length; i++)
         {
@@ -85,32 +50,23 @@ public sealed class RestorationPreviewPlanningTests(ITestOutputHelper output)
                              + (random.NextDouble() - 0.5) * 0.01);
         }
 
-        var plan = RestorationPreviewPlanning.Create(previewStart, Rate, false, 50, 35, false,
-            removeSubsonic: true, subsonicCutoff: cutoff);
+        double error = BoundaryErrorDb(whole, previewStart, previewLength,
+            previewStart - padding, previewStart + previewLength + padding, cutoff);
 
-        double planned = BoundaryErrorDb(whole, previewStart, previewLength, plan.StartSample, cutoff);
-        double padded = BoundaryErrorDb(whole, previewStart, previewLength,
-            previewStart - Math.Max(Restoration.NrFftSize * 2, Rate / 10), cutoff);
-
-        output.WriteLine($"planned lead-in ({plan.WarmupSamples} samples): {planned:0.0} dB");
-        output.WriteLine($"old flat pad (4410 samples):                {padded:0.0} dB");
-
-        // The float samples cannot carry -180 dB, so the bound asserted is the float noise floor;
-        // what the term buys over the pad is the comparison that says the number is doing work.
-        Assert.True(planned < -120, $"the planned lead-in left {planned:0.0} dB of startup error");
-        Assert.True(planned < padded - 20,
-            $"the planned lead-in ({planned:0.0} dB) is no better than the pad ({padded:0.0} dB)");
+        output.WriteLine($"declared two-sided padding: {error:0.0} dB");
+        Assert.True(error < -120, $"ordinary preview padding left {error:0.0} dB of error");
     }
 
     private static double BoundaryErrorDb(float[] whole, int previewStart, int previewLength,
-        int bufferStart, double cutoff)
+        int bufferStart, int bufferEnd, double cutoff)
     {
         bufferStart = Math.Max(0, bufferStart);
+        bufferEnd = Math.Min(whole.Length, bufferEnd);
         var reference = new[] { (float[])whole.Clone() };
         Restoration.RemoveSubsonic(reference, Rate, cutoff);
 
-        var window = new float[whole.Length - bufferStart];
-        Array.Copy(whole, bufferStart, window, 0, window.Length);
+        var window = new float[bufferEnd - bufferStart];
+        Array.Copy(whole, bufferStart, window, 0, bufferEnd - bufferStart);
         var partial = new[] { window };
         Restoration.RemoveSubsonic(partial, Rate, cutoff);
 
@@ -135,7 +91,7 @@ public sealed class RestorationPreviewPlanningTests(ITestOutputHelper output)
     {
         int block = Decrackle.BlockLengthFor(DecrackleOptions.Default);
         var plan = RestorationPreviewPlanning.Create(Rate * 30 + 137, Rate, false, 50, 35, false,
-            removeSubsonic: true, subsonicCutoff: 30, decrackleBlock: block);
+            decrackleBlock: block);
 
         output.WriteLine($"block {block}, start {plan.StartSample}, {plan.StartSample % block} into it");
         Assert.Equal(0, plan.StartSample % block);
@@ -151,7 +107,7 @@ public sealed class RestorationPreviewPlanningTests(ITestOutputHelper output)
         const int hop = Restoration.NrFftSize / 4;
         int block = Decrackle.BlockLengthFor(DecrackleOptions.Default);
         var plan = RestorationPreviewPlanning.Create(Rate * 30 + 991, Rate, false, 50, 35,
-            reduceNoise: true, removeSubsonic: false, subsonicCutoff: 30, decrackleBlock: block);
+            reduceNoise: true, decrackleBlock: block);
 
         Assert.Equal(0, plan.StartSample % hop);
         Assert.Equal(0, plan.StartSample % block);
@@ -163,7 +119,7 @@ public sealed class RestorationPreviewPlanningTests(ITestOutputHelper output)
     {
         const int hop = Restoration.NrFftSize / 4;
         var plan = RestorationPreviewPlanning.Create(Rate * 30 + 991, Rate, false, 50, 35,
-            reduceNoise: true, removeSubsonic: false, subsonicCutoff: 30, decrackleBlock: 1_000);
+            reduceNoise: true, decrackleBlock: 1_000);
 
         output.WriteLine($"start {plan.StartSample}: {plan.StartSample % hop} into the hop, " +
                          $"{plan.StartSample % 1_000} into the block");
@@ -175,8 +131,8 @@ public sealed class RestorationPreviewPlanningTests(ITestOutputHelper output)
     [Fact]
     public void TheLeadInStopsAtTheRangeOrigin()
     {
-        var plan = RestorationPreviewPlanning.Create(500, Rate, false, 50, 35, false,
-            removeSubsonic: true, subsonicCutoff: 20);
+        var plan = RestorationPreviewPlanning.Create(500, Rate, true, 50, 35, false,
+            decrackleBlock: 0);
 
         Assert.Equal(0, plan.StartSample);
         Assert.True(plan.StartsAtRangeOrigin);

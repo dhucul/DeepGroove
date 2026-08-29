@@ -43,20 +43,69 @@ internal static class RestorationRecommendations
     /// </remarks>
     internal const double MonoPressingSideToMidDb = -14.0;
 
-    /// <summary>Side-to-mid ratio above which the side signal is left entirely alone.</summary>
+    /// <summary>Side-to-mid anchor for a clearly stereo pressing.</summary>
     /// <remarks>
-    /// <b>"At or above" was true of the linear ramp and is not true of the sigmoid.</b> The curve
-    /// reaches full only above about −6.6 dB; at this anchor it recommends 0.90, which is the
-    /// deliberate softening — a ratio landing exactly on a number measured from five records should
-    /// not be the difference between a stage that runs and one that does not.
+    /// The sigmoid itself produces 0.90 at this anchor. The minimum-benefit guard below promotes
+    /// that to 1.0: less than 3 dB of vertical-noise reduction does not justify narrowing a clearly
+    /// stereo programme.
     /// </remarks>
     internal const double StereoSideToMidDb = -8.0;
+
+    /// <summary>
+    /// Small side reductions narrow stereo programme without producing a useful change in surface
+    /// noise, so automatic recommendations below this benefit are withheld.
+    /// </summary>
+    /// <remarks>
+    /// Measured on a reported real transfer, a 90% side level changed the quietest passages by only
+    /// 0.2–0.34 dB while removing stereo music across the whole programme. Three decibels is the
+    /// minimum worthwhile side-noise reduction; the visible manual control remains available when
+    /// someone deliberately prefers a subtler tradeoff.
+    /// </remarks>
+    internal const double MinimumRecommendedSideReductionDb = 3.0;
 
     /// <summary>The de-crackle threshold in robust deviations, matching the Restore menu default.</summary>
     internal const double DefaultDecrackleThreshold = 3.5;
 
     internal readonly record struct CrackleEvidence(
         DecrackleReport Report, int SamplesAnalyzed, int SampleRate);
+
+    internal readonly record struct StageEligibility(
+        bool RepairClicks,
+        bool Declip,
+        bool ReduceNoise,
+        bool RemoveHum,
+        bool HighPass,
+        bool Decrackle);
+
+    /// <summary>
+    /// Reconciles the broad spectral recommendation with the adaptive depth measurement used by
+    /// the renderer. A checked card that will deliberately apply zero reduction is misleading and
+    /// lets strength presets turn an unsuitable noise print back on.
+    /// </summary>
+    internal static Settings ApplyNoiseBenefitGuard(Settings settings, bool hasNoiseProfile,
+        double noiseToProgrammeDb, double depthCeilingDb)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        bool useful = settings.ReduceNoise && hasNoiseProfile &&
+            Restoration.SuggestReductionDepthDb(noiseToProgrammeDb,
+                settings.NoiseReductionDb, depthCeilingDb) > 0;
+        return settings with { ReduceNoise = useful };
+    }
+
+    /// <summary>
+    /// Strength presets may tune an eligible treatment, but they may not invent a defect that the
+    /// analysis did not find. This keeps Strong from adding hum, rumble or crackle to clean music.
+    /// </summary>
+    internal static StageEligibility EligibleStages(Settings? analysis, bool hasNoiseProfile) =>
+        analysis == null
+            ? default
+            : new StageEligibility(
+                analysis.RepairClicks,
+                analysis.Declip,
+                analysis.ReduceNoise && hasNoiseProfile,
+                analysis.RemoveHum,
+                analysis.HighPass,
+                analysis.Decrackle);
 
     internal static Settings Create(
         ClickAnalysisResult clicks,
@@ -116,7 +165,9 @@ internal static class RestorationRecommendations
         // fully discarded. A linear ramp was calibrated on five recordings from one collection and
         // could collapse the stereo image on material outside that narrow set; the sigmoid errs
         // toward preserving width while still collapsing the side on a strong mono signal.
+        // Raw curve:
         //   −16.5 dB → 0.20   −14 → 0.25   −11 → 0.55   −8 → 0.90   −6 and above → 1.00
+        // The minimum-benefit guard then promotes reductions below 3 dB to 1.00/off.
         //
         // The 0.80 span is what makes that last column reachable, and it is load-bearing rather
         // than cosmetic. Three things downstream read "1.00" as "there is nothing to do here": the
@@ -130,6 +181,8 @@ internal static class RestorationRecommendations
                    (StereoSideToMidDb - MonoPressingSideToMidDb);
         double sigmoid = 1.0 / (1.0 + Math.Exp(-5.0 * (x - 0.55)));
         double sideLevel = Quantize(Math.Clamp(0.20 + 0.80 * sigmoid, 0.20, 1.0), 0.05);
+        double sideReductionDb = -20 * Math.Log10(Math.Max(sideLevel, 1e-6));
+        if (sideReductionDb < MinimumRecommendedSideReductionDb) sideLevel = 1.0;
 
         // Unlike isolated clicks, surface crackle is a dense population. Recommend this stage only
         // from its own prediction-residual measurement, and require both a useful event density and

@@ -175,7 +175,9 @@ public partial class CleanupAnalysisDialog : Window
                 float[][] source = _source ?? CaptureSourceRange(operation.Token);
                 operation.Token.ThrowIfCancellationRequested();
                 CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
-                    source, _sampleRate, _profile, operation.Token, progress);
+                    source, _sampleRate, _profile, operation.Token, progress,
+                    AppSettings.NormalizeNoiseDepthCeilingDb(
+                        AppSettings.Instance.NoiseDepthCeilingDb));
                 operation.Token.ThrowIfCancellationRequested();
                 return (Source: source, Result: result);
             }, operation.Token);

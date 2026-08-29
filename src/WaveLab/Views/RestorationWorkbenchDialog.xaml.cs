@@ -373,6 +373,8 @@ public partial class RestorationWorkbenchDialog : Window
         _initializing = true;
         var operation = BeginOperation(applying: false, "Starting full-file offline analysis…");
         var progress = CreateProgress(operation);
+        double noiseDepthCeilingDb = AppSettings.NormalizeNoiseDepthCeilingDb(
+            AppSettings.Instance.NoiseDepthCeilingDb);
         try
         {
             var prepared = await Task.Run(() =>
@@ -403,7 +405,7 @@ public partial class RestorationWorkbenchDialog : Window
 
                 var cleanup = CleanupAnalyzer.Analyze(_sourceReferences, _sampleRate,
                     CleanupProfile.VinylCleanup, operation.Token,
-                    new CleanupProgressAdapter(progress, 0.18, 0.25));
+                    new CleanupProgressAdapter(progress, 0.18, 0.25), noiseDepthCeilingDb);
 
                 var clickProgress = new DspProgressAdapter(progress, 0.45, 0.27);
                 var clicks = Restoration.AnalyzeClicks(_sourceReferences, _sampleRate,
@@ -447,10 +449,8 @@ public partial class RestorationWorkbenchDialog : Window
             if (!IsCurrent(operation)) return;
             _source = prepared.Source;
             _noiseProfile = prepared.Noise.Profile;
-            _noiseDepthCeilingDb = AppSettings.NormalizeNoiseDepthCeilingDb(
-                AppSettings.Instance.NoiseDepthCeilingDb);
-            _noiseToProgrammeDb = Restoration.EstimateNoiseToProgrammeDb(
-                prepared.Source, _sampleRate, _noiseDepthCeilingDb);
+            _noiseDepthCeilingDb = noiseDepthCeilingDb;
+            _noiseToProgrammeDb = prepared.Cleanup.NoiseToProgrammeDb;
             // Both measurements come from the analysis that already ran; neither is taken again
             // when a slider moves. The rumble sentence is the analyzer's own, so the card cannot
             // describe the subsonic band differently from the chain that filters it.
@@ -464,8 +464,12 @@ public partial class RestorationWorkbenchDialog : Window
             _clickAnalysis = prepared.Clicks;
             _clippingAnalysis = prepared.Clipping;
             _analyzedClickSensitivity = prepared.Recommendations.ClickSensitivity;
-            _analysisRecommendations = prepared.Recommendations;
-            ApplyAnalysisRecommendations(prepared.Recommendations);
+            RestorationRecommendations.Settings guardedRecommendations =
+                RestorationRecommendations.ApplyNoiseBenefitGuard(
+                    prepared.Recommendations, _noiseProfile is { Length: > 0 },
+                    _noiseToProgrammeDb ?? double.NaN, _noiseDepthCeilingDb);
+            _analysisRecommendations = guardedRecommendations;
+            ApplyAnalysisRecommendations(guardedRecommendations);
             UpdateAnalysisSummary(new AnalysisBundle(prepared.Clicks, prepared.Clipping));
 
             if (_capturedNoiseProfile != null)
@@ -790,23 +794,23 @@ public partial class RestorationWorkbenchDialog : Window
         var source = _source ?? throw new InvalidOperationException("The restoration source is not ready.");
         analyses = AnalysisForApplyRange(analyses);
         int padding = Math.Max(Restoration.NrFftSize * 2, _sampleRate / 10);
-        // The high-pass is an IIR and the de-crackler fits its models on a block grid anchored at
-        // sample zero, so both need the lead-in for the same reason hum and the gate do: started
-        // cold at a preview boundary one thumps and the other disagrees with the full render about
-        // what is crackle. Neither was covered by the flat fallback pad.
-        bool usesSubsonicState = !settings.Bypass && settings.WetAmount > 0 && settings.RemoveSubsonic;
+        // The de-crackler fits its models on a block grid anchored at sample zero, so it needs the
+        // same lead-in discipline as hum and the gate. The zero-phase subsonic filter carries no
+        // state, but it does need the ordinary padding on both sides of the audible preview.
+        bool usesSubsonic = !settings.Bypass && settings.WetAmount > 0 && settings.RemoveSubsonic;
+        if (usesSubsonic)
+            padding = Math.Max(padding, Restoration.SubsonicLookaroundSamples(_sampleRate));
         bool usesCrackleGrid = !settings.Bypass && settings.WetAmount > 0 && settings.Decrackle;
         bool needsContinuousState = !settings.Bypass && settings.WetAmount > 0 &&
             ((settings.RemoveHum && settings.HumAmount > 0) ||
              (settings.ReduceNoise && settings.NoiseReductionDb > 0 && _noiseProfile is { Length: > 0 }) ||
-             usesSubsonicState || usesCrackleGrid);
+             usesCrackleGrid);
         bool usesNoiseState = needsContinuousState && settings.ReduceNoise &&
                               settings.NoiseReductionDb > 0 && _noiseProfile is { Length: > 0 };
         bool usesHumState = needsContinuousState && settings.RemoveHum && settings.HumAmount > 0;
         var plan = needsContinuousState
             ? RestorationPreviewPlanning.Create(_previewStart, _sampleRate,
                 usesHumState, settings.HumFrequency, settings.HumQ, usesNoiseState,
-                usesSubsonicState, settings.SubsonicCutoffHz,
                 usesCrackleGrid
                     ? Decrackle.BlockLengthFor(DecrackleOptions.Default with
                         { Threshold = settings.DecrackleThreshold })
@@ -815,6 +819,8 @@ public partial class RestorationWorkbenchDialog : Window
         int bufferStart = needsContinuousState
             ? plan.StartSample
             : Math.Max(0, _previewStart - padding);
+        if (usesSubsonic)
+            bufferStart = Math.Min(bufferStart, Math.Max(0, _previewStart - padding));
         int previewEnd = Math.Min(source[0].Length, _previewStart + _previewLength);
         int bufferEnd = Math.Min(source[0].Length, previewEnd + padding);
         if (needsContinuousState)
@@ -916,7 +922,7 @@ public partial class RestorationWorkbenchDialog : Window
         // both outputs: a plateau present in only one channel would otherwise be copied into the
         // other, while the event plan still named only the original channel. It also changes the
         // shoulders and rail height the reconstruction was analysed from.
-        if (!settings.Bypass && settings.Declip && settings.DeclipStrength > 0)
+        if (!settings.Bypass && settings.Declip && settings.DeclipStrength > 0 && clipping.Count > 0)
         {
             progress.Report(new OperationProgress("Reconstructing clipped peaks…", at));
             Restoration.RepairClippingInPlace(work, clipping,
@@ -1618,7 +1624,7 @@ public partial class RestorationWorkbenchDialog : Window
         subsonicEvidenceText.Text = !analysed
             ? "Run analysis to measure the subsonic band."
             : subsonicEnabled.IsChecked != true
-                ? "This card is switched off."
+                ? $"This card is switched off. {_rumbleEvidence ?? "No persistent subsonic rumble was separated from musical bass."}"
                 : _rumbleEvidence ?? "No persistent subsonic rumble was separated from musical bass.";
         subsonicEvidenceText.ToolTip = analysed && _rumbleConfidence > 0
             ? $"Rumble confidence {_rumbleConfidence:P0}."
@@ -1866,22 +1872,21 @@ public partial class RestorationWorkbenchDialog : Window
         _suppressControlEvents = true;
         try
         {
-            clickEnabled.IsChecked = declipEnabled.IsChecked = true;
-            noiseEnabled.IsChecked = _noiseProfile != null;
-            // The three stages added after these presets were written must be set here too. A
-            // control the preset does not touch keeps whatever the Analyzed pass left, so "Gentle"
-            // would quietly carry a Strong-analysis high-pass and a discarded side channel.
-            //
-            // The side stays where the analysis put it and the presets do not reach for it: how
-            // far it may go is a fact about the pressing, which a strength preset knows nothing
-            // about, and collapsing a stereo record is not a thing "Strong" should mean.
-            subsonicEnabled.IsChecked = true;
-            subsonicCutoff.Value = 30;
-            decrackleEnabled.IsChecked = true;
+            RestorationRecommendations.StageEligibility eligible =
+                RestorationRecommendations.EligibleStages(
+                    _analysisRecommendations, _noiseProfile is { Length: > 0 });
+            clickEnabled.IsChecked = eligible.RepairClicks;
+            declipEnabled.IsChecked = eligible.Declip;
+            noiseEnabled.IsChecked = eligible.ReduceNoise;
+            humEnabled.IsChecked = eligible.RemoveHum;
+            subsonicEnabled.IsChecked = eligible.HighPass;
+            decrackleEnabled.IsChecked = eligible.Decrackle;
+            // Presets tune strength only. Whether a stage is safe to run remains a measured fact:
+            // Strong must not invent hum, rumble or crackle, and a noise profile that the adaptive
+            // depth guard rejected must remain off. The side level likewise stays analysis-owned.
             switch (presetCombo.SelectedIndex)
             {
                 case 0: // Gentle
-                    humEnabled.IsChecked = false;
                     decrackleThreshold.Value = 4.5;
                     clickSensitivity.Value = 4;
                     clickStrength.Value = 55;
@@ -1895,7 +1900,6 @@ public partial class RestorationWorkbenchDialog : Window
                     globalMix.Value = 80;
                     break;
                 case 1: // Balanced
-                    humEnabled.IsChecked = false;
                     decrackleThreshold.Value = 3.5;
                     clickSensitivity.Value = 6;
                     clickStrength.Value = 75;
@@ -1912,7 +1916,6 @@ public partial class RestorationWorkbenchDialog : Window
                     // Not below 3.0: measured, 2.5 deviations repairs twice as many samples and
                     // leaves more audible ticks than 3.5 does. "Strong" stops where the tool does.
                     decrackleThreshold.Value = 3.0;
-                    humEnabled.IsChecked = true;
                     clickSensitivity.Value = 8;
                     clickStrength.Value = 92;
                     declipStrength.Value = 90;

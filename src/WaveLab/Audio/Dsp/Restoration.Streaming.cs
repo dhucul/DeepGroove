@@ -2,7 +2,7 @@
 
 /// <summary>
 /// Plans the bounded lead-in used by restoration previews. Stateful restoration
-/// still starts on the same global STFT hop grid as a full render, while old IIR
+/// still starts on the same global STFT hop grid as a full render, while IIR
 /// and spectral-gate state is allowed to decay below the float noise floor before
 /// the audible preview begins.
 /// </summary>
@@ -15,7 +15,7 @@ internal static class RestorationPreviewPlanning
 
     internal static Plan Create(int previewStart, int sampleRate,
         bool removeHum, double humFrequency, double humQ, bool reduceNoise,
-        bool removeSubsonic = false, double subsonicCutoff = 30.0, int decrackleBlock = 0)
+        int decrackleBlock = 0)
     {
         if (previewStart < 0) throw new ArgumentOutOfRangeException(nameof(previewStart));
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
@@ -38,32 +38,6 @@ internal static class RestorationPreviewPlanning
                 : 0.0;
             if (radius > 0.0 && radius < 1.0)
                 warmup = Math.Max(warmup, (long)Math.Ceiling(Math.Log(residual) / Math.Log(radius)));
-        }
-
-        if (removeSubsonic)
-        {
-            // The same pole calculation as the notch, over both sections of the Butterworth
-            // pair - the higher-Q section has the smaller alpha and therefore the slower decay,
-            // so the worst of the two is what the lead-in has to cover.
-            //
-            // <b>This is the one stage whose warm-up the flat fallback pad does not cover.</b>
-            // Where hum and noise are both off, the preview used to fall back to a fixed
-            // 0.1 s pad; a 30 Hz corner at 44.1 kHz needs about <b>12,700 samples, 0.29 s</b>,
-            // and 4,410 of them buy roughly -116 dB rather than the -180 asked for. An IIR
-            // high-pass started cold at a preview boundary thumps, and it would have thumped
-            // only when the other two stages happened to be switched off.
-            double cutoff = Math.Clamp(subsonicCutoff, 1.0, sampleRate * 0.48);
-            double w = 2.0 * Math.PI * cutoff / sampleRate;
-            foreach (double sectionQ in Restoration.SubsonicSectionQs)
-            {
-                double alpha = Math.Sin(w) / (2.0 * Math.Clamp(sectionQ, 0.1, 1_000.0));
-                double denominator = 1.0 + alpha;
-                double radius = denominator > 0
-                    ? Math.Sqrt(Math.Abs((1.0 - alpha) / denominator))
-                    : 0.0;
-                if (radius > 0.0 && radius < 1.0)
-                    warmup = Math.Max(warmup, (long)Math.Ceiling(Math.Log(residual) / Math.Log(radius)));
-            }
         }
 
         if (reduceNoise)

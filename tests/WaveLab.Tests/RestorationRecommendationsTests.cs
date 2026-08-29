@@ -92,6 +92,42 @@ public sealed class RestorationRecommendationsTests
         Assert.InRange(result.NoiseSensitivityDb, 5.5, 6.0);
     }
 
+    [Fact]
+    public void NoiseRecommendationIsWithheldWhenAdaptiveDepthWouldDoNothing()
+    {
+        RestorationRecommendations.Settings measured = RestorationRecommendations.Create(
+            new ClickAnalysisResult([], SampleRate * 10, 2, SampleRate),
+            new ClippingAnalysisResult([], SampleRate * 10, 2, SampleRate, true),
+            Cleanup(humEnabled: false, noiseEnabled: true));
+
+        RestorationRecommendations.Settings guarded =
+            RestorationRecommendations.ApplyNoiseBenefitGuard(
+                measured, hasNoiseProfile: true, noiseToProgrammeDb: 62.2,
+                Restoration.NoiseDepthCeilingDb);
+
+        Assert.True(measured.ReduceNoise);
+        Assert.False(guarded.ReduceNoise);
+    }
+
+    [Fact]
+    public void StrengthPresetsCannotEnableStagesRejectedByAnalysis()
+    {
+        RestorationRecommendations.Settings measured = RestorationRecommendations.Create(
+            new ClickAnalysisResult([], SampleRate * 10, 2, SampleRate),
+            new ClippingAnalysisResult([], SampleRate * 10, 2, SampleRate, true),
+            Cleanup(humEnabled: false, noiseEnabled: false));
+
+        RestorationRecommendations.StageEligibility eligible =
+            RestorationRecommendations.EligibleStages(measured, hasNoiseProfile: true);
+
+        Assert.False(eligible.RepairClicks);
+        Assert.False(eligible.Declip);
+        Assert.False(eligible.ReduceNoise);
+        Assert.False(eligible.RemoveHum);
+        Assert.False(eligible.HighPass);
+        Assert.False(eligible.Decrackle);
+    }
+
     // ── the three stages added for vertical surface noise ───────────
 
     /// <summary>
@@ -128,9 +164,9 @@ public sealed class RestorationRecommendationsTests
     /// <remarks>
     /// <para>
     /// <b>Re-pinned once</b>, when the linear ramp between the anchors became a sigmoid with a floor
-    /// at 0.20. The floor is why a mono pressing now keeps a fifth of its side instead of none, and
-    /// the softer knee is why the two anchors no longer sit exactly on 0 and 1 — both deliberate, on
-    /// the grounds that five records from one collection is not enough to justify a hard switch.
+    /// at 0.20. The floor is why a mono pressing now keeps a fifth of its side instead of none. The
+    /// later minimum-benefit guard leaves the stereo anchor entirely alone: the raw curve's 0.9 dB
+    /// reduction was measured as inaudible noise improvement while still narrowing the music.
     /// </para>
     /// <para>
     /// The two ends are not free to move, and that is what the last three rows are here to hold.
@@ -146,7 +182,7 @@ public sealed class RestorationRecommendationsTests
     [InlineData(-16.5, 0.20)]    // a mono pressing: the side is mostly noise, but the floor keeps a fifth
     [InlineData(-14.0, 0.25)]    // the anchor itself
     [InlineData(-11.0, 0.55)]    // between the two, so about half of what goes is music
-    [InlineData(-8.0, 0.90)]     // the other anchor: softened, so landing on it is not a cliff
+    [InlineData(-8.0, 1.00)]     // less than 3 dB of noise reduction is not worth narrowing stereo
     [InlineData(-6.0, 1.00)]     // real stereo: left entirely alone, and the card stays off
     [InlineData(0.0, 1.00)]      // no reading taken: the neutral answer, not a small reduction
     public void TheSideLevelFollowsThePressingRatherThanTheNoise(double sideToMidDb, double expected)
@@ -165,6 +201,21 @@ public sealed class RestorationRecommendationsTests
         if (expected >= 1.0)
             Assert.False(result.SideLevel < 1.0,
                 $"must be exactly 1.0 for the < 1.0 guards to hold, was {result.SideLevel:R}");
+    }
+
+    [Theory]
+    [InlineData(-10.0, 0.70)]    // 3.1 dB: enough potential benefit to offer
+    [InlineData(-9.5, 1.00)]     // the curve gives 0.80/1.9 dB: withhold it
+    [InlineData(-8.25, 1.00)]    // affected real transfer: previously 0.90/0.9 dB
+    public void AutomaticSideReductionMustOfferAnAudibleNoiseBenefit(
+        double sideToMidDb, double expected)
+    {
+        RestorationRecommendations.Settings result = RestorationRecommendations.Create(
+            new ClickAnalysisResult([], SampleRate * 10, 2, SampleRate),
+            new ClippingAnalysisResult([], SampleRate * 10, 2, SampleRate, true),
+            Cleanup(humEnabled: false, noiseEnabled: false, sideToMidDb: sideToMidDb));
+
+        Assert.Equal(expected, result.SideLevel, 3);
     }
 
     /// <summary>

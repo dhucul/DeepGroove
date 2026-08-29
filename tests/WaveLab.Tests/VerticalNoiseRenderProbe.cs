@@ -67,7 +67,7 @@ public sealed class VerticalNoiseRenderProbe(ITestOutputHelper output)
                 workbench.sideEvidenceText.Text = sideLine;
                 workbench.decrackleEvidenceText.Text = crackleLine;
                 workbench.subsonicEvidenceText.Text =
-                    "Subsonic energy is +18.3 dB relative to bass fundamentals.";
+                    "Subsonic energy is +18.3 dB relative to bass fundamentals in the typical passage (100% persistent).";
                 workbench.UpdateLayout();
                 Wpf.Pump();
 

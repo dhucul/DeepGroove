@@ -203,6 +203,33 @@ public sealed class ClickAnalysisTests
     }
 
     [Fact]
+    public void AnalysisNeverMergesCandidatesPastTheMaximumRepairablePopLength()
+    {
+        float[][] audio = Program(seconds: 2);
+        int start = SampleRate;
+        int individualLength = SampleRate / 1000;
+        for (int eventIndex = 0; eventIndex < 8; eventIndex++)
+        {
+            int eventStart = start + eventIndex * (individualLength - 1);
+            for (int index = eventStart; index < eventStart + individualLength; index++)
+                audio[0][index] += eventIndex % 2 == 0 ? 0.72f : -0.72f;
+        }
+
+        const double maximumPopLengthMs = 5.0;
+        ClickAnalysisResult result = Restoration.AnalyzeClicks(audio, SampleRate,
+            new ClickAnalysisOptions
+            {
+                Sensitivity = 10,
+                MaximumPopLengthMs = maximumPopLengthMs,
+                PreserveTransients = true,
+            });
+        int maximumSamples = (int)Math.Round(SampleRate * maximumPopLengthMs / 1000.0);
+
+        Assert.NotEmpty(result.Events);
+        Assert.All(result.Events, item => Assert.InRange(item.Length, 1, maximumSamples));
+    }
+
+    [Fact]
     public void MaximumSensitivityProtectsASmoothPercussiveAttack()
     {
         float[][] audio = Program(seconds: 2);

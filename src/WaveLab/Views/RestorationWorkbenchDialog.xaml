@@ -290,7 +290,7 @@
                                     <CheckBox x:Name="subsonicEnabled" HorizontalAlignment="Right" IsChecked="False"
                                               Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
                                 </Grid>
-                                <TextBlock Text="A Butterworth high-pass removes warp and arm resonance below the music."
+                                <TextBlock Text="A phase-neutral Butterworth high-pass removes persistent warp and arm resonance below the music without putting phase-shifted music in the removed tab."
                                            Style="{StaticResource CardCaption}"/>
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
@@ -312,7 +312,7 @@
                                     <CheckBox x:Name="verticalEnabled" HorizontalAlignment="Right" IsChecked="False"
                                               Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
                                 </Grid>
-                                <TextBlock Text="Groove noise is mostly out of phase, so it lives in the side signal. Turning the side down reaches it; how far is safe depends on the pressing."
+                                <TextBlock Text="Groove noise is mostly out of phase, so it lives in the side signal. This turns the whole side down, not noise alone; it suits mono or narrow pressings and can remove stereo music."
                                            Style="{StaticResource CardCaption}"/>
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>

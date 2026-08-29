@@ -42,6 +42,18 @@ public sealed class AdaptiveNoiseDepthTests(ITestOutputHelper output)
     private static double EstimateNoiseToProgrammeDb(float[] signal, int sampleRate) =>
         Restoration.EstimateNoiseToProgrammeDb([signal], sampleRate);
 
+    [Fact]
+    public void NoiseToProgrammeMeasurementObservesCancellation()
+    {
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() =>
+            Restoration.EstimateNoiseToProgrammeDb(
+                [new float[48_000]], 48_000,
+                Restoration.NoiseDepthCeilingDb, cancelled.Token));
+    }
+
     /// <summary>The reduction depths measured per cell, in dB. Zero means declining to fire at all.</summary>
     /// <remarks>
     /// Sweeping the <b>depth</b> rather than the rule's parameters is what makes this affordable and

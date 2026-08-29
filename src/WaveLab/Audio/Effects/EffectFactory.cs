@@ -325,9 +325,10 @@ public static class EffectFactory
                 [State("eq", ("highGain", 1.5)), State("reverb", ("size", 0.55), ("mix", 0.18)),
                  State("limiter")],
             "Vinyl Cleanup" =>
-                [State("filter", ("mode", 1.0), ("cutoff", 28.0), ("q", 0.707), ("slope", 0.0)),
-                 State("dehum", ("frequency", 60.0), ("harmonics", 6.0), ("q", 40.0), ("amount", 0.75)),
-                 State("denoise", ("threshold", -62.0), ("reduction", 8.0), ("hiss", 6.0), ("release", 350.0)),
+                [DisabledState("filter", ("mode", 1.0), ("cutoff", 28.0), ("q", 0.707),
+                     ("slope", 1.0), ("phase", 1.0)),
+                 DisabledState("dehum", ("frequency", 60.0), ("harmonics", 6.0), ("q", 40.0), ("amount", 0.75)),
+                 DisabledState("denoise", ("threshold", -62.0), ("reduction", 8.0), ("hiss", 6.0), ("release", 350.0)),
                  State("eq", ("lowGain", 0.5), ("midGain", 0.5), ("highGain", 1.0)),
                  State("limiter", ("thresh", -1.5), ("ceiling", -1.0))],
             "Mono Record Presence" =>
@@ -429,15 +430,17 @@ public static class EffectFactory
         static double e(IAudioEffect fx, string key) => fx.GetParam(key);
     }
 
-    private static EffectState DisabledState(string typeId)
+    private static EffectState DisabledState(string typeId,
+        params (string Key, double Value)[] overrides)
     {
-        EffectState state = State(typeId);
+        EffectState state = State(typeId, overrides);
         state.Enabled = false;
         return state;
     }
 
     private static EffectState TransferHighPass(double cutoff) =>
-        State("filter", ("mode", 1.0), ("cutoff", cutoff), ("q", 0.707), ("slope", 0.0));
+        State("filter", ("mode", 1.0), ("cutoff", cutoff), ("q", 0.707),
+            ("slope", 1.0), ("phase", 1.0));
 
     /// <summary>
     /// The tonal transfer presets reserve headroom with Trim, so the limiter only
@@ -517,6 +520,24 @@ public static class EffectFactory
     private static ChainPreset CreatePreviousFactoryPreset(string name)
     {
         ChainPreset previous = CreateFactoryPreset(name);
+        // 2.0.41 and earlier used the causal 12 dB high-pass and enabled every defect-specific
+        // Vinyl Cleanup stage before analysis. Recreate that payload so untouched generated files
+        // migrate, while a user's edited preset remains byte-for-byte theirs.
+        if (name == "Vinyl Cleanup")
+        {
+            foreach (EffectState state in previous.Effects.Where(effect =>
+                         effect.TypeId is "filter" or "dehum" or "denoise"))
+                state.Enabled = true;
+        }
+        if (name == "Vinyl Cleanup" || name.StartsWith("Record to CD - ", StringComparison.Ordinal))
+        {
+            EffectState? filter = previous.Effects.FirstOrDefault(effect => effect.TypeId == "filter");
+            if (filter != null)
+            {
+                filter.Params["slope"] = 0;
+                filter.Params["phase"] = 0;
+            }
+        }
         if (name == "Default")
         {
             EffectState? limiter = previous.Effects.FirstOrDefault(effect => effect.TypeId == "limiter");
@@ -588,13 +609,27 @@ public static class EffectFactory
             if (a == null || b == null ||
                 !string.Equals(a.TypeId, b.TypeId, StringComparison.Ordinal) ||
                 a.Enabled != b.Enabled ||
-                a.Params == null || b.Params == null ||
-                a.Params.Count != b.Params.Count)
+                a.Params == null || b.Params == null)
                 return false;
 
-            foreach ((string key, double value) in a.Params)
-                if (!b.Params.TryGetValue(key, out double other) || value != other)
+            // A newly introduced parameter is absent from an older untouched factory file. Treat
+            // that absence as the effect's default for semantic comparison, while still preserving
+            // any preset with a genuinely different or unknown value as user-customized.
+            IAudioEffect descriptor = Create(a.TypeId);
+            var defaults = descriptor.Params.ToDictionary(
+                parameter => parameter.Key, parameter => parameter.Default, StringComparer.Ordinal);
+            var keys = a.Params.Keys.Concat(b.Params.Keys).Concat(defaults.Keys)
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (string key in keys)
+            {
+                bool hasA = a.Params.TryGetValue(key, out double valueA);
+                bool hasB = b.Params.TryGetValue(key, out double valueB);
+                bool known = defaults.TryGetValue(key, out double defaultValue);
+                if (!hasA && known) valueA = defaultValue;
+                if (!hasB && known) valueB = defaultValue;
+                if ((!hasA && !known) || (!hasB && !known) || valueA != valueB)
                     return false;
+            }
         }
 
         return true;

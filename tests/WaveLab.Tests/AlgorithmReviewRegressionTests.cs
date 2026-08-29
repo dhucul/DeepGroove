@@ -74,6 +74,35 @@ public sealed class AlgorithmReviewRegressionTests
     }
 
     [Fact]
+    public void RackHumRemovalUsesTheSameSupportedHarmonicMask()
+    {
+        var signal = new float[Rate * 3];
+        for (int i = 0; i < signal.Length; i++)
+        {
+            double t = i / (double)Rate;
+            signal[i] = (float)(0.2 * Math.Sin(2 * Math.PI * 50 * t)
+                              + 0.2 * Math.Sin(2 * Math.PI * 100 * t)
+                              + 0.2 * Math.Sin(2 * Math.PI * 150 * t));
+        }
+        double before100 = PowerAt(signal, 100);
+        var effect = new WaveLab.Audio.Effects.HumRemovalEffect();
+        effect.SetParam("frequency", 50);
+        effect.SetParam("harmonics", 3);
+        effect.SetParam("harmonicMask", 0b101);
+        effect.SetParam("q", 35);
+        effect.SetParam("amount", 1);
+        effect.SetParam("autoDetect", 0);
+        effect.SetParam("dynamic", 0);
+        effect.Configure(Rate, 1);
+
+        effect.Process(signal, 0, signal.Length);
+
+        Assert.True(Db(PowerAt(signal, 50)) < Db(before100) - 15);
+        Assert.InRange(Db(PowerAt(signal, 100)) - Db(before100), -1.0, 1.0);
+        Assert.True(Db(PowerAt(signal, 150)) < Db(before100) - 15);
+    }
+
+    [Fact]
     public void AutomaticClippingFindsMoreThanOneRailInAChannel()
     {
         var signal = new float[2_000];
@@ -85,6 +114,32 @@ public sealed class AlgorithmReviewRegressionTests
 
         Assert.Contains(result.Events, item => Math.Abs(item.AbsoluteClipLevel - 0.60f) < 0.001f);
         Assert.Contains(result.Events, item => Math.Abs(item.AbsoluteClipLevel - 0.90f) < 0.001f);
+        DeclipChannelChoice choice = Assert.Single(
+            Restoration.DescribeDeclipChoices([signal], result.Events));
+        Assert.Equal(DeclipMethod.PeakReconstruction, choice.Method);
+    }
+
+    [Fact]
+    public void AutomaticClippingRejectsQuantizedRunsThatTheWaveformContinuesPast()
+    {
+        // Real 16-bit programme can land on one value for three samples without clipping. These
+        // are reduced neighborhoods from an affected transfer: every apparent plateau has a
+        // nearby shoulder that continues beyond the supposed rail.
+        float[] signal =
+        [
+            -0.15112300f, -0.14916990f, -0.14712520f, -0.14474490f, -0.14367680f,
+            -0.14312740f, -0.14312740f, -0.14312740f,
+            -0.13168330f, -0.10980220f, -0.08410645f, -0.05261230f, -0.01776123f,
+            0, 0, 0, 0, 0,
+            0.08599854f, 0.08117676f, 0.06924438f, 0.08666992f, 0.11578370f,
+            0.12362670f, 0.12362670f, 0.12362670f,
+            0.11459350f, 0.10702510f, 0.12118530f, 0.14096070f, 0.15414430f,
+        ];
+
+        ClippingAnalysisResult result = Restoration.AnalyzeClipping([signal], Rate,
+            new ClippingAnalysisOptions());
+
+        Assert.Empty(result.Events);
     }
 
     [Fact]

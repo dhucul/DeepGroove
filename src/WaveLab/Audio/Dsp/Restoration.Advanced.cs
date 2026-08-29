@@ -136,7 +136,8 @@ public static partial class Restoration
                             options.MinimumRecovery, out var clickEvent) &&
                         clickEvent.Confidence >= minimumConfidence)
                     {
-                        AddOrMergeClickEvent(events, clickEvent, maximumClickSamples);
+                        AddOrMergeClickEvent(events, clickEvent, maximumClickSamples,
+                            maximumPopSamples);
                     }
 
                     nextCandidateSample = Math.Max(nextCandidateSample, end + postCandidateSkipSamples);
@@ -670,12 +671,13 @@ public static partial class Restoration
             if (channel < 0 || channel >= channels.Count) continue;
             var samples = channels[channel];
             if (samples == null || samples.Length == 0) continue;
+            ClippedPeakEvent[] channelEvents = group.ToArray();
 
             // The damage is counted from the events rather than from the raw sample values, so the
             // decision rests on the same evidence the repair does.
             long clipped = 0;
             int runs = 0;
-            foreach (var e in group)
+            foreach (var e in channelEvents)
             {
                 clipped += Math.Max(0, e.EndSample - e.StartSample);
                 runs++;
@@ -689,13 +691,46 @@ public static partial class Restoration
                 continue;
             }
 
+            // A-SPADE accepts one channel-wide rail: every sample at or above that level is
+            // declared damaged. Automatic analysis can also find a lower rail left by an earlier
+            // gain stage, and ordinary PCM can contain a rare equal-valued local peak. Sending
+            // either to the sparse solver would mark unrelated, louder programme as clipped. The
+            // event-wise peak reconstruction has no such assumption, so use it unless all events
+            // describe the channel's actual maximum rail.
+            bool sparseCompatibleRail = DescribesChannelMaximumRail(samples, channelEvents);
             choices.Add(new DeclipChannelChoice(channel,
-                DeclipMethodChooser.PrefersSparse(fraction, meanRun)
+                sparseCompatibleRail && DeclipMethodChooser.PrefersSparse(fraction, meanRun)
                     ? DeclipMethod.Sparse
                     : DeclipMethod.PeakReconstruction,
                 fraction, meanRun));
         }
         return choices;
+    }
+
+    private static bool DescribesChannelMaximumRail(
+        float[] samples, IReadOnlyList<ClippedPeakEvent> events)
+    {
+        if (events.Count == 0) return false;
+
+        double minimumRail = double.PositiveInfinity;
+        double maximumRail = 0;
+        foreach (ClippedPeakEvent item in events)
+        {
+            double rail = item.AbsoluteClipLevel;
+            if (!(rail > 0) || !double.IsFinite(rail)) return false;
+            minimumRail = Math.Min(minimumRail, rail);
+            maximumRail = Math.Max(maximumRail, rail);
+        }
+
+        // This is also the tolerance used by Spade when deciding which samples are unreliable.
+        // Rails farther apart than this cannot be represented by one solver threshold.
+        const double railTolerance = 1e-5;
+        if (maximumRail - minimumRail > railTolerance) return false;
+
+        double channelPeak = 0;
+        foreach (float sample in samples)
+            channelPeak = Math.Max(channelPeak, Math.Abs(sample));
+        return channelPeak - maximumRail <= railTolerance;
     }
 
     /// <summary>
@@ -1115,7 +1150,7 @@ public static partial class Restoration
     }
 
     private static void AddOrMergeClickEvent(List<ClickEvent> events, ClickEvent next,
-        int maximumClickSamples)
+        int maximumClickSamples, int maximumPopSamples)
     {
         if (events.Count == 0 || events[^1].Channel != next.Channel ||
             next.StartSample > events[^1].EndSample + 1)
@@ -1127,6 +1162,17 @@ public static partial class Restoration
         var previous = events[^1];
         int start = Math.Min(previous.StartSample, next.StartSample);
         int end = Math.Max(previous.EndSample, next.EndSample);
+        // Several detector passes can nominate slightly different spans for the same
+        // disturbance. Do not let a chain of overlaps turn those individually repairable
+        // candidates into a sustained musical passage: MaximumPopLengthMs is the public
+        // contract for the longest span analysis may offer to reconstruction. When the
+        // connected run exceeds it, retain the strongest local candidate instead.
+        if (end - start > maximumPopSamples)
+        {
+            if (next.Severity > previous.Severity)
+                events[^1] = next;
+            return;
+        }
         bool useNextPeak = next.Severity > previous.Severity;
         events[^1] = new ClickEvent(previous.Channel, start, end,
             useNextPeak ? next.PeakSample : previous.PeakSample,
@@ -1455,6 +1501,19 @@ public static partial class Restoration
         if (start < 1 || end >= samples.Length || end <= start) return false;
         float sign = polarity == ClipPolarity.Positive ? 1f : -1f;
         int length = end - start;
+
+        if (automatic)
+        {
+            // A flat run on the slope of ordinary quantized programme is not a clipped peak.
+            // Both nearby shoulders must remain at or below the proposed rail; otherwise the
+            // waveform demonstrably continued past it. Five samples matches the shoulder window
+            // used for the confidence measurement below.
+            float localLimit = plateauLevel + tolerance * 1.5f;
+            for (int i = Math.Max(0, start - 5); i < start; i++)
+                if (samples[i] * sign > localLimit) return false;
+            for (int i = end; i < Math.Min(samples.Length, end + 5); i++)
+                if (samples[i] * sign > localLimit) return false;
+        }
 
         double insideDifference = 0;
         double maximumInsideDifference = 0;
@@ -1886,7 +1945,8 @@ public static partial class Restoration
             var clickEvent = new ClickEvent(channel, start, end, peakSample, kind,
                 (float)confidence, severity, samples[peakSample], 0);
 
-            AddOrMergeClickEvent(events, clickEvent, maximumClickSamples);
+            AddOrMergeClickEvent(events, clickEvent, maximumClickSamples,
+                maximumPopSamples);
 
             // Skip past this event
             i = end + envelopeWindow;

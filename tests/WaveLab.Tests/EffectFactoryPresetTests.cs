@@ -86,6 +86,54 @@ public sealed class EffectFactoryPresetTests
     }
 
     [Fact]
+    public void VinylCleanupWaitsForAnalysisBeforeEnablingDefectSpecificStages()
+    {
+        EffectFactory.ChainPreset preset = EffectFactory.CreateFactoryPreset("Vinyl Cleanup");
+
+        Assert.False(State(preset, "filter").Enabled);
+        Assert.False(State(preset, "dehum").Enabled);
+        Assert.False(State(preset, "denoise").Enabled);
+        Assert.Equal(1, Param(State(preset, "filter"), "phase"));
+        Assert.Equal(1, Param(State(preset, "filter"), "slope"));
+    }
+
+    [Fact]
+    public void UntouchedPreConsistencyVinylPresetIsSafelyUpgraded()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            EffectFactory.ChainPreset previous = EffectFactory.CreateFactoryPreset("Vinyl Cleanup");
+            foreach (EffectFactory.EffectState state in previous.Effects.Where(effect =>
+                         effect.TypeId is "filter" or "dehum" or "denoise"))
+                state.Enabled = true;
+            EffectFactory.EffectState filter = State(previous, "filter");
+            filter.Params["slope"] = 0;
+            filter.Params.Remove("phase");
+            State(previous, "dehum").Params.Remove("harmonicMask");
+            string path = Path.Combine(directory, previous.Name + ".chain.json");
+            File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(previous));
+
+            EffectFactory.EnsureFactoryPresets(directory);
+
+            EffectFactory.ChainPreset upgraded =
+                System.Text.Json.JsonSerializer.Deserialize<EffectFactory.ChainPreset>(
+                    File.ReadAllText(path))!;
+            Assert.False(State(upgraded, "filter").Enabled);
+            Assert.False(State(upgraded, "dehum").Enabled);
+            Assert.False(State(upgraded, "denoise").Enabled);
+            Assert.Equal(1, Param(State(upgraded, "filter"), "phase"));
+            Assert.True(State(upgraded, "dehum").Params.ContainsKey("harmonicMask"));
+        }
+        finally
+        {
+            foreach (string file in Directory.GetFiles(directory)) File.Delete(file);
+            Directory.Delete(directory);
+        }
+    }
+
+    [Fact]
     public void DullSourceRescueAddsMorePresenceAndAirThanGentleClarity()
     {
         EffectFactory.EffectState gentle = State(
@@ -255,6 +303,9 @@ public sealed class EffectFactoryPresetTests
         {
             EffectFactory.ChainPreset previous =
                 EffectFactory.CreateFactoryPreset("Record to CD - Dull Source Rescue");
+            EffectFactory.EffectState oldFilter = State(previous, "filter");
+            oldFilter.Params["slope"] = 0;
+            oldFilter.Params.Remove("phase");
             EffectFactory.EffectState eq = State(previous, "eq");
             eq.Params["lowGain"] = -0.8;
             eq.Params["lmGain"] = -1.8;

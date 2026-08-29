@@ -13,6 +13,8 @@ public sealed class HumRemovalEffect : EffectBase
     [
         new("frequency", "MAINS", 45, 65, 60, v => $"{v:0.0} Hz"),
         new("harmonics", "HARMONICS", 1, 12, 6, v => $"{Math.Round(v):0}"),
+        new("harmonicMask", "PARTIAL MASK", 1, 0xFFF, 0xFFF,
+            v => $"0x{(int)Math.Round(v):X3}"),
         new("q", "PRECISION", 10, 80, 35, v => $"Q {v:0}"),
         new("amount", "AMOUNT", 0, 1, 0.85, EffectParam.Pct),
         new("autoDetect", "AUTO DETECT", 0, 1, 0, v => v > 0.5 ? "ON" : "OFF"),
@@ -30,10 +32,11 @@ public sealed class HumRemovalEffect : EffectBase
     /// coefficients — twelve notches is a dozen sine and cosine pairs, and only when the tuning
     /// actually moves — and the parameter path never touches a filter at all.
     /// </remarks>
-    private sealed record HumTuning(double Frequency, double Q, int Requested, bool AutoDetect);
+    private sealed record HumTuning(
+        double Frequency, double Q, int Requested, int HarmonicMask, bool AutoDetect);
 
     private Biquad[][] _notches = [];        // audio-thread state only, [channel][harmonic]
-    private HumTuning _requested = new(60, 35, 6, false);
+    private HumTuning _requested = new(60, 35, 6, 0xFFF, false);
     private HumTuning? _applied;             // audio-thread only
     private int _activeHarmonics;
     private double _detectedFundamental = 60;
@@ -61,7 +64,8 @@ public sealed class HumRemovalEffect : EffectBase
     public override string TypeId => "dehum";
     public override string DisplayName => "Hum Removal";
     public override IReadOnlyList<EffectParam> Params => P;
-    public override string? Readout => $"{_activeHarmonics} NOTCHES @ {_detectedFundamental:0.0} Hz";
+    public override string? Readout =>
+        $"{SupportedNotchCount()} NOTCHES @ {_detectedFundamental:0.0} Hz";
 
     protected override void OnConfigure()
     {
@@ -99,7 +103,18 @@ public sealed class HumRemovalEffect : EffectBase
         GetParam("frequency"),
         GetParam("q"),
         (int)Math.Round(GetParam("harmonics")),
+        (int)Math.Round(GetParam("harmonicMask")),
         GetParam("autoDetect") > 0.5));
+
+    private int SupportedNotchCount()
+    {
+        HumTuning tuning = Volatile.Read(ref _applied) ?? Volatile.Read(ref _requested);
+        int count = 0;
+        int active = Math.Min(Volatile.Read(ref _activeHarmonics), MaxHarmonics);
+        for (int harmonic = 0; harmonic < active; harmonic++)
+            if ((tuning.HarmonicMask & (1 << harmonic)) != 0) count++;
+        return count;
+    }
 
     /// <summary>The frequency the bank should be tuned to, manual until the detector has locked.</summary>
     private double EffectiveFundamental(HumTuning tuning) =>
@@ -186,6 +201,11 @@ public sealed class HumRemovalEffect : EffectBase
 
             for (int harmonic = 0; harmonic < active; harmonic++)
             {
+                // Cleanup analysis supplies a sparse mask. A missing second or fourth partial is
+                // evidence that music, not mains, occupies that line; leave it untouched exactly
+                // as the offline restoration path does.
+                if ((tuning.HarmonicMask & (1 << harmonic)) == 0) continue;
+
                 // Dynamic depth: reduce notch depth when harmonic has significant energy
                 // (likely musical content, not hum). Measure once across the complete frame and
                 // apply one depth to every channel: channel-by-channel decisions move a centred

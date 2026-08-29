@@ -903,9 +903,9 @@ whole result.
 - **Half the energy was below 40 Hz and nothing in the workbench was filtering it.**
   `CleanupAnalyzer.EstimateRumble` has always measured it; its result reached the *rack* chain and
   never `RenderOwnedWork`. On that transfer's run-out **48% of the total energy sits under 40 Hz**,
-  peaking at 10.8 and 16.1 Hz — tonearm resonance excited by warp. `Restoration.RemoveSubsonic` is a
-  24 dB/octave Butterworth pair; at a 30 Hz corner it measures **30.9 / 21.7 / 7.3 dB down at 12 /
-  16 / 25 Hz** and moves 120 Hz and above by less than 0.5.
+  peaking at 10.8 and 16.1 Hz — tonearm resonance excited by warp. `Restoration.RemoveSubsonic` has
+  a zero-phase fourth-order Butterworth magnitude; at a 30 Hz corner it measures **28.8 / 20.9 /
+  7.2 dB down at 12 / 16 / 25 Hz** and moves 120 Hz and above by less than 0.01 dB.
 - **Its placement is measured and it does *not* do what it looks like it does.** High-pass then
   collapse then de-crackle gives 15 ticks and 4.2% of samples repaired; collapse then de-crackle then
   high-pass gives 14 and 4.4% — the same answer either way round. Nor does it rescue
@@ -1205,44 +1205,36 @@ The keyboard half of the same gesture, and it reuses the same anchor.
 - **`APlainClickThatNeverMovesSelectsNothing` is the other half** and is the reason the travel
   threshold exists — shift-click is the deliberate exception to it, so both sides are pinned.
 
-## The subsonic residual sounds like it took the vocals, and all of it is phase
+## The subsonic pass now requires persistent evidence and its residual is phase neutral
 
-**Keep what was removed** on a subsonic-only pass produces a file with the vocals plainly audible
-in it, and the obvious reading — that a 30 Hz high-pass is reaching into the midrange — is wrong.
-Measured against the pair on disk: a 184 s 44.1 kHz stereo transfer and the residual that pass
-produced, which sum back to the original by construction, so the filter's own response can be
-recovered by division.
+**Keep what was removed** on the old minimum-phase high-pass produced a file with vocals plainly
+audible in it even though the finished audio lost essentially no vocal-band level. The subtraction
+was capturing phase rotation, not attenuation. That is mathematically consistent and unusable as a
+restoration residual, because the tab necessarily sounded as though the filter ate the song.
 
-- **The filter is exactly the filter it claims to be.** Recovered that way it is a 4th-order
-  Butterworth high-pass at **30 Hz, matching the analytic curve to 0.002 rms over 8–400 Hz**. What
-  it takes out of the vocal band: **−0.25 dB at 100 Hz, −0.066 at 200, −0.026 at 315, −0.010 at
-  500, −0.002 at 1 kHz and 0.000 above 2 kHz.** There is no level to lose there and none is lost.
-- **Everything audible in the residual above the corner is phase, and it is accounted for to within
-  half a decibel with nothing fitted.** `RemoveSubsonic` is minimum phase, so it still rotates far
-  above its corner — **+45.5° at 100 Hz, +22.5° at 200, +4.5° at 1 kHz**. Subtracting two signals of
-  equal magnitude differing by θ leaves `2·sin(θ/2)`, so the residual's level follows from the phase
-  alone: predicted **−9.11 / −17.05 / −23.07 / −29.09 / −35.11 dB** at 200 / 500 / 1 k / 2 k / 4 k
-  against **−8.72 / −17.01 / −22.89 / −28.80 / −34.86** measured. Four decades, every band inside
-  0.4 dB.
-- **A residual like this cannot be quiet in the midrange, and that is arithmetic rather than a
-  calibration.** The complement of an Nth-order high-pass is not an Nth-order low-pass: `1 − H` has
-  a numerator of order **N−1**, so it rolls off at **6 dB/octave** however steep the filter is. The
-  file measures about **2 dB per third-octave from 200 Hz to 16 kHz**, which is that slope exactly.
-  Expect the same of the residual of any minimum-phase filter in this app.
-- **Near the corner the residual is *louder* than the original, and that is the same fact.**
-  `|1 − H|` overshoots unity around a Butterworth's cutoff: **+1.6 dB at 25 Hz, +3.9 at 31.5, +3.8
-  at 40** against the original's own level in those bands. Nothing is added — the two signals are
-  close to antiphase there.
-- **The one thing the file said about the render rather than about the maths is the wet mix.** About
-  **10% dry is blended back** (wet ≈ 0.896, read off the bottom of the band where `H` is zero), so
-  10 Hz comes out **19.7 dB down overall where the filter's own response is 40 dB**. A subsonic pass
-  that looks weak is worth checking against the mix control before the cutoff is touched.
-- **The consequence is the one this file already records for wow and flutter: a residual guaranteed
-  to be misread is worse than no residual.** Wow is excluded from capture because a whole-file
-  waveform residual reads a good time-base correction as total failure; this is the same shape of
-  trap, in that anyone who listens to a high-pass residual will conclude the filter ate their music.
-  Excluding the stage, or saying on the residual tab that a high-pass residual is mostly phase, is
-  the choice; leaving it to be discovered is not.
+- **The reported WAV exposed two independent faults in the recommendation.** The analyzer compared
+  average bin height in 5–25 Hz with average bin height in 40–120 Hz. Those bands are 20 and 80 Hz
+  wide, so the narrower band received an automatic **6 dB advantage** even when its total energy was
+  lower. It also took a ratio after averaging passages, allowing a few loud low-frequency events to
+  dominate the whole side and then calling them persistent. Rumble now compares **integrated band
+  energy per passage**, uses the median passage, and requires at least half the passages to clear the
+  boundary. On `Loving You Baby.wav` the final reading is **−12.4 dB in the typical passage, only
+  33% persistent, confidence 0.449**, so the card is bypassed; the old reading enabled it at 31 Hz.
+- **The pass itself is now zero phase.** It samples the same fourth-order Butterworth magnitude into
+  a symmetric finite response, removes the common delay after convolution, and reflects both file
+  edges so the response does not see a false step. At a 30 Hz corner it measures **28.8 / 20.9 /
+  7.2 dB down at 12 / 16 / 25 Hz**, while 120 Hz and above moves by less than 0.01 dB and 0.0001
+  radians. A half-strength dry/wet blend remains zero phase too, so it cannot comb with the original.
+- **The removed tab now contains low-frequency magnitude, not phase-shifted music.** On pure tones,
+  the residual is **−64 / −77 / −93 / −106 / −118 / −130 dB** at 100 / 200 / 500 / 1 k / 2 k /
+  4 kHz; the old minimum-phase residual was −2 / −8 / −16 / −22 / −28 / −34 dB there. On the
+  reported whole WAV the residual fell from **−27.23 to −43.38 dBFS**, and its first-difference
+  share from **−34.06 to −54.21 dB**, which is the measured shift from plainly audible programme to
+  subsonic content.
+- **Preview and render agree.** The response declares 150 ms of symmetric look-around; the
+  workbench copies that on both sides of the audible preview. A preview cut from that context and a
+  whole-file pass agree to **−145 dB**, so fixing the phase residual did not replace the old cold-IIR
+  boundary thump with a centred-filter seam.
 
 ### The mix was the binding constraint, and nothing on screen said so
 
@@ -1744,6 +1736,14 @@ softened value the commit chose untouched: −16.5 → 0.20, −14 → 0.25, −
 those three middle rows were genuinely re-pinned. `StereoSideToMidDb`'s docstring still said "at or
 above which the side signal is left entirely alone", which the sigmoid made false at the anchor
 itself; it now says which.
+
+**A later real transfer supplied the missing listening check on that softened stereo end.** It read
+−8.25 dB side-to-mid and was automatically set to 90% side. That is only 0.9 dB off the vertical
+noise; measured over its quietest seconds, the total change was 0.2–0.34 dB, while the subtraction
+contained stereo music across the whole programme. The curve is still the same, but automatic
+recommendations below **3 dB of side reduction are now promoted to 1.0/off**. The manual control
+remains available. The card also says plainly that this is broadband side attenuation, not a noise
+separator, and that it can remove stereo music.
 
 **Why no test caught it.** `VerticalNoiseReadoutTests` does pin the full-level behaviour — but by
 passing `level: 1.0` as a literal, so it kept passing while testing a state the recommender could no

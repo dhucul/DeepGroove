@@ -190,17 +190,21 @@ public static partial class Restoration
     /// is the exact defect the remarks above record being fixed once already.
     /// </remarks>
     public static double EstimateNoiseToProgrammeDb(float[][] data, int sampleRate,
-        double ceilingDb = NoiseDepthCeilingDb)
+        double ceilingDb = NoiseDepthCeilingDb,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(data);
+        cancellationToken.ThrowIfCancellationRequested();
         double noReading = EffectiveCeilingDb(ceilingDb);
         if (data.Length == 0 || sampleRate <= 0) return noReading;
 
         double best = double.MaxValue;
         foreach (float[] channel in data)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (channel is not { Length: > 0 }) continue;
-            double estimate = EstimateChannelNoiseToProgrammeDb(channel, sampleRate, noReading);
+            double estimate = EstimateChannelNoiseToProgrammeDb(
+                channel, sampleRate, noReading, cancellationToken);
             if (estimate < best) best = estimate;      // the noisiest channel decides
         }
         return best == double.MaxValue ? noReading : best;
@@ -233,14 +237,18 @@ public static partial class Restoration
     private const double SilentWindowRms = 1e-10;
 
     private static double EstimateChannelNoiseToProgrammeDb(float[] channel, int sampleRate,
-        double noReading)
+        double noReading, CancellationToken cancellationToken)
     {
         int window = Math.Min(channel.Length, Math.Max(NrFftSize, sampleRate * 2));
         int hop = Math.Min(window, 4096);
         if (window <= 0) return noReading;
 
         double total = 0;
-        foreach (float sample in channel) total += (double)sample * sample;
+        for (int index = 0; index < channel.Length; index++)
+        {
+            if ((index & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+            total += (double)channel[index] * channel[index];
+        }
         double programme = Math.Sqrt(total / Math.Max(1, channel.Length));
         if (!(programme > 0)) return noReading;
 
@@ -265,13 +273,18 @@ public static partial class Restoration
         // the corpus is measured, and it decides.
         double floorEnergy = double.MaxValue;
         double rolling = 0;
-        for (int i = 0; i < window; i++) rolling += (double)channel[i] * channel[i];
+        for (int i = 0; i < window; i++)
+        {
+            if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+            rolling += (double)channel[i] * channel[i];
+        }
         double silenceEnergy = SilentWindowRms * SilentWindowRms * window;
         if (rolling > silenceEnergy) floorEnergy = rolling;
 
         int previous = 0;
         for (int start = hop; start + window <= channel.Length; start += hop)
         {
+            if ((start & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
             for (int i = previous; i < start; i++) rolling -= (double)channel[i] * channel[i];
             for (int i = previous + window; i < start + window; i++)
                 rolling += (double)channel[i] * channel[i];
@@ -608,15 +621,14 @@ public static partial class Restoration
         }
     }
 
-    /// <summary>
-    /// Butterworth section Qs for a 24 dB/octave high-pass pair. These are pole positions, not a
-    /// tuning choice — the same two numbers <see cref="WaveLab.Audio.Effects.FilterEffect"/> cascades.
-    /// </summary>
-    internal static readonly double[] SubsonicSectionQs = [0.5412, 1.3066];
+    private static readonly object SubsonicKernelLock = new();
+    private static int _subsonicKernelSampleRate;
+    private static double _subsonicKernelCutoff;
+    private static float[]? _subsonicKernel;
 
     /// <summary>
-    /// Removes subsonic rumble: a 24 dB/octave Butterworth high-pass. A strength of zero is a
-    /// bit-exact no-op; one applies the complete filter.
+    /// Removes subsonic rumble with a zero-phase, fourth-order Butterworth magnitude response.
+    /// A strength of zero is a bit-exact no-op; one applies the complete filter.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -639,11 +651,17 @@ public static partial class Restoration
     /// the readouts and not about the audio.
     /// </para>
     /// <para>
-    /// The cascade is blended <b>once</b> rather than per section. Blending each section against its
-    /// own input is a different filter at any strength below one, and not the one the cutoff names.
-    /// The cutoff is passed to <see cref="Biquad"/> unclamped on purpose: <c>Biquad.Corner</c>
-    /// already bounds it, and clamping a second time at the call site is what made
-    /// <c>MonoToStereoEffect</c> diverge from the rest of the app.
+    /// The response is linear phase and its delay is removed after convolution. This matters to the
+    /// workbench's <b>Keep what was removed</b> result: subtracting a minimum-phase high-pass from
+    /// its input leaves audible music made entirely from phase rotation, even where the filter lost
+    /// no level. A zero-phase response makes that difference contain the low-frequency magnitude
+    /// actually removed instead. The symmetric impulse can pre-ring, but at a 20–60 Hz corner its
+    /// energy is subsonic; reflected edge padding prevents a start/end step from exciting it.
+    /// </para>
+    /// <para>
+    /// The dry/wet blend is applied once after the complete response. Blending is therefore a
+    /// straight interpolation of magnitudes, without the combing produced by mixing a rotated
+    /// minimum-phase signal with its dry input.
     /// </para>
     /// </remarks>
     public static void RemoveSubsonic(float[][] data, int sampleRate, double cutoffHz,
@@ -654,25 +672,110 @@ public static partial class Restoration
         float amount = (float)Math.Clamp(strength, 0.0, 1.0);
         if (amount <= 0f) return;
 
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        double cutoff = Math.Clamp(cutoffHz, 1.0, sampleRate * 0.48);
+        float[] kernel = SubsonicKernel(sampleRate, cutoff);
+        int delay = kernel.Length / 2;
+
         foreach (var channel in data)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (channel is not { Length: > 0 }) continue;
 
-            // One pair per channel, declared here so no state ever crosses a channel boundary.
-            var first = Biquad.HighPass(sampleRate, cutoffHz, SubsonicSectionQs[0]);
-            var second = Biquad.HighPass(sampleRate, cutoffHz, SubsonicSectionQs[1]);
+            // Reflection supplies the samples a centred response needs beyond both file edges.
+            // Treating them as zero creates a false step and a low-frequency thump at each edge.
+            var padded = new float[checked(channel.Length + delay * 2)];
+            Array.Copy(channel, 0, padded, delay, channel.Length);
+            for (int i = 0; i < delay; i++)
+            {
+                if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+                padded[delay - 1 - i] = channel[Math.Min(i, channel.Length - 1)];
+                padded[delay + channel.Length + i] = channel[Math.Max(0, channel.Length - 1 - i)];
+            }
+
+            RecordingCurves.Convolve(padded, kernel, delay, cancellationToken);
             for (int i = 0; i < channel.Length; i++)
             {
                 if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
                 float dry = channel[i];
-                float filtered = second.Process(first.Process(dry));
+                float filtered = padded[delay + i];
                 channel[i] = amount >= 1f
                     ? filtered
                     : dry + (filtered - dry) * amount;
             }
         }
     }
+
+    /// <summary>The most recent kernel only: live cutoff moves cannot grow an unbounded cache.</summary>
+    /// <summary>
+    /// The shared fourth-order-magnitude, symmetric response used by offline restoration and the
+    /// rack's compensated restoration-phase high-pass mode.
+    /// </summary>
+    internal static float[] SubsonicKernel(int sampleRate, double cutoff)
+    {
+        lock (SubsonicKernelLock)
+        {
+            if (_subsonicKernel is { } cached && _subsonicKernelSampleRate == sampleRate &&
+                Math.Abs(_subsonicKernelCutoff - cutoff) < 1e-9)
+                return cached;
+
+            int half = SubsonicLookaroundSamples(sampleRate);
+            int taps = half * 2 + 1;
+            int size = Fft.NextPowerOfTwo(checked(taps * 4));
+            var magnitude = new double[size];
+            for (int bin = 0; bin <= size / 2; bin++)
+            {
+                double frequency = bin * sampleRate / (double)size;
+                double gain;
+                if (frequency <= 0)
+                {
+                    gain = 0;
+                }
+                else
+                {
+                    double ratio = cutoff / frequency;
+                    double fourth = ratio * ratio * ratio * ratio;
+                    gain = 1.0 / Math.Sqrt(1.0 + fourth * fourth);
+                }
+                magnitude[bin] = gain;
+                if (bin > 0 && bin < size / 2) magnitude[size - bin] = gain;
+            }
+
+            double[] centredAtZero = MinimumPhase.ZeroPhase(magnitude);
+            var kernel = new float[taps];
+            for (int i = 0; i < taps; i++)
+            {
+                int source = (i - half + size) % size;
+                double distance = Math.Abs(i - half) / (double)half;
+                double window = distance <= 0.65
+                    ? 1.0
+                    : 0.5 + 0.5 * Math.Cos(Math.PI * (distance - 0.65) / 0.35);
+                kernel[i] = (float)(centredAtZero[source] * window);
+            }
+
+            // Truncation/windowing can leave a tiny DC leak. Pin DC to zero, then normalise the
+            // Nyquist response to unity so the correction cannot change the audible passband.
+            double dc = 0;
+            foreach (float coefficient in kernel) dc += coefficient;
+            kernel[half] -= (float)dc;
+            double nyquist = 0;
+            for (int i = 0; i < kernel.Length; i++)
+                nyquist += ((i - half) & 1) == 0 ? kernel[i] : -kernel[i];
+            if (Math.Abs(nyquist) > 1e-12)
+            {
+                float scale = (float)(1.0 / nyquist);
+                for (int i = 0; i < kernel.Length; i++) kernel[i] *= scale;
+            }
+
+            _subsonicKernelSampleRate = sampleRate;
+            _subsonicKernelCutoff = cutoff;
+            return _subsonicKernel = kernel;
+        }
+    }
+
+    /// <summary>Symmetric context required by the zero-phase subsonic response.</summary>
+    internal static int SubsonicLookaroundSamples(int sampleRate) =>
+        Math.Max(2_048, (int)Math.Ceiling(sampleRate * 0.15));
 
     /// <summary>
     /// Scales the side (L−R) signal of a stereo pair. A level of one is a bit-exact no-op; zero

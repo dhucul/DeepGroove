@@ -27,7 +27,8 @@ public static class CleanupAnalyzer
         int WindowsAnalyzed,
         int QuietWindows,
         double[] ProgramPower,
-        double[] NoisePower);
+        double[] NoisePower,
+        double[] RumbleRatiosDb);
 
     private readonly record struct HumEstimate(
         double Frequency,
@@ -41,6 +42,7 @@ public static class CleanupAnalyzer
 
     private readonly record struct RumbleEstimate(
         double RatioDb,
+        double Persistence,
         double Cutoff,
         double Confidence,
         bool Detected);
@@ -52,6 +54,8 @@ public static class CleanupAnalyzer
         double HissFrequency,
         double ReleaseMs,
         double HissExcessDb,
+        double NoiseToProgrammeDb,
+        bool BenefitWithheld,
         double Confidence,
         bool Detected);
 
@@ -60,7 +64,8 @@ public static class CleanupAnalyzer
         int sampleRate,
         CleanupProfile profile,
         CancellationToken cancellationToken = default,
-        IProgress<CleanupAnalysisProgress>? progress = null)
+        IProgress<CleanupAnalysisProgress>? progress = null,
+        double noiseDepthCeilingDb = Restoration.NoiseDepthCeilingDb)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ValidateInput(channels, sampleRate, out int frames);
@@ -86,6 +91,28 @@ public static class CleanupAnalyzer
         HumEstimate hum = EstimateHum(spectral, channels, sampleRate, cancellationToken);
         RumbleEstimate rumble = EstimateRumble(spectral, sampleRate);
         NoiseEstimate noise = EstimateNoise(global, spectral, sampleRate);
+        // The rack and restoration workbench must make the same minimum-benefit decision. The
+        // spectral evidence alone can nominate a quiet passage that is actually music; compare it
+        // with the whole programme before either UI offers reduction. This also moves the costly
+        // scan off the workbench dispatcher and lets both consumers reuse one result.
+        float[][] noiseChannels = channels as float[][] ?? channels.ToArray();
+        double noiseToProgrammeDb = Restoration.EstimateNoiseToProgrammeDb(
+            noiseChannels, sampleRate, noiseDepthCeilingDb, cancellationToken);
+        if (noise.Detected && Restoration.SuggestReductionDepthDb(
+                noiseToProgrammeDb, noise.ReductionDb, noiseDepthCeilingDb) <= 0)
+        {
+            noise = noise with
+            {
+                NoiseToProgrammeDb = noiseToProgrammeDb,
+                BenefitWithheld = true,
+                Confidence = Math.Min(noise.Confidence, 0.54),
+                Detected = false,
+            };
+        }
+        else
+        {
+            noise = noise with { NoiseToProgrammeDb = noiseToProgrammeDb };
+        }
 
         var metrics = new List<CleanupMetric>();
         var recommendations = new List<CleanupRecommendation>();
@@ -114,6 +141,7 @@ public static class CleanupAnalyzer
             RecommendedPreset = recommended,
             WindowsAnalyzed = spectral.WindowsAnalyzed,
             SideToMidDb = global.SideToMidDb,
+            NoiseToProgrammeDb = noiseToProgrammeDb,
         };
     }
 
@@ -134,12 +162,13 @@ public static class CleanupAnalyzer
         Set(hpf, "mode", 1.0); // HP mode
         Set(hpf, "cutoff", rumble.Cutoff);
         Set(hpf, "q", 0.707);
-        Set(hpf, "slope", 0.0); // 12dB
+        Set(hpf, "slope", 1.0); // fourth-order magnitude
+        Set(hpf, "phase", 1.0); // shared restoration kernel; offline latency is compensated
         recommendations.Add(Recommendation(
             baseline, hpf, "High-Pass Filter",
             rumble.Detected
-                ? $"Subsonic energy is {rumble.RatioDb:+0.0;-0.0;0.0} dB relative to bass fundamentals."
-                : "No persistent subsonic rumble was separated from musical bass.",
+                ? $"Subsonic energy is {rumble.RatioDb:+0.0;-0.0;0.0} dB relative to bass fundamentals in the typical passage ({rumble.Persistence:P0} persistent)."
+                : $"Subsonic energy was not persistent enough to separate from musical bass ({rumble.Persistence:P0} of passages).",
             $"{Param(State(baseline, "filter"), "cutoff"):0} Hz",
             rumble.Detected ? $"{rumble.Cutoff:0} Hz · Q 0.71" : "Bypass",
             rumble.Confidence, true));
@@ -159,9 +188,9 @@ public static class CleanupAnalyzer
         ApplyNoise(denoise, noise);
         recommendations.Add(Recommendation(
             baseline, denoise, "Noise & Hiss Reduction",
-            noise.Detected
-                ? $"Stationary quiet passages support a {global.NoiseFloorDb:0.0} dBFS floor and {noise.HissExcessDb:+0.0;-0.0;0.0} dB high-band excess."
-                : "The file does not contain enough distinct, stationary quiet audio for safe automatic reduction.",
+            NoiseEvidence(noise, global,
+                $"Stationary quiet passages support a {global.NoiseFloorDb:0.0} dBFS floor and {noise.HissExcessDb:+0.0;-0.0;0.0} dB high-band excess.",
+                "The file does not contain enough distinct, stationary quiet audio for safe automatic reduction."),
             NoiseText(State(baseline, "denoise")),
             noise.Detected ? NoiseText(denoise) : "Bypass",
             noise.Confidence, true));
@@ -278,9 +307,9 @@ public static class CleanupAnalyzer
         });
         recommendations.Add(Recommendation(
             baseline, denoise, "Noise & Hiss Reduction",
-            noise.Detected
-                ? "Quiet/active separation supports restrained transfer cleanup without lifting the noise floor."
-                : "No reliable quiet/active separation was found, so automatic reduction is bypassed.",
+            NoiseEvidence(noise, global,
+                "Quiet/active separation supports restrained transfer cleanup without lifting the noise floor.",
+                "No reliable quiet/active separation was found, so automatic reduction is bypassed."),
             NoiseText(State(baseline, "denoise")), denoise.Enabled ? NoiseText(denoise) : "Bypass",
             noise.Confidence, true));
 
@@ -486,7 +515,7 @@ public static class CleanupAnalyzer
         int maximum = Math.Min(32768, frames);
         int fftSize = HighestPowerOfTwo(maximum);
         if (fftSize < 512)
-            return new SpectralStats(Math.Max(1, fftSize), 0, 0, [], []);
+            return new SpectralStats(Math.Max(1, fftSize), 0, 0, [], [], []);
 
         int windowCount = frames == fftSize ? 1 : Math.Min(24, Math.Max(2, frames / Math.Max(1, fftSize / 2)));
         var starts = new List<int>(windowCount);
@@ -541,11 +570,24 @@ public static class CleanupAnalyzer
 
         var valid = measured.Where(item => item.RmsDb > -100 && item.ZeroRatio < 0.95).ToList();
         if (valid.Count == 0)
-            return new SpectralStats(fftSize, 0, 0, [], []);
+            return new SpectralStats(fftSize, 0, 0, [], [], []);
         var quiet = valid.OrderBy(item => item.RmsDb).Take(Math.Min(8, valid.Count)).ToList();
         double[] program = AveragePower(valid, fftSize / 2);
         double[] noise = AveragePower(quiet, fftSize / 2);
-        return new SpectralStats(fftSize, measured.Count, quiet.Count, program, noise);
+        double[] rumbleRatios = valid
+            .Select(item =>
+            {
+                double subsonic = BandEnergyDb(item.Power, 5, 25, sampleRate, fftSize);
+                double bass = BandEnergyDb(item.Power, 40, 120, sampleRate, fftSize);
+                // If both bands hit the numerical floor their ratio is spuriously 0 dB, which is
+                // maximum-confidence "rumble" in a file containing only midrange. Keep the window
+                // in the persistence denominator, but give absent subsonic energy a safe floor.
+                return subsonic <= -90 ? -200 : subsonic - bass;
+            })
+            .Order()
+            .ToArray();
+        return new SpectralStats(fftSize, measured.Count, quiet.Count, program, noise,
+            rumbleRatios);
     }
 
     private static HumEstimate EstimateHum(
@@ -712,17 +754,26 @@ public static class CleanupAnalyzer
 
     private static RumbleEstimate EstimateRumble(SpectralStats spectral, int sampleRate)
     {
-        if (spectral.ProgramPower.Length == 0)
-            return new RumbleEstimate(double.NegativeInfinity, 28, 0, false);
-        double sub = BandDb(spectral.ProgramPower, 5, 25, sampleRate, spectral.FftSize);
-        double bass = BandDb(spectral.ProgramPower, 40, 120, sampleRate, spectral.FftSize);
-        double ratio = sub - bass;
+        if (spectral.RumbleRatiosDb.Length == 0)
+            return new RumbleEstimate(double.NegativeInfinity, 0, 28, 0, false);
+
+        // A ratio of averages lets one loud low-frequency event dominate the entire analysis and
+        // then calls it "persistent". Use the median window instead, and separately require that
+        // the same evidence clears the detection boundary in at least half of the passages.
+        double[] ratios = spectral.RumbleRatiosDb;
+        int middle = ratios.Length / 2;
+        double ratio = (ratios.Length & 1) == 0
+            ? (ratios[middle - 1] + ratios[middle]) * 0.5
+            : ratios[middle];
         double confidence = Ramp(ratio, -20, -3);
-        bool detected = confidence >= 0.55;
+        double detectionRatio = -20 + 0.55 * 17;
+        double persistence = ratios.Count(value => value >= detectionRatio) / (double)ratios.Length;
+        bool detected = confidence >= 0.55 && persistence >= 0.5;
+        if (!detected) confidence = Math.Min(confidence, 0.54);
         double cutoff = detected
             ? Quantize(Math.Clamp(28 + Ramp(ratio, -12, 6) * 12, 28, 40), 1)
             : 28;
-        return new RumbleEstimate(ratio, cutoff, confidence, detected);
+        return new RumbleEstimate(ratio, persistence, cutoff, confidence, detected);
     }
 
     private static NoiseEstimate EstimateNoise(GlobalStats global, SpectralStats spectral, int sampleRate)
@@ -766,7 +817,17 @@ public static class CleanupAnalyzer
                         reduction >= 2;
         if (!detected) confidence = Math.Min(confidence, 0.54);
         return new NoiseEstimate(threshold, reduction, hiss, hissFrequency, release,
-            hissExcess, confidence, detected);
+            hissExcess, double.NaN, false, confidence, detected);
+    }
+
+    private static string NoiseEvidence(NoiseEstimate noise, GlobalStats global,
+        string detectedEvidence, string absentEvidence)
+    {
+        if (noise.Detected) return detectedEvidence;
+        if (!noise.BenefitWithheld) return absentEvidence;
+        return $"A stationary {global.NoiseFloorDb:0.0} dBFS floor was measured, but it sits "
+             + $"{noise.NoiseToProgrammeDb:0.0} dB under the programme; reduction would remove "
+             + "more music than noise and remains bypassed.";
     }
 
     private static (double AlignmentMs, double Confidence) EstimateAlignment(
@@ -983,6 +1044,19 @@ public static class CleanupAnalyzer
         double sum = 0;
         for (int bin = first; bin <= last; bin++) sum += power[bin];
         return 10 * Math.Log10(Math.Max(1e-18, sum / Math.Max(1, last - first + 1)));
+    }
+
+    /// <summary>Total energy in a band, used when two differently wide bands are compared.</summary>
+    private static double BandEnergyDb(double[] power, double lowHz, double highHz,
+        int sampleRate, int fftSize)
+    {
+        if (power.Length == 0 || fftSize <= 1 || highHz <= lowHz) return double.NegativeInfinity;
+        double binHz = sampleRate / (double)fftSize;
+        int first = Math.Clamp((int)Math.Ceiling(lowHz / binHz), 1, power.Length - 1);
+        int last = Math.Clamp((int)Math.Floor(highHz / binHz), first, power.Length - 1);
+        double sum = 0;
+        for (int bin = first; bin <= last; bin++) sum += power[bin];
+        return 10 * Math.Log10(Math.Max(1e-18, sum));
     }
 
     private static int HighestPowerOfTwo(int value)

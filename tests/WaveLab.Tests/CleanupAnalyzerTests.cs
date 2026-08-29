@@ -127,8 +127,64 @@ public sealed class CleanupAnalyzerTests
         Assert.Equal(1, Param(highPass, "mode")); // HP mode of the unified Multi-Mode Filter
         Assert.InRange(Param(highPass, "cutoff"), 28.0, 45.0);
         Assert.InRange(Param(highPass, "q"), 0.65, 0.75);
+        Assert.Equal(1, Param(highPass, "slope"));
+        Assert.Equal(1, Param(highPass, "phase"));
         Assert.True(Recommendation(result, "filter").Confidence >= 0.55);
 
+    }
+
+    [Fact]
+    public void OneLowFrequencyPassageDoesNotBecomePersistentRumble()
+    {
+        float[][] input = StereoSignal(12, (time, channel) =>
+        {
+            double isolatedLowPassage = time < 2
+                ? 0.30 * Math.Sin(2 * Math.PI * 14 * time + channel * 0.2)
+                : 0;
+            return isolatedLowPassage
+                 + 0.035 * Math.Sin(2 * Math.PI * 80 * time)
+                 + 0.030 * Math.Sin(2 * Math.PI * (channel == 0 ? 431 : 523) * time);
+        });
+
+        CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
+            input, SampleRate, CleanupProfile.VinylCleanup);
+        EffectFactory.EffectState highPass = State(result.RecommendedPreset, "filter");
+        CleanupRecommendation recommendation = Recommendation(result, "filter");
+
+        Assert.False(highPass.Enabled);
+        Assert.True(recommendation.Confidence < 0.55);
+        Assert.Contains("not persistent", recommendation.Evidence, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RumbleUsesTotalBandEnergyRatherThanAverageBinHeight()
+    {
+        float[][] input = StereoSignal(12, (time, _) =>
+              0.010 * Math.Sin(2 * Math.PI * 14 * time)
+            + 0.020 * Math.Sin(2 * Math.PI * 50 * time)
+            + 0.020 * Math.Sin(2 * Math.PI * 70 * time)
+            + 0.020 * Math.Sin(2 * Math.PI * 90 * time)
+            + 0.020 * Math.Sin(2 * Math.PI * 110 * time)
+            + 0.025 * Math.Sin(2 * Math.PI * 440 * time));
+
+        CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
+            input, SampleRate, CleanupProfile.VinylCleanup);
+
+        Assert.False(State(result.RecommendedPreset, "filter").Enabled);
+        Assert.True(Recommendation(result, "filter").Confidence < 0.55);
+    }
+
+    [Fact]
+    public void ProgramWithNoLowFrequencyEnergyDoesNotInventRumbleFromTheNumericalFloor()
+    {
+        float[][] input = StereoSignal(8, (time, channel) =>
+            0.08 * Math.Sin(2 * Math.PI * (channel == 0 ? 440 : 523) * time));
+
+        CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
+            input, SampleRate, CleanupProfile.VinylCleanup);
+
+        Assert.False(State(result.RecommendedPreset, "filter").Enabled);
+        Assert.Equal(0, Recommendation(result, "filter").Confidence);
     }
 
     [Fact]
@@ -327,10 +383,10 @@ public sealed class CleanupAnalyzerTests
         float[][] input = StereoSignal(12, (time, channel) =>
         {
             state = state * 1_664_525u + 1_013_904_223u;
-            double noise = ((state >> 8) / 16_777_215.0 * 2 - 1) * 0.00035;
-            double hiss = 0.0014 * Math.Sin(2 * Math.PI * (channel == 0 ? 8_700 : 9_100) * time);
+            double noise = ((state >> 8) / 16_777_215.0 * 2 - 1) * 0.0015;
+            double hiss = 0.008 * Math.Sin(2 * Math.PI * (channel == 0 ? 8_700 : 9_100) * time);
             double program = time >= 3
-                ? 0.012 * Math.Sin(2 * Math.PI * (channel == 0 ? 439 : 443) * time)
+                ? 0.025 * Math.Sin(2 * Math.PI * (channel == 0 ? 439 : 443) * time)
                 : 0;
             return noise + hiss + program;
         });
@@ -339,14 +395,16 @@ public sealed class CleanupAnalyzerTests
             input, SampleRate, CleanupProfile.VinylCleanup);
         EffectFactory.EffectState denoise = State(result.RecommendedPreset, "denoise");
 
-        Assert.True(denoise.Enabled);
+        Assert.True(denoise.Enabled,
+            $"noise-to-programme was {result.NoiseToProgrammeDb:0.0} dB; "
+          + Recommendation(result, "denoise").Evidence);
         Assert.InRange(Param(denoise, "reduction"), 0.5, 12.0);
         Assert.InRange(Param(denoise, "hiss"), 0.0, 10.0);
         Assert.True(Recommendation(result, "denoise").Confidence >= 0.55);
     }
 
     [Fact]
-    public void StrongQuietToProgramSeparationStillRequestsUsefulNoiseReduction()
+    public void NoiseFarUnderTheProgrammeIsWithheldFromBothAutomaticWorkflows()
     {
         uint state = 0xA11C_E55Du;
         float[][] input = StereoSignal(12, (time, channel) =>
@@ -363,9 +421,10 @@ public sealed class CleanupAnalyzerTests
             input, SampleRate, CleanupProfile.VinylCleanup);
         EffectFactory.EffectState denoise = State(result.RecommendedPreset, "denoise");
 
-        Assert.True(denoise.Enabled);
-        Assert.InRange(Param(denoise, "reduction"), 3.0, 12.0);
-        Assert.True(Recommendation(result, "denoise").Confidence >= 0.55);
+        Assert.False(denoise.Enabled);
+        Assert.True(Recommendation(result, "denoise").Confidence < 0.55);
+        Assert.Contains("more music than noise", Recommendation(result, "denoise").Evidence,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

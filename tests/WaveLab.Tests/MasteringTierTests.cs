@@ -438,4 +438,24 @@ public sealed class MasteringTierTests(ITestOutputHelper output)
         Assert.InRange(gentle, 10, 14);
         Assert.InRange(steep, 21, 27);
     }
+
+    [Fact]
+    public void SwitchingFilterPhaseModesCannotResumeStaleHistory()
+    {
+        var effect = Configured<FilterEffect>(
+            ("cutoff", 30), ("q", 0.707), ("mode", 1), ("slope", 1), ("phase", 0));
+        var impulse = new float[2_048];
+        impulse[^1] = 1;
+        effect.Process(impulse, 0, impulse.Length);
+
+        effect.SetParam("phase", 1);
+        var linearSilence = new float[effect.LatencySamples + 512];
+        effect.Process(linearSilence, 0, linearSilence.Length);
+        effect.SetParam("phase", 0);
+        var resumedIir = new float[2_048];
+        effect.Process(resumedIir, 0, resumedIir.Length);
+
+        Assert.All(linearSilence, sample => Assert.InRange(Math.Abs(sample), 0, 1e-7));
+        Assert.All(resumedIir, sample => Assert.InRange(Math.Abs(sample), 0, 1e-7));
+    }
 }

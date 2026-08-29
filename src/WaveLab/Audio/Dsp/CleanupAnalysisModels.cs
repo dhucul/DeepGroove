@@ -47,6 +47,13 @@ public sealed class CleanupAnalysisResult
     /// </remarks>
     public double SideToMidDb { get; init; }
 
+    /// <summary>
+    /// How far the programme sits above its quietest non-silent passage. The restoration
+    /// workbench and analyzed rack preset use this same cached measurement when deciding whether
+    /// broadband reduction offers enough benefit to run.
+    /// </summary>
+    public double NoiseToProgrammeDb { get; init; } = Restoration.NoiseDepthCeilingDb;
+
     public EffectFactory.ChainPreset BuildSelectedPreset(IEnumerable<string> selectedTypeIds)
     {
         ArgumentNullException.ThrowIfNull(selectedTypeIds);
