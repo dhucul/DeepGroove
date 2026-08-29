@@ -9,7 +9,7 @@ namespace WaveLab.Audio;
 /// metering — peak/RMS, EBU R128 loudness, stereo correlation, and ring buffers feeding
 /// the spectrum analyzer and goniometer.
 /// </summary>
-public sealed class MasterSection : ISampleProvider
+public sealed class MasterSection : ISampleProvider, IDisposable
 {
     private ISampleProvider? _source;
     private readonly object _chainLock = new();
@@ -36,6 +36,7 @@ public sealed class MasterSection : ISampleProvider
 
     // M/S processing mode
     private bool _msMode;
+    private int _disposed;
 
     public MasterSection()
     {
@@ -325,6 +326,28 @@ public sealed class MasterSection : ISampleProvider
     {
         if (effects == null) return;
         foreach (IAudioEffect fx in effects) Retire(fx);
+    }
+
+    /// <summary>Releases every effect instance owned by the live chain and its A/B snapshots.</summary>
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
+        List<IAudioEffect> owned;
+        lock (_chainLock)
+        {
+            Volatile.Write(ref _source, null);
+            owned = [.. _chain];
+            if (_snapshotA != null) owned.AddRange(_snapshotA);
+            if (_snapshotB != null) owned.AddRange(_snapshotB);
+            _chain.Clear();
+            _snapshotA = null;
+            _snapshotB = null;
+            _isComparingB = false;
+        }
+
+        Retire(owned);
+        GC.SuppressFinalize(this);
     }
 
     public bool SetEffectEnabled(IAudioEffect fx, bool enabled)

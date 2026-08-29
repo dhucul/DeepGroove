@@ -44,7 +44,8 @@ public static class AutosaveService
     }
 
     /// <summary>Write every dirty document; returns how many were saved.</summary>
-    public static int RunNow(IEnumerable<(AudioDocument Doc, Guid Id)> dirtyDocs)
+    public static int RunNow(IEnumerable<(AudioDocument Doc, Guid Id)> dirtyDocs,
+        CancellationToken cancellationToken = default)
     {
         var inputs = dirtyDocs.ToList();
         var payload = new List<(string File, AudioDocument Doc, Guid Id)>();
@@ -59,10 +60,12 @@ public static class AutosaveService
             Directory.CreateDirectory(AppSettings.AutosaveDir);
             foreach (var (doc, id) in inputs)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 string file = Path.Combine(AppSettings.AutosaveDir, $"{id:N}_{Guid.NewGuid():N}.wav");
                 payload.Add((file, doc, id));
-                WavCodec.Save(doc, file, 32, dither: false); // heavy IO stays outside the lock
+                WavCodec.Save(doc, file, 32, dither: false, cancellationToken); // heavy IO stays outside the lock
             }
+            cancellationToken.ThrowIfCancellationRequested();
             lock (ManifestLock)
             {
                 if (mutationGeneration != _mutationGeneration)
@@ -95,6 +98,12 @@ public static class AutosaveService
                     try { DeleteAutosaveFile(oldFile); } catch { }
             }
             return payload.Count;
+        }
+        catch (OperationCanceledException)
+        {
+            foreach (var (file, _, _) in payload)
+                try { DeleteAutosaveFile(file); } catch { }
+            throw;
         }
         catch
         {

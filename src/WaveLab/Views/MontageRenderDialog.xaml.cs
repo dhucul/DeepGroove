@@ -154,6 +154,7 @@ public partial class MontageRenderDialog : Window
         if (_busy) return;
 
         string? filePath = null;
+        int fileFilterIndex = 1;
         if (Destination == MontageDestination.File)
         {
             var picker = new SaveFileDialog
@@ -165,6 +166,7 @@ public partial class MontageRenderDialog : Window
             };
             if (picker.ShowDialog(this) != true) return;
             filePath = picker.FileName;
+            fileFilterIndex = picker.FilterIndex;
         }
 
         SetBusy(true, "Rendering the montage…");
@@ -196,6 +198,11 @@ public partial class MontageRenderDialog : Window
                 audio = await Task.Run(
                     () => _master.ProcessOffline(audio, montage.SampleRate, token, rackProgress),
                     token);
+                result = result with
+                {
+                    Channels = audio,
+                    PeakAmplitude = MeasurePeak(audio, token),
+                };
             }
 
             Rendered = new AudioDocument(audio, montage.SampleRate, sourceBitDepth: 32)
@@ -207,10 +214,9 @@ public partial class MontageRenderDialog : Window
 
             if (filePath != null)
             {
-                int depth = Path.GetExtension(filePath)
-                    .Equals(".aiff", StringComparison.OrdinalIgnoreCase) ? 24 : 32;
-                await Task.Run(() => WavCodec.Save(Rendered, filePath, depth, dither: depth == 16,
-                    cancellationToken: token), token);
+                int selectedFilter = fileFilterIndex;
+                await Task.Run(
+                    () => SaveRenderedFile(Rendered, filePath, selectedFilter, token), token);
             }
 
         }
@@ -242,6 +248,41 @@ public partial class MontageRenderDialog : Window
         string name = string.IsNullOrWhiteSpace(value) ? "Montage" : value.Trim();
         foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
         return name;
+    }
+
+    internal static (int Depth, bool Dither, bool Aiff) ResolveFileFormat(int filterIndex) =>
+        filterIndex switch
+        {
+            2 => (24, false, false),
+            3 => (16, true, false),
+            4 => (24, false, true),
+            _ => (32, false, false),
+        };
+
+    internal static void SaveRenderedFile(AudioDocument document, string path, int filterIndex,
+        CancellationToken cancellationToken = default)
+    {
+        var format = ResolveFileFormat(filterIndex);
+        if (format.Aiff)
+            AiffCodec.Save(document, path, format.Depth, format.Dither, cancellationToken);
+        else
+            WavCodec.Save(document, path, format.Depth, format.Dither, cancellationToken);
+    }
+
+    internal static double MeasurePeak(IReadOnlyList<float[]> channels,
+        CancellationToken cancellationToken = default)
+    {
+        double peak = 0;
+        foreach (float[] channel in channels)
+        {
+            for (int i = 0; i < channel.Length; i++)
+            {
+                if ((i & 65535) == 0) cancellationToken.ThrowIfCancellationRequested();
+                float sample = channel[i];
+                if (float.IsFinite(sample)) peak = Math.Max(peak, Math.Abs((double)sample));
+            }
+        }
+        return peak;
     }
 
     private void SetBusy(bool busy, string status)

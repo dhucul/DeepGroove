@@ -180,6 +180,47 @@ public sealed class MontageRenderProbe : IDisposable
     public void TheRenderedTabIsNamedApartFromTheMontage(string? title, string expected) =>
         Assert.Equal(expected, MontageRenderDialog.RenderedTitle(title));
 
+    [Theory]
+    [InlineData(1, 32, false, false)]
+    [InlineData(2, 24, false, false)]
+    [InlineData(3, 16, true, false)]
+    [InlineData(4, 24, false, true)]
+    public void EveryFileChoiceMapsToItsAdvertisedContainerAndDepth(
+        int filterIndex, int depth, bool dither, bool aiff)
+    {
+        var actual = MontageRenderDialog.ResolveFileFormat(filterIndex);
+        Assert.Equal((depth, dither, aiff), actual);
+    }
+
+    [Theory]
+    [InlineData(1, "RIFF", 32)]
+    [InlineData(2, "RIFF", 24)]
+    [InlineData(3, "RIFF", 16)]
+    [InlineData(4, "FORM", 24)]
+    public void FileChoicesWriteTheContainerAndDepthTheyName(
+        int filterIndex, string signature, int depth)
+    {
+        Directory.CreateDirectory(_sandbox);
+        string path = Path.Combine(_sandbox, filterIndex == 4 ? "render.aiff" : "render.wav");
+        var document = new AudioDocument([[0f, 0.25f, -0.25f]], Rate, 32);
+
+        MontageRenderDialog.SaveRenderedFile(document, path, filterIndex);
+
+        byte[] bytes = File.ReadAllBytes(path);
+        Assert.Equal(signature, System.Text.Encoding.ASCII.GetString(bytes, 0, 4));
+        AudioDocument loaded = filterIndex == 4 ? AiffCodec.Load(path) : WavCodec.Load(path);
+        Assert.Equal(depth, loaded.SourceBitDepth);
+    }
+
+    [Fact]
+    public void FinalPeakIsMeasuredFromThePostRackAudio()
+    {
+        double peak = MontageRenderDialog.MeasurePeak(
+            [[0.1f, -0.25f], [0.5f, -1.4f, float.NaN]]);
+
+        Assert.Equal(1.4, peak, precision: 6);
+    }
+
     /// <summary>
     /// The CD destinations do not write anything themselves — they open the CD window on the
     /// rendered programme so the running order and catalogue numbers can be checked first, and that

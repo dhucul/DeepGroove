@@ -215,7 +215,7 @@ public partial class BatchConvertDialog : Window
                     if (presetDefinition != null)
                     {
                         var chain = EffectFactory.Instantiate(presetDefinition);
-                        var section = new MasterSection();
+                        using var section = new MasterSection();
                         section.ReplaceChain(chain);
                         var processed = section.ProcessOffline(doc.Channels.ToArray(), doc.SampleRate, token);
                         token.ThrowIfCancellationRequested();

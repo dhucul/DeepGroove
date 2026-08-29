@@ -36,7 +36,9 @@ public partial class MainWindow : Window
     /// </remarks>
     private bool LongOperationRunning
     {
-        get => _longOperationRunning;
+        // ApplyChain is owned by MainViewModel rather than this window. Include that state so a
+        // menu handler cannot start a second operation and later clear ApplyChain's busy flag.
+        get => _longOperationRunning || _vm.IsDocumentOperationRunning;
         set
         {
             if (_longOperationRunning == value) return;
@@ -53,6 +55,8 @@ public partial class MainWindow : Window
     /// </summary>
     private readonly Dictionary<Guid, HistoryDialog> _historyPanels = [];
     private Task _startupTask = Task.CompletedTask;
+    private readonly CancellationTokenSource _startupCancellation = new();
+    private bool _settlingStartup;
 
     public MainWindow()
     {
@@ -115,7 +119,7 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             var args = Environment.GetCommandLineArgs().Skip(1).Where(System.IO.File.Exists).ToArray();
-            _startupTask = RunStartupAsync(args);
+            _startupTask = RunStartupAsync(args, _startupCancellation.Token);
             await _startupTask;
         };
         Closing += OnWindowClosing;
@@ -159,9 +163,10 @@ public partial class MainWindow : Window
         frequencyRuler.Visibility = spectral ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private async Task RunStartupAsync(string[] args)
+    private async Task RunStartupAsync(string[] args, CancellationToken cancellationToken)
     {
-            try { await _vm.StartupLoadAsync(args); }
+            try { await _vm.StartupLoadAsync(args, cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "Startup failed", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -172,7 +177,7 @@ public partial class MainWindow : Window
     {
         if (_allowClose) return;
         e.Cancel = true;
-        if (_closing) return;
+        if (_closing || _settlingStartup) return;
         // RunBlocking no longer disables the window — that would disable the overlay's own Cancel
         // button — so the progress host is what says whether something is still running.
         if (_vm.Progress.Blocking is { } blocking)
@@ -189,6 +194,18 @@ public partial class MainWindow : Window
                 "An audio operation is still running. Wait for it to finish, then close Deep Groove again.",
                 "Operation in progress", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
+        }
+        if (!_startupTask.IsCompleted)
+        {
+            // Startup can be reading the only recovery copy. It must be cancelled and joined before
+            // the dirty-document prompt or OnCleanExitAsync is allowed to clear recovery storage.
+            _settlingStartup = true;
+            try
+            {
+                _startupCancellation.Cancel();
+                await _startupTask;
+            }
+            finally { _settlingStartup = false; }
         }
         if (_vm.IsTransportRecording)
         {
@@ -229,11 +246,6 @@ public partial class MainWindow : Window
         CloseAllPluginEditors();
         try
         {
-            // Bounded. Startup work is best-effort by the time the user is closing, and
-            // _closing has already latched — so a session restore stuck on a disconnected
-            // network path made the window impossible to close by any means.
-            try { await _startupTask.WaitAsync(TimeSpan.FromSeconds(5)); }
-            catch (TimeoutException) { }
             await _vm.OnCleanExitAsync();
         }
         catch (Exception ex)
@@ -895,6 +907,7 @@ public partial class MainWindow : Window
         if (count <= 0) return false;
         var channels = d.Doc.Channels.ToArray();
         int sr = d.Doc.SampleRate;
+        int sourceVersion = d.Doc.EditVersion;
         LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         bool applied = false;
@@ -907,7 +920,13 @@ public partial class MainWindow : Window
                     var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
                     return transform(input, sr, progress, token);
                 }, token);
-                if (output == null || start + count > d.Doc.Length) return;
+                if (output == null) return;
+                if (!_vm.Documents.Contains(d) || d.Doc.EditVersion != sourceVersion ||
+                    start + count > d.Doc.Length)
+                {
+                    _vm.ReportAction($"{undoName} abandoned · the source changed while processing.");
+                    return;
+                }
                 _vm.PrepareForDocumentEdit(d);
                 d.Doc.ReplaceRange(start, count, output, undoName);
                 applied = true;

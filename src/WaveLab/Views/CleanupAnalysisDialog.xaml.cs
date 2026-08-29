@@ -356,7 +356,7 @@ public partial class CleanupAnalysisDialog : Window
         int boundedLength = checked(relativePreviewStart + _previewLength);
         float[][] boundedSource = CopyChannels(source, warmStart, boundedLength, cancellationToken);
 
-        var isolatedRack = new MasterSection();
+        using var isolatedRack = new MasterSection();
         isolatedRack.ReplaceChain(EffectFactory.Instantiate(preset));
         isolatedRack.RackEnabled = true;
         return isolatedRack.ProcessOfflineRange(

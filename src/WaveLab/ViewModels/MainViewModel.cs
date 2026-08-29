@@ -111,20 +111,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _autosaveTimer.Start();
 
         OpenCommand = new RelayCommand(Open);
-        SaveCommand = new RelayCommand(Save, () => _active != null);
-        SaveAsCommand = new RelayCommand(SaveAs, () => _active != null);
+        SaveCommand = new RelayCommand(Save, () => !_documentOperationRunning && _active != null);
+        SaveAsCommand = new RelayCommand(SaveAs, () => !_documentOperationRunning && _active != null);
         CloseTabCommand = new RelayCommand<TabViewModel>(CloseTab,
-            tab => tab != null ? Documents.Contains(tab) : _activeTab != null);
-        CloseAllCommand = new RelayCommand(CloseAll, () => Documents.Count > 0);
+            tab => !_documentOperationRunning && (tab != null ? Documents.Contains(tab) : _activeTab != null));
+        CloseAllCommand = new RelayCommand(CloseAll,
+            () => !_documentOperationRunning && Documents.Count > 0);
         ExitCommand = new RelayCommand(() => Application.Current.MainWindow?.Close());
 
-        UndoCommand = new RelayCommand(Undo, () => _active?.Doc.CanUndo == true);
-        RedoCommand = new RelayCommand(Redo, () => _active?.Doc.CanRedo == true);
-        CutCommand = new RelayCommand(Cut, () => !_editOperationRunning && _active?.HasSelection == true);
-        CopyCommand = new RelayCommand(Copy, () => !_editOperationRunning && _active?.HasSelection == true);
-        PasteCommand = new RelayCommand(Paste, () => !_editOperationRunning && _active != null && _clipboard != null);
-        DeleteCommand = new RelayCommand(DeleteSelection, () => !_editOperationRunning && _active?.HasSelection == true);
-        TrimCommand = new RelayCommand(Trim, () => !_editOperationRunning && _active?.HasSelection == true);
+        UndoCommand = new RelayCommand(Undo,
+            () => CanMutateDocument && _active?.Doc.CanUndo == true);
+        RedoCommand = new RelayCommand(Redo,
+            () => CanMutateDocument && _active?.Doc.CanRedo == true);
+        CutCommand = new RelayCommand(Cut, () => CanMutateDocument && _active?.HasSelection == true);
+        CopyCommand = new RelayCommand(Copy, () => CanMutateDocument && _active?.HasSelection == true);
+        PasteCommand = new RelayCommand(Paste,
+            () => CanMutateDocument && _active != null && _clipboard != null);
+        DeleteCommand = new RelayCommand(DeleteSelection,
+            () => CanMutateDocument && _active?.HasSelection == true);
+        TrimCommand = new RelayCommand(Trim,
+            () => CanMutateDocument && _active?.HasSelection == true);
         SelectAllCommand = new RelayCommand(() => WithDoc(d => d.SelectAll()), () => HasAudioDocument);
 
         PlayCommand = new RelayCommand(TogglePlay,
@@ -142,22 +148,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             () => _active?.HasSelection == true);
 
         GainUpCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Gain(d, s, c, 3)),
-            () => HasAudioDocument);
+            () => CanMutateAudio);
         GainDownCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.Gain(d, s, c, -3)),
-            () => HasAudioDocument);
+            () => CanMutateAudio);
         NormalizeCommand = new RelayCommand(() => RequestNormalizePeakDialog?.Invoke(),
-            () => HasAudioDocument);
+            () => CanMutateAudio);
         NormalizeLoudnessCommand = new RelayCommand(() => RequestNormalizeLoudnessDialog?.Invoke(),
-            () => HasAudioDocument);
-        FadeInCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.FadeIn(d, s, c)), () => HasAudioDocument);
-        FadeOutCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.FadeOut(d, s, c)), () => HasAudioDocument);
-        ReverseCommand = new RelayCommand(() => ApplyToRange(Processing.Reverse), () => HasAudioDocument);
-        RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset), () => HasAudioDocument);
+            () => CanMutateAudio);
+        FadeInCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.FadeIn(d, s, c)),
+            () => CanMutateAudio);
+        FadeOutCommand = new RelayCommand(() => ApplyToRange((d, s, c) => Processing.FadeOut(d, s, c)),
+            () => CanMutateAudio);
+        ReverseCommand = new RelayCommand(() => ApplyToRange(Processing.Reverse), () => CanMutateAudio);
+        RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset), () => CanMutateAudio);
         InsertSilenceCommand = new RelayCommand(() => WithDoc(d =>
         {
             PrepareForDocumentEdit(d);
             Processing.InsertSilence(d.Doc, d.Cursor, 1.0);
-        }), () => HasDocument);
+        }), () => CanMutateAudio);
 
         AddMarkerCommand = new RelayCommand(() => WithDoc(d => d.AddMarker(
             d.HasSelection ? d.SelStart
@@ -175,7 +183,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             d.Regions.Clear();
             d.NotifyMarkersChanged();
         }), () => _active is { } d && (d.Markers.Count > 0 || d.Regions.Count > 0));
-        SmoothEditCommand = new RelayCommand(SmoothEditPoints, () => HasAudioDocument);
+        SmoothEditCommand = new RelayCommand(SmoothEditPoints, () => CanMutateAudio);
 
         ShowWaveformCommand = new RelayCommand(() => EditorView = EditorViewMode.Waveform);
         ShowSplitCommand = new RelayCommand(() => EditorView = EditorViewMode.Split);
@@ -188,13 +196,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         UseLogarithmicScaleCommand = new RelayCommand(() => SpectralScale = SpectralFrequencyScale.Logarithmic);
         UseConstantQScaleCommand = new RelayCommand(() => SpectralScale = SpectralFrequencyScale.ConstantQ);
         RenderCommand = new RelayCommand(RenderMaster, () => HasAudioDocument);
-        ApplyChainCommand = new RelayCommand(ApplyChain, () => HasAudioDocument);
+        ApplyChainCommand = new RelayCommand(ApplyChain, () => CanMutateAudio);
         RecordCommand = new RelayCommand(ToggleRecord, () => !IsFinalizingRecording);
         RecordSetupCommand = new RelayCommand(OpenRecordDialog,
             () => !IsTransportRecording && !IsFinalizingRecording && !HasPendingTransportRecording);
         SettingsCommand = new RelayCommand(() => RequestSettingsDialog?.Invoke());
-        ExportCommand = new RelayCommand(() => RequestExportDialog?.Invoke(), () => HasAudioDocument);
-        StatisticsCommand = new RelayCommand(() => RequestStatisticsDialog?.Invoke(), () => HasAudioDocument);
+        ExportCommand = new RelayCommand(() => RequestExportDialog?.Invoke(),
+            () => !_documentOperationRunning && HasAudioDocument);
+        StatisticsCommand = new RelayCommand(() => RequestStatisticsDialog?.Invoke(),
+            () => !_documentOperationRunning && HasAudioDocument);
         OpenRecentCommand = new RelayCommand<string>(path => { if (path != null) OpenFiles([path]); });
         ClearRecentFilesCommand = new RelayCommand(ClearRecentFiles, () => RecentFiles.Count > 0);
         RecentFileActions = [new MenuEntry("Clear Recent Files", ClearRecentFilesCommand)];
@@ -294,6 +304,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// </para>
     /// </remarks>
     public bool IsDocumentOperationRunning => _documentOperationRunning;
+    private bool CanMutateDocument => !_editOperationRunning && !_documentOperationRunning;
+    private bool CanMutateAudio => CanMutateDocument && HasAudioDocument;
 
     /// <summary>Told by the shell as a long document operation starts and finishes.</summary>
     public void SetDocumentOperationRunning(bool value)
@@ -1016,11 +1028,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally { _openOperations.Remove(operation); }
     }
 
-    private async Task OpenFilesAsync(IEnumerable<string> paths, OpenBitDepth? openAs = null)
+    private async Task OpenFilesAsync(IEnumerable<string> paths, OpenBitDepth? openAs = null,
+        CancellationToken cancellationToken = default)
     {
         if (_shuttingDown) return;
         foreach (var path in paths.ToList())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Mouse.OverrideCursor = Cursors.Wait;
             try
             {
@@ -1031,16 +1045,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     "Decoding and building the waveform overview",
                     async (_, token) =>
                     {
+                        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                            token, cancellationToken);
+                        CancellationToken operationToken = linked.Token;
                         // decode AND build the peak pyramid off the UI thread — the tab appears fully drawn
                         var (doc, peaks) = await Task.Run(() =>
                         {
                             var loaded = openAs.HasValue
-                                ? AudioImporter.LoadAs(path, openAs.Value, token)
-                                : AudioImporter.Load(path, token);
+                                ? AudioImporter.LoadAs(path, openAs.Value, operationToken)
+                                : AudioImporter.Load(path, operationToken);
                             var store = new PeakStore();
-                            store.Rebuild(loaded);
+                            store.Rebuild(loaded, cancellationToken: operationToken);
                             return (loaded, store);
-                        }, token);
+                        }, operationToken);
+                        operationToken.ThrowIfCancellationRequested();
                         AddDocument(doc, peaks);
                         ReportAction($"{doc.Title} opened.");
                         AppSettings.Instance.LastOpenFolder = Path.GetDirectoryName(path);
@@ -1517,7 +1535,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void Undo()
     {
-        if (_active is not { } document) return;
+        if (!CanMutateDocument || _active is not { } document) return;
         if (document.Doc.NextUndoName is not { } operation)
         {
             // Nothing left to undo. That is only worth a line when the reason is that steps were
@@ -1567,7 +1585,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void Redo()
     {
-        if (_active is not { } document || document.Doc.NextRedoName is not { } operation) return;
+        if (!CanMutateDocument || _active is not { } document ||
+            document.Doc.NextRedoName is not { } operation) return;
         PrepareForDocumentEdit(document);
         _suppressEditReport = true;
         try { document.Doc.Redo(); }
@@ -1649,13 +1668,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async void Copy()
     {
-        if (_active is not { HasSelection: true } d) return;
+        if (!CanMutateDocument || _active is not { HasSelection: true } d) return;
         if (await CaptureSelectionAsync(d)) ReportAction("Selection copied.");
     }
 
     private async void Cut()
     {
-        if (_active is not { HasSelection: true } d) return;
+        if (!CanMutateDocument || _active is not { HasSelection: true } d) return;
         if (!await CaptureSelectionAsync(d) || !Documents.Contains(d) || !d.HasSelection) return;
         int start = d.SelStart;
         int count = d.SelEnd - start;
@@ -1717,7 +1736,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async void Trim()
     {
-        if (_editOperationRunning || _active is not { HasSelection: true } d) return;
+        if (!CanMutateDocument || _active is not { HasSelection: true } d) return;
         int selStart = d.SelStart, selLen = d.SelEnd - d.SelStart;
         var channels = d.Doc.Channels.ToArray();
         float[][] kept;
@@ -1741,7 +1760,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async void Paste()
     {
-        if (_editOperationRunning || _active == null || _clipboard == null) return;
+        if (!CanMutateDocument || _active == null || _clipboard == null) return;
         var d = _active;
         var clipboard = _clipboard;
         if (clipboard.Length != d.Doc.ChannelCount)
@@ -1799,7 +1818,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// <returns>False when there was nothing to normalize, so the caller can say so.</returns>
     public bool ApplyPeakNormalize(double ceilingDbfs)
     {
-        if (_active == null) return false;
+        if (!CanMutateDocument || _active == null) return false;
         var (start, count) = _active.EditRange();
         if (count <= 0) return false;
         // Playback is released before the edit exactly as ApplyToRange does it for every other
@@ -1811,7 +1830,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void ApplyToRange(Action<AudioDocument, int, int> op)
     {
-        if (_active == null) return;
+        if (!CanMutateDocument || _active == null) return;
         var (start, count) = _active.EditRange();
         if (count <= 0) return;
         PrepareForDocumentEdit(_active);
@@ -2389,7 +2408,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// <summary>Render the selection (or whole file) as one undoable document edit.</summary>
     private async void ApplyChain()
     {
-        if (_active == null || _active.Doc.Length == 0) return;
+        if (!CanMutateAudio || _active == null || _active.Doc.Length == 0) return;
         var d = _active;
         var (start, count) = d.EditRange();
         if (count <= 0) return;
@@ -2397,33 +2416,38 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         int sr = d.Doc.SampleRate;
         int sourceVersion = d.Doc.EditVersion;
 
-        await RunBlocking("Applying effect chain", "Rendering the selection as one undoable edit",
-            async (progress, token) =>
+        SetDocumentOperationRunning(true);
+        try
         {
-            var output = await Task.Run(() =>
+            await RunBlocking("Applying effect chain", "Rendering the selection as one undoable edit",
+                async (progress, token) =>
             {
-                var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
-                return Engine.Master.ProcessOffline(input, sr, token, progress);
-            }, token);
-            if (d.Doc.EditVersion != sourceVersion)
-                throw new InvalidOperationException("The source changed while the master render was running. Try again.");
+                var output = await Task.Run(() =>
+                {
+                    var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
+                    return Engine.Master.ProcessOffline(input, sr, token, progress);
+                }, token);
+                if (!Documents.Contains(d) || d.Doc.EditVersion != sourceVersion)
+                    throw new InvalidOperationException("The source changed while the master render was running. Try again.");
 
-            bool wholeDocument = start == 0 && count == d.Doc.Length;
-            if (output.Length != d.Doc.ChannelCount && !wholeDocument)
-            {
-                throw new InvalidOperationException(
-                    "The enabled rack changes the channel layout, so it cannot be inserted into only part of this file. " +
-                    "Select the whole file for an undoable in-place render, or use Render Copy.");
-            }
-            if (start + count <= d.Doc.Length)
-            {
-                PrepareForDocumentEdit(d);
-                if (wholeDocument)
-                    d.Doc.ReplaceAllOwned(output, "Render Master Chain");
-                else
-                    d.Doc.ReplaceRange(start, count, output, "Render Master Chain");
-            }
-        });
+                bool wholeDocument = start == 0 && count == d.Doc.Length;
+                if (output.Length != d.Doc.ChannelCount && !wholeDocument)
+                {
+                    throw new InvalidOperationException(
+                        "The enabled rack changes the channel layout, so it cannot be inserted into only part of this file. " +
+                        "Select the whole file for an undoable in-place render, or use Render Copy.");
+                }
+                if (start + count <= d.Doc.Length)
+                {
+                    PrepareForDocumentEdit(d);
+                    if (wholeDocument)
+                        d.Doc.ReplaceAllOwned(output, "Render Master Chain");
+                    else
+                        d.Doc.ReplaceRange(start, count, output, "Render Master Chain");
+                }
+            });
+        }
+        finally { SetDocumentOperationRunning(false); }
     }
 
     /// <summary>
@@ -2576,7 +2600,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Called once from the window after load: crash recovery, session restore, command-line files.</summary>
-    public async Task StartupLoadAsync(string[] args)
+    public async Task StartupLoadAsync(string[] args,
+        CancellationToken cancellationToken = default)
     {
       try
       {
@@ -2593,16 +2618,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 var failures = new List<string>();
                 foreach (var entry in recoverable)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
                         var (doc, peaks) = await Task.Run(() =>
                         {
-                            var loaded = WavCodec.Load(entry.AutosaveFile);
+                            var loaded = WavCodec.Load(entry.AutosaveFile, cancellationToken);
                             AutosaveService.RestoreFormatMetadata(loaded, entry);
                             var store = new PeakStore();
-                            store.Rebuild(loaded);
+                            store.Rebuild(loaded, cancellationToken: cancellationToken);
                             return (loaded, store);
-                        });
+                        }, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
                         doc.FilePath = entry.OriginalPath;
                         string recoveredTitle = string.IsNullOrWhiteSpace(entry.Title)
                             ? "Recovered audio"
@@ -2613,13 +2640,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                         recoveredKeys.Add(entry.ManifestKey);
                         recoveredDocuments.Add(doc);
                     }
+                    catch (OperationCanceledException) { throw; }
                     catch (Exception ex) { failures.Add($"{entry.Title}: {ex.Message}"); }
                 }
                 if (recoveredDocuments.Count > 0)
                 {
                     var replacementSnapshots = recoveredDocuments
                         .Select(doc => (SnapshotDoc(doc), doc.SessionId)).ToList();
-                    int published = await Task.Run(() => AutosaveService.RunNow(replacementSnapshots));
+                    int published = await Task.Run(
+                        () => AutosaveService.RunNow(replacementSnapshots, cancellationToken),
+                        cancellationToken);
                     if (published == replacementSnapshots.Count)
                     {
                         AutosaveService.RemoveRecoverable(recoveredKeys);
@@ -2640,12 +2670,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         if (args.Length > 0)
         {
-            await OpenFilesAsync(args);
+            await OpenFilesAsync(args, cancellationToken: cancellationToken);
         }
         else if (AppSettings.Instance.ReopenLastSession && !AudioDocuments.Any())
         {
             var files = AppSettings.Instance.LastSessionFiles.Where(File.Exists).ToList();
-            if (files.Count > 0) await OpenFilesAsync(files);
+            if (files.Count > 0)
+                await OpenFilesAsync(files, cancellationToken: cancellationToken);
         }
       }
       finally { _startupLoaded = true; }

@@ -98,6 +98,50 @@ public sealed class GuiActionStatusTests : IDisposable
         Assert.Contains("Stepped back 2 steps", status);
     }
 
+    [Fact]
+    public void DocumentMutatingCommandsAreDisabledWhileAnOperationOwnsTheDocument()
+    {
+        Exception? failure = null;
+        bool[]? enabled = null;
+        int versionBefore = -1, versionAfter = -1;
+
+        var thread = new Thread(() =>
+        {
+            MainViewModel? viewModel = null;
+            try
+            {
+                viewModel = new MainViewModel();
+                var document = new AudioDocument([[0.25f, -0.25f]], 48_000, 32);
+                viewModel.AddDocument(document);
+                viewModel.ActiveDocument!.SelectAll();
+                viewModel.SetDocumentOperationRunning(true);
+
+                enabled =
+                [
+                    viewModel.UndoCommand.CanExecute(null),
+                    viewModel.CutCommand.CanExecute(null),
+                    viewModel.DeleteCommand.CanExecute(null),
+                    viewModel.GainUpCommand.CanExecute(null),
+                    viewModel.ApplyChainCommand.CanExecute(null),
+                    viewModel.CloseTabCommand.CanExecute(null),
+                ];
+                versionBefore = document.EditVersion;
+                viewModel.GainUpCommand.Execute(null);
+                versionAfter = document.EditVersion;
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { viewModel?.Dispose(); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        Assert.True(thread.Join(TimeSpan.FromSeconds(10)), "Document command guard test timed out.");
+        Assert.Null(failure);
+        Assert.NotNull(enabled);
+        Assert.All(enabled!, value => Assert.False(value));
+        Assert.Equal(versionBefore, versionAfter);
+    }
+
     /// <summary>
     /// A stale index is absorbed and reported rather than thrown, because the panel is modeless and
     /// the memory budget can renumber the timeline underneath it between a click and its handler.

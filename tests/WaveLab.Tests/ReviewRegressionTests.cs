@@ -63,6 +63,20 @@ public sealed class ReviewRegressionTests
         Assert.Equal(0, effect.ResetCount);
     }
 
+    [Fact]
+    public void DisposingTheMasterSectionReleasesOwnedEffectsExactlyOnce()
+    {
+        var master = new MasterSection();
+        var effect = new DisposableProbeEffect();
+        master.ReplaceChain([effect]);
+
+        master.Dispose();
+        master.Dispose();
+
+        Assert.Equal(1, effect.DisposeCount);
+        Assert.Empty(master.ChainSnapshot);
+    }
+
     // ── MasterSection: the metering ring ─────────────────────────
 
     /// <summary>
@@ -361,6 +375,24 @@ public sealed class ReviewRegressionTests
             var reader = Task.Run(() => owner.ChainSnapshot.Length);
             AnotherThreadReachedTheChainDuringReset = reader.Wait(TimeSpan.FromSeconds(2));
         }
+    }
+
+    private sealed class DisposableProbeEffect : IAudioEffect, IDisposable
+    {
+        public string TypeId => "test-disposable-probe";
+        public string DisplayName => "Disposable Probe";
+        public IReadOnlyList<EffectParam> Params => [];
+        public bool Enabled { get; set; } = true;
+        public int LatencySamples => 0;
+        public string? Readout => null;
+        public int DisposeCount { get; private set; }
+
+        public double GetParam(string key) => 0;
+        public void SetParam(string key, double value) { }
+        public void Configure(int sampleRate, int channels) { }
+        public void Process(float[] buffer, int offset, int count) { }
+        public void ResetState() { }
+        public void Dispose() => DisposeCount++;
     }
 
     /// <summary>Feeds a fixed deinterleaved buffer through MasterSection as interleaved frames.</summary>

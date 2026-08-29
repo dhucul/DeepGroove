@@ -448,7 +448,12 @@ public sealed class PlaybackEngine : IDisposable
         try { device?.Dispose(); } catch { }
     }
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        Stop();
+        Master.Dispose();
+        GC.SuppressFinalize(this);
+    }
 
     /// <summary>
     /// Apply a document's playback-only monitor gain to frames already written into the output

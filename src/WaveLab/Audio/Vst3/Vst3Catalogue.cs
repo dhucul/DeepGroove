@@ -233,17 +233,43 @@ public sealed class Vst3Catalogue
             timeout.CancelAfter(ScanTimeout);
 
             string output;
+            string diagnostic;
+            Task<string> readingOutput = process.StandardOutput.ReadToEndAsync();
+            Task<string> readingError = process.StandardError.ReadToEndAsync();
             try
             {
-                // Read before waiting: a plugin that prints more than the pipe buffer holds would
-                // block on the write while the host blocks on the exit, and neither would move.
-                Task<string> reading = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                // Both pipes must be drained before waiting. A native plugin is free to write to
+                // stderr, and either redirected pipe can fill and stop the child from exiting.
                 await process.WaitForExitAsync(timeout.Token);
-                output = await reading;
+                await Task.WhenAll(readingOutput, readingError);
+                output = readingOutput.Result;
+                diagnostic = readingError.Result;
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                try { process.Kill(entireProcessTree: true); } catch { }
+                try
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                }
+                catch { }
+                try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch { }
+
+                // Observe both readers even if a broken child could not be terminated promptly.
+                Task allReaders = Task.WhenAll(readingOutput, readingError);
+                try { await allReaders.WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch
+                {
+                    // If a damaged child keeps a pipe open, observe a later reader fault without
+                    // extending cancellation indefinitely.
+                    _ = allReaders.ContinueWith(
+                        task => _ = task.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+
+                if (cancellationToken.IsCancellationRequested) throw;
                 return Crashed(path, stamp,
                     $"The plugin did not finish loading within {ScanTimeout.TotalSeconds:0} seconds.");
             }
@@ -252,8 +278,9 @@ public sealed class Vst3Catalogue
             {
                 // A non-zero exit with no report is a fault inside the plugin. This is the case the
                 // separate process exists for: the app is still running to say so.
+                string suffix = LastDiagnosticLine(diagnostic);
                 return Crashed(path, stamp,
-                    $"The plugin faulted while loading (exit code 0x{process.ExitCode:X8}).");
+                    $"The plugin faulted while loading (exit code 0x{process.ExitCode:X8}).{suffix}");
             }
 
             Vst3ScanResult? parsed = JsonSerializer.Deserialize<Vst3ScanResult>(output, Json);
@@ -273,6 +300,15 @@ public sealed class Vst3Catalogue
         Message = message,
         BinaryStamp = stamp,
     };
+
+    private static string LastDiagnosticLine(string diagnostic)
+    {
+        string line = diagnostic.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault()?.Trim() ?? "";
+        if (line.Length == 0) return "";
+        if (line.Length > 300) line = line[..300] + "…";
+        return " " + line;
+    }
 
     /// <summary>
     /// Loads one plugin and reports what it is. <b>Runs in the scanner process</b>, where a fault is

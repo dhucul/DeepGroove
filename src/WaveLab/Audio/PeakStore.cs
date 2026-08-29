@@ -32,7 +32,8 @@ public sealed class PeakStore
     public int Version => Volatile.Read(ref _state).Version;
 
     /// <summary>Rebuild from a point-in-time snapshot of the channel arrays (splices never mutate old arrays).</summary>
-    public void Rebuild(AudioDocument doc, float[][]? snapshot = null)
+    public void Rebuild(AudioDocument doc, float[][]? snapshot = null,
+        CancellationToken cancellationToken = default)
     {
         snapshot ??= doc.Channels.ToArray();
         var newLevels = new List<Level>();
@@ -46,9 +47,11 @@ public sealed class PeakStore
         var sumsq = NewJagged(channels, bins);
         for (int c = 0; c < channels; c++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var src = snapshot[c];
             for (int b = 0; b < bins; b++)
             {
+                if ((b & 1023) == 0) cancellationToken.ThrowIfCancellationRequested();
                 int s0 = b * BaseBin, s1 = Math.Min(s0 + BaseBin, length);
                 float mn = float.MaxValue, mx = float.MinValue;
                 double sq = 0;
@@ -69,12 +72,15 @@ public sealed class PeakStore
         // aggregate levels
         while (bins > 64)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var prev = newLevels[^1];
             int nbins = (bins + LevelFactor - 1) / LevelFactor;
             var lmin = NewJagged(channels, nbins);
             var lmax = NewJagged(channels, nbins);
             var lsq = NewJagged(channels, nbins);
             for (int c = 0; c < channels; c++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
                 for (int b = 0; b < nbins; b++)
                 {
                     float mn = float.MaxValue, mx = float.MinValue, sq = 0;
@@ -92,6 +98,7 @@ public sealed class PeakStore
                     lmax[c][b] = n > 0 ? mx : 0;
                     lsq[c][b] = n > 0 ? sq / n : 0;
                 }
+            }
             newLevels.Add(new Level(prev.BinSize * LevelFactor, lmin, lmax, lsq));
             bins = nbins;
         }
