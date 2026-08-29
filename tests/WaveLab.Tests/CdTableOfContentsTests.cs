@@ -103,6 +103,17 @@ public sealed class CdTableOfContentsTests
         public void Dispose() { }
     }
 
+    private sealed class RepeatingReadDevice : ICdAudioDevice
+    {
+        public CdAudioTableOfContents ReadTableOfContents() =>
+            throw new NotSupportedException();
+
+        public int ReadAudioSectors(int startSector, int sectorCount, byte[] destination) =>
+            sectorCount * CdAudioFormat.BytesPerSector;
+
+        public void Dispose() { }
+    }
+
     private sealed class FakePlatform(CdAudioTableOfContents toc) : ICdAudioPlatform
     {
         public FakeDevice Device { get; } = new(toc);
@@ -157,6 +168,26 @@ public sealed class CdTableOfContentsTests
         Assert.Equal(DataStart, disc.Tracks[1].EndSector);
         Assert.Equal(LeadOutStart, disc.Tracks[2].EndSector);
         Assert.All(disc.Tracks, track => Assert.True(track.IsAudio));
+    }
+
+    [Fact]
+    public async Task AnAudioTrackStopsAtItsSessionLeadOutBeforeAnotherAudioSession()
+    {
+        const int sessionOneLeadOut = 900;
+        var toc = TocWithSessions(
+            [
+                Track(1, Track1Start, AudioControl),
+                Track(2, DataStart, AudioControl),
+                Track(LeadOutTrackNumber, LeadOutStart, AudioControl),
+            ],
+            new CdAudioSession(1, 1, 1, sessionOneLeadOut),
+            new CdAudioSession(2, 2, 2, LeadOutStart));
+        var (service, _) = DriveWith(toc);
+
+        CdAudioDisc disc = await service.ReadDiscAsync(DevicePath);
+
+        Assert.Equal(sessionOneLeadOut, disc.Tracks[0].EndSector);
+        Assert.Equal(DataStart, disc.Tracks[1].StartSector);
     }
 
     /// <summary>
@@ -298,6 +329,37 @@ public sealed class CdTableOfContentsTests
         Assert.Equal(
             [new CdAudioSession(1, 1, 2, 600), new CdAudioSession(2, 3, 3, 30_000)],
             sessions);
+    }
+
+    [Fact]
+    public void OptionalFullTocTimeoutFallsBackButCancellationDoesNot()
+    {
+        Assert.True(WindowsCdAudioDevice.IsOptionalFullTocFailure(new TimeoutException()));
+        Assert.False(WindowsCdAudioDevice.IsOptionalFullTocFailure(
+            new OperationCanceledException()));
+    }
+
+    [Fact]
+    public void VerifiedReadsReuseCallerOwnedBuffersWithoutPerBatchAllocation()
+    {
+        const int sectors = 16;
+        int bytes = sectors * CdAudioFormat.BytesPerSector;
+        byte[][] buffers = Enumerable.Range(0, 5)
+            .Select(_ => new byte[bytes]).ToArray();
+        using var device = new RepeatingReadDevice();
+
+        CdAudioService.ReadVerifiedAudioSectors(
+            device, 150, sectors, buffers, DevicePath, CancellationToken.None);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int batch = 0; batch < 1_000; batch++)
+        {
+            CdAudioService.ReadVerifiedAudioSectors(
+                device, 150 + batch * sectors, sectors, buffers,
+                DevicePath, CancellationToken.None);
+        }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.InRange(allocated, 0, 1_024);
     }
 
     [Fact]

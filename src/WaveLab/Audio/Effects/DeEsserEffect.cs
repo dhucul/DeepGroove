@@ -37,11 +37,17 @@ public sealed class DeEsserEffect : EffectBase
         new("sharpness", "SHARPNESS", 0, 1, 0.5, EffectParam.Pct),
     ];
 
-    private Stft? _stft;
-    private float[][] _input = [];
-    private float[][] _output = [];
-    private float[] _guide = [];
-    private double[] _frameGains = [];
+    private float[][] _inputRing = [];
+    private float[][] _ola = [];
+    private float[][] _frame = [];
+    private float[][] _binRe = [];
+    private float[][] _binIm = [];
+    private float[] _window = [];
+    private double[] _channelEnergy = [];
+    private int[] _channelCrossings = [];
+    private long _streamFrame;
+    private long _nextFrameStart;
+    private double _olaScale;
     private DeEsserParameters _parameters = new(5_000, 0.03, 0.3, 0.5);
     private double _reduction;
 
@@ -51,11 +57,7 @@ public sealed class DeEsserEffect : EffectBase
     public override string DisplayName => "De-Esser";
     public override IReadOnlyList<EffectParam> Params => P;
 
-    /// <summary>
-    /// The block transform uses padded analysis frames and writes each reconstructed sample back at
-    /// its original index. It has spectral context, but no stream delay for the rack to compensate.
-    /// </summary>
-    public override int LatencySamples => 0;
+    public override int LatencySamples => FftSize;
 
     public override string Readout
     {
@@ -68,16 +70,25 @@ public sealed class DeEsserEffect : EffectBase
 
     protected override void OnConfigure()
     {
-        Volatile.Write(ref _stft, new Stft(FftSize, Hop));
-        _input = new float[ChannelCount][];
-        _output = new float[ChannelCount][];
+        int bins = FftSize / 2 + 1;
+        _inputRing = new float[ChannelCount][];
+        _ola = new float[ChannelCount][];
+        _frame = new float[ChannelCount][];
+        _binRe = new float[ChannelCount][];
+        _binIm = new float[ChannelCount][];
         for (int c = 0; c < ChannelCount; c++)
         {
-            _input[c] = new float[FftSize * 4];
-            _output[c] = new float[FftSize * 4];
+            _inputRing[c] = new float[FftSize];
+            _ola[c] = new float[FftSize * 2];
+            _frame[c] = new float[FftSize];
+            _binRe[c] = new float[bins];
+            _binIm[c] = new float[bins];
         }
-        _guide = new float[FftSize * 4];
-        _frameGains = new double[64];
+        _window = WindowFunctions.Sqrt(WindowFunctions.Hann(FftSize, periodic: true));
+        double[] overlap = WindowFunctions.OverlapSum(_window, _window, Hop);
+        _olaScale = 1.0 / overlap.Average();
+        _channelEnergy = new double[ChannelCount];
+        _channelCrossings = new int[ChannelCount];
         OnParamsChanged();
     }
 
@@ -90,126 +101,152 @@ public sealed class DeEsserEffect : EffectBase
 
     public override void ResetState()
     {
-        foreach (float[] channel in _input) Array.Clear(channel);
-        foreach (float[] channel in _output) Array.Clear(channel);
+        foreach (float[] channel in _inputRing) Array.Clear(channel);
+        foreach (float[] channel in _ola) Array.Clear(channel);
+        foreach (float[] channel in _frame) Array.Clear(channel);
+        foreach (float[] channel in _binRe) Array.Clear(channel);
+        foreach (float[] channel in _binIm) Array.Clear(channel);
+        Array.Clear(_channelEnergy);
+        Array.Clear(_channelCrossings);
+        _streamFrame = 0;
+        _nextFrameStart = -(FftSize - Hop);
         Volatile.Write(ref _reduction, 0);
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
-        Stft? stft = Volatile.Read(ref _stft);
         var parameters = Volatile.Read(ref _parameters);
-        if (stft == null || _input.Length != ChannelCount) return;
+        if (_inputRing.Length != ChannelCount || _window.Length != FftSize) return;
 
         int frames = count / ChannelCount;
         if (frames == 0) return;
-
-        // De-interleave into the working buffers, process a whole block, interleave back. The STFT
-        // wants a contiguous channel; the rack hands over interleaved audio.
-        for (int c = 0; c < ChannelCount; c++)
-        {
-            // Grown here only if a host ever exceeds the block ceiling OnConfigure sized
-            // for. Allocating on the audio callback is what this is avoiding, not what it
-            // is doing.
-            if (_input[c].Length < frames) _input[c] = new float[frames];
-            if (_output[c].Length < frames) _output[c] = new float[frames];
-            for (int f = 0; f < frames; f++) _input[c][f] = buffer[offset + f * ChannelCount + c];
-        }
-
-        if (_guide.Length < frames) _guide = new float[frames];
         for (int frame = 0; frame < frames; frame++)
         {
-            float selected = 0;
+            int index = offset + frame * ChannelCount;
+            int inputSlot = (int)(_streamFrame % FftSize);
             for (int channel = 0; channel < ChannelCount; channel++)
             {
-                float sample = _input[channel][frame];
-                if (Math.Abs(sample) > Math.Abs(selected)) selected = sample;
+                float sample = buffer[index + channel];
+                _inputRing[channel][inputSlot] = float.IsFinite(sample) ? sample : 0f;
             }
-            _guide[frame] = selected;
-        }
 
-        double worst = 0;
-        int bins = FftSize / 2 + 1;
-        int fromBin = Math.Clamp((int)(parameters.FromHz * FftSize / SampleRate), 1, bins - 1);
-
-        int spectralFrames = stft.FrameCount(frames);
-        if (_frameGains.Length < spectralFrames) _frameGains = new double[spectralFrames];
-        Array.Fill(_frameGains, 1.0, 0, spectralFrames);
-
-        // Decide once from a guide that cannot cancel anti-phase stereo, then use the same
-        // frame gain on every channel. Independent decisions made sibilants pull the image toward
-        // whichever side happened not to trigger.
-        stft.Analyze(_guide.AsSpan(0, frames), (frameIndex, start, re, im) =>
-        {
-            double sibilant = 0, total = 0;
-            for (int b = 1; b < bins; b++)
+            if (_streamFrame == _nextFrameStart + FftSize - 1)
             {
-                double power = (double)re[b] * re[b] + (double)im[b] * im[b];
-                total += power;
-                if (b >= fromBin) sibilant += power;
+                ProcessSpectralFrame(_nextFrameStart, parameters);
+                _nextFrameStart += Hop;
             }
-            if (total <= 1e-20) return;
 
-            double share = sibilant / total;
-            double crossings = ZeroCrossingRate(_guide, start, FftSize, frames);
-            double sibilance = share * crossings;
-            double level = Math.Sqrt(sibilant / bins);
-            if (level < parameters.Threshold || sibilance < 0.08) return;
-
-            double strength = Math.Clamp((sibilance - 0.08) / 0.25, 0, 1)
-                            * Math.Clamp(level / Math.Max(parameters.Threshold, 1e-9) - 1, 0, 1);
-            double gain = 1 - (1 - parameters.Floor) * strength;
-            _frameGains[frameIndex] = gain;
-            worst = Math.Max(worst, -20 * Math.Log10(Math.Max(gain, 1e-9)));
-        });
-
-        for (int c = 0; c < ChannelCount; c++)
-        {
-            // The array rather than a span: the frame callback is a lambda and a span cannot be
-            // captured by one.
-            float[] source = _input[c];
-            Span<float> destination = _output[c].AsSpan(0, frames);
-
-            stft.Process(source.AsSpan(0, frames), destination, (_, start, re, im) =>
+            long outputFrame = _streamFrame - LatencySamples;
+            if (outputFrame < 0)
             {
-                int frameIndex = (start + (FftSize - Hop)) / Hop;
-                if ((uint)frameIndex >= (uint)spectralFrames) return;
-                double gain = _frameGains[frameIndex];
-                if (gain >= 1) return;
-
-                for (int b = fromBin; b < bins; b++)
+                for (int channel = 0; channel < ChannelCount; channel++)
+                    buffer[index + channel] = 0f;
+            }
+            else
+            {
+                int outputSlot = (int)(outputFrame % (FftSize * 2));
+                for (int channel = 0; channel < ChannelCount; channel++)
                 {
-                    // Sharpness tapers the attenuation in from the corner rather than applying it as
-                    // a step, which would ring.
-                    double into = (b - fromBin) / (double)Math.Max(1, bins - fromBin);
-                    double taper = parameters.Sharpness + (1 - parameters.Sharpness) * Math.Min(1, into * 4);
-                    var applied = (float)(1 - (1 - gain) * taper);
-                    re[b] *= applied;
-                    im[b] *= applied;
+                    buffer[index + channel] = _ola[channel][outputSlot];
+                    _ola[channel][outputSlot] = 0f;
                 }
-            });
+            }
 
-            for (int f = 0; f < frames; f++) buffer[offset + f * ChannelCount + c] = destination[f];
+            _streamFrame++;
         }
-
-        Volatile.Write(ref _reduction, worst);
     }
 
-    /// <summary>
-    /// How often the waveform crosses zero over a frame, normalised. Noise-like sounds cross far
-    /// more often than pitched ones, which is what separates an "s" from a bright vowel.
-    /// </summary>
-    private static double ZeroCrossingRate(float[] signal, int start, int length, int available)
+    private void ProcessSpectralFrame(long start, DeEsserParameters parameters)
     {
-        int from = Math.Max(0, start);
-        int to = Math.Min(available, start + length);
-        if (to - from < 2) return 0;
+        int bins = FftSize / 2 + 1;
+        Array.Clear(_channelEnergy);
+        Array.Clear(_channelCrossings);
 
-        int crossings = 0;
-        for (int i = from + 1; i < to; i++)
-            if ((signal[i] >= 0) != (signal[i - 1] >= 0)) crossings++;
+        for (int channel = 0; channel < ChannelCount; channel++)
+        {
+            float previous = 0;
+            bool havePrevious = false;
+            for (int i = 0; i < FftSize; i++)
+            {
+                long absolute = start + i;
+                float sample = absolute < 0
+                    ? 0f
+                    : _inputRing[channel][(int)(absolute % FftSize)];
+                _frame[channel][i] = sample * _window[i];
+                _channelEnergy[channel] += (double)sample * sample;
+                if (havePrevious && (sample >= 0) != (previous >= 0))
+                    _channelCrossings[channel]++;
+                previous = sample;
+                havePrevious = true;
+            }
+            Fft.RealForward(_frame[channel], _binRe[channel], _binIm[channel]);
+        }
 
-        return crossings / (double)(to - from);
+        int fromBin = Math.Clamp(
+            (int)(parameters.FromHz * FftSize / SampleRate), 1, bins - 1);
+        double total = 0, sibilant = 0;
+        for (int bin = 1; bin < bins; bin++)
+        {
+            double power = 0;
+            for (int channel = 0; channel < ChannelCount; channel++)
+            {
+                double re = _binRe[channel][bin], im = _binIm[channel][bin];
+                power += re * re + im * im;
+            }
+            power /= ChannelCount;
+            total += power;
+            if (bin >= fromBin) sibilant += power;
+        }
+
+        double gain = 1;
+        if (total > 1e-20)
+        {
+            int guideChannel = 0;
+            for (int channel = 1; channel < ChannelCount; channel++)
+            {
+                if (_channelEnergy[channel] > _channelEnergy[guideChannel])
+                    guideChannel = channel;
+            }
+
+            double crossings = _channelCrossings[guideChannel] / (double)FftSize;
+            double sibilanceScore = sibilant / total * crossings;
+            double level = Math.Sqrt(sibilant / bins);
+            if (level >= parameters.Threshold && sibilanceScore >= 0.08)
+            {
+                double strength = Math.Clamp((sibilanceScore - 0.08) / 0.25, 0, 1) *
+                                  Math.Clamp(level / Math.Max(parameters.Threshold, 1e-9) - 1, 0, 1);
+                gain = 1 - (1 - parameters.Floor) * strength;
+            }
+        }
+
+        for (int channel = 0; channel < ChannelCount; channel++)
+        {
+            if (gain < 1)
+            {
+                for (int bin = fromBin; bin < bins; bin++)
+                {
+                    double into = (bin - fromBin) / (double)Math.Max(1, bins - fromBin);
+                    double taper = parameters.Sharpness +
+                                   (1 - parameters.Sharpness) * Math.Min(1, into * 4);
+                    float applied = (float)(1 - (1 - gain) * taper);
+                    _binRe[channel][bin] *= applied;
+                    _binIm[channel][bin] *= applied;
+                }
+            }
+
+            Fft.RealInverse(_binRe[channel], _binIm[channel], _frame[channel]);
+            for (int i = 0; i < FftSize; i++)
+            {
+                long absolute = start + i;
+                if (absolute < 0) continue;
+                int slot = (int)(absolute % (FftSize * 2));
+                _ola[channel][slot] +=
+                    (float)(_frame[channel][i] * _window[i] * _olaScale);
+            }
+        }
+
+        Volatile.Write(ref _reduction,
+            gain < 1 ? -20 * Math.Log10(Math.Max(gain, 1e-9)) : 0);
     }
 }
 

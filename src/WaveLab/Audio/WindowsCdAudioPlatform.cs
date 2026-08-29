@@ -154,11 +154,15 @@ internal sealed class WindowsCdAudioDevice : ICdAudioDevice
             return new CdAudioTableOfContents(
                 standard.FirstTrackNumber, standard.LastTrackNumber, standard.Entries, sessions);
         }
-        catch (Exception error) when (error is Win32Exception or InvalidDataException)
+        catch (Exception error) when (
+            !cancellationToken.IsCancellationRequested && IsOptionalFullTocFailure(error))
         {
             return standard;
         }
     }
+
+    internal static bool IsOptionalFullTocFailure(Exception error) =>
+        error is Win32Exception or InvalidDataException or TimeoutException;
 
     public int ReadAudioSectors(int startSector, int sectorCount, byte[] destination) =>
         ReadAudioSectors(startSector, sectorCount, destination, CancellationToken.None);

@@ -45,8 +45,17 @@ public sealed class ChannelBalanceEffect : EffectBase
     private int _analysisBusy;
     private double _bestAlignment;
     private double _alignmentConfidence;
+    private int _analysisGeneration;
 
-    private static readonly Action<ChannelBalanceEffect> AnalyseCallback = static effect => effect.AnalyseSnapshot();
+    private readonly record struct AlignmentAnalysisWork(
+        ChannelBalanceEffect Effect,
+        int Generation,
+        int SampleRate,
+        double[] Left,
+        double[] Right);
+
+    private static readonly Action<AlignmentAnalysisWork> AnalyseCallback =
+        static work => work.Effect.AnalyseSnapshot(work);
 
     public override string TypeId => "channel-balance";
     public override string DisplayName => "Channel Balance & Alignment";
@@ -57,6 +66,7 @@ public sealed class ChannelBalanceEffect : EffectBase
 
     protected override void OnConfigure()
     {
+        Interlocked.Increment(ref _analysisGeneration);
         int length = Math.Max(32, (int)Math.Ceiling(SampleRate * 0.012) + 2);
         _leftDelay = new float[length];
         _rightDelay = new float[length];
@@ -72,6 +82,7 @@ public sealed class ChannelBalanceEffect : EffectBase
 
     public override void ResetState()
     {
+        Interlocked.Increment(ref _analysisGeneration);
         Array.Clear(_leftDelay);
         Array.Clear(_rightDelay);
         Array.Clear(_leftWindow);
@@ -181,21 +192,29 @@ public sealed class ChannelBalanceEffect : EffectBase
             if (Interlocked.CompareExchange(ref _analysisBusy, 1, 0) != 0) continue;
             Array.Copy(_leftWindow, _analysisLeft, _leftWindow.Length);
             Array.Copy(_rightWindow, _analysisRight, _rightWindow.Length);
-            ThreadPool.UnsafeQueueUserWorkItem(AnalyseCallback, this, preferLocal: false);
+            var work = new AlignmentAnalysisWork(
+                this,
+                Volatile.Read(ref _analysisGeneration),
+                SampleRate,
+                _analysisLeft,
+                _analysisRight);
+            ThreadPool.UnsafeQueueUserWorkItem(AnalyseCallback, work, preferLocal: false);
         }
     }
 
     /// <summary>Background: energy-normalised cross-correlation of L against lagged R.</summary>
-    private void AnalyseSnapshot()
+    private void AnalyseSnapshot(AlignmentAnalysisWork work)
     {
         try
         {
-            double[] left = _analysisLeft, right = _analysisRight;
+            double[] left = work.Left, right = work.Right;
             int n = Math.Min(left.Length, right.Length);
             if (n == 0) return;
 
-            int maxLag = Math.Min(Math.Max(1, (int)(SampleRate * 0.005)), n - 1);
+            int maxLag = Math.Min(Math.Max(1, (int)(work.SampleRate * 0.005)), n - 1);
             (double alignment, double confidence) = EstimateAlignment(left, right, maxLag);
+
+            if (work.Generation != Volatile.Read(ref _analysisGeneration)) return;
 
             Volatile.Write(ref _bestAlignment, alignment);
             Volatile.Write(ref _alignmentConfidence, confidence);

@@ -220,6 +220,9 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
     [Theory]
     [InlineData("GB-AAA-24-00001", "GBAAA2400001")]
     [InlineData("gbaaa2400001", "GBAAA2400001")]
+    [InlineData("12AAA2400001", "")]
+    [InlineData("GBÄAA2400001", "")]
+    [InlineData("GBAAA2四00001", "")]
     [InlineData("too short", "")]
     [InlineData("", "")]
     public void AnIsrcIsNormalisedOrRejected(string input, string expected) =>
@@ -229,6 +232,8 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
     [InlineData("5012345678900", "5012345678900")]
     [InlineData("5 012345 678900", "5012345678900")]
     [InlineData("012345678905", "0012345678905")]
+    [InlineData("5012345678901", "")]
+    [InlineData("５０１２３４５６７８９００", "")]
     [InlineData("nonsense", "")]
     public void AUpcIsNormalisedOrRejected(string input, string expected) =>
         Assert.Equal(expected, new DdpDiscInfo("d", Upc: input).NormalisedUpc);

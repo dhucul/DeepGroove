@@ -1,4 +1,5 @@
 using WaveLab.Audio.Dsp;
+using System.Reflection;
 using Xunit;
 
 namespace WaveLab.Tests;
@@ -170,5 +171,34 @@ public sealed class LoudnessMeterTests
 
         Assert.True(double.IsFinite(meter.TruePeakDb));
         Assert.True(double.IsFinite(meter.MomentaryLufs) || double.IsNegativeInfinity(meter.MomentaryLufs));
+    }
+
+    [Fact]
+    public async Task ChannelReconfigurationCannotSplitFrameCalculationFromIndexing()
+    {
+        var meter = new LoudnessMeter();
+        meter.Configure(SampleRate, 1);
+        object sync = typeof(LoudnessMeter)
+            .GetField("_lock", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(meter)!;
+        var started = new ManualResetEventSlim();
+        Task processing;
+
+        lock (sync)
+        {
+            processing = Task.Run(() =>
+            {
+                started.Set();
+                meter.Process(new float[2], 0, 2);
+            });
+            Assert.True(started.Wait(TimeSpan.FromSeconds(2)));
+            Thread.Sleep(25); // let Process reach the held lock
+
+            // Monitor is re-entrant on this thread. The waiting Process must read
+            // the new width only after this configuration is complete.
+            meter.Configure(SampleRate, 2);
+        }
+
+        await processing.WaitAsync(TimeSpan.FromSeconds(2));
     }
 }

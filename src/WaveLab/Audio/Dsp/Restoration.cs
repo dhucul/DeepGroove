@@ -569,7 +569,7 @@ public static partial class Restoration
     {
         int count = Math.Clamp(harmonics, 0, 30);
         int mask = count == 0 ? 0 : (1 << count) - 1;
-        RemoveHum(data, sampleRate, baseFreq, harmonics, mask, q, strength, cancellationToken);
+        RemoveHum(data, sampleRate, baseFreq, count, mask, q, strength, cancellationToken);
     }
 
     /// <summary>
@@ -581,13 +581,14 @@ public static partial class Restoration
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        int count = Math.Clamp(harmonics, 0, 30);
         float amount = (float)Math.Clamp(strength, 0.0, 1.0);
         if (amount <= 0f) return;
 
         foreach (var channel in data)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            for (int h = 1; h <= harmonics; h++)
+            for (int h = 1; h <= count; h++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if ((harmonicMask & (1 << (h - 1))) == 0) continue;

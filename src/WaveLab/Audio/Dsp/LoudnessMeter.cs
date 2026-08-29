@@ -177,14 +177,16 @@ public sealed class LoudnessMeter
 
     public void Process(float[] interleaved, int offset, int count)
     {
-        int frames = count / _channels;
         lock (_lock)
         {
+            int channels = _channels;
+            int frames = count / channels;
             for (int f = 0; f < frames; f++)
             {
-                for (int c = 0; c < _channels; c++)
+                int frameOffset = offset + f * channels;
+                for (int c = 0; c < channels; c++)
                 {
-                    float raw = interleaved[offset + f * _channels + c];
+                    float raw = interleaved[frameOffset + c];
                     bool valid = float.IsFinite(raw);
                     if (!valid)
                     {
@@ -215,7 +217,7 @@ public sealed class LoudnessMeter
                 if (++_subBlockFill >= _subBlockSize)
                 {
                     double ms = 0;
-                    for (int c = 0; c < _channels; c++) ms += _subBlockSumSq[c] / _subBlockSize;
+                    for (int c = 0; c < channels; c++) ms += _subBlockSumSq[c] / _subBlockSize;
                     _last400.Enqueue(ms);
                     while (_last400.Count > 4) _last400.Dequeue();
                     _last3s.Enqueue(ms);

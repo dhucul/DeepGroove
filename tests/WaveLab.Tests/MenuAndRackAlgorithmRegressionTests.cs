@@ -107,6 +107,25 @@ public sealed class MenuAndRackAlgorithmRegressionTests
     }
 
     [Fact]
+    public void OfflineMonoExpansionStillHonoursGlobalMidSideMode()
+    {
+        using var master = new MasterSection();
+        var enhancer = new MonoToStereoEffect();
+        enhancer.SetParam("amount", 0);
+        var trim = new TrimEffect();
+        trim.SetParam("polarityL", 1);
+        master.ReplaceChain([enhancer, trim]);
+        master.MidSideMode = true;
+
+        float[][] output = master.ProcessOffline(
+            [Enumerable.Repeat(1f, 64).ToArray()], Rate);
+
+        Assert.Equal(2, output.Length);
+        Assert.All(output[0], sample => Assert.Equal(-1f, sample, 6));
+        Assert.All(output[1], sample => Assert.Equal(-1f, sample, 6));
+    }
+
+    [Fact]
     public void DeEsserDoesNotShiftAnOfflineRenderItDoesNotModify()
     {
         using var master = new MasterSection();
@@ -115,9 +134,32 @@ public sealed class MenuAndRackAlgorithmRegressionTests
 
         float[][] output = master.ProcessOffline([tone], Rate);
 
-        Assert.Equal(0, master.ChainSnapshot[0].LatencySamples);
+        Assert.Equal(1_024, master.ChainSnapshot[0].LatencySamples);
         for (int i = 0; i < tone.Length; i += 101)
             Assert.Equal(tone[i], output[0][i], 4);
+    }
+
+    [Fact]
+    public void DeEsserOutputDoesNotDependOnHostBlockSize()
+    {
+        float[] source = Noise(Rate * 2, 71)
+            .Select(sample => sample * 10).ToArray();
+        var wholeEffect = new DeEsserEffect();
+        var chunkedEffect = new DeEsserEffect();
+        wholeEffect.SetParam("threshold", -60);
+        chunkedEffect.SetParam("threshold", -60);
+        wholeEffect.Configure(Rate, 1);
+        chunkedEffect.Configure(Rate, 1);
+
+        float[] whole = ProcessWithBlocks(wholeEffect, source, [int.MaxValue]);
+        float[] chunked = ProcessWithBlocks(chunkedEffect, source, [73, 511, 128, 997, 31]);
+
+        Assert.Equal(whole, chunked);
+        double maximumChange = 0;
+        for (int index = 0; index < source.Length; index++)
+            maximumChange = Math.Max(maximumChange,
+                Math.Abs(whole[index + wholeEffect.LatencySamples] - source[index]));
+        Assert.True(maximumChange > 1e-4, "test signal did not engage the de-esser");
     }
 
     [Fact]
@@ -141,6 +183,26 @@ public sealed class MenuAndRackAlgorithmRegressionTests
     }
 
     [Fact]
+    public void ReturningToAnOversamplingFactorDoesNotResumeOldFilterHistory()
+    {
+        var effect = new SaturationEffect();
+        effect.Configure(Rate, 1);
+        effect.SetParam("oversample", 1); // 2x
+        var impulse = new float[256];
+        impulse[^1] = 1;
+        effect.Process(impulse, 0, impulse.Length);
+
+        effect.SetParam("oversample", 3); // leave the 2x bank idle
+        var settling = new float[Rate / 2];
+        effect.Process(settling, 0, settling.Length);
+        effect.SetParam("oversample", 1);
+
+        var resumed = new float[512];
+        effect.Process(resumed, 0, resumed.Length);
+        Assert.All(resumed, sample => Assert.InRange(Math.Abs(sample), 0, 1e-7));
+    }
+
+    [Fact]
     public void LevelNormalizerGainCanActuallyMoveTowardItsTarget()
     {
         var effect = new LevelNormalizerEffect();
@@ -159,6 +221,22 @@ public sealed class MenuAndRackAlgorithmRegressionTests
         double settled = Rms(quiet, quiet.Length - Rate, quiet.Length);
         Assert.True(settled > input * 1.5,
             $"normalizer remained nearly stationary: {input:0.00000} -> {settled:0.00000}");
+    }
+
+    [Fact]
+    public void LevelNormalizerEnforcesItsTruePeakCeilingOnAnInitialTransient()
+    {
+        var effect = new LevelNormalizerEffect();
+        effect.SetParam("truePeakLimit", -6);
+        effect.Configure(Rate, 1);
+        var signal = new float[Rate / 10 + effect.LatencySamples];
+        signal[10] = 0.99f;
+
+        effect.Process(signal, 0, signal.Length);
+
+        double ceiling = Math.Pow(10, -6 / 20.0);
+        Assert.True(signal.Max(sample => Math.Abs(sample)) <= ceiling + 1e-4,
+            $"output exceeded the selected ceiling: {signal.Max(sample => Math.Abs(sample)):0.000000}");
     }
 
     [Fact]
@@ -286,6 +364,37 @@ public sealed class MenuAndRackAlgorithmRegressionTests
             "anti-phase input disappeared from the wet path");
     }
 
+    [Theory]
+    [InlineData(3, 2)]
+    [InlineData(10, 9)]
+    public void EveryMultichannelInputCanExciteRackReverb(int channels, int impulseChannel)
+    {
+        var interleaved = new float[Rate * channels];
+        interleaved[impulseChannel] = 1;
+
+        var effect = new ReverbEffect();
+        effect.SetParam("mix", 1);
+        effect.SetParam("preDelay", 0);
+        effect.Configure(Rate, channels);
+        effect.Process(interleaved, 0, interleaved.Length);
+
+        Assert.True(Rms(interleaved, 0, interleaved.Length) > 1e-5,
+            $"input channel {impulseChannel} never entered the wet network");
+    }
+
+    [Fact]
+    public void HumRemovalClampsHarmonicCountsBeforeApplyingTheBitMask()
+    {
+        float[] source = Tone(1_485, Rate, amplitude: 0.3); // 45 Hz × 33
+        float[][] clamped = [(float[])source.Clone()];
+        float[][] oversized = [(float[])source.Clone()];
+
+        Restoration.RemoveHum(clamped, Rate, 45, 30, 30, 1);
+        Restoration.RemoveHum(oversized, Rate, 45, 100, 30, 1);
+
+        Assert.Equal(clamped[0], oversized[0]);
+    }
+
     private static T Configured<T>(T effect, params (string Key, double Value)[] settings)
         where T : IAudioEffect
     {
@@ -319,6 +428,21 @@ public sealed class MenuAndRackAlgorithmRegressionTests
             result[i * 2 + 1] = right[i];
         }
         return result;
+    }
+
+    private static float[] ProcessWithBlocks(
+        IAudioEffect effect, float[] source, IReadOnlyList<int> blockSizes)
+    {
+        var data = new float[source.Length + effect.LatencySamples];
+        Array.Copy(source, data, source.Length);
+        int offset = 0, block = 0;
+        while (offset < data.Length)
+        {
+            int take = Math.Min(blockSizes[block++ % blockSizes.Count], data.Length - offset);
+            effect.Process(data, offset, take);
+            offset += take;
+        }
+        return data;
     }
 
     private static double ToneAmplitude(float[] samples, double frequency, int sampleRate)

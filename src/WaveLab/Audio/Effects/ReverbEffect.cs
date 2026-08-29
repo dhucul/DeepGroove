@@ -88,12 +88,14 @@ public sealed class ReverbEffect : EffectBase
     private OnePoleLp[] _fdnFilters = [];
     private DelayLine[] _erLines = [];
     private DelayLine[] _preDelayLines = [];
+    private float[] _preDelayed = [];
     private double _modPhase;
     private ReverbParameters _parameters = new(0.5f, 0.4f, 1f, 0.25f, 0.02f, 0.3f, 0.5f, 0.0015f, 2);
 
     // Scratch buffers allocated at Configure — the audio thread must not allocate per sample.
     private float[] _fdnOut = [];
     private float[] _fdnIn = [];
+    private float[] _fdnExcitation = [];
 
     private sealed record ReverbParameters(
         float Size, float Damp, float Width, float Mix,
@@ -120,13 +122,13 @@ public sealed class ReverbEffect : EffectBase
 
 
         int preDelayLength = Math.Max(4, (int)(SampleRate * 0.15));
-        _preDelayLines =
-        [
-            new DelayLine { Buf = new float[preDelayLength] },
-            new DelayLine { Buf = new float[preDelayLength] },
-        ];
+        _preDelayLines = new DelayLine[ChannelCount];
+        for (int channel = 0; channel < ChannelCount; channel++)
+            _preDelayLines[channel] = new DelayLine { Buf = new float[preDelayLength] };
+        _preDelayed = new float[ChannelCount];
         _fdnOut = new float[FdnSize];
         _fdnIn = new float[FdnSize];
+        _fdnExcitation = new float[FdnSize];
         _modPhase = 0;
     }
 
@@ -152,8 +154,10 @@ public sealed class ReverbEffect : EffectBase
         foreach (var f in _fdnFilters) f.State = 0;
         foreach (var line in _erLines) { Array.Clear(line.Buf); line.Pos = 0; }
         foreach (DelayLine line in _preDelayLines) { Array.Clear(line.Buf); line.Pos = 0; }
+        Array.Clear(_preDelayed);
         Array.Clear(_fdnOut);
         Array.Clear(_fdnIn);
+        Array.Clear(_fdnExcitation);
         _modPhase = 0;
     }
 
@@ -195,28 +199,44 @@ public sealed class ReverbEffect : EffectBase
         {
             int idx = offset + f * channels;
 
-            // Preserve the first stereo pair through the excitation path. Folding L+R to mono
-            // before the network made a vertical/anti-phase recording produce no wet signal.
-            float inputLeft = buffer[idx];
-            float inputRight = channels > 1 ? buffer[idx + 1] : inputLeft;
+            // Preserve each real input channel through its own pre-delay. Selecting only
+            // L/R made centre and surround channels receive a room they never excited.
+            for (int channel = 0; channel < channels; channel++)
+            {
+                DelayLine line = _preDelayLines[channel];
+                int prePosition = line.Pos;
+                line.Buf[prePosition] = buffer[idx + channel] * 0.5f;
+                int preRead = (prePosition - preDelaySamples + line.Buf.Length) % line.Buf.Length;
+                _preDelayed[channel] = line.Buf[preRead];
+                line.Pos = (prePosition + 1) % line.Buf.Length;
+            }
 
-            // --- Pre-delay: independent L/R rings with a shared position ---
-            int preLen = _preDelayLines[0].Buf.Length;
-            int prePosition = _preDelayLines[0].Pos;
-            _preDelayLines[0].Buf[prePosition] = inputLeft * 0.5f;
-            _preDelayLines[1].Buf[prePosition] = inputRight * 0.5f;
-            int preRead = (prePosition - preDelaySamples + preLen) % preLen;
-            float preDelayedLeft = _preDelayLines[0].Buf[preRead];
-            float preDelayedRight = _preDelayLines[1].Buf[preRead];
-            prePosition = (prePosition + 1) % preLen;
-            _preDelayLines[0].Pos = prePosition;
-            _preDelayLines[1].Pos = prePosition;
+            // Keep the established channel-to-line routing for common layouts. When
+            // there are more inputs than FDN lines, fold every input into a line and
+            // normalize each bucket so no channel is silently discarded.
+            if (channels <= FdnSize)
+            {
+                for (int i = 0; i < FdnSize; i++)
+                    _fdnExcitation[i] = _preDelayed[i % channels];
+            }
+            else
+            {
+                Array.Clear(_fdnExcitation);
+                for (int channel = 0; channel < channels; channel++)
+                    _fdnExcitation[channel % FdnSize] += _preDelayed[channel];
+
+                for (int i = 0; i < FdnSize; i++)
+                {
+                    int contributors = 1 + ((channels - 1 - i) / FdnSize);
+                    _fdnExcitation[i] /= MathF.Sqrt(contributors);
+                }
+            }
 
             // --- Early reflections ---
             float erOut = 0;
             for (int i = 0; i < FdnSize; i++)
             {
-                float source = (i & 1) == 0 ? preDelayedLeft : preDelayedRight;
+                float source = _fdnExcitation[i];
                 float er = _erLines[i].Process(source * (0.3f / FdnSize));
                 erOut += er * (1.0f - i * 0.08f); // decaying ER pattern
             }
@@ -269,7 +289,7 @@ public sealed class ReverbEffect : EffectBase
             float sizeFeedback = parameters.Size * 0.95f;
             for (int i = 0; i < FdnSize; i++)
             {
-                float source = (i & 1) == 0 ? preDelayedLeft : preDelayedRight;
+                float source = _fdnExcitation[i];
                 float drive = source * fdnInputGain + fdnIn[i] * sizeFeedback;
                 _fdnLines[i].Buf[_fdnLines[i].Pos] = drive;
                 _fdnLines[i].Pos = (_fdnLines[i].Pos + 1) % _fdnLines[i].Buf.Length;

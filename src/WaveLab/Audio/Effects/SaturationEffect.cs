@@ -33,6 +33,7 @@ public sealed class SaturationEffect : EffectBase
     private double _toneCutoff = double.NaN;
     private SaturationParameters _parameters = new(1f, 1f, 1f, 0, 2);
     private Oversampler?[] _samplers = [];
+    private int _activeOversamplingFactor = 1;
 
     private sealed record SaturationParameters(
         float Drive, float Compensation, float Mix, int Curve, int OversamplingFactor);
@@ -128,6 +129,7 @@ public sealed class SaturationEffect : EffectBase
     {
         for (int c = 0; c < _tone.Length; c++) _tone[c].Reset();
         foreach (Oversampler? sampler in _samplers) sampler?.Reset();
+        _activeOversamplingFactor = Volatile.Read(ref _parameters).OversamplingFactor;
     }
 
     public override void Process(float[] buffer, int offset, int count)
@@ -142,6 +144,13 @@ public sealed class SaturationEffect : EffectBase
         float dry = 1 - mix;
         int curve = parameters.Curve;
         Oversampler? sampler = SamplerFor(parameters.OversamplingFactor);
+        if (parameters.OversamplingFactor != _activeOversamplingFactor)
+        {
+            // Each factor owns independent FIR history. A bank that has been idle
+            // must not resume with samples from the last time it was selected.
+            sampler?.Reset();
+            _activeOversamplingFactor = parameters.OversamplingFactor;
+        }
         bool oversample = sampler is { Factor: > 1 };
 
         // Allocated once for the block, not once per sample: this runs on the audio thread.

@@ -45,8 +45,16 @@ public static class Isrc
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
         var cleaned = new StringBuilder(Length);
         foreach (char c in value)
-            if (char.IsLetterOrDigit(c)) cleaned.Append(char.ToUpperInvariant(c));
-        return cleaned.Length == Length ? cleaned.ToString() : string.Empty;
+            if (char.IsAsciiLetterOrDigit(c)) cleaned.Append(char.ToUpperInvariant(c));
+        if (cleaned.Length != Length) return string.Empty;
+
+        string result = cleaned.ToString();
+        bool valid = char.IsAsciiLetter(result[0]) && char.IsAsciiLetter(result[1]);
+        for (int index = 2; valid && index < 5; index++)
+            valid = char.IsAsciiLetterOrDigit(result[index]);
+        for (int index = 5; valid && index < Length; index++)
+            valid = char.IsAsciiDigit(result[index]);
+        return valid ? result : string.Empty;
     }
 
     /// <summary>Whether this is either blank or a usable ISRC — the two states that are not an error.</summary>
@@ -101,9 +109,22 @@ public readonly record struct DdpDiscInfo(
         {
             if (string.IsNullOrWhiteSpace(Upc)) return string.Empty;
             var digits = new StringBuilder(13);
-            foreach (char c in Upc) if (char.IsDigit(c)) digits.Append(c);
-            return digits.Length is 12 or 13 ? digits.ToString().PadLeft(13, '0') : string.Empty;
+            foreach (char c in Upc) if (char.IsAsciiDigit(c)) digits.Append(c);
+            if (digits.Length is not (12 or 13)) return string.Empty;
+            string normalised = digits.ToString().PadLeft(13, '0');
+            return HasValidCheckDigit(normalised) ? normalised : string.Empty;
         }
+    }
+
+    private static bool HasValidCheckDigit(string value)
+    {
+        int sum = 0;
+        for (int index = 0; index < 12; index++)
+        {
+            int digit = value[index] - '0';
+            sum += (index & 1) == 0 ? digit : digit * 3;
+        }
+        return (10 - sum % 10) % 10 == value[12] - '0';
     }
 }
 

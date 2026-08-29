@@ -10,6 +10,7 @@ namespace WaveLab.Audio;
 public sealed class CdAudioService : ICdAudioService
 {
     private const int SectorsPerRead = 16;
+    private const int MaximumVerifiedReads = 5;
 
     private readonly ICdAudioPlatform _platform;
 
@@ -209,7 +210,10 @@ public sealed class CdAudioService : ICdAudioService
         }
 
         var raw = new byte[SectorsPerRead * CdAudioFormat.BytesPerSector];
-        var verification = new byte[raw.Length];
+        var verificationBuffers = new byte[MaximumVerifiedReads][];
+        verificationBuffers[0] = raw;
+        for (int read = 1; read < verificationBuffers.Length; read++)
+            verificationBuffers[read] = new byte[raw.Length];
         int sectorsRead = 0;
         int destinationFrame = 0;
 
@@ -223,8 +227,7 @@ public sealed class CdAudioService : ICdAudioService
                 reader,
                 startSector,
                 batchSectors,
-                raw,
-                verification,
+                verificationBuffers,
                 devicePath,
                 cancellationToken);
 
@@ -261,39 +264,45 @@ public sealed class CdAudioService : ICdAudioService
         return document;
     }
 
-    private static int ReadVerifiedAudioSectors(
+    internal static int ReadVerifiedAudioSectors(
         ICdAudioDevice reader,
         int startSector,
         int sectorCount,
-        byte[] destination,
-        byte[] verification,
+        byte[][] buffers,
         string devicePath,
         CancellationToken cancellationToken)
     {
-        const int maximumVerifiedReads = 5;
         int expectedBytes = checked(sectorCount * CdAudioFormat.BytesPerSector);
-        var candidates = new List<byte[]>();
-
-        for (int read = 0; read < maximumVerifiedReads; read++)
+        if (buffers.Length != MaximumVerifiedReads)
+            throw new ArgumentException("Five reusable read buffers are required.", nameof(buffers));
+        for (int read = 0; read < buffers.Length; read++)
         {
-            byte[] buffer = read == 0 ? destination : verification;
+            if (buffers[read] is null || buffers[read].Length < expectedBytes)
+                throw new ArgumentException("Five reusable read buffers are required.", nameof(buffers));
+        }
+        Span<int> validReads = stackalloc int[MaximumVerifiedReads];
+        int validCount = 0;
+
+        for (int read = 0; read < buffers.Length; read++)
+        {
+            byte[] buffer = buffers[read];
             int bytesRead = ReadAudioSectorsWithRetry(
                 reader, startSector, sectorCount, buffer, cancellationToken);
             if (bytesRead != expectedBytes)
                 continue;
 
-            foreach (byte[] candidate in candidates)
+            for (int candidateIndex = 0; candidateIndex < validCount; candidateIndex++)
             {
-                if (!buffer.AsSpan(0, expectedBytes).SequenceEqual(candidate))
+                byte[] candidate = buffers[validReads[candidateIndex]];
+                if (!buffer.AsSpan(0, expectedBytes)
+                        .SequenceEqual(candidate.AsSpan(0, expectedBytes)))
                     continue;
-                if (!ReferenceEquals(buffer, destination))
-                    Buffer.BlockCopy(buffer, 0, destination, 0, expectedBytes);
+                if (read != 0)
+                    Buffer.BlockCopy(buffer, 0, buffers[0], 0, expectedBytes);
                 return expectedBytes;
             }
 
-            var snapshot = new byte[expectedBytes];
-            Buffer.BlockCopy(buffer, 0, snapshot, 0, expectedBytes);
-            candidates.Add(snapshot);
+            validReads[validCount++] = read;
         }
 
         throw new CdAudioException(
@@ -479,7 +488,7 @@ public sealed class CdAudioService : ICdAudioService
                 throw InvalidToc(device.DevicePath, $"Track {number:00} has an invalid sector range.");
 
             int endSector = next.StartSector;
-            if (!current.IsData && next.IsData && !next.IsLeadOut)
+            if (!current.IsData && !next.IsLeadOut)
             {
                 CdAudioSession? currentSession = toc.Sessions.FirstOrDefault(session =>
                     number >= session.FirstTrackNumber && number <= session.LastTrackNumber);

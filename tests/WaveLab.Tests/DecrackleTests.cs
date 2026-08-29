@@ -138,6 +138,20 @@ public sealed class DecrackleTests(ITestOutputHelper output)
         Assert.True(hits > positions.Length * 0.6, $"only {hits} of {positions.Length} were found");
     }
 
+    [Fact]
+    public void ClampedTailScanKeepsDetectedEventsInTimelineOrder()
+    {
+        float[] clean = Programme(31);
+        var (damaged, _) = AddCrackle(clean, count: 500, amplitude: 0.06, seed: 37);
+
+        List<(int Start, int End)> found = Decrackle.Detect(damaged, Options);
+
+        Assert.NotEmpty(found);
+        for (int index = 1; index < found.Count; index++)
+            Assert.True(found[index].Start >= found[index - 1].Start,
+                $"event {index} moved backwards: {found[index - 1]} then {found[index]}");
+    }
+
     /// <summary>
     /// A transient is not a defect. A sustained departure from the model is a rimshot or the start
     /// of a note, and replacing it with what the model expected is what makes an aggressive

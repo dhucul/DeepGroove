@@ -617,24 +617,20 @@ public sealed class MasterSection : ISampleProvider, IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
         progress?.Report(0);
-        IAudioEffect[] enabledEffects;
-        bool processMidSide;
-        lock (_chainLock)
-        {
-            enabledEffects = _rackEnabled ? _chain.Where(f => f.Enabled).ToArray() : [];
-            processMidSide = _rackEnabled && _msMode && data.Length >= 2;
-        }
+        EffectFactory.OfflineRenderSnapshot[] snapshots = CaptureOfflineRenderSnapshots(
+            out bool midSideRequested);
 
-        // Its own instances, not the live rack's: see CloneForOfflineRender.
-        var chain = new List<IAudioEffect>(enabledEffects.Length);
+        var chain = new List<IAudioEffect>(snapshots.Length);
         try
         {
-            foreach (IAudioEffect effect in enabledEffects)
-                chain.Add(EffectFactory.CloneForOfflineRender(effect));
+            foreach (EffectFactory.OfflineRenderSnapshot snapshot in snapshots)
+                chain.Add(snapshot.Instantiate());
 
-            bool expandMono = data.Length == 1 && enabledEffects.Any(fx => fx.TypeId == "mono-stereo");
+            bool expandMono = data.Length == 1 &&
+                              snapshots.Any(snapshot => snapshot.TypeId == "mono-stereo");
             float[][] sourceData = expandMono ? [data[0], data[0]] : data;
             int channels = sourceData.Length;
+            bool processMidSide = midSideRequested && channels >= 2;
             foreach (var fx in chain) fx.Configure(sampleRate, channels);
             int latency = checked(chain.Sum(f => f.LatencySamples));
 
@@ -674,6 +670,7 @@ public sealed class MasterSection : ISampleProvider, IDisposable
             // Same contract as RemoveEffect and ReplaceChain: a clone that leaves scope
             // drops its reference. Cancellation lands here too.
             Retire(chain);
+            DisposeSnapshots(snapshots);
         }
     }
 
@@ -703,23 +700,19 @@ public sealed class MasterSection : ISampleProvider, IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
         progress?.Report(0);
-        IAudioEffect[] enabledEffects;
-        bool processMidSide;
-        lock (_chainLock)
-        {
-            enabledEffects = _rackEnabled ? _chain.Where(effect => effect.Enabled).ToArray() : [];
-            processMidSide = _rackEnabled && _msMode && data.Length >= 2;
-        }
+        EffectFactory.OfflineRenderSnapshot[] snapshots = CaptureOfflineRenderSnapshots(
+            out bool midSideRequested);
 
-        // Its own instances, not the live rack's: see CloneForOfflineRender.
-        var chain = new List<IAudioEffect>(enabledEffects.Length);
+        var chain = new List<IAudioEffect>(snapshots.Length);
         try
         {
-            foreach (IAudioEffect effect in enabledEffects)
-                chain.Add(EffectFactory.CloneForOfflineRender(effect));
-            bool expandMono = data.Length == 1 && enabledEffects.Any(effect => effect.TypeId == "mono-stereo");
+            foreach (EffectFactory.OfflineRenderSnapshot snapshot in snapshots)
+                chain.Add(snapshot.Instantiate());
+            bool expandMono = data.Length == 1 &&
+                              snapshots.Any(snapshot => snapshot.TypeId == "mono-stereo");
             float[][] sourceData = expandMono ? [data[0], data[0]] : data;
             int channels = sourceData.Length;
+            bool processMidSide = midSideRequested && channels >= 2;
             var output = new float[channels][];
             for (int channel = 0; channel < channels; channel++) output[channel] = new float[frameCount];
             if (frameCount == 0)
@@ -782,7 +775,41 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         {
             // Same contract as ProcessOffline: the clones are this render's to release.
             Retire(chain);
+            DisposeSnapshots(snapshots);
         }
+    }
+
+    private EffectFactory.OfflineRenderSnapshot[] CaptureOfflineRenderSnapshots(
+        out bool midSideRequested)
+    {
+        lock (_chainLock)
+        {
+            midSideRequested = _rackEnabled && _msMode;
+            if (!_rackEnabled) return [];
+
+            var snapshots = new List<EffectFactory.OfflineRenderSnapshot>();
+            try
+            {
+                foreach (IAudioEffect effect in _chain)
+                {
+                    if (effect.Enabled)
+                        snapshots.Add(EffectFactory.CaptureForOfflineRender(effect));
+                }
+                return [.. snapshots];
+            }
+            catch
+            {
+                DisposeSnapshots(snapshots);
+                throw;
+            }
+        }
+    }
+
+    private static void DisposeSnapshots(
+        IEnumerable<EffectFactory.OfflineRenderSnapshot> snapshots)
+    {
+        foreach (EffectFactory.OfflineRenderSnapshot snapshot in snapshots)
+            snapshot.Dispose();
     }
 
     private static void ConvertToMidSide(float[] interleaved, int frames, int channels)

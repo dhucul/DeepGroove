@@ -160,10 +160,17 @@ public static class Decrackle
         for (int start = 0; start + block <= samples.Length; start += block) starts.Add(start);
         if (starts.Count == 0 || starts[^1] != lastStart) starts.Add(lastStart);
 
+        int scannedThrough = 0;
         foreach (int start in starts)
         {
             cancellationToken.ThrowIfCancellationRequested();
             progress?.Report(start / (double)samples.Length);
+
+            // The clamped final block overlaps the previous one so it has enough
+            // context for prediction. Only its previously unseen suffix may emit
+            // events; CollectRuns assumes monotonically increasing offsets.
+            int firstUnscanned = Math.Max(0, scannedThrough - start);
+            scannedThrough = Math.Max(scannedThrough, start + block);
 
             if (!FitPredictor(samples, start, block, order, autocorrelation, coefficients)) continue;
 
@@ -183,7 +190,7 @@ public static class Decrackle
             if (scale <= 1e-9) continue;
             double limit = scale * Math.Max(1, options.Threshold);
 
-            CollectRuns(magnitude, start, limit, options, samples.Length, events);
+            CollectRuns(magnitude, start, limit, options, samples.Length, events, firstUnscanned);
         }
 
         progress?.Report(1);
@@ -202,11 +209,11 @@ public static class Decrackle
     /// aggressive de-crackling sound dull.
     /// </remarks>
     private static void CollectRuns(double[] magnitude, int offset, double limit,
-        DecrackleOptions options, int length, List<(int, int)> events)
+        DecrackleOptions options, int length, List<(int, int)> events, int firstIndex)
     {
         int guard = Math.Max(0, options.Guard);
         int longest = Math.Max(1, options.MaximumRunLength);
-        int i = 0;
+        int i = Math.Clamp(firstIndex, 0, magnitude.Length);
 
         while (i < magnitude.Length)
         {
@@ -346,12 +353,10 @@ public static class Decrackle
         if (n < BlockLengthFor(options)) return DecrackleReport.None;
 
         // Decompose into mid/side. The side signal carries the vertical noise.
-        var mid = new float[n];
         var side = new float[n];
         for (int i = 0; i < n; i++)
         {
             if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
-            mid[i] = (left[i] + right[i]) * 0.5f;
             side[i] = (left[i] - right[i]) * 0.5f;
         }
 
@@ -400,8 +405,9 @@ public static class Decrackle
         for (int i = 0; i < n; i++)
         {
             if ((i & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
-            left[i] = mid[i] + side[i];
-            right[i] = mid[i] - side[i];
+            float mid = (left[i] + right[i]) * 0.5f;
+            left[i] = mid + side[i];
+            right[i] = mid - side[i];
         }
 
         progress?.Report(1);

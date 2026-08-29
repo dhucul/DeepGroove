@@ -39,10 +39,12 @@ public sealed class LevelNormalizerEffect : EffectBase
     private int[] _truePeakHistory = [];
     private Biquad[] _kStage1 = [];   // K-weighting pre-filter (shelf)
     private Biquad[] _kStage2 = [];   // K-weighting RLB high-pass
+    private readonly Limiter _ceilingLimiter = new();
 
     public override string TypeId => "normalizer";
     public override string DisplayName => "Level Normalizer";
     public override IReadOnlyList<EffectParam> Params => P;
+    public override int LatencySamples => Math.Max(1, SampleRate * 5 / 1000);
     public override string? Readout => $"GAIN {_gainReadoutDb:+0.0;-0.0;0.0} dB";
 
     protected override void OnConfigure()
@@ -68,6 +70,15 @@ public sealed class LevelNormalizerEffect : EffectBase
             _kStage1[c] = Biquad.HighShelf(SampleRate, 1681.97, 3.99982, 1.0);
             _kStage2[c] = Biquad.HighPass(SampleRate, 38.13, 0.5);
         }
+        _ceilingLimiter.Configure(SampleRate, ChannelCount);
+    }
+
+    protected override void OnParamsChanged()
+    {
+        _ceilingLimiter.ThresholdDb = 0;
+        _ceilingLimiter.CeilingDb = GetParam("truePeakLimit");
+        _ceilingLimiter.Oversample = true;
+        _ceilingLimiter.Enabled = true;
     }
 
     public override void ResetState()
@@ -89,6 +100,7 @@ public sealed class LevelNormalizerEffect : EffectBase
         // and the K-weighting memory would carry over into the next render.
         for (int c = 0; c < _kStage1.Length; c++) _kStage1[c].Reset();
         for (int c = 0; c < _kStage2.Length; c++) _kStage2[c].Reset();
+        _ceilingLimiter.Reset();
     }
 
     public override void Process(float[] buffer, int offset, int count)
@@ -217,5 +229,8 @@ public sealed class LevelNormalizerEffect : EffectBase
         }
 
         _gainReadoutDb = 20 * Math.Log10(Math.Max(1e-12, _currentGain));
+        // The control loop above anticipates peak pressure, but only look-ahead can
+        // enforce a ceiling on audio that has not left the effect yet.
+        _ceilingLimiter.Process(buffer, offset, count);
     }
 }

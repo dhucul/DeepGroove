@@ -186,6 +186,91 @@ public static class EffectFactory
         return copy;
     }
 
+    /// <summary>
+    /// Immutable state captured while the live rack is protected, then materialised
+    /// as an independent processor after the audio lock has been released.
+    /// </summary>
+    internal sealed class OfflineRenderSnapshot : IDisposable
+    {
+        private IAudioEffect? _preparedBuiltIn;
+        private readonly string? _pluginPath;
+        private readonly string? _pluginState;
+        private readonly string? _pluginName;
+        private readonly bool _enabled;
+
+        internal OfflineRenderSnapshot(IAudioEffect preparedBuiltIn)
+        {
+            _preparedBuiltIn = preparedBuiltIn;
+            TypeId = preparedBuiltIn.TypeId;
+        }
+
+        internal OfflineRenderSnapshot(
+            string typeId,
+            string pluginPath,
+            string pluginState,
+            string pluginName,
+            bool enabled)
+        {
+            TypeId = typeId;
+            _pluginPath = pluginPath;
+            _pluginState = pluginState;
+            _pluginName = pluginName;
+            _enabled = enabled;
+        }
+
+        internal string TypeId { get; }
+
+        internal IAudioEffect Instantiate()
+        {
+            if (_preparedBuiltIn is { } builtIn)
+            {
+                _preparedBuiltIn = null;
+                return builtIn;
+            }
+
+            Vst3Effect? copy = Vst3PluginHost.Instance.Open(_pluginPath!, out string error);
+            if (copy == null)
+            {
+                throw new InvalidOperationException(
+                    $"'{_pluginName}' could not be opened a second time for the render: {error}");
+            }
+
+            copy.Enabled = _enabled;
+            copy.ApplyStateNow(_pluginState);
+            return copy;
+        }
+
+        public void Dispose()
+        {
+            IAudioEffect? prepared = Interlocked.Exchange(ref _preparedBuiltIn, null);
+            if (prepared is IDisposable disposable)
+            {
+                try { disposable.Dispose(); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Capture everything an offline processor needs without retaining a live-chain
+    /// wrapper. The caller protects <paramref name="source"/> from concurrent process,
+    /// reset and disposal while this method runs.
+    /// </summary>
+    internal static OfflineRenderSnapshot CaptureForOfflineRender(IAudioEffect source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (source is Vst3Effect plugin)
+        {
+            return new OfflineRenderSnapshot(
+                plugin.TypeId,
+                plugin.PluginPath,
+                plugin.SaveStateBase64(),
+                plugin.DisplayName,
+                plugin.Enabled);
+        }
+
+        return new OfflineRenderSnapshot(Clone(source));
+    }
+
     public static IAudioEffect Clone(IAudioEffect source)
     {
         // A plugin is copied by sharing the instance and carrying its settings alongside, not by
