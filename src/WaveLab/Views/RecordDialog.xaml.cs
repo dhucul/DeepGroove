@@ -50,7 +50,7 @@ public partial class RecordDialog : Window
     public RecordViewModel ViewModel { get; } = new();
 
     /// <summary>True when the user asked to punch the recording into the current selection.</summary>
-    public bool PunchRequested => chkPunch.IsChecked == true;
+    public bool PunchRequested => ViewModel.PunchInsertEnabled;
 
     public RecordDialog(bool punchAvailable = false)
     {
@@ -70,12 +70,14 @@ public partial class RecordDialog : Window
         if (punchAvailable)
         {
             chkPunch.Visibility = Visibility.Visible;
+            ViewModel.PunchInsertEnabled = true;
             chkPunch.IsChecked = true;
         }
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
         _timer.Tick += (_, _) => ViewModel.Tick();
         _timer.Start();
+        ViewModel.RecordingBitDepthSaveFailed += OnRecordingBitDepthSaveFailed;
         ViewModel.UnexpectedStopCompleted += OnUnexpectedStopCompleted;
         ViewModel.MonitoringStopped += OnMonitoringStopped;
         ViewModel.NeedleDropMonitoringStopped += OnNeedleDropMonitoringStopped;
@@ -112,6 +114,7 @@ public partial class RecordDialog : Window
             _lifetimeCts.Cancel();
             _timer.Stop();
             _click.Dispose();
+            ViewModel.RecordingBitDepthSaveFailed -= OnRecordingBitDepthSaveFailed;
             ViewModel.UnexpectedStopCompleted -= OnUnexpectedStopCompleted;
             ViewModel.MonitoringStopped -= OnMonitoringStopped;
             ViewModel.NeedleDropMonitoringStopped -= OnNeedleDropMonitoringStopped;
@@ -594,6 +597,34 @@ public partial class RecordDialog : Window
         SetSetupControlsEnabled(true);
     }
 
+    private void OnPunchOptionChanged(object sender, RoutedEventArgs e)
+    {
+        if (bitDepthCombo == null) return;
+        bool punching = chkPunch.IsChecked == true;
+        ViewModel.PunchInsertEnabled = punching;
+        bitDepthCombo.IsEnabled = !punching
+            && !_starting
+            && !ViewModel.IsRecording
+            && !ViewModel.IsWaitingForNeedleDrop
+            && !ViewModel.IsFinalizing;
+        bitDepthCombo.ToolTip = punching
+            ? "Punch recording keeps the open document's existing bit depth"
+            : "Bit depth used when the completed take is saved";
+    }
+
+    private void OnRecordingBitDepthSaveFailed(string error)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => OnRecordingBitDepthSaveFailed(error));
+            return;
+        }
+
+        MessageBox.Show(
+            "The recording bit-depth preference could not be saved:\n" + error,
+            "Record", MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(RecordViewModel.IsLevelChecking)
@@ -636,6 +667,7 @@ public partial class RecordDialog : Window
     private void SetSetupControlsEnabled(bool enabled)
     {
         deviceCombo.IsEnabled = enabled && !ViewModel.IsLevelChecking;
+        bitDepthCombo.IsEnabled = enabled && !ViewModel.PunchInsertEnabled;
         levelCheckBtn.IsEnabled = enabled && !ViewModel.IsRecording;
         resetLevelCheckBtn.IsEnabled = enabled
             && (ViewModel.IsLevelChecking || ViewModel.HasStoppedLevelCheck);

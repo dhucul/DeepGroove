@@ -163,11 +163,51 @@ public sealed class AppSettingsAudioHardwareTests
         Assert.Equal("console", normalized.InputDefaultRole);
     }
 
+    [Theory]
+    [InlineData(16, 16)]
+    [InlineData(24, 24)]
+    [InlineData(32, 32)]
+    [InlineData(20, 24)]
+    [InlineData(0, 24)]
+    public void RecordingBitDepthOffersPcm16Pcm24AndFloat32(int requested, int expected)
+    {
+        var settings = new AppSettings { RecordingBitDepth = requested };
+
+        Assert.Equal(expected, AppSettings.Normalize(settings).RecordingBitDepth);
+        Assert.Equal(expected, RecordViewModel.NormalizeRecordingBitDepth(requested));
+    }
+
+    [Fact]
+    public void ArmedRecordingSelectorOffersEverySupportedDepth()
+    {
+        Assert.Equal(
+            [16, 24, 32],
+            RecordViewModel.AvailableRecordingBitDepthChoices.Select(choice => choice.Bits));
+        Assert.Equal(
+            ["16 BIT", "24 BIT", "32 FLOAT"],
+            RecordViewModel.AvailableRecordingBitDepthChoices.Select(choice => choice.ToolbarLabel));
+    }
+
+    [Theory]
+    [InlineData(16, true)]
+    [InlineData(24, false)]
+    [InlineData(32, false)]
+    public void CompletedTakeUsesTheSelectedBitDepth(int bitDepth, bool ditherOnSave)
+    {
+        var document = new AudioDocument([[0.1234567f]], 48_000, 32);
+
+        RecordViewModel.ApplyRecordingBitDepth(document, bitDepth);
+
+        Assert.Equal(bitDepth, document.SourceBitDepth);
+        Assert.Equal(ditherOnSave, document.Dither16BitOnSave);
+    }
+
     [Fact]
     public void RestoreDefaultsResetsEveryAdvancedAudioHardwareSetting()
     {
         var settings = new AppSettings
         {
+            RecordingBitDepth = 16,
             BufferMs = 12,
             CaptureBufferMs = 7,
             OutputShareMode = "exclusive",
@@ -180,6 +220,7 @@ public sealed class AppSettingsAudioHardwareTests
 
         settings.RestoreDefaults();
 
+        Assert.Equal(24, settings.RecordingBitDepth);
         Assert.Equal(60, settings.BufferMs);
         Assert.Equal(100, settings.CaptureBufferMs);
         Assert.Equal("shared", settings.OutputShareMode);

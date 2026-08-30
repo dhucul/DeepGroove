@@ -31,6 +31,23 @@ public sealed class AppSettingsPersistenceTests : IDisposable
         }
     }
 
+    [Fact]
+    public void FloatRecordingBitDepthRoundTripsAndInvalidValuesReturnTo24Bit()
+    {
+        AppSettings settings = AppSettings.Instance;
+        settings.RecordingBitDepth = 32;
+        Assert.True(settings.Save(), settings.LastSaveError);
+
+        AppSettings.AppDataDir = _sandbox;
+        Assert.Equal(32, AppSettings.Instance.RecordingBitDepth);
+
+        AppSettings.Instance.RecordingBitDepth = 20;
+        Assert.True(AppSettings.Instance.Save(), AppSettings.Instance.LastSaveError);
+
+        AppSettings.AppDataDir = _sandbox;
+        Assert.Equal(24, AppSettings.Instance.RecordingBitDepth);
+    }
+
     /// <summary>
     /// The peak ceiling survives a real write and reload. It has to: the command asks once and then
     /// offers the answer back, so a ceiling that does not persist turns Normalize Peak from one

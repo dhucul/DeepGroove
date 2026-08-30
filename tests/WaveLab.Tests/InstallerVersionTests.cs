@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 using Xunit;
@@ -46,5 +47,63 @@ public sealed class InstallerVersionTests
             projectVersion == scriptVersion,
             $"the project builds {projectVersion} and the installer would ship it as {scriptVersion}; "
             + "bump both or neither.");
+    }
+
+    [Fact]
+    public void AnExplicitCompilerMustActuallyBeInnoSetupSeven()
+    {
+        DirectoryInfo? root = RepoRoot();
+        Assert.True(root != null, "WaveLab.sln should sit above the test binaries.");
+        string buildScript = Path.Combine(root!.FullName, "installer", "Build-Installer.ps1");
+        string fakeCompiler = Path.Combine(Path.GetTempPath(), $"Fake-ISCC-{Guid.NewGuid():N}.exe");
+        File.WriteAllText(fakeCompiler, "not an Inno Setup compiler");
+
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-ExecutionPolicy");
+            start.ArgumentList.Add("Bypass");
+            start.ArgumentList.Add("-File");
+            start.ArgumentList.Add(buildScript);
+            start.ArgumentList.Add("-IsccPath");
+            start.ArgumentList.Add(fakeCompiler);
+
+            using Process process = Process.Start(start)!;
+            string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            Assert.True(process.WaitForExit(10_000), "the rejected compiler check did not finish.");
+
+            Assert.NotEqual(0, process.ExitCode);
+            Assert.Contains("requires Inno Setup 7", output, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { File.Delete(fakeCompiler); } catch { }
+        }
+    }
+
+    [Fact]
+    public void InstallerBuildRefreshesTheVisualStudioReleaseBeforePublishingItsPayload()
+    {
+        DirectoryInfo? root = RepoRoot();
+        Assert.True(root != null, "WaveLab.sln should sit above the test binaries.");
+        string buildScript = Path.Combine(root!.FullName, "installer", "Build-Installer.ps1");
+        string script = File.ReadAllText(buildScript);
+
+        int releaseBuild = script.IndexOf("& dotnet build $projectPath -c Release", StringComparison.Ordinal);
+        int installerPublish = script.IndexOf("& dotnet publish $projectPath -c Release", StringComparison.Ordinal);
+
+        Assert.True(releaseBuild >= 0, "the normal Visual Studio Release program must be rebuilt");
+        Assert.True(installerPublish > releaseBuild,
+            "the normal Release program must be refreshed before the installer payload is published");
+        Assert.Contains("$releaseExecutable", script, StringComparison.Ordinal);
+        Assert.Contains("Visual Studio Release program reports", script, StringComparison.Ordinal);
     }
 }

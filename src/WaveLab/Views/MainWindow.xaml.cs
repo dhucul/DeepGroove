@@ -1579,12 +1579,14 @@ public partial class MainWindow : Window
             return;
 
         string verb = direction == CurveDirection.Playback ? "De-emphasis" : "Pre-emphasis";
+        int taps = RecordingCurves.EffectiveTapCount(
+            spec, d.Doc.SampleRate, RecordingCurves.DefaultTaps);
         _ = RunWholeFileTool($"{verb} · {spec.Name}",
-            $"{phase} phase · {RecordingCurves.DefaultTaps} taps",
+            $"{phase} phase · {taps} taps",
             (channels, sampleRate, progress, token) =>
             {
                 RecordingCurves.Apply(channels, spec, sampleRate, direction, phase,
-                    RecordingCurves.DefaultTaps, token, progress);
+                    taps, token, progress);
                 return channels;
             }, d);
     }

@@ -139,8 +139,15 @@
                 <TextBlock Text="{Binding SoftwarePlaythroughStatusText}" Margin="22,4,0,0" FontSize="10.5"
                            Foreground="{StaticResource Amber}" TextWrapping="Wrap"/>
 
-                <TextBlock Text="FORMAT"
-                           Margin="0,13,0,0" Style="{StaticResource UpperLabel}"/>
+                <Grid Margin="0,13,0,0">
+                    <TextBlock Text="FORMAT" Style="{StaticResource UpperLabel}" VerticalAlignment="Center"/>
+                    <ComboBox x:Name="bitDepthCombo" Width="142" HorizontalAlignment="Right"
+                              ItemsSource="{Binding RecordingBitDepthChoices}"
+                              DisplayMemberPath="Label" SelectedValuePath="Bits"
+                              SelectedValue="{Binding RecordingBitDepth, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              AutomationProperties.Name="Recording bit depth"
+                              ToolTip="Bit depth used when the completed take is saved"/>
+                </Grid>
                 <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1"
                         CornerRadius="8" Padding="12,9" Margin="0,6,0,0">
                     <TextBlock Text="{Binding FormatText}" Foreground="{StaticResource TextDim}" FontSize="12.5"/>
@@ -518,7 +525,9 @@
                 </Grid>
 
                 <CheckBox x:Name="chkPunch" Content="Insert into selection on stop (punch)" Margin="0,12,0,0"
-                          Visibility="Collapsed"/>
+                          Visibility="Collapsed"
+                          IsChecked="{Binding PunchInsertEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                          Checked="OnPunchOptionChanged" Unchecked="OnPunchOptionChanged"/>
                 <TextBlock x:Name="countInText" Text="COUNT-IN…" FontSize="10.5" FontWeight="Bold"
                            Foreground="{StaticResource Amber}" HorizontalAlignment="Center" Margin="0,9,0,0"
                            Visibility="Collapsed"/>

@@ -132,6 +132,7 @@ public sealed class AppSettings
     public const int MaximumRememberedCalibrations = 32;
 
     // Recording — automatic stop. Bounds live with the code that enforces them.
+    public int RecordingBitDepth { get; set; } = 24;
     public bool RecordAutoStopOnRunOut { get; set; }
     public double RecordRunOutHoldSeconds { get; set; } = Audio.RunOutDetector.DefaultHoldSeconds;
     public bool RecordAutoStopOnDuration { get; set; }
@@ -507,6 +508,9 @@ public sealed class AppSettings
             settings.RecordAutoStopMinutes,
             ViewModels.RecordViewModel.MinimumAutoStopMinutes,
             ViewModels.RecordViewModel.MaximumAutoStopMinutes);
+        settings.RecordingBitDepth = settings.RecordingBitDepth is 16 or 24 or 32
+            ? settings.RecordingBitDepth
+            : 24;
         settings.AutosaveMinutes = settings.AutosaveMinutes is 1 or 2 or 3 or 5 or 10 or 15
             ? settings.AutosaveMinutes
             : 3;
@@ -607,6 +611,7 @@ public sealed class AppSettings
         InputEventSync = d.InputEventSync;
         OutputDefaultRole = d.OutputDefaultRole;
         InputDefaultRole = d.InputDefaultRole;
+        RecordingBitDepth = d.RecordingBitDepth;
         RecordAutoStopOnRunOut = d.RecordAutoStopOnRunOut;
         RecordRunOutHoldSeconds = d.RecordRunOutHoldSeconds;
         RecordAutoStopOnDuration = d.RecordAutoStopOnDuration;

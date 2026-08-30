@@ -11,7 +11,7 @@ public enum RecordingCurve
     /// <summary>RIAA with the IEC 1976 amendment: a 7950 µs rumble filter at 20.02 Hz as well.</summary>
     RiaaIec,
 
-    /// <summary>Columbia LP (1948): 3180 / 318 / 100 µs. Also published as NAB / NARTB.</summary>
+    /// <summary>Columbia LP (1948): 1590 / 318 / 100 µs — 100 / 500 / 1590 Hz.</summary>
     ColumbiaLp,
 
     /// <summary>AES (1951): 3180 / 398 / 63.6 µs — a 400 Hz turnover and a gentler treble.</summary>
@@ -23,8 +23,7 @@ public enum RecordingCurve
     Coarse78,
 
     /// <summary>
-    /// Decca FFRR: a 250 Hz turnover and only 5 dB down at 10 kHz — far more top left on the disc
-    /// than any of the others here, which is what "full frequency range recording" was claiming.
+    /// Decca FFRR (1949): 40 / 250 / 3000 Hz, with the published 3 dB/octave treble slope.
     /// </summary>
     DeccaFfrr,
 
@@ -32,7 +31,7 @@ public enum RecordingCurve
     Emi,
 
     /// <summary>
-    /// RCA Orthophonic (1952): a 500 Hz turnover, 10.5 dB down at 10 kHz. Not to be confused with
+    /// RCA Orthophonic (1952): 50 / 500 / 3180 Hz, about 11 dB down at 10 kHz. Not to be confused with
     /// <em>New</em> Orthophonic of the following year, which is the curve the RIAA adopted — for
     /// that one use <see cref="Riaa"/>, which is what it became.
     /// </summary>
@@ -66,16 +65,19 @@ public enum CurvePhase
 }
 
 /// <summary>
-/// A curve as a set of time constants. Every published curve reduces to these, which is why they
-/// are stored rather than the turnover and rolloff figures usually quoted alongside them.
+/// A curve as a set of time constants plus its published treble slope. Most curves are ordinary
+/// one-pole networks; FFRR's 3 dB/octave top is the historical exception.
 /// </summary>
 /// <param name="BassShelfUs">Where the bass boost stops rising, in µs. 3180 µs is 50.05 Hz.</param>
 /// <param name="TurnoverUs">The bass turnover, in µs. 318 µs is 500.5 Hz.</param>
 /// <param name="TrebleUs">The treble rolloff, in µs. 75 µs is 2122 Hz; zero means none.</param>
 /// <param name="RumbleUs">An optional highpass below the shelf, in µs. Zero means none.</param>
+/// <param name="TrebleSlopeDbPerOctave">
+/// The asymptotic treble slope. Ordinary one-pole curves use 6; Decca FFRR uses 3.
+/// </param>
 public readonly record struct RecordingCurveSpec(
     RecordingCurve Curve, string Name, double BassShelfUs, double TurnoverUs,
-    double TrebleUs, double RumbleUs = 0)
+    double TrebleUs, double RumbleUs = 0, double TrebleSlopeDbPerOctave = 6)
 {
     private static double Corner(double microseconds) =>
         microseconds > 0 ? 1e6 / (2 * Math.PI * microseconds) : 0;
@@ -124,18 +126,20 @@ public static class RecordingCurves
     [
         new(RecordingCurve.Riaa, "RIAA (1954)", 3180, 318, 75),
         new(RecordingCurve.RiaaIec, "RIAA + IEC rumble", 3180, 318, 75, RumbleUs: 7950),
-        new(RecordingCurve.ColumbiaLp, "Columbia LP (1948)", 3180, 318, 100),
+        new(RecordingCurve.ColumbiaLp, "Columbia LP (1948)", 1591.55, 318, 100),
         new(RecordingCurve.Aes, "AES (1951)", 3180, 398, 63.6),
         new(RecordingCurve.Coarse78, "78 rpm, 500 Hz turnover", 3180, 318, 0),
 
-        // The three below are given in the sources as a turnover and a rolloff at 10 kHz rather than
-        // as time constants, so the treble constant is derived from the rolloff instead of quoted.
-        // The derivation is worth trusting because it reproduces the others: run it on RIAA's
-        // published −13.734 dB and it returns 75.0 µs, which is RIAA's constant to the decimal.
-        // `RecordingCurveTests` re-derives all three and checks them against the published figures.
-        new(RecordingCurve.DeccaFfrr, "Decca FFRR", 3180, 636.6, 22.8),
+        // FFRR is the exception to the one-pole treble family: the source explicitly specifies a
+        // 3 dB/octave slope and warns that using a 6 dB/octave pole adjusted merely to meet the
+        // 10 kHz figure starts the rolloff in the wrong place.
+        new(RecordingCurve.DeccaFfrr, "Decca FFRR (1949)", 3978.87, 636.62, 53.05,
+            TrebleSlopeDbPerOctave: 3),
+
+        // These two are published as turnover and 10 kHz rolloff figures. Their ordinary one-pole
+        // treble constants are derived from those figures and checked by RecordingCurveTests.
         new(RecordingCurve.Emi, "EMI (1955)", 3180, 318, 58.4),
-        new(RecordingCurve.RcaOrthophonic, "RCA Orthophonic (1952)", 3180, 318, 47.3),
+        new(RecordingCurve.RcaOrthophonic, "RCA Orthophonic (1952)", 3180, 318, 50.05),
     ];
 
     public static IReadOnlyList<RecordingCurveSpec> All => Specs;
@@ -172,7 +176,11 @@ public static class RecordingCurves
 
         double value = Hypot(omega * turnover);
         if (shelf > 0) value /= Hypot(omega * shelf);
-        if (treble > 0) value /= Hypot(omega * treble);
+        if (treble > 0)
+        {
+            double slopePower = Math.Max(0, spec.TrebleSlopeDbPerOctave) / 6.0;
+            value /= Math.Pow(Hypot(omega * treble), slopePower);
+        }
         if (rumble > 0)
         {
             double x = omega * rumble;
@@ -187,6 +195,25 @@ public static class RecordingCurves
 
     /// <summary>Default filter length. Long enough that the 50 Hz shelf is resolved properly.</summary>
     public const int DefaultTaps = 8192;
+
+    // A playback-only rumble corner needs a longer time aperture than the ordinary shelf curves.
+    // Roughly forty-three time constants puts the 20 Hz IEC response within 0.1 dB of the curve.
+    private const double MinimumRumbleTimeConstants = 42.9;
+
+    internal static int EffectiveTapCount(
+        in RecordingCurveSpec spec, int sampleRate, int requestedTaps = DefaultTaps)
+    {
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        if (requestedTaps < 16) throw new ArgumentOutOfRangeException(nameof(requestedTaps));
+
+        int effective = Fft.NextPowerOfTwo(requestedTaps);
+        if (spec.RumbleUs <= 0) return effective;
+
+        double needed = sampleRate * spec.RumbleUs * 1e-6 * MinimumRumbleTimeConstants;
+        if (!double.IsFinite(needed) || needed > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(spec), "The rumble time constant is too large.");
+        return Math.Max(effective, Fft.NextPowerOfTwo((int)Math.Ceiling(needed)));
+    }
 
     /// <summary>
     /// Designs an impulse response matching the curve exactly in magnitude.
@@ -211,7 +238,7 @@ public static class RecordingCurves
                 "A recording curve cannot invert a playback-only rumble high-pass.",
                 nameof(direction));
 
-        taps = Fft.NextPowerOfTwo(taps);
+        taps = EffectiveTapCount(spec, sampleRate, taps);
         int size = taps * 4;
 
         var magnitude = new double[size];

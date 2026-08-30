@@ -58,6 +58,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _isFinalizingRecording;
     private Task _recordFinalization = Task.CompletedTask;
     private long _expectedTransportRecordingSessionId;
+    private int _recordingBitDepthPreference = 24;
+    private int _transportRecordingBitDepth = 24;
     private double _transportPeakL = -60;
     private double _transportPeakR = -60;
     private string _recordInputName = "Default input";
@@ -91,6 +93,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public MainViewModel()
     {
         AudioDocument.UndoBudgetBytes = AppSettings.Instance.UndoLimitBytes;
+        _recordingBitDepthPreference = RecordViewModel.NormalizeRecordingBitDepth(
+            AppSettings.Instance.RecordingBitDepth);
         EffectFactory.EnsureFactoryPresets();
 
         Engine = new PlaybackEngine();
@@ -558,6 +562,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public IReadOnlyList<RecordingBitDepthChoice> RecordingBitDepthChoices =>
+        RecordViewModel.AvailableRecordingBitDepthChoices;
+
+    /// <summary>The visible, persisted output depth used by the Arm fast path.</summary>
+    public int RecordingBitDepthPreference
+    {
+        get => _recordingBitDepthPreference;
+        set
+        {
+            if (!CanChangeRecordArm) return;
+            int normalized = RecordViewModel.NormalizeRecordingBitDepth(value);
+            int previous = _recordingBitDepthPreference;
+            if (!Set(ref _recordingBitDepthPreference, normalized)) return;
+            Raise(nameof(RecordStatusText));
+            Raise(nameof(RecordButtonToolTip));
+            if (RecordViewModel.TryPersistRecordingBitDepth(normalized)) return;
+
+            Set(ref _recordingBitDepthPreference, previous, nameof(RecordingBitDepthPreference));
+            Raise(nameof(RecordStatusText));
+            Raise(nameof(RecordButtonToolTip));
+            ReportSettingsSaveFailure();
+        }
+    }
+
     public bool IsTransportRecording
     {
         get => _isTransportRecording;
@@ -593,17 +621,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public double TransportPeakLDb { get => _transportPeakL; private set => Set(ref _transportPeakL, value); }
     public double TransportPeakRDb { get => _transportPeakR; private set => Set(ref _transportPeakR, value); }
-    public bool CanChangeRecordArm => !IsTransportRecording && !IsFinalizingRecording && !HasPendingTransportRecording;
+    internal static bool CanChangeRecordArmForState(
+        bool isRecording,
+        bool isFinalizing,
+        bool hasPendingCapture) => !isRecording && !isFinalizing && !hasPendingCapture;
+
+    public bool CanChangeRecordArm => CanChangeRecordArmForState(
+        IsTransportRecording, IsFinalizingRecording, HasPendingTransportRecording);
     public bool HasPendingTransportRecording => _transportRecorder.HasPendingCapture;
     public string RecordStatusText => IsFinalizingRecording ? "FINALIZING…"
         : IsTransportRecording
             ? $"REC {TimeFormat.Position((long)(_transportRecorder.RecordedSeconds * _transportRecorder.SampleRate), _transportRecorder.SampleRate)}"
             : HasPendingTransportRecording ? "CAPTURE NEEDS RETRY"
-            : IsRecordArmed ? $"ARMED · {_recordInputName}" : "";
+            : IsRecordArmed
+                ? $"ARMED · {_recordInputName} · {RecordViewModel.DescribeRecordingBitDepth(_recordingBitDepthPreference)}"
+                : "";
     public string RecordButtonToolTip => IsFinalizingRecording ? "Finalizing captured audio"
         : IsTransportRecording ? "Stop recording"
         : HasPendingTransportRecording ? "Retry preserving the buffered recording"
-        : IsRecordArmed ? "Record now from the selected input (Ctrl+R)" : "Record setup (Ctrl+R)";
+        : IsRecordArmed
+            ? $"Record now from the selected input at {RecordViewModel.DescribeRecordingBitDepth(_recordingBitDepthPreference)} (Ctrl+R)"
+            : "Record setup (Ctrl+R)";
 
     public string StatusEngine
     {
@@ -998,6 +1036,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void RefreshEngineStatus()
     {
+        int depth = RecordViewModel.NormalizeRecordingBitDepth(AppSettings.Instance.RecordingBitDepth);
+        if (Set(ref _recordingBitDepthPreference, depth, nameof(RecordingBitDepthPreference)))
+        {
+            Raise(nameof(RecordStatusText));
+            Raise(nameof(RecordButtonToolTip));
+        }
         UpdateRecordInputName();
         Raise(nameof(StatusEngine));
         Raise(nameof(RecordStatusText));
@@ -1940,6 +1984,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try
         {
             UpdateRecordInputName();
+            // Freeze the preference with the session. Finalization can happen much later, including
+            // through an unexpected-stop callback, and must describe the format selected at start.
+            FreezeTransportRecordingBitDepth();
             Interlocked.Exchange(ref _expectedTransportRecordingSessionId, 0);
             long sessionId = _transportRecorder.Start(AppSettings.Instance.InputDeviceId);
             Interlocked.Exchange(ref _expectedTransportRecordingSessionId, sessionId);
@@ -1993,7 +2040,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             var result = requireSessionMatch
                 ? await _transportRecorder.StopSessionAndGetDocumentAsync(ownedSessionId)
                 : await _transportRecorder.StopAndGetDocumentAsync();
-            if (result != null) AddGeneratedDocument(result);
+            if (result != null)
+            {
+                ApplyTransportRecordingBitDepth(result);
+                AddGeneratedDocument(result);
+            }
             if (_transportRecorder.LastStopError != null)
                 MessageBox.Show($"The input device stopped unexpectedly. Audio captured before the failure was kept.\n\n{_transportRecorder.LastStopError.Message}",
                     "Recording stopped", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -2034,6 +2085,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 await FinishTransportRecordingAsync(info.SessionId);
         });
     }
+
+    /// <summary>
+    /// Couples the selected depth to one transport session. The selector can change after a take,
+    /// but delayed or retried finalization must keep the choice made before this session started.
+    /// </summary>
+    internal int FreezeTransportRecordingBitDepth()
+    {
+        _transportRecordingBitDepth = RecordViewModel.NormalizeRecordingBitDepth(
+            _recordingBitDepthPreference);
+        return _transportRecordingBitDepth;
+    }
+
+    internal void ApplyTransportRecordingBitDepth(AudioDocument document) =>
+        RecordViewModel.ApplyRecordingBitDepth(document, _transportRecordingBitDepth);
 
     private void TogglePlay()
     {

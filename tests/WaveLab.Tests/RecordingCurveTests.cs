@@ -75,9 +75,8 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
     /// <see cref="TheDerivationReproducesRiaasPublishedConstant"/>.
     /// </remarks>
     [Theory]
-    [InlineData(RecordingCurve.DeccaFfrr, 250.0, -5.0)]
     [InlineData(RecordingCurve.Emi, 500.0, -12.0)]
-    [InlineData(RecordingCurve.RcaOrthophonic, 500.0, -10.5)]
+    [InlineData(RecordingCurve.RcaOrthophonic, 500.0, -11.0)]
     public void ThePreRiaaCurvesMatchTheirPublishedFigures(
         RecordingCurve curve, double turnoverHz, double rolloffAt10kDb)
     {
@@ -88,7 +87,37 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
                          + $"10 kHz {at10k:0.00} dB (published {rolloffAt10kDb:0.0})");
 
         Assert.Equal(turnoverHz, spec.TurnoverHz, 1.0);
-        Assert.Equal(rolloffAt10kDb, at10k, 0.05);
+        Assert.Equal(rolloffAt10kDb, at10k, 0.1);
+    }
+
+    [Fact]
+    public void ColumbiaLpKeepsItsPublishedOneHundredHertzBassShelf()
+    {
+        RecordingCurveSpec columbia = RecordingCurves.Spec(RecordingCurve.ColumbiaLp);
+
+        Assert.Equal(100, columbia.ShelfHz, 0.1);
+        Assert.Equal(500, columbia.TurnoverHz, 1.0);
+        Assert.Equal(1590, columbia.TrebleHz, 2.0);
+
+        // This low-band assertion prevents the RIAA 50 Hz shelf from being copied back in while
+        // the turnover and 10 kHz checks continue to pass.
+        Assert.Equal(14.34, RecordingCurves.ResponseDb(columbia, 20), 0.05);
+    }
+
+    [Fact]
+    public void DeccaFfrrKeepsItsPublishedThreeDbPerOctaveTrebleSlope()
+    {
+        RecordingCurveSpec ffrr = RecordingCurves.Spec(RecordingCurve.DeccaFfrr);
+
+        Assert.Equal(40, ffrr.ShelfHz, 0.1);
+        Assert.Equal(250, ffrr.TurnoverHz, 1.0);
+        Assert.Equal(3_000, ffrr.TrebleHz, 1.0);
+        Assert.Equal(3, ffrr.TrebleSlopeDbPerOctave, 6);
+        Assert.Equal(-5, RecordingCurves.ResponseDb(ffrr, 10_000), 0.5);
+
+        double upperOctave = RecordingCurves.ResponseDb(ffrr, 20_000)
+                            - RecordingCurves.ResponseDb(ffrr, 10_000);
+        Assert.InRange(upperOctave, -3.2, -2.6);
     }
 
     /// <summary>
@@ -102,7 +131,8 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
     {
         // The external check, and the only one that uses a figure from outside this file: RIAA
         // publishes both a rolloff and a time constant, so the two have to agree.
-        double derived = TrebleUsFrom(Riaa.BassShelfUs, Riaa.TurnoverUs, -13.734);
+        double derived = TrebleUsFrom(
+            Riaa.BassShelfUs, Riaa.TurnoverUs, Riaa.TrebleSlopeDbPerOctave, -13.734);
         output.WriteLine($"from RIAA's published -13.734 dB: {derived:0.000} µs, published 75 µs");
         Assert.Equal(75.0, derived, 0.05);
     }
@@ -124,7 +154,8 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
             if (spec.TrebleUs <= 0) continue;
 
             double rolloff = RecordingCurves.ResponseDb(spec, 10_000);
-            double derived = TrebleUsFrom(spec.BassShelfUs, spec.TurnoverUs, rolloff);
+            double derived = TrebleUsFrom(
+                spec.BassShelfUs, spec.TurnoverUs, spec.TrebleSlopeDbPerOctave, rolloff);
 
             output.WriteLine($"{spec.Name,-26} {spec.TrebleUs,6:0.0} µs -> {rolloff,7:0.000} dB "
                              + $"-> {derived,6:0.0} µs");
@@ -137,13 +168,19 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
     /// The same arithmetic the three derived constants came from, kept here so the relationship is
     /// enforced rather than remembered.
     /// </summary>
-    private static double TrebleUsFrom(double bassShelfUs, double turnoverUs, double targetDbAt10k)
+    private static double TrebleUsFrom(
+        double bassShelfUs,
+        double turnoverUs,
+        double trebleSlopeDbPerOctave,
+        double targetDbAt10k)
     {
         double low = 1e-6, high = 400;
         for (int i = 0; i < 200; i++)
         {
             double mid = (low + high) / 2;
-            var spec = new RecordingCurveSpec(RecordingCurve.Riaa, "probe", bassShelfUs, turnoverUs, mid);
+            var spec = new RecordingCurveSpec(
+                RecordingCurve.Riaa, "probe", bassShelfUs, turnoverUs, mid,
+                TrebleSlopeDbPerOctave: trebleSlopeDbPerOctave);
             if (RecordingCurves.ResponseDb(spec, 10_000) > targetDbAt10k) low = mid;
             else high = mid;
         }
@@ -203,19 +240,48 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
     [InlineData(CurvePhase.Linear)]
     public void TheDesignedFilterMatchesTheCurveAcrossTheBand(CurvePhase phase)
     {
-        float[] kernel = RecordingCurves.Design(Riaa, Rate, CurveDirection.Playback, phase);
-
-        double worst = 0, worstAt = 0;
-        for (double f = 20; f <= 20_000; f *= 1.05)
+        foreach (RecordingCurveSpec spec in RecordingCurves.All)
         {
-            double designed = 20 * Math.Log10(Math.Max(1e-12, ResponseAt(kernel, f, Rate)));
-            double reference = 20 * Math.Log10(Math.Max(1e-12, RecordingCurves.Magnitude(Riaa, f)));
-            double error = Math.Abs(designed - reference);
-            if (error > worst) { worst = error; worstAt = f; }
-        }
+            float[] kernel = RecordingCurves.Design(
+                spec, Rate, CurveDirection.Playback, phase);
 
-        output.WriteLine($"{phase} phase: worst error {worst:0.000} dB at {worstAt:0} Hz");
-        Assert.True(worst < 0.1, $"the filter is out by {worst:0.00} dB at {worstAt:0} Hz");
+            double worst = 0, worstAt = 0;
+            for (double f = 20; f <= 20_000; f *= 1.05)
+            {
+                double designed = 20 * Math.Log10(Math.Max(1e-12, ResponseAt(kernel, f, Rate)));
+                double reference = 20 * Math.Log10(
+                    Math.Max(1e-12, RecordingCurves.Magnitude(spec, f)));
+                double error = Math.Abs(designed - reference);
+                if (error > worst) { worst = error; worstAt = f; }
+            }
+
+            output.WriteLine(
+                $"{spec.Name}, {phase}: worst error {worst:0.000} dB at {worstAt:0} Hz");
+            Assert.True(worst < 0.1,
+                $"{spec.Name} is out by {worst:0.00} dB at {worstAt:0} Hz");
+        }
+    }
+
+    [Theory]
+    [InlineData(44_100, 16_384)]
+    [InlineData(48_000, 16_384)]
+    [InlineData(96_000, 32_768)]
+    public void IecRumbleCurveScalesItsTimeApertureWithSampleRate(int sampleRate, int expectedTaps)
+    {
+        RecordingCurveSpec iec = RecordingCurves.Spec(RecordingCurve.RiaaIec);
+        Assert.Equal(expectedTaps,
+            RecordingCurves.EffectiveTapCount(iec, sampleRate));
+
+        foreach (CurvePhase phase in Enum.GetValues<CurvePhase>())
+        {
+            float[] kernel = RecordingCurves.Design(
+                iec, sampleRate, CurveDirection.Playback, phase);
+            double designed = 20 * Math.Log10(
+                Math.Max(1e-12, ResponseAt(kernel, 20, sampleRate)));
+            double error = Math.Abs(designed - RecordingCurves.ResponseDb(iec, 20));
+            Assert.True(error < 0.1,
+                $"{sampleRate} Hz {phase} IEC response is out by {error:0.000} dB at 20 Hz");
+        }
     }
 
     /// <summary>
@@ -307,16 +373,23 @@ public sealed class RecordingCurveTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void RecordIsTheExactInverseOfPlayback()
+    public void EveryLegalRecordCurveIsTheExactInverseOfPlayback()
     {
-        foreach (double f in new[] { 20.0, 100, 1_000, 10_000, 20_000 })
+        foreach (RecordingCurveSpec spec in RecordingCurves.All)
         {
-            float[] playback = RecordingCurves.Design(Riaa, Rate, CurveDirection.Playback, CurvePhase.Minimum);
-            float[] record = RecordingCurves.Design(Riaa, Rate, CurveDirection.Record, CurvePhase.Minimum);
+            if (spec.RumbleUs > 0) continue;
+            float[] playback = RecordingCurves.Design(
+                spec, Rate, CurveDirection.Playback, CurvePhase.Minimum);
+            float[] record = RecordingCurves.Design(
+                spec, Rate, CurveDirection.Record, CurvePhase.Minimum);
 
-            double product = ResponseAt(playback, f, Rate) * ResponseAt(record, f, Rate);
-            output.WriteLine($"{f,6:0} Hz: playback × record = {Db(product):+0.000;-0.000;0.000} dB");
-            Assert.Equal(0, Db(product), 0.15);
+            foreach (double f in new[] { 20.0, 100, 1_000, 10_000, 20_000 })
+            {
+                double product = ResponseAt(playback, f, Rate) * ResponseAt(record, f, Rate);
+                output.WriteLine($"{spec.Name}, {f,6:0} Hz: playback × record = " +
+                                 $"{Db(product):+0.000;-0.000;0.000} dB");
+                Assert.Equal(0, Db(product), 0.15);
+            }
         }
     }
 

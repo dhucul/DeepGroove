@@ -8,6 +8,7 @@ using WaveLab.Util;
 namespace WaveLab.ViewModels;
 
 public sealed record CaptureDevice(string Id, string Name);
+public sealed record RecordingBitDepthChoice(int Bits, string Label, string ToolbarLabel);
 
 public sealed class RecordViewModel : ObservableObject, IDisposable
 {
@@ -71,6 +72,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private double _runOutHoldSeconds = RunOutDetector.DefaultHoldSeconds;
     private bool _autoStopOnDuration;
     private int _autoStopMinutes = DefaultAutoStopMinutes;
+    private int _recordingBitDepth;
+    private bool _punchInsertEnabled;
     private string _autoStopStatusText = "";
     // written on the UI thread in Dispose, read on NAudio's capture/stop
     // callback threads — must not be cached in a register
@@ -89,6 +92,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         _engine.LevelTargetCeilingDb = AppSettings.Instance.RecordingTargetCeilingDb;
         // Read back rather than trusting the setting: the analyzer clamps it.
         _targetCeilingDb = _committedTargetCeilingDb = _engine.LevelTargetCeilingDb;
+        _recordingBitDepth = NormalizeRecordingBitDepth(AppSettings.Instance.RecordingBitDepth);
 
         string? preferred = AppSettings.Instance.InputDeviceId;
         _selectedDevice = Devices.FirstOrDefault(d => d.Id == preferred)
@@ -190,6 +194,79 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     }
 
     public ObservableCollection<CaptureDevice> Devices { get; } = [];
+
+    internal static IReadOnlyList<RecordingBitDepthChoice> AvailableRecordingBitDepthChoices { get; } =
+    [
+        new(16, "16-bit PCM", "16 BIT"),
+        new(24, "24-bit PCM", "24 BIT"),
+        new(32, "32-bit float", "32 FLOAT"),
+    ];
+
+    public IReadOnlyList<RecordingBitDepthChoice> RecordingBitDepthChoices =>
+        AvailableRecordingBitDepthChoices;
+
+    /// <summary>
+    /// Output depth assigned to the completed take. The WASAPI stream remains the device's
+    /// 32-bit-float mix format so selecting a file depth never changes hardware compatibility.
+    /// </summary>
+    public int RecordingBitDepth
+    {
+        get => _recordingBitDepth;
+        set
+        {
+            int normalized = NormalizeRecordingBitDepth(value);
+            int previous = _recordingBitDepth;
+            if (!Set(ref _recordingBitDepth, normalized)) return;
+            Raise(nameof(FormatText));
+            if (TryPersistRecordingBitDepth(normalized)) return;
+
+            // Save reports failure rather than throwing. Put both live copies back so a later,
+            // unrelated settings write cannot unexpectedly persist a choice this write rejected.
+            Set(ref _recordingBitDepth, previous, nameof(RecordingBitDepth));
+            Raise(nameof(FormatText));
+            RecordingBitDepthSaveFailed?.Invoke(
+                AppSettings.Instance.LastSaveError ?? "The settings file could not be written.");
+        }
+    }
+
+    /// <summary>
+    /// A punch becomes part of an existing document, whose output depth remains authoritative.
+    /// This also drives the format explanation while the otherwise irrelevant selector is disabled.
+    /// </summary>
+    public bool PunchInsertEnabled
+    {
+        get => _punchInsertEnabled;
+        set
+        {
+            if (!Set(ref _punchInsertEnabled, value)) return;
+            Raise(nameof(FormatText));
+        }
+    }
+
+    internal static int NormalizeRecordingBitDepth(int value) => value is 16 or 24 or 32 ? value : 24;
+
+    internal static bool TryPersistRecordingBitDepth(int value)
+    {
+        AppSettings settings = AppSettings.Instance;
+        int previous = settings.RecordingBitDepth;
+        settings.RecordingBitDepth = NormalizeRecordingBitDepth(value);
+        if (settings.Save()) return true;
+        settings.RecordingBitDepth = previous;
+        return false;
+    }
+
+    internal static string DescribeRecordingBitDepth(int value) => NormalizeRecordingBitDepth(value) == 32
+        ? "32-bit float"
+        : $"{NormalizeRecordingBitDepth(value)}-bit PCM";
+
+    internal static void ApplyRecordingBitDepth(AudioDocument document, int bitDepth)
+    {
+        int normalized = NormalizeRecordingBitDepth(bitDepth);
+        document.SourceBitDepth = normalized;
+        // The editor works in float. Defer the one stochastic reduction to the WAV writer so a
+        // 16-bit take is not dithered once here and then quantised a second time after editing.
+        document.Dither16BitOnSave = normalized == 16;
+    }
 
     public CaptureDevice? SelectedDevice
     {
@@ -430,16 +507,24 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             if (!IsRecording && !IsLevelChecking && !IsWaitingForNeedleDrop)
-                return "Records in the device mix format · saved as 16/24/32-bit WAV";
+                return PunchInsertEnabled
+                    ? "Uses the device mix format · punch keeps the open document's bit depth"
+                    : $"Uses the device mix format · completed take: {RecordingBitDepthLabel}";
             string channels = _engine.Channels switch
             {
                 1 => "Mono",
                 2 => "Stereo",
                 int count => $"{count} channels",
             };
-            return $"{_engine.SampleRate / 1000.0:0.0} kHz · 32-bit float · {channels} (device mix format)";
+            string destination = PunchInsertEnabled
+                ? "open document bit depth"
+                : $"{RecordingBitDepthLabel} take";
+            return $"{_engine.SampleRate / 1000.0:0.0} kHz · 32-bit float device → "
+                + $"{destination} · {channels}";
         }
     }
+
+    private string RecordingBitDepthLabel => DescribeRecordingBitDepth(_recordingBitDepth);
 
     public string LevelCheckButtonText => IsLevelChecking
         ? SampleWholeRecord ? "Finish Full Scan" : "Stop Check"
@@ -967,6 +1052,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     }
 
     public AudioDocument? Result { get; private set; }
+    public event Action<string>? RecordingBitDepthSaveFailed;
     public event Action<RecordingStoppedInfo, Exception?>? UnexpectedStopCompleted;
     public event Action<RecordingStoppedInfo>? MonitoringStopped;
     public event Action<RecordingStoppedInfo>? NeedleDropMonitoringStopped;
@@ -1203,6 +1289,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Result = requireSessionMatch
                 ? await _engine.StopSessionAndGetDocumentAsync(ownedSessionId)
                 : await _engine.StopAndGetDocumentAsync();
+            if (Result != null) ApplyRecordingBitDepth(Result, _recordingBitDepth);
             // Append rather than replace: the engine may already have written a
             // note at the monitor-to-take boundary, and losing it would discard the
             // level check that actually preceded this take.

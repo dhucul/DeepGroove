@@ -68,7 +68,7 @@ public static class HelpCatalog
             Section("Playback controls",
                 "Play/Pause or Space starts playback at the current position, then pauses or resumes it. Stop ends the active transport. Home returns to the beginning. Loop repeats the selection when a selection exists; otherwise it repeats the playable document range."),
             Section("Arm Recording Input",
-                "Arm is a fast path. When Arm is off, Record opens the full Record Audio dialog. When Arm is on, Record immediately captures from the input selected in Settings. Press Record again to stop and place the new unsaved recording in a tab. Arm resets when Deep Groove starts so recording cannot begin unexpectedly."),
+                "Arm is a fast path. When Arm is off, Record opens the full Record Audio dialog. When Arm is on, Record immediately captures from the input selected in Settings. Choose 16 BIT, 24 BIT, or 32 FLOAT from the selector beside Arm before starting; it stays synchronized with the Bit Depth choice in Record Audio. Press Record again to stop and place the new unsaved recording in a tab. Arm resets when Deep Groove starts so recording cannot begin unexpectedly."),
             Section("When controls are unavailable",
                 "Playback is disabled while a recording is active or being finalized. Recording setup is disabled while a capture is active, finalizing, or waiting to be recovered. Let finalization finish before starting another transport operation.")),
 
@@ -76,7 +76,7 @@ public static class HelpCatalog
             "Choose an input, check the loudest passage, avoid clipping, and start a clean take.",
             "record vinyl input device mix format check levels true peak projected rms crest clipping gain count-in punch loudness lufs noise floor hum dc clicks history needle stylus automatic start automatic stop run-out runout end of side unattended time limit",
             Section("Input device and format",
-                "Input Device chooses the Windows recording endpoint. 'Uses the Windows input-device format' means the device supplies its configured sample rate and channel count, such as 48 kHz stereo. Deep Groove captures in 32-bit float working precision. When saving the recording, you choose one WAV encoding: 16-bit, 24-bit, or 32-bit float. It does not create all three."),
+                "Input Device chooses the Windows recording endpoint. 'Uses the Windows input-device format' means the device supplies its configured sample rate and channel count, such as 48 kHz stereo. The Bit Depth choice sets the completed take to 16-bit PCM, 24-bit PCM, or 32-bit float; 24-bit is the default and is recommended for transfers. Deep Groove receives and edits the device stream in 32-bit float working precision. A 16-bit take is dithered once when it is saved. Punch recording keeps the open document's existing depth, so the choice is disabled while Punch is selected."),
             Section("Check Levels",
                 "Cue the loudest musical passage on the record side, press Check Levels, and play at least 10 active seconds; 30 to 60 seconds is safer. Monitoring audio is discarded. Stop Check ends monitoring and leaves the measurements visible. Reset Check clears the measurements while monitoring continues, or clears the frozen results after Stop Check. Pressing Start Recording switches to a fresh retained take, so the level-check passage is not included."),
             Section("Device Input Level",

@@ -395,6 +395,13 @@
                                   ToolTip="Arm the selected recording input" AutomationProperties.Name="Arm recording input">
                         <TextBlock Text="ARM"/>
                     </ToggleButton>
+                    <ComboBox x:Name="armedBitDepthCombo" Width="82" Height="30" Margin="6,0,0,0" Padding="7,0"
+                              ItemsSource="{Binding RecordingBitDepthChoices}"
+                              DisplayMemberPath="ToolbarLabel" SelectedValuePath="Bits"
+                              SelectedValue="{Binding RecordingBitDepthPreference, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              IsEnabled="{Binding CanChangeRecordArm}"
+                              ToolTip="Bit depth for armed recordings"
+                              AutomationProperties.Name="Armed recording bit depth"/>
                     <Button Style="{StaticResource ToolButton}" Margin="6,0,0,0" Command="{Binding RecordCommand}"
                             ToolTip="{Binding RecordButtonToolTip}" AutomationProperties.Name="Record or stop recording">
                         <Grid>

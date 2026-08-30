@@ -1,16 +1,14 @@
 ﻿; Deep Groove — Inno Setup script
-; Build: dotnet publish first (self-contained win-x64), then compile this script. Both the
-; payload and the intermediate build land under artifacts\, so the Visual Studio output
-; folder (bin\Release\net10.0-windows) holds nothing but the framework-dependent build.
-;   dotnet publish src\WaveLab\WaveLab.csproj -c Release -r win-x64 --self-contained true -o artifacts\publish --artifacts-path artifacts\build
-;   ISCC.exe installer\WaveLab.iss
+; Build from the repository root. The script validates the paired version, publishes a clean
+; self-contained win-x64 payload, locates Inno Setup 7, compiles this file and verifies the result.
+;   powershell -ExecutionPolicy Bypass -File installer\Build-Installer.ps1
 
 ; Display name only: the wizard, the Start Menu group, the desktop shortcut and the
 ; Add/Remove Programs entry. MyAppExeName stays WaveLab.exe because that is what
 ; dotnet publish produces from AssemblyName, and AppId below is what Inno matches an
 ; upgrade on — so an existing install is still recognised and updated in place.
 #define MyAppName "Deep Groove"
-#define MyAppVersion "2.0.44"
+#define MyAppVersion "2.0.45"
 #define MyAppExeName "WaveLab.exe"
 #define PublishDir "..\artifacts\publish"
 
