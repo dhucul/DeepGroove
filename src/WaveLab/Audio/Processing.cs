@@ -225,6 +225,65 @@ public static class Processing
         });
     }
 
+    /// <summary>
+    /// Replaces a selected defect with a straight bridge between the clean samples on either side.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The endpoints are the samples immediately <em>outside</em> the range, so neither clean anchor
+    /// is overwritten and every replacement sample lies strictly between them. Each channel uses
+    /// its own anchors but the same interpolation positions, preserving the channel layout and
+    /// timing relationship.
+    /// </para>
+    /// <para>
+    /// At a file edge only one clean anchor exists; extending that value is safer than extrapolating
+    /// a slope backwards or forwards through an unknown-length defect. A whole-file range has no
+    /// anchor at all and is declined without creating an undo entry.
+    /// </para>
+    /// </remarks>
+    /// <returns>True when the repair was committed; false when no usable boundary exists.</returns>
+    public static bool InterpolateRepair(AudioDocument doc, int start, int count)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        if (start < 0 || start > doc.Length)
+            throw new ArgumentOutOfRangeException(nameof(start));
+        if (count < 0 || count > doc.Length - start)
+            throw new ArgumentOutOfRangeException(nameof(count));
+        if (count == 0) return false;
+
+        int end = start + count;
+        bool hasLeft = start > 0;
+        bool hasRight = end < doc.Length;
+        if (!hasLeft && !hasRight) return false;
+
+        var replacement = new float[doc.ChannelCount][];
+        for (int channel = 0; channel < doc.ChannelCount; channel++)
+        {
+            float[] source = doc.Channels[channel];
+            var repaired = new float[count];
+            if (hasLeft && hasRight)
+            {
+                float left = source[start - 1];
+                float right = source[end];
+                double denominator = count + 1.0;
+                for (int i = 0; i < count; i++)
+                {
+                    double t = (i + 1.0) / denominator;
+                    repaired[i] = (float)(left + (right - left) * t);
+                }
+            }
+            else
+            {
+                float anchor = hasLeft ? source[start - 1] : source[end];
+                Array.Fill(repaired, anchor);
+            }
+            replacement[channel] = repaired;
+        }
+
+        doc.ReplaceRange(start, count, replacement, "Interpolate Repair");
+        return true;
+    }
+
     public static void InsertSilence(AudioDocument doc, int at, double seconds)
     {
         ArgumentNullException.ThrowIfNull(doc);

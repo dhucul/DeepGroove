@@ -2835,6 +2835,7 @@ public partial class MainWindow : Window
             new("Vinyl Restoration & CD Transfer…", null, () => OnVinylWorkflow(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Prepare Tracks for Audio CD…", null, () => OnPrepareAudioCd(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Reduce Noise…", null, () => OnReduceNoise(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            VmCommand("Interpolate Selection", null, _vm.InterpolateRepairCommand),
             new("Remove Clicks & Pops…", null, () => OnRemoveClicks(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Remove Hum…", null, () => OnRemoveHum(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Time Stretch…", null, () => OnTimeStretch(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),

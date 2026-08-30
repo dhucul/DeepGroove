@@ -122,6 +122,7 @@ public sealed class GuiActionStatusTests : IDisposable
                     viewModel.CutCommand.CanExecute(null),
                     viewModel.DeleteCommand.CanExecute(null),
                     viewModel.GainUpCommand.CanExecute(null),
+                    viewModel.InterpolateRepairCommand.CanExecute(null),
                     viewModel.ApplyChainCommand.CanExecute(null),
                     viewModel.CloseTabCommand.CanExecute(null),
                 ];
@@ -221,6 +222,50 @@ public sealed class GuiActionStatusTests : IDisposable
         Assert.Null(failure);
         Assert.True(canUndo);
         Assert.Contains("Remove DC Offset applied", status);
+        Assert.Contains("Undo available", status);
+    }
+
+    [Fact]
+    public void InterpolateRepairRequiresAUsableSelectionAndCommitsThroughTheCommand()
+    {
+        Exception? failure = null;
+        bool withoutSelection = true, wholeFile = true, interior = false, canUndo = false;
+        string? status = null;
+        float[]? repaired = null;
+        var thread = new Thread(() =>
+        {
+            MainViewModel? viewModel = null;
+            try
+            {
+                viewModel = new MainViewModel();
+                var document = new AudioDocument([[0, 100, -100, 3]], 48_000, 32);
+                viewModel.AddDocument(document);
+
+                withoutSelection = viewModel.InterpolateRepairCommand.CanExecute(null);
+                viewModel.ActiveDocument!.SelectAll();
+                wholeFile = viewModel.InterpolateRepairCommand.CanExecute(null);
+                viewModel.ActiveDocument.SetSelection(1, 3);
+                interior = viewModel.InterpolateRepairCommand.CanExecute(null);
+                viewModel.InterpolateRepairCommand.Execute(null);
+
+                repaired = [.. document.Channels[0]];
+                canUndo = document.CanUndo;
+                status = viewModel.ActionStatusText;
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { viewModel?.Dispose(); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        Assert.True(thread.Join(TimeSpan.FromSeconds(10)), "Interpolate command test timed out.");
+        Assert.Null(failure);
+        Assert.False(withoutSelection);
+        Assert.False(wholeFile);
+        Assert.True(interior);
+        Assert.Equal([0, 1, 2, 3], repaired!);
+        Assert.True(canUndo);
+        Assert.Contains("Interpolate Repair applied", status);
         Assert.Contains("Undo available", status);
     }
 

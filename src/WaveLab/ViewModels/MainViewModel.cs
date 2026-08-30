@@ -170,6 +170,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             () => CanMutateAudio);
         ReverseCommand = new RelayCommand(() => ApplyToRange(Processing.Reverse), () => CanMutateAudio);
         RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset), () => CanMutateAudio);
+        InterpolateRepairCommand = new RelayCommand(InterpolateRepair, () => CanInterpolateRepair);
         InsertSilenceCommand = new RelayCommand(() => WithDoc(d =>
         {
             PrepareForDocumentEdit(d);
@@ -315,6 +316,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public bool IsDocumentOperationRunning => _documentOperationRunning;
     private bool CanMutateDocument => !_editOperationRunning && !_documentOperationRunning && !_closeAllRunning;
     private bool CanMutateAudio => CanMutateDocument && HasAudioDocument;
+    private bool CanInterpolateRepair => CanMutateAudio
+        && _active is { HasSelection: true } document
+        && (document.SelStart > 0 || document.SelEnd < document.Doc.Length);
 
     /// <summary>Told by the shell as a long document operation starts and finishes.</summary>
     public void SetDocumentOperationRunning(bool value)
@@ -346,6 +350,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand FadeOutCommand { get; }
     public RelayCommand ReverseCommand { get; }
     public RelayCommand RemoveDcCommand { get; }
+    public RelayCommand InterpolateRepairCommand { get; }
     public RelayCommand InsertSilenceCommand { get; }
     public RelayCommand AddMarkerCommand { get; }
     public RelayCommand AddRegionCommand { get; }
@@ -2492,6 +2497,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         FadeOutCommand.RaiseCanExecuteChanged();
         ReverseCommand.RaiseCanExecuteChanged();
         RemoveDcCommand.RaiseCanExecuteChanged();
+        InterpolateRepairCommand.RaiseCanExecuteChanged();
         InsertSilenceCommand.RaiseCanExecuteChanged();
         AddMarkerCommand.RaiseCanExecuteChanged();
         AddRegionCommand.RaiseCanExecuteChanged();
@@ -2610,6 +2616,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     public void RefreshSpectrogram() => RequestSpectrogram?.Invoke();
+
+    /// <summary>Bridge the active damaged selection from the clean samples around it.</summary>
+    private void InterpolateRepair()
+    {
+        if (!CanInterpolateRepair || _active is not { HasSelection: true } document) return;
+        int start = document.SelStart;
+        int count = document.SelEnd - start;
+        PrepareForDocumentEdit(document);
+        if (!Processing.InterpolateRepair(document.Doc, start, count))
+            ReportAction("Interpolate Repair needs clean audio beside the selection · document unchanged.");
+    }
 
     /// <summary>De-click the selection boundaries (or the cursor position) after an edit.</summary>
     private void SmoothEditPoints()
