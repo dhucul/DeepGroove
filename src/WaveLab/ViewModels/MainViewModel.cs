@@ -20,6 +20,12 @@ namespace WaveLab.ViewModels;
 
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
+    private sealed class RestorationFractionProgress(IProgress<double> target)
+        : IProgress<RestorationProgress>
+    {
+        public void Report(RestorationProgress value) => target.Report(value.Fraction);
+    }
+
     private static float[][]? _clipboard;
     private static int _clipboardRate;
 
@@ -170,7 +176,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             () => CanMutateAudio);
         ReverseCommand = new RelayCommand(() => ApplyToRange(Processing.Reverse), () => CanMutateAudio);
         RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset), () => CanMutateAudio);
-        InterpolateRepairCommand = new RelayCommand(InterpolateRepair, () => CanInterpolateRepair);
+        InterpolateRepairCommand = new RelayCommand(
+            () => _ = InterpolateRepairAsync(), () => CanInterpolateRepair);
         InsertSilenceCommand = new RelayCommand(() => WithDoc(d =>
         {
             PrepareForDocumentEdit(d);
@@ -2617,15 +2624,106 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void RefreshSpectrogram() => RequestSpectrogram?.Invoke();
 
-    /// <summary>Bridge the active damaged selection from the clean samples around it.</summary>
-    private void InterpolateRepair()
+    /// <summary>
+    /// Repair a precise selection directly, or isolate one short defect from a rough selection.
+    /// </summary>
+    internal async Task InterpolateRepairAsync()
     {
-        if (!CanInterpolateRepair || _active is not { HasSelection: true } document) return;
-        int start = document.SelStart;
-        int count = document.SelEnd - start;
-        PrepareForDocumentEdit(document);
-        if (!Processing.InterpolateRepair(document.Doc, start, count))
-            ReportAction("Interpolate Repair needs clean audio beside the selection · document unchanged.");
+        bool ownsOperation = false;
+        bool applied = false;
+        try
+        {
+            if (!CanInterpolateRepair || _active is not { HasSelection: true } document) return;
+            int start = document.SelStart;
+            int count = document.SelEnd - start;
+            int directLimit = Processing.MaximumDirectInterpolationSamples(document.Doc.SampleRate);
+            if (count <= directLimit)
+            {
+                PrepareForDocumentEdit(document);
+                applied = Processing.InterpolateRepair(document.Doc, start, count);
+                if (!applied)
+                    ReportAction("Interpolate Repair needs clean audio beside the selection · document unchanged.");
+                return;
+            }
+
+            if (count > Processing.MaximumAutomaticInterpolationSearchSamples(document.Doc.SampleRate))
+            {
+                document.ZoomToSelection();
+                ReportAction("The interpolation area is too broad to search safely · it was zoomed in so you can mark a smaller area around the defect.");
+                return;
+            }
+
+            int end = start + count;
+            int sourceVersion = document.Doc.EditVersion;
+            int sampleRate = document.Doc.SampleRate;
+            float[][] channels = document.Doc.Channels.ToArray();
+            InterpolateRepairTarget? target = null;
+            CancellationToken operationToken = default;
+            SetDocumentOperationRunning(true);
+            ownsOperation = true;
+            Mouse.OverrideCursor = Cursors.Wait;
+            await Progress.RunBlockingAsync("Finding interpolation repair",
+                "Locating the strongest short defect inside the rough selection",
+                async (progress, token) =>
+                {
+                    operationToken = token;
+                    var detectorProgress = new RestorationFractionProgress(progress);
+                    target = await Task.Run(() => Processing.LocateInterpolateRepairTarget(
+                        channels, sampleRate, start, count, token, detectorProgress), token);
+                    // A request arriving after the detector's last periodic check still owns the
+                    // outcome: do not turn a completed analysis into a committed edit after Cancel.
+                    token.ThrowIfCancellationRequested();
+                });
+            // Once this continuation starts it does not yield again before the splice, so the UI
+            // cannot race another Cancel between this check and the commit.
+            operationToken.ThrowIfCancellationRequested();
+
+            if (!Documents.Contains(document) || document.Doc.EditVersion != sourceVersion
+                || !document.HasSelection || document.SelStart != start || document.SelEnd != end)
+            {
+                ReportAction("Interpolate Repair abandoned · the source or selection changed while it was analyzed.");
+                return;
+            }
+
+            if (target is not { } repair)
+            {
+                document.ZoomToSelection();
+                ReportAction("No short defect was isolated · the rough selection was zoomed in so you can tighten it.");
+                return;
+            }
+
+            PrepareForDocumentEdit(document);
+            string operation = $"Interpolate Repair · auto-located {repair.Count} samples";
+            applied = Processing.InterpolateRepair(
+                document.Doc, repair.Start, repair.Count, operation);
+            if (!applied)
+            {
+                ReportAction("Interpolate Repair needs clean audio beside the defect · document unchanged.");
+                return;
+            }
+            document.SetSelection(repair.Start, repair.Start + repair.Count);
+            document.ZoomToSelection();
+        }
+        catch (OperationCanceledException)
+        {
+            ReportAction("Interpolate Repair cancelled · document unchanged.");
+        }
+        catch (Exception ex)
+        {
+            ReportAction(applied
+                ? "Interpolate Repair was applied, but its view could not be updated."
+                : "Interpolate Repair failed · document unchanged.");
+            MessageBox.Show(ex.Message, "Interpolate Repair",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            if (ownsOperation)
+            {
+                Mouse.OverrideCursor = null;
+                SetDocumentOperationRunning(false);
+            }
+        }
     }
 
     /// <summary>De-click the selection boundaries (or the cursor position) after an edit.</summary>

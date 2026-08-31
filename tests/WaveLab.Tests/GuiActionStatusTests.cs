@@ -1,4 +1,5 @@
 using System.Threading;
+using System.Windows.Threading;
 using WaveLab.Audio;
 using WaveLab.Util;
 using WaveLab.ViewModels;
@@ -270,6 +271,108 @@ public sealed class GuiActionStatusTests : IDisposable
     }
 
     [Fact]
+    public void RoughInterpolateCommandRepairsOnlyTheLocatedDefectAndReleasesItsGuard()
+    {
+        Wpf.Run(() =>
+        {
+            using var viewModel = new MainViewModel();
+            float[] audio = InterpolationProgram();
+            int defect = 48_000;
+            for (int i = defect; i < defect + 24; i++) audio[i] += 0.75f;
+            var document = new AudioDocument([audio], 48_000, 32);
+            viewModel.AddDocument(document);
+            DocumentViewModel tab = viewModel.ActiveDocument!;
+            tab.SetSelection(24_000, 72_000);
+
+            CompleteOnDispatcher(viewModel.InterpolateRepairAsync());
+
+            Assert.Equal(1, document.HistoryCount);
+            Assert.True(tab.SelStart <= defect + 1);
+            Assert.True(tab.SelEnd >= defect + 23);
+            Assert.True(tab.SelEnd - tab.SelStart < 480);
+            Assert.Contains("auto-located", viewModel.ActionStatusText);
+            Assert.False(viewModel.IsDocumentOperationRunning);
+        });
+    }
+
+    [Fact]
+    public void RoughInterpolateWithNoDefectZoomsWithoutCreatingAnEdit()
+    {
+        Wpf.Run(() =>
+        {
+            using var viewModel = new MainViewModel();
+            var document = new AudioDocument([new float[96_000]], 48_000, 32);
+            viewModel.AddDocument(document);
+            DocumentViewModel tab = viewModel.ActiveDocument!;
+            tab.ViewWidthPixels = 800;
+            tab.ZoomFull();
+            tab.SetSelection(24_000, 72_000);
+            double before = tab.SamplesPerPixel;
+
+            CompleteOnDispatcher(viewModel.InterpolateRepairAsync());
+
+            Assert.Equal(0, document.HistoryCount);
+            Assert.True(tab.SamplesPerPixel < before);
+            Assert.Contains("No short defect was isolated", viewModel.ActionStatusText);
+            Assert.False(viewModel.IsDocumentOperationRunning);
+        });
+    }
+
+    [Fact]
+    public void SelectionChangedDuringRoughAnalysisPreventsTheCommitAndReleasesItsGuard()
+    {
+        Wpf.Run(() =>
+        {
+            using var viewModel = new MainViewModel();
+            float[] audio = InterpolationProgram();
+            for (int i = 48_000; i < 48_024; i++) audio[i] += 0.75f;
+            var document = new AudioDocument([audio], 48_000, 32);
+            viewModel.AddDocument(document);
+            DocumentViewModel tab = viewModel.ActiveDocument!;
+            tab.SetSelection(24_000, 72_000);
+
+            Task operation = viewModel.InterpolateRepairAsync();
+            // The command has reached its first await and the detector owns the old selection. A
+            // modeless surface can still move the selection while the main overlay is up.
+            tab.SetSelection(30_000, 60_000);
+            CompleteOnDispatcher(operation);
+
+            Assert.Equal(0, document.HistoryCount);
+            Assert.Equal(30_000, tab.SelStart);
+            Assert.Equal(60_000, tab.SelEnd);
+            Assert.Contains("source or selection changed", viewModel.ActionStatusText);
+            Assert.False(viewModel.IsDocumentOperationRunning);
+        });
+    }
+
+    [Fact]
+    public void CancellationAfterDetectorCompletionStillPreventsTheCommit()
+    {
+        Wpf.Run(() =>
+        {
+            using var viewModel = new MainViewModel();
+            float[] audio = InterpolationProgram();
+            for (int i = 48_000; i < 48_024; i++) audio[i] += 0.75f;
+            var document = new AudioDocument([audio], 48_000, 32);
+            viewModel.AddDocument(document);
+            viewModel.ActiveDocument!.SetSelection(24_000, 72_000);
+
+            Task operation = viewModel.InterpolateRepairAsync();
+            // Hold the dispatcher while the worker finishes. Its continuation — including the
+            // commit — cannot run yet, which makes this the late-cancel window the old flow missed.
+            Thread.Sleep(500);
+            viewModel.Progress.Tick();
+            OperationProgress visible = Assert.IsType<OperationProgress>(viewModel.Progress.Blocking);
+            visible.CancelCommand.Execute(null);
+            CompleteOnDispatcher(operation);
+
+            Assert.Equal(0, document.HistoryCount);
+            Assert.Contains("cancelled", viewModel.ActionStatusText, StringComparison.OrdinalIgnoreCase);
+            Assert.False(viewModel.IsDocumentOperationRunning);
+        });
+    }
+
+    [Fact]
     public void EffectAdjustmentReportsLiveRackAndUnchangedSource()
     {
         var master = new MasterSection();
@@ -286,5 +389,27 @@ public sealed class GuiActionStatusTests : IDisposable
         Assert.Contains(effect.DisplayName, status);
         Assert.Contains("active in rack", status);
         Assert.Contains("source unchanged until render", status);
+    }
+
+    private static float[] InterpolationProgram()
+    {
+        const int rate = 48_000;
+        var audio = new float[rate * 2];
+        for (int i = 0; i < audio.Length; i++)
+            audio[i] = (float)(0.2 * Math.Sin(2 * Math.PI * 440 * i / rate)
+                             + 0.08 * Math.Sin(2 * Math.PI * 1_731 * i / rate));
+        return audio;
+    }
+
+    private static void CompleteOnDispatcher(Task task)
+    {
+        long deadline = Environment.TickCount64 + 10_000;
+        while (!task.IsCompleted && Environment.TickCount64 < deadline)
+        {
+            Wpf.Pump(DispatcherPriority.Background);
+            Thread.Sleep(1);
+        }
+        Assert.True(task.IsCompleted, "Interpolation operation did not finish.");
+        task.GetAwaiter().GetResult();
     }
 }

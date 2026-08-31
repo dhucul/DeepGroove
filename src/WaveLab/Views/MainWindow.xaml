@@ -271,7 +271,7 @@
                     <MenuItem Header="Reduce Noise…" Click="OnReduceNoise"/>
                     <Separator/>
                     <MenuItem Header="Interpolate Selection" Command="{Binding InterpolateRepairCommand}"
-                              ToolTip="Replace the selected defect from the clean samples immediately beside it"/>
+                              ToolTip="Select roughly around a short defect; Deep Groove isolates and reconstructs it"/>
                     <MenuItem Header="Remove Clicks &amp; Pops…" Click="OnRemoveClicks"/>
                     <MenuItem Header="Remove Surface Crackle…" Click="OnRemoveCrackle"/>
                     <MenuItem Header="Remove Hum…" Click="OnRemoveHum"/>
