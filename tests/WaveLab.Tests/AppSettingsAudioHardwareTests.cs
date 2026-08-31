@@ -9,6 +9,27 @@ namespace WaveLab.Tests;
 
 public sealed class AppSettingsAudioHardwareTests
 {
+    [Theory]
+    [InlineData("DS-DAC-10R")]
+    [InlineData("KORG DS-DAC-10R Audio")]
+    [InlineData("KORG 2ch 1bit Audio Device")]
+    [InlineData("KORG 2ch Audio Device")]
+    [InlineData("Speakers (KORG 2CH 1BIT AUDIO DEVICE)")]
+    public void KorgDsDac10RRecognizesProductAndDriverEndpointNames(string name)
+    {
+        Assert.True(AudioHardware.IsKorgDsDac10R(name));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("KORG USB Audio Device Driver")]
+    [InlineData("Creative SB/SBX AE DSD ASIO Device")]
+    public void KorgDsDac10RRecognitionDoesNotClaimOtherDsdDevices(string? name)
+    {
+        Assert.False(AudioHardware.IsKorgDsDac10R(name));
+    }
+
     [Fact]
     public void CaptureFormatValidationRequiresInterleaved32BitFloat()
     {

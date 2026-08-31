@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.IO;
 using NAudio.CoreAudioApi;
 using NAudio.MediaFoundation;
 using NAudio.Wave;
@@ -80,6 +82,56 @@ public sealed record AudioInputSettingPlan(
 public static class AudioHardware
 {
     private static readonly int[] ProbeSampleRates = [44100, 48000, 88200, 96000, 176400, 192000];
+
+    /// <summary>
+    /// Recognizes both the product name and the endpoint name published by Korg's Windows driver.
+    /// Endpoint IDs are intentionally ignored: Windows can replace them after a driver reinstall.
+    /// </summary>
+    public static bool IsKorgDsDac10R(string? endpointName)
+    {
+        if (string.IsNullOrWhiteSpace(endpointName)) return false;
+        string compact = new(endpointName.Where(char.IsLetterOrDigit)
+            .Select(char.ToUpperInvariant).ToArray());
+        return compact.Contains("DSDAC10R", StringComparison.Ordinal)
+            || compact.Contains("KORG2CH1BITAUDIO", StringComparison.Ordinal)
+            || compact.Contains("KORG2CHAUDIODEVICE", StringComparison.Ordinal);
+    }
+
+    /// <summary>Opens the configuration shortcut installed by Korg's Windows setup package.</summary>
+    public static bool TryOpenKorgDsDac10RSettingTool(
+        out Process? process,
+        out string? error)
+    {
+        process = null;
+        error = null;
+        try
+        {
+            foreach (Environment.SpecialFolder folder in new[]
+            {
+                Environment.SpecialFolder.CommonStartMenu,
+                Environment.SpecialFolder.StartMenu,
+            })
+            {
+                string root = Environment.GetFolderPath(folder);
+                if (root.Length == 0) continue;
+                string shortcut = Path.Combine(root, "Programs", "KORG", "USB Audio Device",
+                    "DS-DAC-10R Setting Tool.lnk");
+                if (!File.Exists(shortcut)) continue;
+                process = Process.Start(new ProcessStartInfo(shortcut) { UseShellExecute = true });
+                return true;
+            }
+
+            error = "KORG's DS-DAC-10R Setting Tool shortcut was not found. Install it from the "
+                + "KORG AudioGate and USB Audio Device Setup package, or open it from Start > KORG "
+                + "> USB Audio Device.";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
 
     public static AudioEndpointInfo Inspect(string? deviceId, DataFlow flow, Role defaultRole)
     {

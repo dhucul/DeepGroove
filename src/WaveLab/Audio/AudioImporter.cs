@@ -13,13 +13,14 @@ public enum OpenBitDepth
 
 /// <summary>
 /// Loads any supported audio file into an AudioDocument.
-/// WAV and AIFF go through sample-accurate native codecs; compressed formats decode via Media Foundation.
+/// WAV, AIFF and DSD go through native codecs; compressed PCM formats decode via Media Foundation.
 /// </summary>
 public static class AudioImporter
 {
     public const string OpenFilter =
-        "Audio files (*.wav;*.w64;*.aif;*.aiff;*.aifc;*.mp3;*.flac;*.m4a;*.wma)|*.wav;*.w64;*.aif;*.aiff;*.aifc;*.mp3;*.flac;*.m4a;*.wma|" +
+        "Audio files (*.wav;*.w64;*.aif;*.aiff;*.aifc;*.dsf;*.dff;*.diff;*.dsdiff;*.mp3;*.flac;*.m4a;*.wma)|*.wav;*.w64;*.aif;*.aiff;*.aifc;*.dsf;*.dff;*.diff;*.dsdiff;*.mp3;*.flac;*.m4a;*.wma|" +
         "Wave files (*.wav;*.w64)|*.wav;*.w64|AIFF files (*.aif;*.aiff;*.aifc)|*.aif;*.aiff;*.aifc|" +
+        "DSD files (*.dsf;*.dff;*.diff;*.dsdiff)|*.dsf;*.dff;*.diff;*.dsdiff|" +
         "All files (*.*)|*.*";
 
     public static AudioDocument Load(string path, CancellationToken cancellationToken = default)
@@ -42,6 +43,11 @@ public static class AudioImporter
             extension.Equals(".aiff", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".aifc", StringComparison.OrdinalIgnoreCase))
             return AiffCodec.Load(path, cancellationToken);
+        if (extension.Equals(".dsf", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".dff", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".diff", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".dsdiff", StringComparison.OrdinalIgnoreCase))
+            return DsdCodec.Load(path, cancellationToken);
 
         using var reader = new MediaFoundationReader(path);
         var sp = reader.ToSampleProvider();

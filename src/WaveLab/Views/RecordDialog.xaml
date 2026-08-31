@@ -64,6 +64,18 @@
                         <DataTemplate><TextBlock Text="{Binding Name}"/></DataTemplate>
                     </ComboBox.ItemTemplate>
                 </ComboBox>
+                <Border Background="#111C1B" BorderBrush="#2D514B" BorderThickness="1" CornerRadius="8"
+                        Padding="11,8" Margin="0,7,0,0"
+                        Visibility="{Binding IsKorgDsDac10RSelected, Converter={StaticResource BoolToVis}}">
+                    <DockPanel LastChildFill="True">
+                        <Button x:Name="korgToolBtn" DockPanel.Dock="Right" Content="Open KORG Tool" Margin="12,0,0,0"
+                                VerticalAlignment="Top" Style="{StaticResource MiniButton}"
+                                Foreground="{StaticResource Accent}" Click="OnOpenKorgTool"
+                                AutomationProperties.Name="Open the KORG DS-DAC-10R Setting Tool"/>
+                        <TextBlock Text="{Binding DeviceCompatibilityText}" Foreground="{StaticResource TealMuted}"
+                                   FontSize="10.5" TextWrapping="Wrap" LineHeight="15"/>
+                    </DockPanel>
+                </Border>
                 <Grid Margin="0,5,0,0"
                       Visibility="{Binding HasDeviceMemory, Converter={StaticResource BoolToVis}}">
                     <Grid.ColumnDefinitions>

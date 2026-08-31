@@ -284,10 +284,21 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             RaiseLevelProperties();
             Raise(nameof(DeviceMemoryText));
             Raise(nameof(HasDeviceMemory));
+            Raise(nameof(IsKorgDsDac10RSelected));
+            Raise(nameof(DeviceCompatibilityText));
             Raise(nameof(CanForgetDeviceMemory));
             RefreshInputLevel();
         }
     }
+
+    public bool IsKorgDsDac10RSelected => AudioHardware.IsKorgDsDac10R(_selectedDevice?.Name);
+
+    public string DeviceCompatibilityText => IsKorgDsDac10RSelected
+        ? "KORG DS-DAC-10R detected · Deep Groove records its Windows PCM stream. Set the hardware "
+          + "input level and confirm the current Line/Phono mode in KORG's DS-DAC-10R Setting Tool; "
+          + "AudioGate changes that input mode. Native DSD capture uses the KORG ASIO 2.1 path: record "
+          + "DSF or DSDIFF in AudioGate, then open that file here for editing."
+        : "";
 
     /// <summary>Recent input RMS (dB), newest last; drives the scrolling history strip.</summary>
     public LevelHistoryBuffer LevelHistory { get; } = new(LevelHistoryCapacity);
@@ -1510,6 +1521,20 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         ApplyInputLevelInfo(AudioHardware.GetInputLevel(
             _selectedDevice.Id,
             AudioHardwareOptions.ParseRole(settings.InputDefaultRole, NAudio.CoreAudioApi.Role.Console)));
+    }
+
+    /// <summary>
+    /// Re-reads hardware gain after an external device utility closes. A running scan or completed
+    /// recommendation is always invalidated: a vendor utility can change gain outside the Windows
+    /// endpoint-volume surface, so an unchanged Core Audio reading is not proof that nothing moved.
+    /// </summary>
+    public void RefreshInputLevelAfterExternalChange()
+    {
+        if (IsRecording || IsWaitingForNeedleDrop || IsFinalizing) return;
+        RefreshInputLevel();
+
+        if (IsLevelChecking || HasStoppedLevelCheck)
+            ResetLevelCheck(preserveRecommendation: false);
     }
 
     private void ApplyInputLevelInfo(AudioInputLevelInfo info)

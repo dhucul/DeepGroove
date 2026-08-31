@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls.Primitives;
@@ -46,6 +47,7 @@ public partial class RecordDialog : Window
     private readonly ClickTrack _click = new();
     private readonly CancellationTokenSource _lifetimeCts = new();
     private bool _starting;
+    private bool _korgToolRunning;
 
     public RecordViewModel ViewModel { get; } = new();
 
@@ -275,7 +277,7 @@ public partial class RecordDialog : Window
 
     private async void OnStartStop(object sender, RoutedEventArgs e)
     {
-        if (_starting || ViewModel.IsFinalizing) return;
+        if (_starting || _korgToolRunning || ViewModel.IsFinalizing) return;
         if (ViewModel.IsWaitingForNeedleDrop)
         {
             ViewModel.Cancel();
@@ -597,6 +599,60 @@ public partial class RecordDialog : Window
         SetSetupControlsEnabled(true);
     }
 
+    private async void OnOpenKorgTool(object sender, RoutedEventArgs e)
+    {
+        if (_korgToolRunning || _starting || ViewModel.IsRecording
+            || ViewModel.IsWaitingForNeedleDrop || ViewModel.IsFinalizing) return;
+        if (!AudioHardware.TryOpenKorgDsDac10RSettingTool(
+                out Process? process, out string? error))
+        {
+            MessageBox.Show(error ?? "The KORG DS-DAC-10R Setting Tool could not be opened.",
+                "KORG DS-DAC-10R", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _korgToolRunning = true;
+        startBtn.IsEnabled = false;
+        SetSetupControlsEnabled(false);
+        try
+        {
+            if (process != null)
+            {
+                using (process)
+                    await process.WaitForExitAsync(_lifetimeCts.Token);
+            }
+            else
+            {
+                // ShellExecute can launch an existing instance without returning a process handle.
+                // Keep the record controls locked until the user confirms that utility is closed.
+                MessageBox.Show(
+                    "Make the input-level change in the KORG tool, close it, then click OK here "
+                    + "to refresh Deep Groove's hardware reading.",
+                    "KORG DS-DAC-10R", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (IsVisible)
+                MessageBox.Show($"The KORG tool stopped unexpectedly:\n{ex.Message}",
+                    "KORG DS-DAC-10R", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _korgToolRunning = false;
+            if (IsVisible)
+            {
+                ViewModel.RefreshInputLevelAfterExternalChange();
+                bool setupEnabled = !ViewModel.IsRecording
+                    && !ViewModel.IsWaitingForNeedleDrop
+                    && !ViewModel.IsFinalizing;
+                SetSetupControlsEnabled(setupEnabled);
+                startBtn.IsEnabled = setupEnabled && !_starting;
+            }
+        }
+    }
+
     private void OnPunchOptionChanged(object sender, RoutedEventArgs e)
     {
         if (bitDepthCombo == null) return;
@@ -668,6 +724,10 @@ public partial class RecordDialog : Window
     {
         deviceCombo.IsEnabled = enabled && !ViewModel.IsLevelChecking;
         bitDepthCombo.IsEnabled = enabled && !ViewModel.PunchInsertEnabled;
+        korgToolBtn.IsEnabled = enabled && !_korgToolRunning
+            && !ViewModel.IsRecording
+            && !ViewModel.IsWaitingForNeedleDrop
+            && !ViewModel.IsFinalizing;
         levelCheckBtn.IsEnabled = enabled && !ViewModel.IsRecording;
         resetLevelCheckBtn.IsEnabled = enabled
             && (ViewModel.IsLevelChecking || ViewModel.HasStoppedLevelCheck);
