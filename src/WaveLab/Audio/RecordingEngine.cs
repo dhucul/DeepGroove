@@ -657,6 +657,7 @@ public sealed class RecordingEngine : IDisposable
             if (session != null) DetachSession(session);
             if (session?.DataHandler != null) capture.DataAvailable -= session.DataHandler;
             if (session?.StoppedHandler != null) capture.RecordingStopped -= session.StoppedHandler;
+            AudioHardware.ReleaseRecorderConfiguration(capture, failed: true);
             try { capture.Dispose(); } catch { }
             _inputMonitor.StopStream();
             throw;
@@ -665,6 +666,8 @@ public sealed class RecordingEngine : IDisposable
 
     private void OnRecordingStopped(CaptureSession candidate, StoppedEventArgs e)
     {
+        AudioHardware.ReleaseRecorderConfiguration(
+            candidate.Capture, failed: e.Exception != null);
         // A discarded WASAPI capture can already have queued this callback on
         // WPF's synchronization context. Never let that stale notification stop
         // or finalize a newer capture owned by this engine.
@@ -1067,6 +1070,7 @@ public sealed class RecordingEngine : IDisposable
                 catch (Exception ex) { stopped.TrySetResult(new StoppedEventArgs(ex)); }
             }
 
+            bool stopTimedOut = false;
             try
             {
                 var stoppedArgs = await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -1074,6 +1078,7 @@ public sealed class RecordingEngine : IDisposable
             }
             catch (TimeoutException)
             {
+                stopTimedOut = true;
                 // Preserve everything received so far even if a driver never
                 // acknowledges StopRecording; disposal is the final fallback.
             }
@@ -1081,6 +1086,8 @@ public sealed class RecordingEngine : IDisposable
             // Disable this session before unhook/dispose. Delegates already
             // queued by NAudio can still run after event unsubscription.
             DeactivateSession(session);
+            AudioHardware.ReleaseRecorderConfiguration(
+                capture, failed: stopTimedOut || LastStopError != null);
             if (session.DataHandler != null) capture.DataAvailable -= session.DataHandler;
             if (session.StoppedHandler != null) capture.RecordingStopped -= session.StoppedHandler;
             try
@@ -1208,6 +1215,7 @@ public sealed class RecordingEngine : IDisposable
                 if (session != null)
                 {
                     WasapiRecorder capture = session.Capture;
+                    AudioHardware.ReleaseRecorderConfiguration(capture, failed: false);
                     if (session.DataHandler != null) capture.DataAvailable -= session.DataHandler;
                     if (session.StoppedHandler != null) capture.RecordingStopped -= session.StoppedHandler;
                     try { capture.StopRecording(); } catch { }

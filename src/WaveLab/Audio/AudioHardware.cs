@@ -82,11 +82,17 @@ public sealed record AudioInputSettingPlan(
     double FineTrimDb,
     double TotalLevelDb);
 
+internal readonly record struct CaptureStreamConfiguration(bool EventSync, int BufferMs);
+
 /// <summary>Read-only endpoint diagnostics and a short output-path test.</summary>
 public static class AudioHardware
 {
     private static readonly int[] ProbeSampleRates = [44100, 48000, 88200, 96000, 176400, 192000];
     private static readonly ConcurrentDictionary<string, bool> ExclusiveEventSupport = new();
+    private static readonly ConcurrentDictionary<string, Lazy<Task<CaptureStreamConfiguration>>>
+        ExclusiveCaptureConfigurations = new();
+    private static readonly ConcurrentDictionary<WasapiRecorder, string>
+        ExclusiveRecorderConfigurationKeys = new();
     private const int AudioClientBufferSizeError = unchecked((int)0x88890016);
     private const int AudioClientBufferSizeNotAligned = unchecked((int)0x88890019);
     private const int InvalidArgumentError = unchecked((int)0x80070057);
@@ -419,9 +425,12 @@ public static class AudioHardware
 
         WaveFormat format = capture.WaveFormat;
         if (!IsSupportedCaptureFormat(format))
+        {
+            ReleaseRecorderConfiguration(capture, failed: true);
             throw new NotSupportedException(
                 $"The input supplies {DescribeFormat(format)}. Deep Groove recording requires "
                 + "32-bit float, 24-bit PCM, or 16-bit PCM audio.");
+        }
 
         var stopped = new TaskCompletionSource<StoppedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         var statisticsLock = new object();
@@ -448,7 +457,11 @@ public static class AudioHardware
                 sampleCount += localCount;
             }
         };
-        EventHandler<StoppedEventArgs> stoppedHandler = (_, args) => stopped.TrySetResult(args);
+        EventHandler<StoppedEventArgs> stoppedHandler = (_, args) =>
+        {
+            ReleaseRecorderConfiguration(capture, failed: args.Exception != null);
+            stopped.TrySetResult(args);
+        };
         capture.DataAvailable += dataHandler;
         capture.RecordingStopped += stoppedHandler;
         try
@@ -474,6 +487,7 @@ public static class AudioHardware
         }
         finally
         {
+            ReleaseRecorderConfiguration(capture, failed: false);
             capture.DataAvailable -= dataHandler;
             capture.RecordingStopped -= stoppedHandler;
             try { capture.StopRecording(); } catch { }
@@ -546,23 +560,27 @@ public static class AudioHardware
         {
             capture.StartRecording();
         }
-        catch (Exception ex) when (
-            shareMode == AudioClientShareMode.Exclusive
-            && ex is AudioDeviceInUseException or AudioExclusiveModeNotAllowedException)
+        catch (Exception ex)
         {
-            throw new InvalidOperationException(
-                $"{device.FriendlyName} rejected exclusive capture initialization. In Windows "
-                + "Sound properties, enable 'Allow applications to take exclusive control' for "
-                + "this input and close other audio applications, or use Shared capture.",
-                ex);
-        }
-        catch (CoreAudioException ex) when (IsCaptureParameterError(ex.HResult))
-        {
-            throw new InvalidOperationException(
-                $"{device.FriendlyName} rejected the requested capture stream parameters. "
-                + "Check the endpoint's Windows default format and try a larger buffer or the "
-                + "other sharing mode. The driver returned E_INVALIDARG.",
-                ex);
+            ReleaseRecorderConfiguration(capture, failed: true);
+            if (shareMode == AudioClientShareMode.Exclusive
+                && ex is AudioDeviceInUseException or AudioExclusiveModeNotAllowedException)
+            {
+                throw new InvalidOperationException(
+                    $"{device.FriendlyName} rejected exclusive capture initialization. In Windows "
+                    + "Sound properties, enable 'Allow applications to take exclusive control' for "
+                    + "this input and close other audio applications, or use Shared capture.",
+                    ex);
+            }
+            if (ex is CoreAudioException coreAudio && IsCaptureParameterError(coreAudio.HResult))
+            {
+                throw new InvalidOperationException(
+                    $"{device.FriendlyName} rejected the requested capture stream parameters. "
+                    + "Check the endpoint's Windows default format and try a larger buffer or the "
+                    + "other sharing mode. The driver returned E_INVALIDARG.",
+                    ex);
+            }
+            throw;
         }
     }
 
@@ -573,15 +591,196 @@ public static class AudioHardware
         int bufferMs)
     {
         ArgumentNullException.ThrowIfNull(device);
+        WaveFormat? exclusiveFormat = null;
+        if (shareMode == AudioClientShareMode.Exclusive)
+        {
+            exclusiveFormat = GetExclusiveCaptureFormat(device);
+            string key = $"{device.ID}\n{exclusiveFormat.SampleRate}\n{exclusiveFormat.Channels}\n"
+                + $"{exclusiveFormat.BitsPerSample}\n{exclusiveFormat.Encoding}\n"
+                + $"{eventSync}\n{Math.Clamp(bufferMs, 3, 500)}";
+            var lazyProbe = ExclusiveCaptureConfigurations.GetOrAdd(
+                key,
+                _ => new Lazy<Task<CaptureStreamConfiguration>>(
+                    () => Task.Run(() => ProbeExclusiveCaptureConfiguration(
+                        device.ID, exclusiveFormat, eventSync, bufferMs)),
+                    LazyThreadSafetyMode.ExecutionAndPublication));
+            CaptureStreamConfiguration configuration;
+            try
+            {
+                configuration = lazyProbe.Value.GetAwaiter().GetResult();
+            }
+            catch
+            {
+                ExclusiveCaptureConfigurations.TryRemove(key, out _);
+                throw;
+            }
+            eventSync = configuration.EventSync;
+            bufferMs = configuration.BufferMs;
+
+            try
+            {
+                WasapiRecorder recorder = BuildRecorder(
+                    device, shareMode, eventSync, bufferMs, exclusiveFormat);
+                ExclusiveRecorderConfigurationKeys[recorder] = key;
+                return recorder;
+            }
+            catch
+            {
+                ExclusiveCaptureConfigurations.TryRemove(key, out _);
+                throw;
+            }
+        }
+
+        return BuildRecorder(
+            device, shareMode, eventSync, bufferMs, exclusiveFormat);
+    }
+
+    internal static void ReleaseRecorderConfiguration(WasapiRecorder recorder, bool failed)
+    {
+        if (!ExclusiveRecorderConfigurationKeys.TryRemove(recorder, out string? key)) return;
+        if (failed) ExclusiveCaptureConfigurations.TryRemove(key, out _);
+    }
+
+    private static WasapiRecorder BuildRecorder(
+        MMDevice device,
+        AudioClientShareMode shareMode,
+        bool eventSync,
+        int bufferMs,
+        WaveFormat? exclusiveFormat)
+    {
         var builder = new WasapiRecorderBuilder()
             .WithDevice(device)
             .WithBufferLength(Math.Clamp(bufferMs, 3, 500))
             .WithMmcssThreadPriority();
         builder = shareMode == AudioClientShareMode.Exclusive
-            ? builder.WithExclusiveMode().WithFormat(GetExclusiveCaptureFormat(device))
+            ? builder.WithExclusiveMode().WithFormat(exclusiveFormat
+                ?? throw new ArgumentNullException(nameof(exclusiveFormat)))
             : builder.WithSharedMode();
         builder = eventSync ? builder.WithEventSync() : builder.WithPollingSync();
         return builder.Build();
+    }
+
+    private static CaptureStreamConfiguration ProbeExclusiveCaptureConfiguration(
+        string deviceId,
+        WaveFormat format,
+        bool requestedEventSync,
+        int requestedBufferMs)
+    {
+        using var enumerator = new MMDeviceEnumerator();
+        using MMDevice device = enumerator.GetDevice(deviceId);
+        using AudioClient client = device.CreateAudioClient();
+        int defaultPeriodMs = Math.Max(3,
+            (int)Math.Ceiling(client.DefaultDevicePeriod / (double)TimeSpan.TicksPerMillisecond));
+        int minimumPeriodMs = Math.Max(3,
+            (int)Math.Ceiling(client.MinimumDevicePeriod / (double)TimeSpan.TicksPerMillisecond));
+        Exception? lastError = null;
+
+        foreach (CaptureStreamConfiguration candidate in ExclusiveCaptureCandidates(
+            requestedEventSync, requestedBufferMs, defaultPeriodMs, minimumPeriodMs))
+        {
+            WasapiRecorder recorder = BuildRecorder(
+                device,
+                AudioClientShareMode.Exclusive,
+                candidate.EventSync,
+                candidate.BufferMs,
+                format);
+            var stopped = new TaskCompletionSource<Exception?>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstData = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler<StoppedEventArgs> stoppedHandler =
+                (_, args) => stopped.TrySetResult(args.Exception);
+            CaptureDataAvailableHandler dataHandler =
+                (_, _, _, _) => firstData.TrySetResult(true);
+            recorder.RecordingStopped += stoppedHandler;
+            recorder.DataAvailable += dataHandler;
+            bool candidateSucceeded = false;
+            Exception? candidateError = null;
+            try
+            {
+                recorder.StartRecording();
+                int startupTimeoutMs = Math.Clamp(candidate.BufferMs * 3 + 100, 250, 1600);
+                Task startup = Task.WhenAny(firstData.Task, stopped.Task)
+                    .WaitAsync(TimeSpan.FromMilliseconds(startupTimeoutMs))
+                    .GetAwaiter().GetResult();
+                if (ReferenceEquals(startup, stopped.Task))
+                {
+                    Exception? startupError = stopped.Task.Result;
+                    if (startupError != null) throw startupError;
+                    throw new InvalidOperationException(
+                        "The direct capture stream stopped during startup.");
+                }
+
+                recorder.StopRecording();
+                Exception? stopError = stopped.Task
+                    .WaitAsync(TimeSpan.FromMilliseconds(Math.Clamp(
+                        candidate.BufferMs * 3 + 500, 750, 2500)))
+                    .GetAwaiter().GetResult();
+                if (stopError != null) throw stopError;
+                candidateSucceeded = true;
+            }
+            catch (Exception ex)
+            {
+                candidateError = ex;
+            }
+            finally
+            {
+                recorder.DataAvailable -= dataHandler;
+                recorder.RecordingStopped -= stoppedHandler;
+                try { recorder.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                catch (Exception ex)
+                {
+                    candidateSucceeded = false;
+                    candidateError ??= ex;
+                }
+            }
+
+            if (candidateSucceeded) return candidate;
+            if (candidateError is CoreAudioException coreAudio
+                && (ShouldFallbackExclusiveEvent(coreAudio.HResult)
+                    || IsCaptureParameterError(coreAudio.HResult))
+                || candidateError is TimeoutException)
+            {
+                lastError = candidateError;
+                continue;
+            }
+            throw candidateError ?? new InvalidOperationException(
+                "The direct capture probe failed without an error.");
+        }
+
+        throw new InvalidOperationException(
+            $"{device.FriendlyName} rejected every direct-capture buffer and scheduler "
+            + "combination offered by its driver. Use Shared capture or adjust the endpoint's "
+            + "Windows default format.",
+            lastError);
+    }
+
+    internal static IReadOnlyList<CaptureStreamConfiguration> ExclusiveCaptureCandidates(
+        bool requestedEventSync,
+        int requestedBufferMs,
+        int defaultPeriodMs,
+        int minimumPeriodMs)
+    {
+        int requested = Math.Clamp(requestedBufferMs, 3, 500);
+        int defaultPeriod = Math.Clamp(defaultPeriodMs, 3, 500);
+        int minimumPeriod = Math.Clamp(minimumPeriodMs, 3, 500);
+        var candidates = new List<CaptureStreamConfiguration>();
+        void Add(bool eventSync, int buffer)
+        {
+            var candidate = new CaptureStreamConfiguration(eventSync, buffer);
+            if (!candidates.Contains(candidate)) candidates.Add(candidate);
+        }
+
+        if (requestedEventSync)
+        {
+            Add(eventSync: true, requested);
+            Add(eventSync: true, defaultPeriod);
+            Add(eventSync: true, minimumPeriod);
+        }
+        Add(eventSync: false, requested);
+        Add(eventSync: false, defaultPeriod);
+        Add(eventSync: false, minimumPeriod);
+        return candidates;
     }
 
     internal static IWaveProvider CreateExclusiveOutputProvider(

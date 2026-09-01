@@ -313,8 +313,8 @@ public partial class SettingsDialog : Window
                 "Exclusive playback and capture bypass the Windows mixer and can block other applications. "
                 + "Playback requires the document's sample rate to be accepted by the output; safe mono/stereo "
                 + "channel conversion and float/PCM depth are adapted automatically. If an output driver rejects "
-                + "its requested event buffer, Deep Groove retries polling for that stream. Use both path tests and the "
-                + "exclusive-format probes below.",
+                + "its requested event buffer, Deep Groove retries polling for that stream; capture also retries "
+                + "event and polling at the driver periods. Use both path tests and the exclusive-format probes below.",
             (true, false) =>
                 "Exclusive playback bypasses the Windows mixer and can block other applications. The document's "
                 + "sample rate must be accepted by the output; safe mono/stereo channel conversion and float/PCM "
@@ -323,8 +323,9 @@ public partial class SettingsDialog : Window
                 + "Use Test Output and the exclusive-format probe below.",
             (false, true) =>
                 "Exclusive capture bypasses the Windows shared audio engine and can block other applications. "
-                + "The input must accept a negotiated float or PCM format. Use Test Input and the exclusive-format "
-                + "probe below.",
+                + "The input must accept a negotiated float or PCM format. If it rejects the requested buffer or "
+                + "scheduler, Deep Groove retries event and polling with the driver periods before failing. Use Test Input "
+                + "and the exclusive-format probe below.",
             _ =>
                 "Shared mode follows the endpoint mix format, allows other applications to use the device, and is "
                 + "the safest choice. Event-driven scheduling normally gives the most stable low-latency behavior.",

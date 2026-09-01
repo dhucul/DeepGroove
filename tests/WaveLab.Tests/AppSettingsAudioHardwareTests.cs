@@ -140,6 +140,46 @@ public sealed class AppSettingsAudioHardwareTests
     }
 
     [Fact]
+    public void DirectCaptureNegotiationTriesEventThenPollingDriverPeriods()
+    {
+        IReadOnlyList<CaptureStreamConfiguration> candidates =
+            AudioHardware.ExclusiveCaptureCandidates(
+                requestedEventSync: true,
+                requestedBufferMs: 100,
+                defaultPeriodMs: 10,
+                minimumPeriodMs: 3);
+
+        Assert.Equal(
+            [
+                new CaptureStreamConfiguration(true, 100),
+                new CaptureStreamConfiguration(true, 10),
+                new CaptureStreamConfiguration(true, 3),
+                new CaptureStreamConfiguration(false, 100),
+                new CaptureStreamConfiguration(false, 10),
+                new CaptureStreamConfiguration(false, 3),
+            ],
+            candidates);
+    }
+
+    [Fact]
+    public void DirectCaptureNegotiationDoesNotDuplicatePollingCandidates()
+    {
+        IReadOnlyList<CaptureStreamConfiguration> candidates =
+            AudioHardware.ExclusiveCaptureCandidates(
+                requestedEventSync: false,
+                requestedBufferMs: 10,
+                defaultPeriodMs: 10,
+                minimumPeriodMs: 3);
+
+        Assert.Equal(
+            [
+                new CaptureStreamConfiguration(false, 10),
+                new CaptureStreamConfiguration(false, 3),
+            ],
+            candidates);
+    }
+
+    [Fact]
     public void EncodingDescriptionDoesNotMislabelNonPcmAudio()
     {
         WaveFormat alaw = WaveFormat.CreateCustomFormat(
