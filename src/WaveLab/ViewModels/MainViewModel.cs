@@ -8,6 +8,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using NAudio.CoreAudioApi;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
 using WaveLab.Audio.Effects;

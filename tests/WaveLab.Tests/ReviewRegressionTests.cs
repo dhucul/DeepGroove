@@ -103,7 +103,7 @@ public sealed class ReviewRegressionTests
         master.SetSource(new ArraySampleProvider(source, 48000));
 
         var buffer = new float[4096 * 2];
-        while (master.Read(buffer, 0, buffer.Length) > 0) { }
+        while (master.Read(buffer) > 0) { }
 
         var mono = new float[requested];
         master.CopyLatest(mono);
@@ -403,15 +403,15 @@ public sealed class ReviewRegressionTests
         public WaveFormat WaveFormat { get; } =
             WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels.Length);
 
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
             int ch = channels.Length;
-            int framesWanted = count / ch;
+            int framesWanted = buffer.Length / ch;
             int available = Math.Min(framesWanted, channels[0].Length - _position);
             if (available <= 0) return 0;
             for (int f = 0; f < available; f++)
                 for (int c = 0; c < ch; c++)
-                    buffer[offset + f * ch + c] = channels[c][_position + f];
+                    buffer[f * ch + c] = channels[c][_position + f];
             _position += available;
             return available * ch;
         }

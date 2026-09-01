@@ -45,7 +45,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
                 // ever taking _sync (this lock is held across device open/teardown).
                 Volatile.Write(ref _session, session);
                 _lastError = null;
-                // With no synchronization context, WasapiOut can report a worker-
+                // With no synchronization context, the player can report a worker-
                 // thread failure before Start returns and before _session is set.
                 if (session.TryGetUnexpectedStop(out Exception? error))
                     FailSessionCore(session, error);
@@ -73,8 +73,8 @@ internal sealed class SoftwareInputMonitor : IDisposable
         _enabled = false;
         _lastError = error?.Message ?? "The monitoring output stopped unexpectedly.";
 
-        // PlaybackStopped can run on WasapiOut's own worker thread. Disposing on
-        // that thread would make WasapiOut.Stop try to join itself.
+        // PlaybackStopped can run on the player's own worker thread. Disposing on
+        // that thread could make Stop try to join itself.
         ThreadPool.QueueUserWorkItem(static state =>
         {
             try { ((MonitorSession)state!).Dispose(); } catch { }
@@ -135,7 +135,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
     private sealed class MonitorSession : IDisposable
     {
         private readonly MMDevice _device;
-        private readonly WasapiOut _output;
+        private readonly IWavePlayer _output;
         private readonly BufferedWaveProvider _buffer;
         private readonly Action<MonitorSession, Exception?> _onUnexpectedStop;
         private byte[] _transfer = [];
@@ -152,7 +152,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
 
         private MonitorSession(
             MMDevice device,
-            WasapiOut output,
+            IWavePlayer output,
             BufferedWaveProvider buffer,
             Action<MonitorSession, Exception?> onUnexpectedStop)
         {
@@ -170,7 +170,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
             AppSettings settings = AppSettings.Instance;
             Role role = AudioHardwareOptions.ParseRole(settings.OutputDefaultRole, Role.Multimedia);
             MMDevice? device = null;
-            WasapiOut? output = null;
+            IWavePlayer? output = null;
             MonitorSession? session = null;
             try
             {
@@ -186,14 +186,14 @@ internal sealed class SoftwareInputMonitor : IDisposable
                     device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
                 }
 
-                using AudioClient client = device.AudioClient;
+                using AudioClient client = device.CreateAudioClient();
                 WaveFormat outputMix = client.MixFormat;
                 int outputChannels = Math.Max(1, outputMix.Channels);
                 int outputRate = outputMix.SampleRate;
 
-                var buffer = new BufferedWaveProvider(inputFormat)
+                var buffer = new BufferedWaveProvider(
+                    inputFormat, TimeSpan.FromMilliseconds(700))
                 {
-                    BufferDuration = TimeSpan.FromMilliseconds(700),
                     DiscardOnBufferOverflow = true,
                     ReadFully = true,
                 };
@@ -205,11 +205,11 @@ internal sealed class SoftwareInputMonitor : IDisposable
 
                 // Monitoring always uses shared mode so it can coexist with the
                 // metronome and other normal desktop audio.
-                output = new WasapiOut(
+                output = AudioHardware.CreatePlayer(
                     device,
                     AudioClientShareMode.Shared,
-                     settings.OutputEventSync,
-                     Math.Clamp(settings.BufferMs, 3, 500));
+                    settings.OutputEventSync,
+                    Math.Clamp(settings.BufferMs, 3, 500));
                 output.Init(provider);
                 session = new MonitorSession(device, output, buffer, onUnexpectedStop);
                 session.StartOutput();
@@ -225,8 +225,8 @@ internal sealed class SoftwareInputMonitor : IDisposable
                 {
                     if (output != null)
                     {
-                        try { output.Stop(); } catch { }
-                        try { output.Dispose(); } catch { }
+                        _ = DisposeOutputAsync(output, device);
+                        device = null;
                     }
                     try { device?.Dispose(); } catch { }
                 }
@@ -242,8 +242,8 @@ internal sealed class SoftwareInputMonitor : IDisposable
             Volatile.Write(ref _unexpectedStopError, e.Exception);
             Volatile.Write(ref _unexpectedlyStopped, 1);
 
-            // Never take the owner's lock on WasapiOut's play thread. A concurrent
-            // StopStream/Dispose/Configure holds it and calls WasapiOut.Stop, which joins
+            // Never take the owner's lock on the player's render thread. A concurrent
+            // StopStream/Dispose/Configure holds it and calls Stop, which may join
             // this very thread: the flag check above cannot close that window, because it
             // is passed before the other thread has begun tearing anything down.
             // Configure's own TryGetUnexpectedStop check still sees an early failure
@@ -304,9 +304,23 @@ internal sealed class SoftwareInputMonitor : IDisposable
             while (Volatile.Read(ref _inFlight) != 0) spin.SpinOnce();
 
             _output.PlaybackStopped -= OnPlaybackStopped;
-            try { _output.Stop(); } catch { }
-            try { _output.Dispose(); }
-            finally { _device.Dispose(); }
+            _ = DisposeOutputAsync(_output, _device);
+        }
+
+        private static async Task DisposeOutputAsync(IWavePlayer output, MMDevice? device)
+        {
+            try
+            {
+                if (output is IAsyncDisposable asyncDisposable)
+                    await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                else
+                    await Task.Run(output.Dispose).ConfigureAwait(false);
+            }
+            catch { }
+            finally
+            {
+                try { device?.Dispose(); } catch { }
+            }
         }
     }
 
@@ -329,20 +343,20 @@ internal sealed class SoftwareInputMonitor : IDisposable
 
         public WaveFormat WaveFormat { get; }
 
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
             int outputChannels = WaveFormat.Channels;
-            int framesWanted = count / outputChannels;
+            int framesWanted = buffer.Length / outputChannels;
             int sourceSamplesWanted = checked(framesWanted * _sourceChannels);
             if (_sourceBuffer.Length < sourceSamplesWanted)
                 _sourceBuffer = new float[sourceSamplesWanted];
-            int sourceSamples = _source.Read(_sourceBuffer, 0, sourceSamplesWanted);
+            int sourceSamples = _source.Read(_sourceBuffer.AsSpan(0, sourceSamplesWanted));
             int frames = sourceSamples / _sourceChannels;
 
             for (int frame = 0; frame < frames; frame++)
             {
                 int sourceOffset = frame * _sourceChannels;
-                int destinationOffset = offset + frame * outputChannels;
+                int destinationOffset = frame * outputChannels;
                 if (outputChannels == 1)
                 {
                     double sum = 0;
@@ -361,9 +375,10 @@ internal sealed class SoftwareInputMonitor : IDisposable
                 }
 
                 int copied = Math.Min(_sourceChannels, outputChannels);
-                Array.Copy(_sourceBuffer, sourceOffset, buffer, destinationOffset, copied);
+                _sourceBuffer.AsSpan(sourceOffset, copied)
+                    .CopyTo(buffer.Slice(destinationOffset, copied));
                 if (copied < outputChannels)
-                    Array.Clear(buffer, destinationOffset + copied, outputChannels - copied);
+                    buffer.Slice(destinationOffset + copied, outputChannels - copied).Clear();
             }
             return frames * outputChannels;
         }

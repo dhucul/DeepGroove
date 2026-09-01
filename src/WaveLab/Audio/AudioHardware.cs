@@ -1,8 +1,12 @@
+using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.MediaFoundation;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace WaveLab.Audio;
 
@@ -43,7 +47,7 @@ public sealed record AudioEndpointInfo(
     double MinimumPeriodMs,
     string EndpointLevel,
     string HardwareSupport,
-    string ExclusiveFloatRates,
+    string ExclusiveFormats,
     string? Error = null)
 {
     public string Details
@@ -55,7 +59,7 @@ public sealed record AudioEndpointInfo(
                 + $"Mix format  {MixFormat}\n"
                 + $"Engine period  {DefaultPeriodMs:0.###} ms default · {MinimumPeriodMs:0.###} ms minimum\n"
                 + $"Endpoint  {EndpointLevel} · hardware {HardwareSupport}\n"
-                + $"Exclusive float probe  {ExclusiveFloatRates}\n"
+                + $"Exclusive formats  {ExclusiveFormats}\n"
                 + $"ID  {Id}";
         }
     }
@@ -82,6 +86,10 @@ public sealed record AudioInputSettingPlan(
 public static class AudioHardware
 {
     private static readonly int[] ProbeSampleRates = [44100, 48000, 88200, 96000, 176400, 192000];
+    private static readonly ConcurrentDictionary<string, bool> ExclusiveEventSupport = new();
+    private const int AudioClientBufferSizeError = unchecked((int)0x88890016);
+    private const int AudioClientBufferSizeNotAligned = unchecked((int)0x88890019);
+    private const int InvalidArgumentError = unchecked((int)0x80070057);
 
     /// <summary>
     /// Recognizes both the product name and the endpoint name published by Korg's Windows driver.
@@ -141,7 +149,7 @@ public static class AudioHardware
             using MMDevice device = deviceId == null
                 ? enumerator.GetDefaultAudioEndpoint(flow, defaultRole)
                 : enumerator.GetDevice(deviceId);
-            using AudioClient client = device.AudioClient;
+            using AudioClient client = device.CreateAudioClient();
             WaveFormat mix = client.MixFormat;
 
             string level = "level unavailable";
@@ -160,13 +168,12 @@ public static class AudioHardware
             var supported = new List<string>();
             foreach (int sampleRate in ProbeSampleRates)
             {
-                try
+                foreach (WaveFormat candidate in ExclusiveFormatCandidates(sampleRate, probeChannels))
                 {
-                    WaveFormat candidate = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, probeChannels);
-                    if (client.IsFormatSupported(AudioClientShareMode.Exclusive, candidate))
-                        supported.Add(FormatSampleRate(sampleRate));
+                    if (!IsFormatSupported(client, AudioClientShareMode.Exclusive, candidate)) continue;
+                    supported.Add(
+                        $"{FormatSampleRate(sampleRate)} {candidate.BitsPerSample}-bit {DescribeEncoding(candidate)}");
                 }
-                catch { }
             }
 
             return new AudioEndpointInfo(
@@ -179,7 +186,7 @@ public static class AudioHardware
                 level,
                 hardware,
                 supported.Count == 0
-                    ? $"none of the standard {probeChannels}-channel rates"
+                    ? $"none of the standard {probeChannels}-channel formats"
                     : string.Join(", ", supported) + $" ({probeChannels} ch)");
         }
         catch (Exception ex)
@@ -357,17 +364,30 @@ public static class AudioHardware
         using MMDevice device = deviceId == null
             ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, defaultRole)
             : enumerator.GetDevice(deviceId);
-        using AudioClient client = device.AudioClient;
+        using AudioClient client = device.CreateAudioClient();
         WaveFormat mix = client.MixFormat;
-        int channels = Math.Clamp(mix.Channels, 1, 2);
-        var tone = new DiagnosticToneProvider(mix.SampleRate, channels, 0.7);
-        using var output = new WasapiOut(device, shareMode, eventSync, Math.Clamp(bufferMs, 3, 500));
+        WaveFormat toneFormat = shareMode == AudioClientShareMode.Exclusive
+            ? SelectExclusiveFormat(
+                mix,
+                candidate => IsFormatSupported(client, AudioClientShareMode.Exclusive, candidate),
+                allowSampleRateFallback: true)
+                ?? throw new NotSupportedException(
+                    "The selected output does not expose a supported format for exclusive mode. "
+                    + "Use shared mode or choose another endpoint.")
+            : WaveFormat.CreateIeeeFloatWaveFormat(
+                mix.SampleRate, Math.Clamp(mix.Channels, 1, 2));
+        var tone = new DiagnosticToneProvider(toneFormat.SampleRate, toneFormat.Channels, 0.7);
+        IWaveProvider toneWave = ConvertOutput(tone, toneFormat);
+        bool effectiveEventSync = ResolveOutputEventScheduling(
+            device, shareMode, eventSync, bufferMs, toneWave.WaveFormat);
+        IWavePlayer output = CreatePlayer(
+            device, shareMode, effectiveEventSync, Math.Clamp(bufferMs, 3, 500));
         var stopped = new TaskCompletionSource<StoppedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         EventHandler<StoppedEventArgs> handler = (_, args) => stopped.TrySetResult(args);
-        output.PlaybackStopped += handler;
         try
         {
-            output.Init(tone.ToWaveProvider());
+            output.Init(toneWave);
+            output.PlaybackStopped += handler;
             output.Play();
             StoppedEventArgs result = await stopped.Task
                 .WaitAsync(TimeSpan.FromSeconds(4), cancellationToken)
@@ -378,6 +398,7 @@ public static class AudioHardware
         {
             output.PlaybackStopped -= handler;
             try { output.Stop(); } catch { }
+            try { output.Dispose(); } catch { }
         }
     }
 
@@ -393,30 +414,28 @@ public static class AudioHardware
         using MMDevice device = deviceId == null
             ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, defaultRole)
             : enumerator.GetDevice(deviceId);
-        using var capture = new WasapiCapture(device, eventSync, Math.Clamp(bufferMs, 3, 500))
-        {
-            ShareMode = shareMode,
-        };
+        using WasapiRecorder capture = CreateRecorder(
+            device, shareMode, eventSync, Math.Clamp(bufferMs, 3, 500));
 
         WaveFormat format = capture.WaveFormat;
         if (!IsSupportedCaptureFormat(format))
             throw new NotSupportedException(
-                $"The input supplies {DescribeFormat(format)}. Deep Groove recording requires a 32-bit float WASAPI format.");
+                $"The input supplies {DescribeFormat(format)}. Deep Groove recording requires "
+                + "32-bit float, 24-bit PCM, or 16-bit PCM audio.");
 
         var stopped = new TaskCompletionSource<StoppedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         var statisticsLock = new object();
         double sumSquares = 0;
         long sampleCount = 0;
         float peak = 0;
-        EventHandler<WaveInEventArgs> dataHandler = (_, args) =>
+        CaptureDataAvailableHandler dataHandler = (data, _, _, _) =>
         {
-            int samples = args.BytesRecorded / sizeof(float);
+            float[] samples = DecodeCaptureSamples(data, format);
             double localSquares = 0;
             float localPeak = 0;
             long localCount = 0;
-            for (int sampleIndex = 0; sampleIndex < samples; sampleIndex++)
+            foreach (float sample in samples)
             {
-                float sample = BitConverter.ToSingle(args.Buffer, sampleIndex * sizeof(float));
                 if (!float.IsFinite(sample)) continue;
                 localPeak = Math.Max(localPeak, Math.Abs(sample));
                 localSquares += sample * sample;
@@ -434,7 +453,7 @@ public static class AudioHardware
         capture.RecordingStopped += stoppedHandler;
         try
         {
-            capture.StartRecording();
+            StartCapture(capture, device, shareMode);
             Task delay = Task.Delay(TimeSpan.FromSeconds(1.5), cancellationToken);
             Task first = await Task.WhenAny(stopped.Task, delay).ConfigureAwait(false);
             if (ReferenceEquals(first, delay))
@@ -463,22 +482,321 @@ public static class AudioHardware
 
     internal static bool IsSupportedCaptureFormat(WaveFormat format)
     {
-        bool isFloat = format.Encoding == WaveFormatEncoding.IeeeFloat
-            || (format is WaveFormatExtensible extensible
-                && extensible.SubFormat == AudioSubtypes.MFAudioFormat_Float);
-        return isFloat
-            && format.BitsPerSample == sizeof(float) * 8
+        bool supportedEncoding = (IsFloatFormat(format) && format.BitsPerSample == sizeof(float) * 8)
+            || (IsPcmFormat(format) && format.BitsPerSample is 16 or 24);
+        return supportedEncoding
             && format.Channels > 0
-            && format.BlockAlign == format.Channels * sizeof(float);
+            && format.BlockAlign == format.Channels * (format.BitsPerSample / 8);
+    }
+
+    /// <summary>
+    /// WASAPI's mix format describes shared mode and is not necessarily accepted by the
+    /// endpoint in exclusive mode. Choose an explicitly supported stream format, keeping
+    /// the requested rate and channel count whenever possible. Float is preferred, then
+    /// 24-bit and 16-bit PCM, all of which the app can adapt to or from its float pipeline.
+    /// </summary>
+    internal static WaveFormat? SelectExclusiveFormat(
+        WaveFormat preferred,
+        Func<WaveFormat, bool> isSupported,
+        bool allowSampleRateFallback)
+    {
+        ArgumentNullException.ThrowIfNull(preferred);
+        ArgumentNullException.ThrowIfNull(isSupported);
+
+        int[] rates = allowSampleRateFallback
+            ? [preferred.SampleRate, .. ProbeSampleRates.Where(rate => rate != preferred.SampleRate)]
+            : [preferred.SampleRate];
+        int[] channels = [preferred.Channels, .. new[] { 2, 1 }.Where(count => count != preferred.Channels)];
+        foreach (int sampleRate in rates)
+        {
+            foreach (int channelCount in channels)
+            {
+                if (sampleRate <= 0 || channelCount <= 0) continue;
+                foreach (WaveFormat candidate in ExclusiveFormatCandidates(sampleRate, channelCount))
+                {
+                    if (isSupported(candidate)) return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
+    internal static WaveFormat GetExclusiveCaptureFormat(MMDevice device)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        using AudioClient client = device.CreateAudioClient();
+        WaveFormat mix = client.MixFormat;
+        return SelectExclusiveFormat(
+            mix,
+            candidate => IsFormatSupported(client, AudioClientShareMode.Exclusive, candidate),
+            allowSampleRateFallback: true)
+            ?? throw new NotSupportedException(
+                $"{device.FriendlyName} does not expose a supported capture format "
+                + "for exclusive mode. Use shared capture or choose another input.");
+    }
+
+    internal static void StartCapture(
+        WasapiRecorder capture,
+        MMDevice device,
+        AudioClientShareMode shareMode)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        ArgumentNullException.ThrowIfNull(device);
+        try
+        {
+            capture.StartRecording();
+        }
+        catch (Exception ex) when (
+            shareMode == AudioClientShareMode.Exclusive
+            && ex is AudioDeviceInUseException or AudioExclusiveModeNotAllowedException)
+        {
+            throw new InvalidOperationException(
+                $"{device.FriendlyName} rejected exclusive capture initialization. In Windows "
+                + "Sound properties, enable 'Allow applications to take exclusive control' for "
+                + "this input and close other audio applications, or use Shared capture.",
+                ex);
+        }
+        catch (CoreAudioException ex) when (IsCaptureParameterError(ex.HResult))
+        {
+            throw new InvalidOperationException(
+                $"{device.FriendlyName} rejected the requested capture stream parameters. "
+                + "Check the endpoint's Windows default format and try a larger buffer or the "
+                + "other sharing mode. The driver returned E_INVALIDARG.",
+                ex);
+        }
+    }
+
+    internal static WasapiRecorder CreateRecorder(
+        MMDevice device,
+        AudioClientShareMode shareMode,
+        bool eventSync,
+        int bufferMs)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        var builder = new WasapiRecorderBuilder()
+            .WithDevice(device)
+            .WithBufferLength(Math.Clamp(bufferMs, 3, 500))
+            .WithMmcssThreadPriority();
+        builder = shareMode == AudioClientShareMode.Exclusive
+            ? builder.WithExclusiveMode().WithFormat(GetExclusiveCaptureFormat(device))
+            : builder.WithSharedMode();
+        builder = eventSync ? builder.WithEventSync() : builder.WithPollingSync();
+        return builder.Build();
+    }
+
+    internal static IWaveProvider CreateExclusiveOutputProvider(
+        MMDevice device,
+        ISampleProvider source)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        ArgumentNullException.ThrowIfNull(source);
+        using AudioClient client = device.CreateAudioClient();
+        WaveFormat target = SelectExclusiveFormat(
+            source.WaveFormat,
+            candidate => IsFormatSupported(client, AudioClientShareMode.Exclusive, candidate),
+            allowSampleRateFallback: false)
+            ?? throw new NotSupportedException(
+                $"{device.FriendlyName} does not accept {FormatSampleRate(source.WaveFormat.SampleRate)} "
+                + "in exclusive mode. Resample the document, use shared playback, or choose another output.");
+
+        ISampleProvider adapted = source;
+        if (source.WaveFormat.Channels != target.Channels)
+        {
+            if (!CanAdaptOutputChannels(source.WaveFormat.Channels, target.Channels))
+            {
+                throw new NotSupportedException(
+                    $"{device.FriendlyName} requires {target.Channels}-channel exclusive playback, "
+                    + $"but an automatic {source.WaveFormat.Channels}-to-{target.Channels} channel "
+                    + "conversion would discard audio. Downmix the document first or use shared playback.");
+            }
+            adapted = new SoftwareInputMonitor.ChannelMappingSampleProvider(source, target.Channels);
+        }
+        return ConvertOutput(adapted, target);
+    }
+
+    internal static bool CanAdaptOutputChannels(int sourceChannels, int targetChannels) =>
+        sourceChannels == targetChannels
+        || (sourceChannels == 1 && targetChannels == 2)
+        || (sourceChannels == 2 && targetChannels == 1);
+
+    internal static WasapiPlayer CreatePlayer(
+        MMDevice device,
+        AudioClientShareMode shareMode,
+        bool eventSync,
+        int bufferMs)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        var builder = new WasapiPlayerBuilder()
+            .WithDevice(device)
+            .WithLatency(Math.Clamp(bufferMs, 3, 500))
+            .WithMmcssThreadPriority();
+        builder = shareMode == AudioClientShareMode.Exclusive
+            ? builder.WithExclusiveMode()
+            : builder.WithSharedMode();
+        builder = eventSync ? builder.WithEventSync() : builder.WithPollingSync();
+        return builder.Build();
+    }
+
+    /// <summary>
+    /// NAudio 3 initializes the real stream on its worker thread. Probe an exclusive
+    /// event stream synchronously with the exact provider format so a driver-specific
+    /// buffer rejection can fall back to polling before playback is published as running.
+    /// </summary>
+    internal static bool ResolveOutputEventScheduling(
+        MMDevice device,
+        AudioClientShareMode shareMode,
+        bool requestedEventSync,
+        int bufferMs,
+        WaveFormat format)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        ArgumentNullException.ThrowIfNull(format);
+        if (!requestedEventSync || shareMode == AudioClientShareMode.Shared)
+            return requestedEventSync;
+
+        string key = $"{device.ID}\n{format.SampleRate}\n{format.Channels}\n"
+            + $"{format.BitsPerSample}\n{format.Encoding}\n{Math.Clamp(bufferMs, 3, 500)}";
+        return ExclusiveEventSupport.GetOrAdd(
+            key,
+            _ => Task.Run(() => ProbeExclusiveEventPlayback(
+                    device.ID, bufferMs, format))
+                .GetAwaiter().GetResult());
+    }
+
+    internal static bool ShouldFallbackExclusiveEvent(int hresult) =>
+        hresult is AudioClientBufferSizeError or AudioClientBufferSizeNotAligned;
+
+    internal static bool IsCaptureParameterError(int hresult) =>
+        hresult == InvalidArgumentError;
+
+    private static bool ProbeExclusiveEventPlayback(
+        string deviceId,
+        int bufferMs,
+        WaveFormat format)
+    {
+        using var enumerator = new MMDeviceEnumerator();
+        using MMDevice device = enumerator.GetDevice(deviceId);
+        IWavePlayer player = CreatePlayer(
+            device, AudioClientShareMode.Exclusive, eventSync: true, bufferMs);
+        var stopped = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler<StoppedEventArgs> handler = (_, args) => stopped.TrySetResult(args.Exception);
+        try
+        {
+            player.Init(new SilentWaveProvider(format));
+            player.PlaybackStopped += handler;
+            player.Play();
+            int probeTimeoutMs = Math.Clamp(Math.Clamp(bufferMs, 3, 500) * 3 + 100, 250, 1600);
+            if (!stopped.Task.Wait(TimeSpan.FromMilliseconds(probeTimeoutMs))) return true;
+            Exception? error = stopped.Task.Result;
+            if (error is CoreAudioException coreAudio
+                && ShouldFallbackExclusiveEvent(coreAudio.HResult)) return false;
+            if (error != null) throw error;
+            return true;
+        }
+        finally
+        {
+            player.PlaybackStopped -= handler;
+            try
+            {
+                if (player is IAsyncDisposable asyncDisposable)
+                    asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                else
+                    player.Dispose();
+            }
+            catch { }
+        }
+    }
+
+    internal static float[] DecodeCaptureSamples(byte[] buffer, int bytesRecorded, WaveFormat format)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        int available = Math.Min(buffer.Length, Math.Max(0, bytesRecorded));
+        return DecodeCaptureSamples(buffer.AsSpan(0, available), format);
+    }
+
+    internal static float[] DecodeCaptureSamples(ReadOnlySpan<byte> buffer, WaveFormat format)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        if (!IsSupportedCaptureFormat(format))
+            throw new NotSupportedException($"Unsupported capture format: {DescribeFormat(format)}.");
+
+        int bytesPerSample = format.BitsPerSample / 8;
+        int completeBytes = buffer.Length;
+        completeBytes -= completeBytes % format.BlockAlign;
+        int sampleCount = completeBytes / bytesPerSample;
+        var samples = new float[sampleCount];
+
+        if (IsFloatFormat(format))
+        {
+            buffer[..completeBytes].CopyTo(MemoryMarshal.AsBytes(samples.AsSpan()));
+            return samples;
+        }
+
+        if (format.BitsPerSample == 16)
+        {
+            for (int index = 0, offset = 0; index < sampleCount; index++, offset += 2)
+                samples[index] = BinaryPrimitives.ReadInt16LittleEndian(buffer.Slice(offset, 2)) / 32768f;
+            return samples;
+        }
+
+        for (int index = 0, offset = 0; index < sampleCount; index++, offset += 3)
+        {
+            int value = buffer[offset] | buffer[offset + 1] << 8 | buffer[offset + 2] << 16;
+            if ((value & 0x800000) != 0) value |= unchecked((int)0xFF000000);
+            samples[index] = value / 8388608f;
+        }
+        return samples;
+    }
+
+    private static IEnumerable<WaveFormat> ExclusiveFormatCandidates(int sampleRate, int channels)
+    {
+        yield return WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels);
+        yield return new WaveFormat(sampleRate, 24, channels);
+        yield return new WaveFormat(sampleRate, 16, channels);
+    }
+
+    private static IWaveProvider ConvertOutput(ISampleProvider source, WaveFormat target)
+    {
+        if (IsFloatFormat(target)) return source.ToWaveProvider();
+        return target.BitsPerSample switch
+        {
+            24 => new SampleToWaveProvider24(source),
+            16 => new SampleToWaveProvider16(source),
+            _ => throw new NotSupportedException($"Unsupported output format: {DescribeFormat(target)}."),
+        };
+    }
+
+    private static bool IsFloatFormat(WaveFormat format) =>
+        format.Encoding == WaveFormatEncoding.IeeeFloat
+        || (format is WaveFormatExtensible extensible
+            && extensible.SubFormat == AudioSubtypes.MFAudioFormat_Float);
+
+    private static bool IsPcmFormat(WaveFormat format) =>
+        format.Encoding == WaveFormatEncoding.Pcm
+        || (format is WaveFormatExtensible extensible
+            && extensible.SubFormat == AudioSubtypes.MFAudioFormat_PCM);
+
+    private static bool IsFormatSupported(
+        AudioClient client,
+        AudioClientShareMode shareMode,
+        WaveFormat format)
+    {
+        try { return client.IsFormatSupported(shareMode, format); }
+        catch { return false; }
     }
 
     private static string DescribeFormat(WaveFormat format)
     {
-        bool isFloat = format.Encoding == WaveFormatEncoding.IeeeFloat
-            || (format is WaveFormatExtensible extensible
-                && extensible.SubFormat == AudioSubtypes.MFAudioFormat_Float);
-        string encoding = isFloat ? "float" : format.Encoding.ToString();
+        string encoding = DescribeEncoding(format);
         return $"{FormatSampleRate(format.SampleRate)} · {format.BitsPerSample}-bit {encoding} · {format.Channels} ch";
+    }
+
+    internal static string DescribeEncoding(WaveFormat format)
+    {
+        if (IsFloatFormat(format)) return "float";
+        if (IsPcmFormat(format)) return "PCM";
+        return format.Encoding.ToString();
     }
 
     private static string FormatSampleRate(int sampleRate) =>
@@ -500,6 +818,32 @@ public static class AudioHardware
         return parts.Count == 0 ? support.ToString() : string.Join("/", parts);
     }
 
+    private sealed class SilentWaveProvider : IWaveProvider
+    {
+        private int _remainingBytes;
+
+        public SilentWaveProvider(WaveFormat format)
+        {
+            WaveFormat = format;
+            _remainingBytes = Math.Max(
+                format.BlockAlign,
+                format.AverageBytesPerSecond / 50); // 20 ms, then a deliberate end-of-stream.
+            _remainingBytes -= _remainingBytes % format.BlockAlign;
+        }
+
+        public WaveFormat WaveFormat { get; }
+
+        public int Read(Span<byte> buffer)
+        {
+            if (_remainingBytes <= 0) return 0;
+            int bytes = Math.Min(buffer.Length, _remainingBytes);
+            bytes -= bytes % WaveFormat.BlockAlign;
+            buffer[..bytes].Clear();
+            _remainingBytes -= bytes;
+            return bytes;
+        }
+    }
+
     private sealed class DiagnosticToneProvider : ISampleProvider
     {
         private readonly int _totalFrames;
@@ -513,10 +857,10 @@ public static class AudioHardware
 
         public WaveFormat WaveFormat { get; }
 
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
             int channels = WaveFormat.Channels;
-            int frames = Math.Min(count / channels, _totalFrames - _frame);
+            int frames = Math.Min(buffer.Length / channels, _totalFrames - _frame);
             for (int frame = 0; frame < frames; frame++)
             {
                 int absolute = _frame + frame;
@@ -527,7 +871,7 @@ public static class AudioHardware
                 float sample = (float)(0.12 * Math.Max(0, envelope)
                     * Math.Sin(2 * Math.PI * 440 * absolute / WaveFormat.SampleRate));
                 for (int channel = 0; channel < channels; channel++)
-                    buffer[offset + frame * channels + channel] = sample;
+                    buffer[frame * channels + channel] = sample;
             }
             _frame += frames;
             return frames * channels;

@@ -28,6 +28,7 @@ public sealed class MasterSection : ISampleProvider, IDisposable
     private int _sampleRate = 48000, _channels = 2;
     private int _startRampFrames, _startRampPosition;
     private bool _startRampWaitingForSignal;
+    private float[] _processingBuffer = [];
 
     // A/B comparison snapshots
     private List<IAudioEffect>? _snapshotA;
@@ -441,13 +442,17 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         Loudness.Reset();
     }
 
-    public int Read(float[] buffer, int offset, int count)
+    public int Read(Span<float> destination)
     {
         // ClearSource can run on the control thread while the audio callback is
         // winding down, so keep one stable reference for this entire read.
         var source = Volatile.Read(ref _source);
         if (source == null) return 0;
-        int read = source.Read(buffer, offset, count);
+        if (_processingBuffer.Length < destination.Length)
+            _processingBuffer = new float[destination.Length];
+        float[] buffer = _processingBuffer;
+        const int offset = 0;
+        int read = source.Read(buffer.AsSpan(0, destination.Length));
         if (read <= 0)
         {
             Loudness.FlushTruePeak();
@@ -535,6 +540,7 @@ public sealed class MasterSection : ISampleProvider, IDisposable
             if (RmsL > 1e-5 && RmsR > 1e-5)
                 BalanceDb = 20 * Math.Log10(RmsR / RmsL);
         }
+        buffer.AsSpan(0, read).CopyTo(destination);
         return read;
     }
 

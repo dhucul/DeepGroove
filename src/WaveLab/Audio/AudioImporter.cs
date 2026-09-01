@@ -63,7 +63,7 @@ public static class AudioImporter
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            read = sp.Read(buf, 0, buf.Length);
+            read = sp.Read(buf);
             if (read <= 0) break;
             if (total + read > (long)Array.MaxLength * channels)
                 throw new InvalidDataException("The decoded audio exceeds the maximum supported sample count.");

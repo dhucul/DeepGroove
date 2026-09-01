@@ -1,4 +1,3 @@
-using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using WaveLab.Util;
 
@@ -7,16 +6,21 @@ namespace WaveLab.Audio;
 /// <summary>Metronome click player for count-in and recording (WASAPI, independent of the main engine).</summary>
 public sealed class ClickTrack : IDisposable
 {
-    private WasapiOut? _out;
+    private IWavePlayer? _out;
 
     public void Start(double bpm, int beatsPerBar)
     {
         Stop();
         var provider = new ClickProvider(bpm, beatsPerBar);
-        WasapiOut? output = null;
+        IWavePlayer? output = null;
         try
         {
-            output = new WasapiOut(AudioClientShareMode.Shared, 60);
+            output = new WasapiPlayerBuilder()
+                .WithSharedMode()
+                .WithEventSync()
+                .WithLatency(60)
+                .WithMmcssThreadPriority()
+                .Build();
             output.Init(provider);
             output.Play();
             _out = output;
@@ -47,9 +51,9 @@ public sealed class ClickTrack : IDisposable
 
         public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(Rate, 1);
 
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < buffer.Length; i++)
             {
                 long p = _pos + i;
                 long beatIndex = p / _beatSamples;
@@ -58,10 +62,10 @@ public sealed class ClickTrack : IDisposable
                 double t = (double)within / Rate;
                 double freq = downbeat ? 1500 : 1000;
                 double env = t < 0.03 ? Math.Exp(-t * 130) : 0;
-                buffer[offset + i] = (float)(Math.Sin(2 * Math.PI * freq * t) * env * 0.5);
+                buffer[i] = (float)(Math.Sin(2 * Math.PI * freq * t) * env * 0.5);
             }
-            _pos += count;
-            return count;
+            _pos += buffer.Length;
+            return buffer.Length;
         }
     }
 

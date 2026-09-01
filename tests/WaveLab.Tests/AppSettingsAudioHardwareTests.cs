@@ -1,3 +1,4 @@
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
@@ -38,12 +39,161 @@ public sealed class AppSettingsAudioHardwareTests
             WaveFormatEncoding.IeeeFloat, 48_000, 2, 48_000 * 16, 16, 64);
         WaveFormat invalidBlockAlignment = WaveFormat.CreateCustomFormat(
             WaveFormatEncoding.IeeeFloat, 48_000, 2, 48_000 * 4, 4, 32);
+        var pcm16 = new WaveFormat(48_000, 16, 2);
+        var pcm24 = new WaveFormat(48_000, 24, 2);
         var pcm32 = new WaveFormat(48_000, 32, 2);
 
         Assert.True(AudioHardware.IsSupportedCaptureFormat(valid));
+        Assert.True(AudioHardware.IsSupportedCaptureFormat(pcm16));
+        Assert.True(AudioHardware.IsSupportedCaptureFormat(pcm24));
         Assert.False(AudioHardware.IsSupportedCaptureFormat(float64));
         Assert.False(AudioHardware.IsSupportedCaptureFormat(invalidBlockAlignment));
         Assert.False(AudioHardware.IsSupportedCaptureFormat(pcm32));
+    }
+
+    [Fact]
+    public void ExclusiveFormatSelectionKeepsASupportedNativeFormat()
+    {
+        WaveFormat preferred = WaveFormat.CreateIeeeFloatWaveFormat(96_000, 2);
+
+        WaveFormat? selected = AudioHardware.SelectExclusiveFormat(
+            preferred,
+            candidate => candidate.Encoding == WaveFormatEncoding.IeeeFloat
+                && candidate.SampleRate == preferred.SampleRate
+                && candidate.Channels == preferred.Channels,
+            allowSampleRateFallback: false);
+
+        Assert.NotNull(selected);
+        Assert.Equal(WaveFormatEncoding.IeeeFloat, selected.Encoding);
+        Assert.Equal(preferred.SampleRate, selected.SampleRate);
+        Assert.Equal(preferred.Channels, selected.Channels);
+    }
+
+    [Fact]
+    public void ExclusiveFormatSelectionFindsASupportedPcmHardwareFormat()
+    {
+        WaveFormat preferred = new(48_000, 24, 2);
+
+        WaveFormat? selected = AudioHardware.SelectExclusiveFormat(
+            preferred,
+            candidate => candidate.SampleRate == 96_000
+                && candidate.Channels == 2
+                && candidate.BitsPerSample == 16,
+            allowSampleRateFallback: true);
+
+        Assert.NotNull(selected);
+        Assert.Equal(96_000, selected.SampleRate);
+        Assert.Equal(2, selected.Channels);
+        Assert.Equal(16, selected.BitsPerSample);
+        Assert.True(AudioHardware.IsSupportedCaptureFormat(selected));
+    }
+
+    [Fact]
+    public void ExclusiveFormatSelectionReportsWhenNoStreamFormatIsSupported()
+    {
+        WaveFormat? selected = AudioHardware.SelectExclusiveFormat(
+            WaveFormat.CreateIeeeFloatWaveFormat(48_000, 2),
+            _ => false,
+            allowSampleRateFallback: true);
+
+        Assert.Null(selected);
+    }
+
+    [Theory]
+    [InlineData(1, 1, true)]
+    [InlineData(2, 2, true)]
+    [InlineData(6, 6, true)]
+    [InlineData(1, 2, true)]
+    [InlineData(2, 1, true)]
+    [InlineData(6, 2, false)]
+    [InlineData(2, 6, false)]
+    [InlineData(6, 1, false)]
+    public void OutputChannelAdaptationNeverSilentlyDropsMultichannelAudio(
+        int sourceChannels,
+        int targetChannels,
+        bool expected)
+    {
+        Assert.Equal(expected,
+            AudioHardware.CanAdaptOutputChannels(sourceChannels, targetChannels));
+    }
+
+    [Theory]
+    [InlineData(unchecked((int)0x88890016), true)]
+    [InlineData(unchecked((int)0x88890019), true)]
+    [InlineData(unchecked((int)0x80070057), false)]
+    public void ExclusiveEventFallbackIsLimitedToBufferNegotiationFailures(
+        int hresult,
+        bool expected)
+    {
+        Assert.Equal(expected, AudioHardware.ShouldFallbackExclusiveEvent(hresult));
+    }
+
+    [Theory]
+    [InlineData(unchecked((int)0x80070057), true)]
+    [InlineData(unchecked((int)0x88890016), false)]
+    [InlineData(unchecked((int)0x88890019), false)]
+    public void CaptureParameterGuidanceIsLimitedToInvalidArgument(
+        int hresult,
+        bool expected)
+    {
+        Assert.Equal(expected, AudioHardware.IsCaptureParameterError(hresult));
+    }
+
+    [Fact]
+    public void EncodingDescriptionDoesNotMislabelNonPcmAudio()
+    {
+        WaveFormat alaw = WaveFormat.CreateCustomFormat(
+            WaveFormatEncoding.ALaw, 8_000, 1, 8_000, 1, 8);
+
+        Assert.Equal("ALaw", AudioHardware.DescribeEncoding(alaw));
+        Assert.Equal("PCM", AudioHardware.DescribeEncoding(new WaveFormat(48_000, 16, 2)));
+        Assert.Equal("float", AudioHardware.DescribeEncoding(
+            WaveFormat.CreateIeeeFloatWaveFormat(48_000, 2)));
+    }
+
+    [Theory]
+    [InlineData(false, false, "Shared mode")]
+    [InlineData(true, false, "Exclusive playback")]
+    [InlineData(false, true, "Exclusive capture")]
+    [InlineData(true, true, "Exclusive playback and capture")]
+    public void AudioModeWarningDescribesTheSelectedPathsOnly(
+        bool outputExclusive,
+        bool inputExclusive,
+        string expectedPrefix)
+    {
+        string warning = Views.SettingsDialog.AudioModeWarning(
+            outputExclusive, inputExclusive);
+
+        Assert.StartsWith(expectedPrefix, warning);
+        if (!outputExclusive) Assert.DoesNotContain("document's sample rate", warning);
+        if (!inputExclusive) Assert.DoesNotContain("The input must accept", warning);
+    }
+
+    [Fact]
+    public void Pcm16CaptureDecodesIntoNormalizedFloatSamples()
+    {
+        byte[] bytes = [0x00, 0x80, 0x00, 0xC0, 0x00, 0x00, 0xFF, 0x7F];
+
+        float[] samples = AudioHardware.DecodeCaptureSamples(
+            bytes, bytes.Length, new WaveFormat(48_000, 16, 2));
+
+        Assert.Equal([-1f, -0.5f, 0f, 32767 / 32768f], samples);
+    }
+
+    [Fact]
+    public void Pcm24CaptureDecodesAndDropsAnIncompleteFrame()
+    {
+        byte[] bytes =
+        [
+            0x00, 0x00, 0x80, 0x00, 0x00, 0xC0,
+            0x00, 0x00, 0x00, 0xFF, 0xFF, 0x7F,
+            0x55,
+        ];
+
+        float[] samples = AudioHardware.DecodeCaptureSamples(
+            bytes, bytes.Length, new WaveFormat(48_000, 24, 2));
+
+        Assert.Equal([-1f, -0.5f, 0f, 8388607 / 8388608f], samples);
     }
 
     [Theory]
@@ -141,7 +291,7 @@ public sealed class AppSettingsAudioHardwareTests
         var mapper = new SoftwareInputMonitor.ChannelMappingSampleProvider(source, outputChannels: 2);
         var output = new float[4];
 
-        int read = mapper.Read(output, 0, output.Length);
+        int read = mapper.Read(output);
 
         Assert.Equal(4, read);
         Assert.Equal([0.25f, 0.25f, -0.5f, -0.5f], output);
@@ -154,7 +304,7 @@ public sealed class AppSettingsAudioHardwareTests
         var mapper = new SoftwareInputMonitor.ChannelMappingSampleProvider(source, outputChannels: 1);
         var output = new float[2];
 
-        int read = mapper.Read(output, 0, output.Length);
+        int read = mapper.Read(output);
 
         Assert.Equal(2, read);
         Assert.Equal(0.125f, output[0], 6);
@@ -462,10 +612,10 @@ public sealed class AppSettingsAudioHardwareTests
 
         public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(48_000, channels);
 
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
-            int available = Math.Min(count, samples.Length - _position);
-            Array.Copy(samples, _position, buffer, offset, available);
+            int available = Math.Min(buffer.Length, samples.Length - _position);
+            samples.AsSpan(_position, available).CopyTo(buffer);
             _position += available;
             return available;
         }

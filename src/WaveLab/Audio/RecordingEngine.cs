@@ -30,7 +30,7 @@ public sealed class RecordingEngine : IDisposable
     private const float DigitalClipLevel = 0.999969f;
     // Every stop path is reachable from the dispatcher, and the gates can be held
     // by a finalization that itself needs the dispatcher to make progress
-    // (WasapiCapture posts RecordingStopped to the context it was created on).
+    // (WasapiRecorder posts RecordingStopped to the context it was created on).
     // No stop may therefore wait on them without a bound.
     private static readonly TimeSpan StopGateTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan DisposeGateTimeout = TimeSpan.FromSeconds(10);
@@ -51,13 +51,15 @@ public sealed class RecordingEngine : IDisposable
     private Exception? _lastStopError;
     private readonly SemaphoreSlim _stopGate = new(1, 1);
     private readonly SemaphoreSlim _finalizeGate = new(1, 1);
+    private readonly object _captureCleanupLock = new();
+    private readonly List<Task> _pendingCaptureCleanups = [];
     private readonly object _lifecycleLock = new();
     private CaptureSnapshot? _pendingSnapshot;
     private int _activeFinalizations;
     /// <summary>
     /// Finalizations currently inside the stop/snapshot phase, holding <see cref="_finalizeGate"/>.
     /// A finalization in that phase may be waiting for NAudio's RecordingStopped, which
-    /// WasapiCapture posts to the dispatcher — the same thread every Start arrives on — so a
+    /// WasapiRecorder posts to the dispatcher — the same thread every Start arrives on — so a
     /// Start that waits on the gate cannot help it finish and only parks the UI for the timeout.
     /// Counted separately from <see cref="_activeFinalizations"/> because the flatten that follows
     /// releases the gate, and starting a new take during a flatten is legitimate.
@@ -95,13 +97,17 @@ public sealed class RecordingEngine : IDisposable
 
     private sealed class CaptureSession(
         long id,
-        WasapiCapture capture,
+        WasapiRecorder capture,
         TaskCompletionSource<StoppedEventArgs> stopped,
-        bool retainAudio)
+        bool retainAudio,
+        WaveFormat waveFormat)
     {
         public long Id { get; } = id;
-        public WasapiCapture Capture { get; } = capture;
+        public WasapiRecorder Capture { get; } = capture;
         public TaskCompletionSource<StoppedEventArgs> Stopped { get; } = stopped;
+        public WaveFormat WaveFormat { get; } = waveFormat;
+        public CaptureDataAvailableHandler? DataHandler { get; set; }
+        public EventHandler<StoppedEventArgs>? StoppedHandler { get; set; }
         public CaptureDataBoundary DataBoundary { get; } = new(retainAudio);
         public long DataState => DataBoundary.DataState;
         public bool RetainAudio => DataBoundary.RetainAudio;
@@ -306,11 +312,11 @@ public sealed class RecordingEngine : IDisposable
         lock (_sessionLock) return _session;
     }
 
-    private CaptureSession? GetSessionFor(object? sender, out long dataState)
+    private CaptureSession? GetSessionFor(CaptureSession candidate, out long dataState)
     {
         lock (_sessionLock)
         {
-            if (_session is { AcceptCallbacks: true } && ReferenceEquals(sender, _session.Capture))
+            if (_session is { AcceptCallbacks: true } && ReferenceEquals(candidate, _session))
             {
                 dataState = _session.DataState;
                 return _session;
@@ -572,12 +578,23 @@ public sealed class RecordingEngine : IDisposable
                 "The previous recording is still being finalized. Try again in a moment.");
         }
 
+        if (!DrainPendingCaptureCleanups(StopGateTimeout))
+        {
+            throw new InvalidOperationException(
+                "The previous input stream is still releasing its device. Try again in a moment.");
+        }
+
         // Starting over a finalization that is still reading the captured blocks
         // would corrupt both takes, so this stop must succeed before proceeding.
         if (!TryStopCore(StopGateTimeout, captureLevelSnapshot: false, out _))
         {
             throw new InvalidOperationException(
                 "The previous recording is still being finalized. Try again in a moment.");
+        }
+        if (!DrainPendingCaptureCleanups(StopGateTimeout))
+        {
+            throw new InvalidOperationException(
+                "The previous input stream is still releasing its device. Try again in a moment.");
         }
         lock (_blocks) _pendingCaptureNote = null;
         AppSettings settings = AppSettings.Instance;
@@ -587,13 +604,12 @@ public sealed class RecordingEngine : IDisposable
             ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, role)
             : enumerator.GetDevice(deviceId);
 
-        var capture = new WasapiCapture(
+        AudioClientShareMode shareMode = AudioHardwareOptions.ParseShareMode(settings.InputShareMode);
+        var capture = AudioHardware.CreateRecorder(
             device,
+            shareMode,
             settings.InputEventSync,
-            Math.Clamp(settings.CaptureBufferMs, 3, 500))
-        {
-            ShareMode = AudioHardwareOptions.ParseShareMode(settings.InputShareMode),
-        };
+            Math.Clamp(settings.CaptureBufferMs, 3, 500));
         CaptureSession? session = null;
         try
         {
@@ -601,7 +617,8 @@ public sealed class RecordingEngine : IDisposable
             if (!AudioHardware.IsSupportedCaptureFormat(format))
             {
                 throw new NotSupportedException(
-                    $"Unsupported capture format ({device.FriendlyName}) — expected interleaved 32-bit float audio.");
+                    $"Unsupported capture format ({device.FriendlyName}) — expected interleaved "
+                    + "32-bit float, 24-bit PCM, or 16-bit PCM audio.");
             }
             Volatile.Write(ref _channels, format.Channels);
             Volatile.Write(ref _sampleRate, format.SampleRate);
@@ -618,15 +635,18 @@ public sealed class RecordingEngine : IDisposable
                 Interlocked.Increment(ref _nextSessionId),
                 capture,
                 new TaskCompletionSource<StoppedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously),
-                retainAudio);
-            capture.DataAvailable += OnData;
-            capture.RecordingStopped += OnRecordingStopped;
+                retainAudio,
+                format);
+            session.DataHandler = (data, _, _, _) => OnData(session, data);
+            session.StoppedHandler = (_, args) => OnRecordingStopped(session, args);
+            capture.DataAvailable += session.DataHandler;
+            capture.RecordingStopped += session.StoppedHandler;
 
             // Publish the running state before asking the driver to start. A
             // device is allowed to stop immediately, and its callback must win
             // that race rather than being overwritten after StartRecording.
             PublishSession(session);
-            capture.StartRecording();
+            AudioHardware.StartCapture(capture, device, shareMode);
             return session.Id;
         }
         catch
@@ -635,15 +655,15 @@ public sealed class RecordingEngine : IDisposable
             // Leave no hidden capture behind (notably when Record Setup closes
             // with neither IsRecording nor a pending buffer set).
             if (session != null) DetachSession(session);
-            capture.DataAvailable -= OnData;
-            capture.RecordingStopped -= OnRecordingStopped;
+            if (session?.DataHandler != null) capture.DataAvailable -= session.DataHandler;
+            if (session?.StoppedHandler != null) capture.RecordingStopped -= session.StoppedHandler;
             try { capture.Dispose(); } catch { }
             _inputMonitor.StopStream();
             throw;
         }
     }
 
-    private void OnRecordingStopped(object? sender, StoppedEventArgs e)
+    private void OnRecordingStopped(CaptureSession candidate, StoppedEventArgs e)
     {
         // A discarded WASAPI capture can already have queued this callback on
         // WPF's synchronization context. Never let that stale notification stop
@@ -652,7 +672,7 @@ public sealed class RecordingEngine : IDisposable
         lock (_sessionLock)
         {
             CaptureSession? session = _session;
-            if (session is not { AcceptCallbacks: true } || !ReferenceEquals(sender, session.Capture)) return;
+            if (session is not { AcceptCallbacks: true } || !ReferenceEquals(candidate, session)) return;
             IsRecording = false;
             LastStopError = e.Exception;
             session.Stopped.TrySetResult(e);
@@ -672,9 +692,9 @@ public sealed class RecordingEngine : IDisposable
         }
     }
 
-    private void OnData(object? sender, WaveInEventArgs e)
+    private void OnData(CaptureSession candidate, ReadOnlySpan<byte> data)
     {
-        CaptureSession? session = GetSessionFor(sender, out long dataState);
+        CaptureSession? session = GetSessionFor(candidate, out long dataState);
         if (session == null) return;
         bool retainAudio = CaptureDataBoundary.RetainsAudio(dataState);
         if (retainAudio && CapacityReached) return;
@@ -682,13 +702,12 @@ public sealed class RecordingEngine : IDisposable
         int channels = Volatile.Read(ref _channels);
         if (channels <= 0) return;
 
-        // WASAPI shared-mode capture delivers 32-bit float (validated in Start).
-        // Only retain complete sample frames if a driver supplies a partial tail.
-        int samples = (e.BytesRecorded / sizeof(float) / channels) * channels;
+        // Exclusive endpoints commonly expose only integer PCM even when their shared
+        // mix format is float. Convert either representation into the float pipeline,
+        // retaining only complete frames if a driver supplies a partial tail.
+        float[] block = AudioHardware.DecodeCaptureSamples(data, session.WaveFormat);
+        int samples = block.Length;
         if (samples <= 0) return;
-
-        var block = new float[samples];
-        Buffer.BlockCopy(e.Buffer, 0, block, 0, samples * sizeof(float));
 
         // The endpoint may only offer 1.5-2 dB hardware steps. A small,
         // attenuation-only trim fills the gap at 0.1 dB resolution. Count
@@ -1040,7 +1059,7 @@ public sealed class RecordingEngine : IDisposable
             }
             if (expectedSessionId is long expected && session.Id != expected)
                 return null;
-            WasapiCapture capture = session.Capture;
+            WasapiRecorder capture = session.Capture;
             TaskCompletionSource<StoppedEventArgs> stopped = session.Stopped;
             if (stopped is { Task.IsCompleted: false })
             {
@@ -1062,11 +1081,11 @@ public sealed class RecordingEngine : IDisposable
             // Disable this session before unhook/dispose. Delegates already
             // queued by NAudio can still run after event unsubscription.
             DeactivateSession(session);
-            capture.DataAvailable -= OnData;
-            capture.RecordingStopped -= OnRecordingStopped;
+            if (session.DataHandler != null) capture.DataAvailable -= session.DataHandler;
+            if (session.StoppedHandler != null) capture.RecordingStopped -= session.StoppedHandler;
             try
             {
-                capture.Dispose();
+                await capture.DisposeAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1179,7 +1198,7 @@ public sealed class RecordingEngine : IDisposable
             if (!_stopGate.Wait(timeout)) return false;
             try
             {
-                // This is the explicit discard path. WasapiCapture posts its
+                // This is the explicit discard path. WasapiRecorder posts its
                 // RecordingStopped event back to the synchronization context on
                 // which it was created (normally WPF's UI thread), so blocking
                 // that thread waiting for the event would force the 5 s timeout.
@@ -1188,11 +1207,11 @@ public sealed class RecordingEngine : IDisposable
                 CaptureSession? session = DetachCurrentSession();
                 if (session != null)
                 {
-                    WasapiCapture capture = session.Capture;
-                    capture.DataAvailable -= OnData;
-                    capture.RecordingStopped -= OnRecordingStopped;
+                    WasapiRecorder capture = session.Capture;
+                    if (session.DataHandler != null) capture.DataAvailable -= session.DataHandler;
+                    if (session.StoppedHandler != null) capture.RecordingStopped -= session.StoppedHandler;
                     try { capture.StopRecording(); } catch { }
-                    try { capture.Dispose(); } catch { }
+                    QueueCaptureCleanup(capture);
                 }
                 _inputMonitor.StopStream();
 
@@ -1218,6 +1237,36 @@ public sealed class RecordingEngine : IDisposable
         finally { _finalizeGate.Release(); }
         levelSnapshot = finalLevelSnapshot;
         return true;
+    }
+
+    private void QueueCaptureCleanup(WasapiRecorder capture)
+    {
+        Task cleanup = DisposeCaptureAsync(capture);
+        lock (_captureCleanupLock) _pendingCaptureCleanups.Add(cleanup);
+        _ = cleanup.ContinueWith(
+            completed =>
+            {
+                lock (_captureCleanupLock) _pendingCaptureCleanups.Remove(completed);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private static async Task DisposeCaptureAsync(WasapiRecorder capture)
+    {
+        try { await capture.DisposeAsync().ConfigureAwait(false); }
+        catch { }
+    }
+
+    private bool DrainPendingCaptureCleanups(TimeSpan timeout)
+    {
+        Task[] pending;
+        lock (_captureCleanupLock)
+            pending = [.. _pendingCaptureCleanups.Where(task => !task.IsCompleted)];
+        if (pending.Length == 0) return true;
+        try { return Task.WhenAll(pending).Wait(timeout); }
+        catch { return true; }
     }
 
     public void Dispose()

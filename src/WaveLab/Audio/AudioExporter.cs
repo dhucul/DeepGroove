@@ -1,5 +1,4 @@
 using System.IO;
-using System.Runtime.InteropServices;
 using NAudio.MediaFoundation;
 using NAudio.Wave;
 using WaveLab.Audio.Dsp;
@@ -297,12 +296,7 @@ public static class AudioExporter
 
     private static void ReleaseMediaType(MediaType mediaType)
     {
-        try
-        {
-            object mediaFoundationObject = mediaType.MediaFoundationObject;
-            if (Marshal.IsComObject(mediaFoundationObject))
-                Marshal.FinalReleaseComObject(mediaFoundationObject);
-        }
+        try { mediaType.Dispose(); }
         catch
         {
             // Capability probing and cleanup must preserve the primary result/error.
@@ -347,23 +341,18 @@ public static class AudioExporter
 
         public WaveFormat WaveFormat { get; }
 
-        public int Read(byte[] buffer, int offset, int count)
+        public int Read(Span<byte> buffer)
         {
-            ArgumentNullException.ThrowIfNull(buffer);
-            if (offset < 0 || count < 0 || offset > buffer.Length - count)
-                throw new ArgumentOutOfRangeException(nameof(offset));
-            // NAudio 2.2.1 allocates an IMFMediaBuffer and IMFSample before it
-            // calls the provider, but does not release them when Read throws.
-            // Report end-of-stream on cancellation so NAudio reaches its COM
-            // release statements; EncodeViaMediaFoundation propagates the token
-            // immediately after Encode returns and its staged output is deleted.
+            // Report end-of-stream on cancellation so the encoder releases its
+            // current native resources. EncodeViaMediaFoundation propagates the
+            // token immediately after Encode returns and deletes staged output.
             if (_cancellationToken.IsCancellationRequested) return 0;
 
             int channels = _data.Length;
             int frameBytes = checked(channels * sizeof(short));
-            int framesRequested = count / frameBytes;
+            int framesRequested = buffer.Length / frameBytes;
             int frames = Math.Min(framesRequested, _data[0].Length - _position);
-            int output = offset;
+            int output = 0;
             int framesWritten = 0;
             for (; framesWritten < frames; framesWritten++)
             {
@@ -401,20 +390,17 @@ public static class AudioExporter
 
         public WaveFormat WaveFormat { get; }
 
-        public int Read(byte[] buffer, int offset, int count)
+        public int Read(Span<byte> buffer)
         {
-            ArgumentNullException.ThrowIfNull(buffer);
-            if (offset < 0 || count < 0 || offset > buffer.Length - count)
-                throw new ArgumentOutOfRangeException(nameof(offset));
-            // See Pcm16Provider: throwing from Read leaks NAudio 2.2.1's current
-            // IMFMediaBuffer/IMFSample allocation, so cancellation ends the stream.
+            // See Pcm16Provider: cancellation ends the stream before the encoder
+            // allocates more native work for it.
             if (_cancellationToken.IsCancellationRequested) return 0;
 
             int channels = _data.Length;
             int frameBytes = checked(channels * 3);
-            int framesRequested = count / frameBytes;
+            int framesRequested = buffer.Length / frameBytes;
             int frames = Math.Min(framesRequested, _data[0].Length - _position);
-            int output = offset;
+            int output = 0;
             int framesWritten = 0;
             for (; framesWritten < frames; framesWritten++)
             {

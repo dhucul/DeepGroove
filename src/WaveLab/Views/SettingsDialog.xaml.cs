@@ -299,12 +299,36 @@ public partial class SettingsDialog : Window
 
         bool outputExclusive = SelectedKey(cmbOutputShare, "shared") == "exclusive";
         bool inputExclusive = SelectedKey(cmbInputShare, "shared") == "exclusive";
-        txtModeWarning.Text = outputExclusive || inputExclusive
-            ? "Exclusive mode bypasses the Windows mixer and can block other applications. Playback also requires the document's sample rate and channel format to be accepted by the endpoint; use Test Output and the exclusive-format probe below."
-            : "Shared mode follows the endpoint mix format, allows other applications to use the device, and is the safest choice. Event-driven scheduling normally gives the most stable low-latency behavior.";
+        cmbOutputScheduling.IsEnabled = true;
+        cmbInputScheduling.IsEnabled = true;
+        txtModeWarning.Text = AudioModeWarning(outputExclusive, inputExclusive);
 
         if (refreshDiagnostics) RefreshDiagnostics();
     }
+
+    internal static string AudioModeWarning(bool outputExclusive, bool inputExclusive) =>
+        (outputExclusive, inputExclusive) switch
+        {
+            (true, true) =>
+                "Exclusive playback and capture bypass the Windows mixer and can block other applications. "
+                + "Playback requires the document's sample rate to be accepted by the output; safe mono/stereo "
+                + "channel conversion and float/PCM depth are adapted automatically. If an output driver rejects "
+                + "its requested event buffer, Deep Groove retries polling for that stream. Use both path tests and the "
+                + "exclusive-format probes below.",
+            (true, false) =>
+                "Exclusive playback bypasses the Windows mixer and can block other applications. The document's "
+                + "sample rate must be accepted by the output; safe mono/stereo channel conversion and float/PCM "
+                + "depth are adapted automatically. If the driver rejects its requested event buffer, Deep Groove "
+                + "retries polling for that stream. "
+                + "Use Test Output and the exclusive-format probe below.",
+            (false, true) =>
+                "Exclusive capture bypasses the Windows shared audio engine and can block other applications. "
+                + "The input must accept a negotiated float or PCM format. Use Test Input and the exclusive-format "
+                + "probe below.",
+            _ =>
+                "Shared mode follows the endpoint mix format, allows other applications to use the device, and is "
+                + "the safest choice. Event-driven scheduling normally gives the most stable low-latency behavior.",
+        };
 
     private async void RefreshDiagnostics()
     {

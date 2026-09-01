@@ -5,10 +5,10 @@ using WaveLab.Util;
 
 namespace WaveLab.Audio;
 
-/// <summary>WASAPI shared-mode playback of a document region through the master section.</summary>
+/// <summary>WASAPI playback of a document region through the master section.</summary>
 public sealed class PlaybackEngine : IDisposable
 {
-    private WasapiOut? _out;
+    private IWavePlayer? _out;
     private MMDevice? _outDevice;
     private DocumentProvider? _provider;
     private EventHandler<StoppedEventArgs>? _playbackStoppedHandler;
@@ -141,7 +141,11 @@ public sealed class PlaybackEngine : IDisposable
         catch { return "Default output"; }
     }
 
-    private static (WasapiOut Output, MMDevice? Device) CreateOut()
+    private static (
+        MMDevice Device,
+        AudioClientShareMode ShareMode,
+        bool RequestedEventSync,
+        int Latency) ResolveOutput()
     {
         var settings = AppSettings.Instance;
         int latency = Math.Clamp(settings.BufferMs, 3, 500);
@@ -154,7 +158,7 @@ public sealed class PlaybackEngine : IDisposable
             device = settings.OutputDeviceId != null
                 ? enumerator.GetDevice(settings.OutputDeviceId)
                 : enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
-            return (new WasapiOut(device, shareMode, settings.OutputEventSync, latency), device);
+            return (device, shareMode, settings.OutputEventSync, latency);
         }
         catch
         {
@@ -165,7 +169,7 @@ public sealed class PlaybackEngine : IDisposable
             device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
             try
             {
-                return (new WasapiOut(device, shareMode, settings.OutputEventSync, latency), device);
+                return (device, shareMode, settings.OutputEventSync, latency);
             }
             catch
             {
@@ -182,23 +186,34 @@ public sealed class PlaybackEngine : IDisposable
         lock (_controlLock)
         {
             StopCore();
+            DrainPendingCleanups();
             lock (_stateLock) LastPlaybackError = null;
             long playbackSession = ++_nextPlaybackSession;
             var provider = new DocumentProvider(
                 doc, startSample, endSample,
                 expandMonoToStereo: Master.ExpandsMonoToStereo)
             { Loop = Loop };
-            WasapiOut? output = null;
+            IWavePlayer? output = null;
             MMDevice? device = null;
             EventHandler<StoppedEventArgs>? handler = null;
             bool registered = false;
+            AudioClientShareMode shareMode = AudioClientShareMode.Shared;
+            bool requestedEventSync = true;
+            int latency = 60;
 
             try
             {
-                (output, device) = CreateOut();
+                (device, shareMode, requestedEventSync, latency) = ResolveOutput();
                 Master.SetSource(provider);
                 Master.Loudness.Reset();
-                output.Init(Master);
+                IWaveProvider outputProvider = shareMode == AudioClientShareMode.Exclusive
+                    ? AudioHardware.CreateExclusiveOutputProvider(device!, Master)
+                    : Master.ToWaveProvider();
+                bool effectiveEventSync = AudioHardware.ResolveOutputEventScheduling(
+                    device, shareMode, requestedEventSync, latency, outputProvider.WaveFormat);
+                output = AudioHardware.CreatePlayer(
+                    device, shareMode, effectiveEventSync, latency);
+                output.Init(outputProvider);
 
                 handler = (_, args) => OnPlaybackStopped(
                     output, device, provider, handler!, playbackSession, doc, args.Exception);
@@ -246,7 +261,8 @@ public sealed class PlaybackEngine : IDisposable
                 {
                     if (output != null && handler != null)
                         output.PlaybackStopped -= handler;
-                    DisposeOutput(output, device, stopFirst: true);
+                    QueueOutputCleanup(output, device);
+                    DrainPendingCleanups();
                 }
                 throw;
             }
@@ -257,7 +273,7 @@ public sealed class PlaybackEngine : IDisposable
     {
         lock (_controlLock)
         {
-            WasapiOut? output;
+            IWavePlayer? output;
             lock (_stateLock)
             {
                 if (_out == null || !IsPlaying) return;
@@ -278,7 +294,7 @@ public sealed class PlaybackEngine : IDisposable
     {
         lock (_controlLock)
         {
-            WasapiOut? output;
+            IWavePlayer? output;
             lock (_stateLock)
             {
                 if (_out == null || !IsPaused) return;
@@ -303,7 +319,7 @@ public sealed class PlaybackEngine : IDisposable
 
     private void StopCore()
     {
-        WasapiOut? output;
+        IWavePlayer? output;
         MMDevice? device;
         EventHandler<StoppedEventArgs>? handler;
         lock (_stateLock)
@@ -316,11 +332,11 @@ public sealed class PlaybackEngine : IDisposable
 
         if (output != null && handler != null)
             output.PlaybackStopped -= handler;
-        DisposeOutput(output, device, stopFirst: true);
+        QueueOutputCleanup(output, device);
     }
 
     private void OnPlaybackStopped(
-        WasapiOut output,
+        IWavePlayer output,
         MMDevice? device,
         DocumentProvider provider,
         EventHandler<StoppedEventArgs> handler,
@@ -354,16 +370,17 @@ public sealed class PlaybackEngine : IDisposable
         }
     }
 
-    private void QueueOutputCleanup(WasapiOut output, MMDevice? device)
+    private void QueueOutputCleanup(IWavePlayer? output, MMDevice? device)
     {
-        Task cleanup = Task.Run(() => DisposeOutput(output, device, stopFirst: false));
+        if (output == null && device == null) return;
+        Task cleanup = DisposeOutputAsync(output, device);
         lock (_cleanupLock) _pendingCleanupTasks.Add(cleanup);
     }
 
     private void DrainPendingCleanups()
     {
         // An event subscriber can synchronously call Stop/Dispose from WASAPI's
-        // callback thread. Waiting there would deadlock with WasapiOut.Dispose,
+        // callback thread. Waiting there could deadlock with player disposal,
         // which may join that same thread. A later non-callback Stop/Dispose drains it.
         if (_playbackCallbackDepth > 0) return;
 
@@ -379,7 +396,7 @@ public sealed class PlaybackEngine : IDisposable
 
             bool completed;
             // Bounded: Play() and Stop() reach this from the UI thread, and the
-            // queued teardown (WasapiOut.Dispose joins the render thread) is at the
+            // queued teardown (the player joins its render thread) is at the
             // driver's mercy once an endpoint has been invalidated.
             try { completed = Task.WhenAll(pending).Wait(CleanupDrainTimeout); }
             catch { completed = true; /* DisposeOutput is best-effort; cleanup must not block shutdown. */ }
@@ -435,23 +452,48 @@ public sealed class PlaybackEngine : IDisposable
         Master.ClearSource();
     }
 
-    private static void DisposeOutput(WasapiOut? output, MMDevice? device, bool stopFirst)
+    private static async Task DisposeOutputAsync(IWavePlayer? output, MMDevice? device)
     {
-        if (output != null)
+        try
         {
-            if (stopFirst)
+            if (output is IAsyncDisposable asyncDisposable)
             {
-                try { output.Stop(); } catch { }
+                try { await asyncDisposable.DisposeAsync().ConfigureAwait(false); }
+                catch { }
             }
-            try { output.Dispose(); } catch { }
+            else if (output != null)
+            {
+                try { await Task.Run(output.Dispose).ConfigureAwait(false); }
+                catch { }
+            }
         }
-        try { device?.Dispose(); } catch { }
+        finally
+        {
+            try { device?.Dispose(); } catch { }
+        }
     }
 
     public void Dispose()
     {
         Stop();
-        Master.Dispose();
+        Task[] pending;
+        lock (_cleanupLock)
+        {
+            pending = [.. _pendingCleanupTasks];
+            _pendingCleanupTasks.Clear();
+        }
+        if (pending.Length == 0)
+        {
+            Master.Dispose();
+        }
+        else
+        {
+            _ = Task.WhenAll(pending).ContinueWith(
+                _ => Master.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
         GC.SuppressFinalize(this);
     }
 
@@ -471,9 +513,13 @@ public sealed class PlaybackEngine : IDisposable
     internal static void ApplyMonitorGain(float[] buffer, int offset, int count, float gain, bool limit)
     {
         ArgumentNullException.ThrowIfNull(buffer);
-        if (count <= 0 || (gain == 1f && !limit)) return;
-        int end = offset + count;
-        for (int i = offset; i < end; i++)
+        ApplyMonitorGain(buffer.AsSpan(offset, count), gain, limit);
+    }
+
+    private static void ApplyMonitorGain(Span<float> buffer, float gain, bool limit)
+    {
+        if (buffer.IsEmpty || (gain == 1f && !limit)) return;
+        for (int i = 0; i < buffer.Length; i++)
             buffer[i] = Math.Clamp(buffer[i] * gain, -1f, 1f);
     }
 
@@ -517,10 +563,10 @@ public sealed class PlaybackEngine : IDisposable
         public int InitialPreRollFrames => _initialPreRollFrames;
         public int PositionSamples => Volatile.Read(ref _pos);
 
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
             int channels = WaveFormat.Channels;
-            int framesWanted = count / channels;
+            int framesWanted = buffer.Length / channels;
             int written = 0;
             // Read once per callback so one buffer is never half at the old gain and half
             // at the new one when the monitor slider moves under it.
@@ -532,7 +578,7 @@ public sealed class PlaybackEngine : IDisposable
                 if (_preRollFrames > 0)
                 {
                     int silenceFrames = Math.Min(framesWanted, _preRollFrames);
-                    Array.Clear(buffer, offset + written * channels, silenceFrames * channels);
+                    buffer.Slice(written * channels, silenceFrames * channels).Clear();
                     _preRollFrames -= silenceFrames;
                     written += silenceFrames;
                     framesWanted -= silenceFrames;
@@ -548,7 +594,7 @@ public sealed class PlaybackEngine : IDisposable
                     if (available <= 0) break;
                 }
                 int n = Math.Min(framesWanted, available);
-                int destination = offset + written * channels;
+                int destination = written * channels;
                 ReadSnapshotInterleaved(_pos, n, buffer, destination);
                 if (_expandMonoToStereo)
                 {
@@ -563,7 +609,8 @@ public sealed class PlaybackEngine : IDisposable
                 }
                 // After the mono expansion, so both copies are lifted, and outside the
                 // pre-roll above, which stays silent.
-                ApplyMonitorGain(buffer, destination, n * channels, monitorGain, limitToFullScale);
+                ApplyMonitorGain(
+                    buffer.Slice(destination, n * channels), monitorGain, limitToFullScale);
                 // Published, to match the Volatile.Read in PositionSamples: the UI polls
                 // this while the render thread is inside Read.
                 Volatile.Write(ref _pos, _pos + n);
@@ -573,7 +620,7 @@ public sealed class PlaybackEngine : IDisposable
             return written * channels;
         }
 
-        private void ReadSnapshotInterleaved(int start, int frames, float[] destination, int offset)
+        private void ReadSnapshotInterleaved(int start, int frames, Span<float> destination, int offset)
         {
             int sourceChannels = _channels.Length;
             for (int frame = 0; frame < frames; frame++)
