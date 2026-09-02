@@ -204,6 +204,9 @@ public sealed class Vst3Effect : IAudioEffect, IEffectState, IDisposable
         }
     }
 
+    // VST3 does not expose a reliable tail length through the interfaces this host supports.
+    public int TailSamples => 0;
+
     /// <summary>
     /// Only ever non-null when something is wrong, because a silent failure inside somebody else's
     /// code is indistinguishable from a plugin that simply does nothing audible.

@@ -14,6 +14,7 @@ public sealed class MasterSectionViewModel : ObservableObject
     private double _holdL = -60, _holdR = -60;
     private string? _selectedPreset;
     private bool _applyingPreset;
+    private bool _automaticallyBypassedAfterRender;
     private string _rackStatusText = "Rack ready.";
     private int _tick;
     // last rendered value of each formatted readout, so a tick only notifies
@@ -55,6 +56,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         {
             if (_master.RackEnabled == value) return;
             bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+            _automaticallyBypassedAfterRender = false;
             _master.RackEnabled = value;
             Raise();
             Raise(nameof(RackStateText));
@@ -63,6 +65,33 @@ public sealed class MasterSectionViewModel : ObservableObject
                 : "Rack bypassed · effects processing disabled; source unchanged.";
             NotifyTopologyChanged(expandedMonoBefore);
         }
+    }
+
+    /// <summary>
+    /// Prevent an already-rendered document from immediately running through the same rack again.
+    /// Unlike an intentional user bypass, the next rack edit leaves this temporary state so the
+    /// card controls continue to be a live preview.
+    /// </summary>
+    internal void BypassAfterRender()
+    {
+        if (!_master.RackEnabled) return; // preserve an intentional bypass
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        _automaticallyBypassedAfterRender = true;
+        _master.RackEnabled = false;
+        Raise(nameof(RackEnabled));
+        Raise(nameof(RackStateText));
+        RackStatusText = "Rack bypassed after render · edit or switch an effect to resume live preview.";
+        NotifyTopologyChanged(expandedMonoBefore);
+    }
+
+    /// <summary>Resume preview only from the temporary render bypass, never from a user bypass.</summary>
+    private void ResumePreviewForRackEdit()
+    {
+        if (!_automaticallyBypassedAfterRender) return;
+        _automaticallyBypassedAfterRender = false;
+        _master.RackEnabled = true;
+        Raise(nameof(RackEnabled));
+        Raise(nameof(RackStateText));
     }
 
     public string RackStateText => RackEnabled ? "ACTIVE" : "BYPASSED";
@@ -134,6 +163,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         ChainReplacing?.Invoke();
         _master.ReplaceChain(effects);
+        _automaticallyBypassedAfterRender = false;
         _master.RackEnabled = true;
         Raise(nameof(RackEnabled));
         Raise(nameof(RackStateText));
@@ -183,9 +213,12 @@ public sealed class MasterSectionViewModel : ObservableObject
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         foreach (var (key, value) in settings) existing.SetParam(key, value);
         _master.SetEffectEnabled(existing, true);
+        ResumePreviewForRackEdit();
         MarkChainCustom();
         SyncFromMaster();
-        RackStatusText = $"{existing.DisplayName} was already in the rack · re-aimed rather than duplicated.";
+        RackStatusText = RackEnabled
+            ? $"{existing.DisplayName} was already in the rack · re-aimed and active."
+            : $"{existing.DisplayName} was already in the rack · re-aimed; rack remains bypassed.";
         NotifyTopologyChanged(expandedMonoBefore);
         return existing.DisplayName;
     }
@@ -212,18 +245,26 @@ public sealed class MasterSectionViewModel : ObservableObject
         }
 
         MarkChainCustom();
+        ResumePreviewForRackEdit();
         SyncFromMaster();
-        RackStatusText = $"{effect.DisplayName} added · active in rack; source unchanged until render.";
+        RackStatusText = RackEnabled
+            ? $"{effect.DisplayName} added · active in rack; source unchanged until render."
+            : $"{effect.DisplayName} added · rack remains bypassed; source unchanged.";
         NotifyTopologyChanged(expandedMonoBefore);
         return effect.DisplayName;
     }
 
     private void MoveEffect(EffectViewModel vm, int delta)
     {
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         if (!_master.MoveEffect(vm.Effect, delta)) return;
+        ResumePreviewForRackEdit();
         MarkChainCustom();
         SyncFromMaster();
-        RackStatusText = "Effects reordered · active rack updated; source unchanged until render.";
+        RackStatusText = RackEnabled
+            ? "Effects reordered · active rack updated; source unchanged until render."
+            : "Effects reordered · rack remains bypassed; source unchanged.";
+        NotifyTopologyChanged(expandedMonoBefore);
     }
 
     private bool CanMoveEffect(EffectViewModel vm, int delta)
@@ -240,6 +281,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         EffectRemoving?.Invoke(vm);
         if (_master.RemoveEffect(vm.Effect))
         {
+            ResumePreviewForRackEdit();
             MarkChainCustom();
             SyncFromMaster();
             RackStatusText = $"{name} removed — processing stopped.";
@@ -251,9 +293,12 @@ public sealed class MasterSectionViewModel : ObservableObject
     {
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         if (!_master.SetEffectEnabled(vm.Effect, enabled)) return;
+        ResumePreviewForRackEdit();
         MarkChainCustom();
         RackStatusText = enabled
-            ? $"{vm.DisplayName} enabled · active in rack; source unchanged until render."
+            ? RackEnabled
+                ? $"{vm.DisplayName} enabled · active in rack; source unchanged until render."
+                : $"{vm.DisplayName} enabled · rack remains bypassed; source unchanged."
             : $"{vm.DisplayName} bypassed · source unchanged.";
         NotifyTopologyChanged(expandedMonoBefore);
     }
@@ -263,11 +308,14 @@ public sealed class MasterSectionViewModel : ObservableObject
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         ChainReplacing?.Invoke();
         _master.ReplaceChain(EffectFactory.Instantiate(EffectFactory.CreateFactoryPreset("Default")));
+        ResumePreviewForRackEdit();
         _applyingPreset = true;
         SelectedPreset = null;
         _applyingPreset = false;
         SyncFromMaster();
-        RackStatusText = "Rack reset to Studio EQ with Precision Limiter bypassed · source unchanged until render.";
+        RackStatusText = RackEnabled
+            ? "Rack reset to Studio EQ with Precision Limiter bypassed · live preview active."
+            : "Rack reset to Studio EQ with Precision Limiter bypassed · rack remains bypassed.";
         NotifyTopologyChanged(expandedMonoBefore);
     }
 
@@ -279,8 +327,13 @@ public sealed class MasterSectionViewModel : ObservableObject
 
     private void OnEffectChanged(EffectViewModel effect)
     {
+        bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+        ResumePreviewForRackEdit();
         MarkChainCustom();
-        RackStatusText = $"{effect.DisplayName} adjusted · active in rack; source unchanged until render.";
+        RackStatusText = RackEnabled
+            ? $"{effect.DisplayName} adjusted · active in rack; source unchanged until render."
+            : $"{effect.DisplayName} adjusted · rack remains bypassed; source unchanged.";
+        NotifyTopologyChanged(expandedMonoBefore);
     }
 
     private void MarkChainCustom()
@@ -318,6 +371,7 @@ public sealed class MasterSectionViewModel : ObservableObject
         bool expandedMonoBefore = _master.ExpandsMonoToStereo;
         ChainReplacing?.Invoke();
         _master.ReplaceChain(effects);
+        ResumePreviewForRackEdit();
         _applyingPreset = true;
         SelectedPreset = null;
         _applyingPreset = false;

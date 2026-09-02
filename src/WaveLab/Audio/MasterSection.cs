@@ -612,7 +612,8 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         float[][] data,
         int sampleRate,
         CancellationToken cancellationToken = default,
-        IProgress<double>? progress = null)
+        IProgress<double>? progress = null,
+        bool includeTail = false)
     {
         ArgumentNullException.ThrowIfNull(data);
         if (data.Length == 0) return [];
@@ -639,12 +640,16 @@ public sealed class MasterSection : ISampleProvider, IDisposable
             bool processMidSide = midSideRequested && channels >= 2;
             foreach (var fx in chain) fx.Configure(sampleRate, channels);
             int latency = checked(chain.Sum(f => f.LatencySamples));
+            int tail = includeTail && frames > 0
+                ? TailForCopyRender(chain, sampleRate)
+                : 0;
 
-            int totalFrames = checked(frames + latency);
+            int outputFrames = checked(frames + tail);
+            int totalFrames = checked(outputFrames + latency);
             const int block = 65536;
             var interleaved = new float[checked(block * channels)];
             var output = new float[channels][];
-            for (int c = 0; c < channels; c++) output[c] = new float[frames];
+            for (int c = 0; c < channels; c++) output[c] = new float[outputFrames];
 
             int outFrame = -latency; // skip the first `latency` processed frames
             for (int start = 0; start < totalFrames; start += block)
@@ -662,7 +667,7 @@ public sealed class MasterSection : ISampleProvider, IDisposable
                 if (processMidSide) ConvertFromMidSide(interleaved, n, channels);
                 for (int f = 0; f < n; f++, outFrame++)
                 {
-                    if (outFrame < 0 || outFrame >= frames) continue;
+                    if (outFrame < 0 || outFrame >= outputFrames) continue;
                     for (int c = 0; c < channels; c++)
                         output[c][outFrame] = interleaved[f * channels + c];
                 }
@@ -678,6 +683,23 @@ public sealed class MasterSection : ISampleProvider, IDisposable
             Retire(chain);
             DisposeSnapshots(snapshots);
         }
+    }
+
+    /// <summary>
+    /// Explicit time effects are allowed to ring after the source in a copy render. Tails add when
+    /// effects are chained (a reverb can feed a delay), with a generous hard ceiling to keep a
+    /// near-unity feedback chain from creating an accidentally enormous document.
+    /// </summary>
+    private static int TailForCopyRender(IEnumerable<IAudioEffect> chain, int sampleRate)
+    {
+        long tail = 0;
+        long maximum = (long)sampleRate * 120;
+        foreach (IAudioEffect effect in chain)
+        {
+            tail += Math.Max(0, effect.TailSamples);
+            if (tail >= maximum) return (int)maximum;
+        }
+        return (int)tail;
     }
 
     /// <summary>

@@ -141,6 +141,18 @@ public sealed class ConvolutionReverbEffect : EffectBase, IEffectState
     /// same block so the two still line up.
     /// </summary>
     public override int LatencySamples => HasResponse ? Block : 0;
+    public override int TailSamples
+    {
+        get
+        {
+            if (!HasResponse || GetParam("mix") <= 0.001 || _response.Length == 0) return 0;
+            long response = Math.Max(0, _response.Max(channel => channel.Length) - 1L);
+            long preDelay = (long)Math.Ceiling(GetParam("predelay") * 0.001 * SampleRate);
+            long maximum = (long)Math.Ceiling(
+                SampleRate * (MaximumSeconds + MaximumPreDelayMs / 1000.0));
+            return (int)Math.Min(response + preDelay, maximum);
+        }
+    }
 
     public override string? Readout => HasResponse
         ? null

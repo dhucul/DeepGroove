@@ -33,6 +33,27 @@ public sealed class DelayEffect : EffectBase
     public override string TypeId => "delay";
     public override string DisplayName => "Stereo Delay";
     public override IReadOnlyList<EffectParam> Params => P;
+    public override int TailSamples => FeedbackTailSamples(
+        GetParam("time") * SampleRate / 1000.0,
+        GetParam("feedback"),
+        GetParam("mix"));
+
+    /// <summary>A practical -60 dB decay point for an explicit repeat generator.</summary>
+    private int FeedbackTailSamples(double cycleSamples, double feedback, double wetLevel)
+    {
+        const double silence = 0.001;
+        if (wetLevel <= silence || cycleSamples <= 0) return 0;
+
+        int repeats = 1;
+        if (feedback > 1e-9)
+        {
+            double decayCycles = Math.Log(silence / wetLevel) / Math.Log(feedback);
+            repeats = Math.Max(1, 1 + (int)Math.Ceiling(Math.Max(0, decayCycles)));
+        }
+
+        long samples = (long)Math.Ceiling(cycleSamples) * repeats;
+        return (int)Math.Min(samples, (long)SampleRate * 120);
+    }
 
     protected override void OnConfigure()
     {
@@ -125,9 +146,12 @@ public sealed class DelayEffect : EffectBase
                 float delayed = (float)(_lines[c][i0] * (1 - frac) + _lines[c][i1] * frac);
                 _delayedScratch[c] = delayed;
 
-                // Feedback with filter
-                float fbInput = buffer[idx + c] + delayed * feedback;
-                _fbScratch[c] = _fbFilters[c].Process(fbInput);
+                // The filter belongs inside the feedback loop. Filtering the sum of the dry
+                // injection and the return coloured the very first repeat too, even though the
+                // control is explicitly a feedback filter. It also meant a high-pass setting
+                // could turn a clean first echo into a thin click before feedback had occurred.
+                float filteredReturn = _fbFilters[c].Process(delayed);
+                _fbScratch[c] = buffer[idx + c] + filteredReturn * feedback;
             }
 
             // Ping-pong: write each channel's feedback into the opposite delay

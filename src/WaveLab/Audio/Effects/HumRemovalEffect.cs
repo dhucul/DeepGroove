@@ -127,6 +127,8 @@ public sealed class HumRemovalEffect : EffectBase
     private void ApplyTuning(HumTuning tuning, double fundamental)
     {
         var bank = _notches;
+        int previousActive = _activeHarmonics;
+        int previousMask = _applied?.HarmonicMask ?? 0;
         int active = 0;
         for (int harmonic = 1; harmonic <= tuning.Requested; harmonic++)
             if (fundamental * harmonic < SampleRate * 0.475) active++;
@@ -138,10 +140,17 @@ public sealed class HumRemovalEffect : EffectBase
                 bank[channel][harmonic - 1].CopyCoefficientsFrom(proto);
         }
 
-        // Stages coming back into use start from a stale delay line — clear those.
-        for (int harmonic = _activeHarmonics; harmonic < active; harmonic++)
+        // Stages coming back into use start from a stale delay line — clear those. That includes a
+        // stage restored by PARTIAL MASK, not only one restored by increasing HARMONICS.
+        for (int harmonic = 0; harmonic < active; harmonic++)
+        {
+            bool newlyActive = harmonic >= previousActive;
+            bool newlyUnmasked = (previousMask & (1 << harmonic)) == 0
+                                 && (tuning.HarmonicMask & (1 << harmonic)) != 0;
+            if (!newlyActive && !newlyUnmasked) continue;
             for (int channel = 0; channel < bank.Length; channel++)
                 bank[channel][harmonic].Reset();
+        }
 
         _applied = tuning;
         _appliedFundamental = fundamental;

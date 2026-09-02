@@ -114,6 +114,14 @@ public sealed class DynamicEqEffect : EffectBase
         if (_band.Length != ChannelCount || _detector.Length != ChannelCount) return;
 
         double worst = 0;
+        // Frequency and Q can move while the stream is running. The processing band was already
+        // retuned below, but the detector used to remain at the values from Configure, so after a
+        // sweep the effect changed one band while listening to another. StateVariableFilter keeps
+        // its topology and delay state through Set, which makes this safe at a block boundary.
+        for (int channel = 0; channel < ChannelCount; channel++)
+            _detector[channel].Set(
+                SvfMode.BandPass, SampleRate, parameters.Frequency, parameters.Q);
+
         int frames = count / ChannelCount;
         for (int frame = 0; frame < frames; frame++)
         {

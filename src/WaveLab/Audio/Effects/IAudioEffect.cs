@@ -44,6 +44,12 @@ public interface IAudioEffect
     /// <summary>Samples of latency this effect introduces (for offline compensation).</summary>
     int LatencySamples { get; }
 
+    /// <summary>
+    /// Additional output after the last input frame. Offline copy renders may preserve it; an
+    /// in-place render stays length-stable.
+    /// </summary>
+    int TailSamples => 0;
+
     /// <summary>Optional live readout for the UI (e.g. gain reduction), or null.</summary>
     string? Readout { get; }
 }
@@ -127,6 +133,7 @@ public abstract class EffectBase : IAudioEffect
     public abstract void ResetState();
     public abstract void Process(float[] buffer, int offset, int count);
     public virtual int LatencySamples => 0;
+    public virtual int TailSamples => 0;
     public virtual string? Readout => null;
 
     /// <summary>Called after Configure (allocate per-channel state).</summary>

@@ -34,6 +34,8 @@ public sealed class SaturationEffect : EffectBase
     private SaturationParameters _parameters = new(1f, 1f, 1f, 0, 2);
     private Oversampler?[] _samplers = [];
     private int _activeOversamplingFactor = 1;
+    private float[][] _dryDelay = [];
+    private int _dryDelayPosition;
 
     private sealed record SaturationParameters(
         float Drive, float Compensation, float Mix, int Curve, int OversamplingFactor);
@@ -73,6 +75,10 @@ public sealed class SaturationEffect : EffectBase
         // The bank is allocated here and nowhere else. Sizing it from the parameter path meant
         // the thread moving TONE could hand the audio thread a freshly-zeroed array.
         _tone = new Biquad[ChannelCount];
+        _dryDelay = new float[ChannelCount][];
+        for (int channel = 0; channel < ChannelCount; channel++)
+            _dryDelay[channel] = new float[Oversampler.DefaultTapsPerPhase];
+        _dryDelayPosition = 0;
         RebuildTone(EffectiveToneCutoff());
     }
 
@@ -129,6 +135,8 @@ public sealed class SaturationEffect : EffectBase
     {
         for (int c = 0; c < _tone.Length; c++) _tone[c].Reset();
         foreach (Oversampler? sampler in _samplers) sampler?.Reset();
+        foreach (float[] channel in _dryDelay) Array.Clear(channel);
+        _dryDelayPosition = 0;
         _activeOversamplingFactor = Volatile.Read(ref _parameters).OversamplingFactor;
     }
 
@@ -149,6 +157,8 @@ public sealed class SaturationEffect : EffectBase
             // Each factor owns independent FIR history. A bank that has been idle
             // must not resume with samples from the last time it was selected.
             sampler?.Reset();
+            foreach (float[] channel in _dryDelay) Array.Clear(channel);
+            _dryDelayPosition = 0;
             _activeOversamplingFactor = parameters.OversamplingFactor;
         }
         bool oversample = sampler is { Factor: > 1 };
@@ -160,6 +170,16 @@ public sealed class SaturationEffect : EffectBase
         {
             int c = (i - offset) % ChannelCount;
             float x = buffer[i];
+            float alignedDry = x;
+            if (oversample)
+            {
+                // Upsampling and decimation delay the wet path by the latency the effect reports.
+                // The dry path must travel beside it or a partial MIX comb-filters the signal; an
+                // offline render then compensates the mixture as if both halves had been delayed.
+                float[] dryLine = _dryDelay[c];
+                alignedDry = dryLine[_dryDelayPosition];
+                dryLine[_dryDelayPosition] = x;
+            }
 
             float shaped;
             if (oversample && sampler != null)
@@ -181,7 +201,10 @@ public sealed class SaturationEffect : EffectBase
             }
 
             shaped = tone[c].Process(shaped);
-            buffer[i] = x * dry + shaped * mix;
+            buffer[i] = alignedDry * dry + shaped * mix;
+
+            if (oversample && c == ChannelCount - 1 && ++_dryDelayPosition >= _dryDelay[0].Length)
+                _dryDelayPosition = 0;
         }
     }
 

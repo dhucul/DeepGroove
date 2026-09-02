@@ -104,6 +104,20 @@ public sealed class ReverbEffect : EffectBase
     public override string TypeId => "reverb";
     public override string DisplayName => "Reverb";
     public override IReadOnlyList<EffectParam> Params => P;
+    public override int TailSamples
+    {
+        get
+        {
+            const double silence = 0.001;
+            double wet = GetParam("mix");
+            if (wet <= silence) return 0;
+            double feedback = (0.3 + GetParam("size") * 0.65) * 0.95;
+            int cycles = Math.Max(1, 1 + (int)Math.Ceiling(Math.Max(0,
+                Math.Log(silence / wet) / Math.Log(feedback))));
+            double decayMs = GetParam("preDelay") + ErDelaysMs[^1] + BaseDelaysMs[^1] * cycles;
+            return (int)Math.Min(Math.Ceiling(decayMs * SampleRate / 1000.0), SampleRate * 30.0);
+        }
+    }
 
     protected override void OnConfigure()
     {

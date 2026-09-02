@@ -36,6 +36,22 @@ public sealed class ChorusEffect : EffectBase
     public override string TypeId => "chorus";
     public override string DisplayName => "Chorus";
     public override IReadOnlyList<EffectParam> Params => P;
+    public override int TailSamples
+    {
+        get
+        {
+            const double silence = 0.001;
+            double wet = GetParam("mix");
+            if (wet <= silence) return 0;
+            double feedback = GetParam("feedback");
+            int cycles = feedback <= 1e-9
+                ? 1
+                : Math.Max(1, 1 + (int)Math.Ceiling(Math.Max(0,
+                    Math.Log(silence / wet) / Math.Log(feedback))));
+            double longestDelay = (BaseDelayMs + GetParam("depth")) * SampleRate / 1000.0;
+            return (int)Math.Min(Math.Ceiling(longestDelay) * cycles, SampleRate * 10.0);
+        }
+    }
 
     protected override void OnConfigure()
     {

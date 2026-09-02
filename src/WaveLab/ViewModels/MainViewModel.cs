@@ -2532,11 +2532,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             async (progress, token) =>
             {
                 var output = await Task.Run(
-                    () => Engine.Master.ProcessOffline(input, sr, token, progress), token);
+                    () => Engine.Master.ProcessOffline(
+                        input, sr, token, progress, includeTail: true), token);
+                // The samples in this tab already contain the rack. Leaving it active makes the
+                // first audition run every effect a second time — most obvious as overlapping
+                // repeats from Stereo Delay, but equally wrong for dynamics and saturation.
+                Master.BypassAfterRender();
                 AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
                 {
                     Title = Path.GetFileNameWithoutExtension(doc.Title) + " (rendered copy).wav",
-                }, "Effects rack rendered to a new tab · source audio unchanged.");
+                }, "Effects rack rendered once to a new tab · rack bypassed for an accurate audition · source audio unchanged.");
             });
     }
 
@@ -2579,6 +2584,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                         d.Doc.ReplaceAllOwned(output, "Render Master Chain");
                     else
                         d.Doc.ReplaceRange(start, count, output, "Render Master Chain");
+                    // The edited samples now contain the rack. Keep the chain and its settings, but
+                    // bypass it so playback does not immediately process the result a second time.
+                    Master.BypassAfterRender();
                 }
             });
         }
