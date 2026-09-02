@@ -15,6 +15,7 @@ public sealed class DocumentViewModel : TabViewModel
     private int _cursor;
     private int _playhead;
     private int _markersVersion;
+    private int _embeddedMarkersVersion;
     private int _historyVersion;
 
     private bool _rebuildRunning;
@@ -96,7 +97,7 @@ public sealed class DocumentViewModel : TabViewModel
     /// dot from <see cref="IsDirty"/>, and appending a bullet here as well said it twice.
     /// </summary>
     public override string Title => Doc.Title;
-    public override bool IsDirty => Doc.Dirty;
+    public override bool IsDirty => Doc.Dirty || _markersVersion != _embeddedMarkersVersion;
     public override string Kind => "WAV";
 
     public double ViewStart
@@ -205,6 +206,18 @@ public sealed class DocumentViewModel : TabViewModel
     {
         _markersVersion++;
         Raise(nameof(MarkersVersion));
+        Raise(nameof(IsDirty));
+        QueueMarkerSave();
+    }
+
+    /// <summary>
+    /// Writes the current marker snapshot to the document's present sidecar path without claiming
+    /// that the marker data itself changed. Save As uses this after assigning the new audio path.
+    /// </summary>
+    internal void PersistMarkers() => QueueMarkerSave();
+
+    private void QueueMarkerSave()
+    {
         var path = Doc.FilePath;
         if (path == null) return;
         // snapshot for the background write so UI mutations can't tear the serialization,
@@ -227,6 +240,15 @@ public sealed class DocumentViewModel : TabViewModel
             if (_markerSaveRunning) return;
             StartMarkerSaveWorkerLocked();
         }
+    }
+
+    /// <summary>Marks the exact marker version embedded by a completed audio-file save.</summary>
+    internal void MarkMarkersEmbedded(int version)
+    {
+        if (_markersVersion != version) return;
+        if (_embeddedMarkersVersion == version) return;
+        _embeddedMarkersVersion = version;
+        Raise(nameof(IsDirty));
     }
 
     /// <summary>

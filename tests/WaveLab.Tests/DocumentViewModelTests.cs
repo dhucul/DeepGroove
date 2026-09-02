@@ -7,6 +7,24 @@ namespace WaveLab.Tests;
 public sealed class DocumentViewModelTests
 {
     [Fact]
+    public void MarkerEditsRemainDirtyUntilThatExactVersionIsEmbedded()
+    {
+        var vm = CreateDocument(length: 1_000);
+        vm.Doc.MarkSaved();
+        Assert.False(vm.IsDirty);
+
+        vm.AddMarker(100, "Cut");
+        int changedVersion = vm.MarkersVersion;
+        Assert.True(vm.IsDirty);
+
+        vm.MarkMarkersEmbedded(changedVersion - 1);
+        Assert.True(vm.IsDirty);
+
+        vm.MarkMarkersEmbedded(changedVersion);
+        Assert.False(vm.IsDirty);
+    }
+
+    [Fact]
     public void EnsurePlayheadVisible_FollowsContinuouslyAfterTrailingAnchor()
     {
         var vm = CreateDocument(length: 10_000);

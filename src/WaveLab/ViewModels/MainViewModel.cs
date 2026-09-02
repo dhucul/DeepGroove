@@ -213,7 +213,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         UseLinearScaleCommand = new RelayCommand(() => SpectralScale = SpectralFrequencyScale.Linear);
         UseLogarithmicScaleCommand = new RelayCommand(() => SpectralScale = SpectralFrequencyScale.Logarithmic);
         UseConstantQScaleCommand = new RelayCommand(() => SpectralScale = SpectralFrequencyScale.ConstantQ);
-        RenderCommand = new RelayCommand(RenderMaster, () => HasAudioDocument);
+        RenderCommand = new RelayCommand(RenderMaster,
+            () => !_documentOperationRunning && !_shuttingDown && HasAudioDocument);
         ApplyChainCommand = new RelayCommand(ApplyChain, () => CanMutateAudio);
         RecordCommand = new RelayCommand(ToggleRecord, () => !IsFinalizingRecording);
         RecordSetupCommand = new RelayCommand(OpenRecordDialog,
@@ -334,6 +335,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (!Set(ref _documentOperationRunning, value, nameof(IsDocumentOperationRunning))) return;
         RefreshEditCommandStates();
         DocumentOperationRunningChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Acquires the process-wide document mutation slot for a modeless surface. UI callers are
+    /// serialized by the dispatcher, so the test-and-set is atomic with respect to every command
+    /// and owned window that can request it.
+    /// </summary>
+    public bool TryBeginDocumentOperation()
+    {
+        if (_shuttingDown || _documentOperationRunning || _editOperationRunning || _closeAllRunning)
+            return false;
+        SetDocumentOperationRunning(true);
+        return true;
     }
     public RelayCommand CutCommand { get; }
     public RelayCommand CopyCommand { get; }
@@ -1270,8 +1284,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return $"{name} (removed at {TimeFormat.Compact((double)rangeStart / source.SampleRate)}).wav";
     }
 
-    /// <summary>Point-in-time copy sharing the current channel arrays (splices never mutate old arrays).</summary>
-    private static AudioDocument SnapshotDoc(AudioDocument doc)
+    /// <summary>
+    /// Point-in-time copy sharing immutable channel arrays and owning an independent metadata copy.
+    /// </summary>
+    internal static AudioDocument SnapshotDoc(AudioDocument doc)
     {
         var refs = doc.Channels.ToArray();
         return new AudioDocument(refs, doc.SampleRate, doc.SourceBitDepth)
@@ -1282,10 +1298,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             RequiresSaveAs = doc.RequiresSaveAs,
             CaptureNote = doc.CaptureNote,
 
-            // Shared, not copied. The codecs clone before touching a chunk, so the snapshot only
-            // ever reads this — and leaving it out is what would quietly drop the file's broadcast
-            // metadata on the first ordinary Save, which is the whole point of carrying it.
-            Riff = doc.Riff,
+            // Leaving this out would quietly drop the file's broadcast metadata on the first
+            // ordinary Save, which is the whole point of carrying it.
+            // Metadata is mutable and file writes continue after this method returns. Sharing the
+            // live object lets a File Information edit change the chunk list after a codec has
+            // calculated the container size but before it writes those chunks.
+            Riff = doc.Riff.Clone(),
         };
     }
 
@@ -1362,6 +1380,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
         var markers = MarkerSnapshot(d);
+        int markersVersion = d.MarkersVersion;
         string path = doc.FilePath!;
         int depth = doc.SourceBitDepth;
         try
@@ -1379,15 +1398,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             // (or has failed).
             await d.FlushMarkersAsync();
             _saveFailures.Remove(doc.SessionId);
-            if (doc.EditVersion == version) // only mark clean if nothing changed while writing
+            if (d.MarkersVersion == markersVersion)
+                d.MarkMarkersEmbedded(markersVersion);
+            if (doc.EditVersion == version && d.MarkersVersion == markersVersion)
             {
                 doc.MarkSaved();
                 d.NotifySaved();
                 AutosaveService.Remove(doc.SessionId);
             }
-            ReportAction(doc.EditVersion == version
+            ReportAction(doc.EditVersion == version && d.MarkersVersion == markersVersion
                 ? $"{doc.Title} saved."
-                : $"{doc.Title} save completed · newer edits remain unsaved.");
+                : $"{doc.Title} save completed · newer audio or marker edits remain unsaved.");
         }
         catch (OperationCanceledException)
         {
@@ -1442,6 +1463,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
         var markers = MarkerSnapshot(d);
+        int markersVersion = d.MarkersVersion;
         try
         {
             await Task.Run(() => SaveEditableDocument(snapshot, dlg.FileName, depth,
@@ -1454,9 +1476,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             doc.Dither16BitOnSave = dither16;
             // Generated documents could accumulate markers/regions before they had
             // a path. Persist that in-memory metadata alongside the first Save As.
-            d.NotifyMarkersChanged();
+            d.PersistMarkers();
             await d.FlushMarkersAsync();
-            if (doc.EditVersion == version)
+            if (d.MarkersVersion == markersVersion)
+                d.MarkMarkersEmbedded(markersVersion);
+            if (doc.EditVersion == version && d.MarkersVersion == markersVersion)
             {
                 doc.MarkSaved();
                 AutosaveService.Remove(doc.SessionId);
@@ -1466,9 +1490,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (!AppSettings.Instance.AddRecentFile(dlg.FileName)) ReportSettingsSaveFailure();
             SyncRecentFiles();
             Raise(nameof(WindowTitle));
-            ReportAction(doc.EditVersion == version
+            ReportAction(doc.EditVersion == version && d.MarkersVersion == markersVersion
                 ? $"{doc.Title} saved."
-                : $"{doc.Title} save completed · newer edits remain unsaved.");
+                : $"{doc.Title} save completed · newer audio or marker edits remain unsaved.");
         }
         catch (Exception ex)
         {
@@ -2527,22 +2551,29 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // capture stable channel refs on the UI thread — splices never mutate old arrays
         var input = doc.Channels.ToArray();
         int sr = doc.SampleRate;
+        if (!TryBeginDocumentOperation()) return;
 
-        await RunBlocking("Rendering master chain", "Writing to a new tab · source unchanged",
-            async (progress, token) =>
-            {
-                var output = await Task.Run(
-                    () => Engine.Master.ProcessOffline(
-                        input, sr, token, progress, includeTail: true), token);
-                // The samples in this tab already contain the rack. Leaving it active makes the
-                // first audition run every effect a second time — most obvious as overlapping
-                // repeats from Stereo Delay, but equally wrong for dynamics and saturation.
-                Master.BypassAfterRender();
-                AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
+        try
+        {
+            await RunBlocking("Rendering master chain", "Writing to a new tab · source unchanged",
+                async (progress, token) =>
                 {
-                    Title = Path.GetFileNameWithoutExtension(doc.Title) + " (rendered copy).wav",
-                }, "Effects rack rendered once to a new tab · rack bypassed for an accurate audition · source audio unchanged.");
-            });
+                    var output = await Task.Run(
+                        () => Engine.Master.ProcessOffline(
+                            input, sr, token, progress, includeTail: true), token);
+                    token.ThrowIfCancellationRequested();
+                    if (_shuttingDown) return;
+                    // The samples in this tab already contain the rack. Leaving it active makes the
+                    // first audition run every effect a second time — most obvious as overlapping
+                    // repeats from Stereo Delay, but equally wrong for dynamics and saturation.
+                    Master.BypassAfterRender();
+                    AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
+                    {
+                        Title = Path.GetFileNameWithoutExtension(doc.Title) + " (rendered copy).wav",
+                    }, "Effects rack rendered once to a new tab · rack bypassed for an accurate audition · source audio unchanged.");
+                });
+        }
+        finally { SetDocumentOperationRunning(false); }
     }
 
     /// <summary>Render the selection (or whole file) as one undoable document edit.</summary>
@@ -2597,9 +2628,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// Runs a long operation behind the progress overlay. Work that cannot report progress still
     /// gets an indeterminate one, which is the point: the window used to simply freeze.
     /// </summary>
-    private Task RunBlocking(Func<Task> work) =>
-        RunBlocking("Working", null, (_, _) => work());
-
     /// <summary>
     /// Runs a long operation behind the progress overlay, reporting progress and honouring cancel.
     /// </summary>
@@ -2956,6 +2984,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Exception? failure = null;
         try
         {
+            Progress.CancelAll();
+            await Progress.WaitForIdleAsync();
             if (Engine.IsPlaying || Engine.IsPaused) ReleasePlayback();
             if (!_recordFinalization.IsCompleted) await _recordFinalization;
             await _autosaveTask;

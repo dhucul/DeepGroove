@@ -15,6 +15,8 @@ public sealed class AudioDocument
     private readonly List<Edit> _redo = [];
     private long _currentStateId;
     private long? _savedStateId = 0;
+    private int _metadataVersion;
+    private int _savedMetadataVersion;
     private long _nextStateId = 1;
     private int _historyGeneration;
     private int _discardedOlder;
@@ -163,6 +165,7 @@ public sealed class AudioDocument
     /// </remarks>
     public void MarkMetadataChanged()
     {
+        _metadataVersion++;
         Dirty = true;
         EditVersion++;
     }
@@ -714,6 +717,7 @@ public sealed class AudioDocument
     public void MarkSaved()
     {
         _savedStateId = _currentStateId;
+        _savedMetadataVersion = _metadataVersion;
         Dirty = false;
     }
 
@@ -728,7 +732,9 @@ public sealed class AudioDocument
     }
 
     private void UpdateDirtyFromSavepoint() =>
-        Dirty = !_savedStateId.HasValue || _currentStateId != _savedStateId.Value;
+        Dirty = !_savedStateId.HasValue
+            || _currentStateId != _savedStateId.Value
+            || _metadataVersion != _savedMetadataVersion;
 
     /// <summary>Interleaved copy of a range (for playback/export).</summary>
     public void ReadInterleaved(int start, int frames, float[] dest, int destOffset)

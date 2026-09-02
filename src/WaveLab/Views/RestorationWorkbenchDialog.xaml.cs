@@ -642,6 +642,12 @@ public partial class RestorationWorkbenchDialog : Window
         bool keepRemoved = keepRemovedCheck.IsChecked == true;
         var operation = BeginOperation(applying: true, "Rendering the complete restoration…");
         var progress = CreateProgress(operation);
+        if (!_main.TryBeginDocumentOperation())
+        {
+            CompleteOperation(operation);
+            statusText.Text = "Another document operation is running · wait for it to finish before applying.";
+            return;
+        }
         bool committed = false;
         try
         {
@@ -718,6 +724,7 @@ public partial class RestorationWorkbenchDialog : Window
         finally
         {
             CompleteOperation(operation);
+            _main.SetDocumentOperationRunning(false);
         }
 
         if (!committed || _closed) return;

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text;
 using WaveLab.Audio;
+using WaveLab.ViewModels;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -43,6 +44,20 @@ public sealed class FileTagsTests(ITestOutputHelper output) : IDisposable
                 data[c][i] = (float)(0.3 * Math.Sin(2 * Math.PI * 440 * i / Rate));
         }
         return new AudioDocument(data, Rate, 24);
+    }
+
+    [Fact]
+    public void SaveSnapshotOwnsAnIndependentMetadataCopy()
+    {
+        AudioDocument source = Document();
+        source.Riff.Set("bext", [1, 2, 3]);
+
+        AudioDocument snapshot = MainViewModel.SnapshotDoc(source);
+        source.Riff.Set("bext", [9]);
+        source.Riff.Set("iXML", [4, 5]);
+
+        Assert.Equal([1, 2, 3], snapshot.Riff.Find("bext")?.Data);
+        Assert.Null(snapshot.Riff.Find("iXML"));
     }
 
     // ── the model ────────────────────────────────────────────────

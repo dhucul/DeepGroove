@@ -33,6 +33,26 @@ public sealed class ProgressHost : ObservableObject
     {
         public OperationProgress Operation { get; } = operation;
         public bool IsBlocking { get; } = isBlocking;
+        public TaskCompletionSource Completion { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    /// <summary>
+    /// The oldest blocking operation whether or not it has crossed the visual show delay. Lifecycle
+    /// decisions must use this rather than <see cref="Blocking"/>, which is intentionally delayed.
+    /// </summary>
+    public OperationProgress? ActiveBlockingOperation
+    {
+        get
+        {
+            lock (_gate)
+                return _running.FirstOrDefault(entry => entry.IsBlocking)?.Operation;
+        }
+    }
+
+    public bool HasActiveOperations
+    {
+        get { lock (_gate) return _running.Count > 0; }
     }
 
     public ProgressHost(Func<DateTime>? clock = null) => _clock = clock ?? (() => DateTime.UtcNow);
@@ -83,6 +103,31 @@ public sealed class ProgressHost : ObservableObject
             if (ReferenceEquals(Blocking, operation)) Blocking = Promote(isBlocking: true);
             if (ReferenceEquals(Background, operation)) Background = Promote(isBlocking: false);
             operation.DisposeToken();
+            entry.Completion.TrySetResult();
+        }
+    }
+
+    /// <summary>Requests cancellation for every operation currently owned by the host.</summary>
+    public void CancelAll()
+    {
+        OperationProgress[] operations;
+        lock (_gate) operations = [.. _running.Select(entry => entry.Operation)];
+        foreach (OperationProgress operation in operations) operation.Cancel();
+    }
+
+    /// <summary>
+    /// Joins the operations present when called. New operations are refused by the view model once
+    /// shutdown begins; the loop also covers a completion that queued its successor just before it
+    /// observed that state.
+    /// </summary>
+    public async Task WaitForIdleAsync()
+    {
+        while (true)
+        {
+            Task[] pending;
+            lock (_gate) pending = [.. _running.Select(entry => entry.Completion.Task)];
+            if (pending.Length == 0) return;
+            await Task.WhenAll(pending);
         }
     }
 

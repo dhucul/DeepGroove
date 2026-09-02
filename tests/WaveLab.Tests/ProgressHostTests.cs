@@ -30,6 +30,37 @@ public sealed class ProgressHostTests
     }
 
     [Fact]
+    public async Task LifecycleSeesBlockingWorkBeforeTheOverlayDelay()
+    {
+        var host = NewHost();
+        var gate = new TaskCompletionSource();
+        Task running = host.RunBlockingAsync("Rendering", null, (_, _) => gate.Task);
+
+        Assert.Null(host.Blocking);
+        Assert.Equal("Rendering", host.ActiveBlockingOperation?.Title);
+        Assert.True(host.HasActiveOperations);
+
+        gate.SetResult();
+        await running;
+        Assert.Null(host.ActiveBlockingOperation);
+        Assert.False(host.HasActiveOperations);
+    }
+
+    [Fact]
+    public async Task CancelAndJoinCoversHiddenBlockingWork()
+    {
+        var host = NewHost();
+        Task running = host.RunBlockingAsync("Rendering", null,
+            (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token));
+
+        host.CancelAll();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
+        await host.WaitForIdleAsync();
+
+        Assert.False(host.HasActiveOperations);
+    }
+
+    [Fact]
     public async Task WorkThatOutlivesTheDelayBecomesVisible()
     {
         var host = NewHost();

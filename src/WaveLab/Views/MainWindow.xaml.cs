@@ -180,7 +180,9 @@ public partial class MainWindow : Window
         if (_closing || _settlingStartup) return;
         // RunBlocking no longer disables the window — that would disable the overlay's own Cancel
         // button — so the progress host is what says whether something is still running.
-        if (_vm.Progress.Blocking is { } blocking)
+        // Lifecycle ownership starts with the work, not when its deliberately delayed overlay
+        // becomes visible. Render Copy in particular has no other window-local busy flag.
+        if (_vm.Progress.ActiveBlockingOperation is { } blocking)
         {
             blocking.Cancel();
             MessageBox.Show(
@@ -1882,6 +1884,7 @@ public partial class MainWindow : Window
     {
         float[][] channels = d.Doc.Channels.ToArray();
         int rate = d.Doc.SampleRate;
+        int sourceVersion = d.Doc.EditVersion;
         LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
@@ -1917,7 +1920,12 @@ public partial class MainWindow : Window
                     _vm.ReportAction("Nothing was learned from that selection · document unchanged.");
                     return;
                 }
-                if (start + count > d.Doc.Length) return;
+                if (!_vm.Documents.Contains(d) || d.Doc.EditVersion != sourceVersion
+                    || start + count > d.Doc.Length)
+                {
+                    _vm.ReportAction("Remove Pattern abandoned · the source changed while processing.");
+                    return;
+                }
 
                 _vm.PrepareForDocumentEdit(d);
                 d.Doc.ReplaceRange(start, count, output, "Remove Pattern");
@@ -1978,6 +1986,7 @@ public partial class MainWindow : Window
         }
 
         float[][] channels = d.Doc.Channels.ToArray();
+        int sourceVersion = d.Doc.EditVersion;
         LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
@@ -2001,7 +2010,8 @@ public partial class MainWindow : Window
                     return;
                 }
                 int start = results[0].Start, count = results[0].Samples.Length;
-                if (start + count > d.Doc.Length)
+                if (!_vm.Documents.Contains(d) || d.Doc.EditVersion != sourceVersion
+                    || start + count > d.Doc.Length)
                 {
                     // The file moved under the operation, so the span the repair was computed for
                     // is no longer there to splice into.
@@ -2445,6 +2455,7 @@ public partial class MainWindow : Window
         if (LongOperationRunning) return null;
         var channels = document.Doc.Channels.ToArray();
         int sampleRate = document.Doc.SampleRate;
+        int sourceVersion = document.Doc.EditVersion;
         LongOperationRunning = true;
         Mouse.OverrideCursor = Cursors.Wait;
         try
@@ -2453,6 +2464,11 @@ public partial class MainWindow : Window
             await _vm.Progress.RunBlockingAsync("Detecting silences", "Scanning the file for quiet gaps",
                 async (_, token) => found = await Task.Run(() => Restoration.DetectSilences(
                     channels, sampleRate, threshold, minimumLength, token), token));
+            if (!_vm.Documents.Contains(document) || document.Doc.EditVersion != sourceVersion)
+            {
+                _vm.ReportAction("Silence detection abandoned · the source changed while processing.");
+                return null;
+            }
             return found;
         }
         catch (OperationCanceledException)

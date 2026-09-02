@@ -118,6 +118,22 @@ public sealed class EditHistoryTests : IDisposable
         Assert.True(document.GetHistory().Entries[1].IsSavepoint);
     }
 
+    [Fact]
+    public void MetadataEditsStayDirtyWhenAudioHistoryReturnsToItsSavepoint()
+    {
+        var document = Document();
+        Edit(document, "first");
+        document.MarkSaved();
+
+        document.MarkMetadataChanged();
+        document.Undo();
+        document.Redo();
+
+        Assert.True(document.Dirty);
+        document.MarkSaved();
+        Assert.False(document.Dirty);
+    }
+
     // ── jumping ─────────────────────────────────────────────────
 
     /// <summary>
