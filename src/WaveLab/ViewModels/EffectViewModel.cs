@@ -10,6 +10,10 @@ public sealed class EffectParamViewModel(IAudioEffect fx, EffectParam param, Act
     public string Label => param.Label;
     public double Min => param.Min;
     public double Max => param.Max;
+    public double TickFrequency => param.Step > 0 ? param.Step : 1;
+    public double SmallChange => param.Step > 0 ? param.Step : 0.1;
+    public double LargeChange => param.Step > 0 ? param.Step : 1;
+    public bool SnapsToTicks => param.Step > 0;
 
     public double Value
     {

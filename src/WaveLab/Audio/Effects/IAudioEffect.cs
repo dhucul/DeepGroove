@@ -1,7 +1,14 @@
 namespace WaveLab.Audio.Effects;
 
 /// <summary>Descriptor for one automatable effect parameter (drives the auto-generated UI).</summary>
-public sealed record EffectParam(string Key, string Label, double Min, double Max, double Default, Func<double, string> Format)
+public sealed record EffectParam(
+    string Key,
+    string Label,
+    double Min,
+    double Max,
+    double Default,
+    Func<double, string> Format,
+    double Step = 0)
 {
     public static string Db(double v) => $"{v:0.0} dB";
     public static string Db1(double v) => $"{v:+0.0;-0.0;0.0} dB";
@@ -85,7 +92,19 @@ public abstract class EffectBase : IAudioEffect
         if (!_parameterIndices.TryGetValue(key, out int index)) return;
         if (!double.IsFinite(value)) return;
         var parameter = _parameterDefinitions[index];
-        Volatile.Write(ref _values[index], Math.Clamp(value, parameter.Min, parameter.Max));
+        double normalized = Math.Clamp(value, parameter.Min, parameter.Max);
+        if (double.IsFinite(parameter.Step) && parameter.Step > 0)
+        {
+            double steps = Math.Round(
+                (normalized - parameter.Min) / parameter.Step,
+                MidpointRounding.AwayFromZero);
+            normalized = Math.Clamp(
+                parameter.Min + steps * parameter.Step,
+                parameter.Min,
+                parameter.Max);
+        }
+        if (Volatile.Read(ref _values[index]) == normalized) return;
+        Volatile.Write(ref _values[index], normalized);
         OnParamsChanged();
     }
 

@@ -180,9 +180,9 @@ public static class HelpCatalog
 
         Topic("effects", "MASTERING", "Rack effects reference",
             "A concise description of every effect available from Add Effect.",
-            "eq compressor normalizer trim mono stereo width balance denoise dehum gate reverb delay chorus saturation filters limiter",
+            "eq emphasis de-emphasis deemphasis fm 50 75 microseconds cd iec compressor normalizer trim mono stereo width balance denoise dehum gate reverb delay chorus saturation filters limiter",
             Section("Tone and level",
-                "Studio EQ adjusts broad low, mid, and high tonal ranges. Gain & Trim applies controlled level and trimming. Level Normalizer follows programme level toward a target within boost/cut limits. Compressor reduces dynamic range above its threshold and may add makeup gain. Precision Limiter catches peaks at a ceiling; it is peak protection, not a repair for clipped input."),
+                "Studio EQ adjusts broad low, mid, and high tonal ranges. Emphasis / De-Emphasis supplies the reciprocal FM 50 µs, FM 75 µs, and CD/IEC 50/15 µs curves: use de-emphasis only when the source still carries the matching pre-emphasis, or emphasis when preparing a signal for a matching playback de-emphasis stage. Emphasis can add substantial treble level, so leave headroom and meter the result. Gain & Trim applies controlled level and trimming. Level Normalizer follows programme level toward a target within boost/cut limits. Compressor reduces dynamic range above its threshold and may add makeup gain. Precision Limiter catches peaks at a ceiling; it is peak protection, not a repair for clipped input."),
             Section("Stereo and channels",
                 "Mono-to-Stereo Enhancer creates decorrelated width from a mono source while protecting bass and level. Stereo Width narrows or widens an existing stereo image and can keep low frequencies mono. Channel Balance & Alignment adjusts left/right level and timing alignment. Check phase correlation and mono compatibility after using these."),
             Section("Cleanup and control",

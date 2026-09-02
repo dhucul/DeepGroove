@@ -65,6 +65,15 @@ public struct Biquad
         _b0 = b0 / a0, _b1 = b1 / a0, _b2 = b2 / a0, _a1 = a1 / a0, _a2 = a2 / a0,
     };
 
+    /// <summary>
+    /// Builds a filter from an already-normalized transfer function. Kept internal so effects with
+    /// standard-defined pole/zero curves can use the shared state-safe processor without exposing
+    /// arbitrary (and potentially unstable) coefficients as public API.
+    /// </summary>
+    internal static Biquad FromNormalized(
+        double b0, double b1, double b2, double a1, double a2) =>
+        FromCoefficients(b0, b1, b2, 1, a1, a2);
+
     public static Biquad Identity() => FromCoefficients(1, 0, 0, 1, 0, 0);
 
     public static Biquad LowShelf(double fs, double f, double gainDb, double slope = 1.0)
