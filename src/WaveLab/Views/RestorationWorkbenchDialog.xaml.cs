@@ -107,7 +107,7 @@ public partial class RestorationWorkbenchDialog : Window
     }
 
     /// <summary>
-    /// The workbench open on each document. Modeless, Restore &gt; Vinyl Restoration can be chosen
+    /// The workbench open on each document. Modeless, Restore &gt; Vinyl Transfer &amp; Restoration can be chosen
     /// twice; two of these on one file would each hold their own analysis of it and each be willing
     /// to commit that analysis over the other's edit.
     /// </summary>
@@ -158,13 +158,11 @@ public partial class RestorationWorkbenchDialog : Window
     private bool _closeWhenFinished;
     private bool _sourceStale;
     private bool _rangeStale;
-    private bool _pendingFlatMode;
     private bool _removeDcChoice = true;
     private bool? _azimuthChoice;
     private bool? _wowChoice;
 
-    public RestorationWorkbenchDialog(DocumentViewModel document, MainViewModel main,
-        bool startWithFlatTransfer = false)
+    public RestorationWorkbenchDialog(DocumentViewModel document, MainViewModel main)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(main);
@@ -177,10 +175,7 @@ public partial class RestorationWorkbenchDialog : Window
         foreach (RecordingCurveSpec curve in RecordingCurves.All)
             curveCombo.Items.Add(curve.Name);
         curveCombo.SelectedIndex = 0;
-        sourceModeCombo.SelectedIndex = startWithFlatTransfer &&
-                                        document.Doc.DiscSignalState != DiscSignalState.PlaybackEqualized
-            ? 1
-            : 0;
+        sourceModeCombo.SelectedIndex = 0;
 
         _previewDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(360) };
         _previewDebounce.Tick += OnPreviewDebounce;
@@ -198,7 +193,6 @@ public partial class RestorationWorkbenchDialog : Window
         _initialized = true;
         UpdateReadouts();
         UpdateUiState();
-        Loaded += OnLoaded;
         Closed += OnClosed;
     }
 
@@ -278,36 +272,18 @@ public partial class RestorationWorkbenchDialog : Window
     /// caller used to do with the <c>ShowDialog</c> result.
     /// </summary>
     public static RestorationWorkbenchDialog ShowFor(
-        DocumentViewModel document, MainViewModel main, Window? owner, Action<bool>? onApplied = null,
-        bool startWithFlatTransfer = false)
+        DocumentViewModel document, MainViewModel main, Window? owner, Action<bool>? onApplied = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(main);
         if (OpenDialogs.TryGetValue(document, out RestorationWorkbenchDialog? existing))
         {
-            if (startWithFlatTransfer && existing.SourceMode != TransferSourceMode.Flat)
-            {
-                if (document.Doc.DiscSignalState == DiscSignalState.PlaybackEqualized)
-                    existing.statusText.Text = "Playback disc equalisation is already present · undo it before selecting flat transfer.";
-                else if (existing._busy)
-                {
-                    if (existing._applying)
-                        existing.statusText.Text = "The current render must finish before the transfer mode can change.";
-                    else
-                    {
-                        existing._pendingFlatMode = true;
-                        existing.statusText.Text = "Flat cartridge transfer will be selected when the current analysis finishes.";
-                    }
-                }
-                else
-                    existing.sourceModeCombo.SelectedIndex = 1;
-            }
             if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
             existing.Activate();
             return existing;
         }
 
-        var dialog = new RestorationWorkbenchDialog(document, main, startWithFlatTransfer) { Owner = owner };
+        var dialog = new RestorationWorkbenchDialog(document, main) { Owner = owner };
         if (onApplied != null) dialog.Applied += onApplied;
         dialog.Closed += (_, _) =>
         {
@@ -467,49 +443,93 @@ public partial class RestorationWorkbenchDialog : Window
     /// </summary>
     private async void OnReanalyze(object sender, RoutedEventArgs e) => await ResetAndAnalyzeAsync();
 
-    private async void OnSourceModeChanged(object sender, SelectionChangedEventArgs e)
+    private async void OnAnalyze(object sender, RoutedEventArgs e) =>
+        await ResetAndAnalyzeAsync(resetPreparationChoices: false);
+
+    private bool ValidateSelectedSourceMode(bool resetRejectedMode)
     {
-        if (!_initialized || _busy || _closed) return;
-        if (SourceMode == TransferSourceMode.Flat &&
-            _document.Doc.DiscSignalState == DiscSignalState.PlaybackEqualized)
-        {
-            _suppressControlEvents = true;
-            sourceModeCombo.SelectedIndex = 0;
-            _suppressControlEvents = false;
-            InfoDialog.Show(this, "Flat vinyl transfer",
-                "This document state already contains playback disc equalisation. Undo that step before applying another playback curve.");
-            return;
-        }
+        if (SourceMode != TransferSourceMode.Flat ||
+            _document.Doc.DiscSignalState != DiscSignalState.PlaybackEqualized)
+            return true;
+
+        bool previousSuppression = _suppressControlEvents;
+        _suppressControlEvents = true;
+        try { sourceModeCombo.SelectedIndex = 0; }
+        finally { _suppressControlEvents = previousSuppression; }
         UpdateSourceModeUi();
-        await ResetAndAnalyzeAsync();
+
+        if (resetRejectedMode)
+        {
+            ResetAnalysis();
+            statusText.Text =
+                "Playback disc equalisation is already present · confirm the source and press Analyze.";
+        }
+
+        InfoDialog.Show(this, "Flat vinyl transfer",
+            "This document state already contains playback disc equalisation. Undo that step before applying another playback curve.");
+        return false;
     }
 
-    private async void OnCurveChanged(object sender, SelectionChangedEventArgs e)
+    private void OnSourceModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_initialized || _suppressControlEvents || _busy || _closed) return;
+        if (!ValidateSelectedSourceMode(resetRejectedMode: false)) return;
+        UpdateSourceModeUi();
+        if (!ResetAnalysis()) return;
+        statusText.Text = "Source signal changed · press Analyze when the choice is correct.";
+    }
+
+    private void OnCurveChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_initialized || _busy || _closed) return;
         UpdateSourceModeUi();
         if (SourceMode == TransferSourceMode.Flat)
-            await ResetAndAnalyzeAsync(resetPreparationChoices: false);
+        {
+            if (!ResetAnalysis(resetPreparationChoices: false)) return;
+            statusText.Text = "Disc curve changed · press Analyze to tune the transfer for it.";
+        }
     }
 
-    private async void OnPreparationChanged(object sender, RoutedEventArgs e)
+    private void OnPreparationChanged(object sender, RoutedEventArgs e)
     {
         if (!_initialized || _suppressControlEvents || _busy || _closed) return;
         _removeDcChoice = removeDcEnabled.IsChecked == true;
         _azimuthChoice = azimuthEnabled.IsChecked == true;
         _wowChoice = wowEnabled.IsChecked == true;
         MarkPresetCustom();
-        await ResetAndAnalyzeAsync(resetPreparationChoices: false);
+        if (!ResetAnalysis(resetPreparationChoices: false)) return;
+        statusText.Text = "Transfer preparation changed · press Analyze to update the recommendations.";
     }
 
     private async Task ResetAndAnalyzeAsync(bool resetPreparationChoices = true)
     {
-        if (_busy || _closed) return;
+        if (!ValidateSelectedSourceMode(resetRejectedMode: true)) return;
+        if (!ResetAnalysis(resetPreparationChoices)) return;
+        await AnalyzeAsync();
+    }
+
+    private bool ResetAnalysis(bool resetPreparationChoices = true)
+    {
+        if (_busy || _closed) return false;
         if (resetPreparationChoices)
         {
             _removeDcChoice = true;
             _azimuthChoice = null;
             _wowChoice = null;
+            bool previousSuppression = _suppressControlEvents;
+            _suppressControlEvents = true;
+            try
+            {
+                removeDcEnabled.IsChecked = true;
+                azimuthEnabled.IsChecked = false;
+                azimuthEnabled.IsEnabled = true;
+                wowEnabled.IsChecked = false;
+                wowEnabled.IsEnabled = true;
+            }
+            finally
+            {
+                _suppressControlEvents = previousSuppression;
+            }
         }
         _main.StopPreview();
         _previewDebounce.Stop();
@@ -531,14 +551,19 @@ public partial class RestorationWorkbenchDialog : Window
         _previewWetCacheSettings = null;
         _previewWetCache = null;
         _previewStarted = false;
+        _analysisForReadout = null;
+        clickCountText.Text = "Run analysis to scan clicks and pops";
+        clipCountText.Text = "Run analysis to scan distorted peaks";
+        noiseSourceText.Text = "Run analysis to find a noise print";
+        azimuthEvidenceText.Text = "Run analysis to measure channel timing.";
+        wowEvidenceText.Text = "Run analysis to measure time-base variation.";
+        UpdateDeclipMethodReadout();
         noiseEnabled.IsEnabled = true;
         CaptureSource(firstCapture: false);
         UpdateSourceModeUi();
         UpdateUiState();
-        await AnalyzeAsync();
+        return true;
     }
-
-    private async void OnLoaded(object sender, RoutedEventArgs e) => await AnalyzeAsync();
 
     private static double[] MeasureDcOffsets(IReadOnlyList<float[]> channels,
         CancellationToken cancellationToken)
@@ -685,6 +710,7 @@ public partial class RestorationWorkbenchDialog : Window
             AppSettings.Instance.NoiseDepthCeilingDb);
         TransferSourceMode sourceMode = SourceMode;
         RecordingCurveSpec discCurve = SelectedDiscCurve;
+        CurvePhase curvePhase = SelectedCurvePhase;
         bool removeDcChoice = _removeDcChoice;
         bool? azimuthChoice = _azimuthChoice;
         bool? wowChoice = _wowChoice;
@@ -776,7 +802,7 @@ public partial class RestorationWorkbenchDialog : Window
                 if (sourceMode == TransferSourceMode.Flat)
                 {
                     RecordingCurves.Apply(excerpt.Channels, discCurve, _sampleRate,
-                        CurveDirection.Playback, CurvePhase.Minimum, RecordingCurves.DefaultTaps,
+                        CurveDirection.Playback, curvePhase, RecordingCurves.DefaultTaps,
                         operation.Token,
                         new FractionProgressAdapter(progress,
                             $"Applying {discCurve.Name} for cleanup analysis…", 0.62, 0.10));
@@ -1019,6 +1045,7 @@ public partial class RestorationWorkbenchDialog : Window
     private async Task ApplyAsync(bool prepareCd)
     {
         if (_source == null || _busy || bypassCheck.IsChecked == true || _closed) return;
+        if (!ValidateSelectedSourceMode(resetRejectedMode: true)) return;
         if (_sourceStale)
         {
             // UpdateUiState already disables both Apply buttons here; this is the keyboard and
@@ -2533,15 +2560,6 @@ public partial class RestorationWorkbenchDialog : Window
             UpdateUiState();
         }
         operation.Dispose();
-        if (!_busy && _pendingFlatMode && !_closed &&
-            _document.Doc.DiscSignalState != DiscSignalState.PlaybackEqualized)
-        {
-            _pendingFlatMode = false;
-            Dispatcher.BeginInvoke(() =>
-            {
-                if (!_closed) sourceModeCombo.SelectedIndex = 1;
-            }, DispatcherPriority.Background);
-        }
         if (!_busy && _closeWhenFinished && !_closed)
         {
             _closeWhenFinished = false;
@@ -2563,8 +2581,16 @@ public partial class RestorationWorkbenchDialog : Window
     private void UpdateUiState()
     {
         bool ready = _source != null && !_initializing && !_closed;
-        controlsHost.IsEnabled = ready && !_applying;
+        controlsHost.IsEnabled = !_busy && !_applying && !_closed;
+        bool analysisControlsEnabled = ready && !_applying;
+        foreach (UIElement control in (UIElement[])
+                 [clickCard, declipCard, crackleCard, noiseCard, humCard,
+                  subsonicCard, verticalCard, outputCard])
+            control.IsEnabled = analysisControlsEnabled;
         sourceModeCombo.IsEnabled = !_busy && !_applying && !_closed;
+        analyzeBtn.IsEnabled = !_busy && !_applying && !_closed &&
+                               _rangeCount > 0 && _sourceReferences.Length > 0;
+        analyzeBtn.Content = ready ? "Re-analyze" : "Analyze";
         presetCombo.IsEnabled = ready && !_applying;
         previewBtn.IsEnabled = ready && !_applying;
         auditionChannelCombo.IsEnabled = ready && !_applying &&

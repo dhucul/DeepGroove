@@ -264,8 +264,7 @@
                     </MenuItem>
                 </MenuItem>
                 <MenuItem Header="_Restore" IsEnabled="{Binding HasAudioDocument}">
-                    <MenuItem Header="Vinyl Restoration &amp; CD Transfer…" Click="OnVinylWorkflow"/>
-                    <MenuItem Header="Flat Vinyl Transfer Workflow…" Click="OnFlatVinylWorkflow"/>
+                    <MenuItem Header="Vinyl Transfer &amp; Restoration…" Click="OnVinylWorkflow"/>
                     <MenuItem Header="Prepare Tracks for Audio CD…" Click="OnPrepareAudioCd"/>
                     <Separator/>
                     <MenuItem Header="Learn Noise Profile from Selection" Click="OnLearnNoise"/>

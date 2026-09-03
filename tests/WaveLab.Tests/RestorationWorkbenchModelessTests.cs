@@ -68,6 +68,144 @@ public sealed class RestorationWorkbenchModelessTests : IDisposable
 
     private static Button Reanalyze(Window window) => (Button)window.FindName("reanalyzeBtn");
 
+    private static Button Analyze(Window window) => (Button)window.FindName("analyzeBtn");
+
+    [Fact]
+    public void OpeningWaitsForAnExplicitAnalysisRequest()
+    {
+        (bool analyzeEnabled, bool applyEnabled, bool setupEnabled, bool processingEnabled,
+            string status) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main);
+
+            (bool AnalyzeEnabled, bool ApplyEnabled, bool SetupEnabled, bool ProcessingEnabled,
+                string Status) result = default;
+            Wpf.Show(new RestorationWorkbenchDialog(document, main), window =>
+            {
+                Wpf.Pump();
+                var workbench = (RestorationWorkbenchDialog)window;
+                result = (Analyze(window).IsEnabled,
+                    ((Button)window.FindName("applyBtn")).IsEnabled,
+                    workbench.removeDcEnabled.IsEnabled,
+                    workbench.clickEnabled.IsEnabled,
+                    ((TextBlock)window.FindName("statusText")).Text);
+            });
+            return result;
+        });
+
+        Assert.True(analyzeEnabled);
+        Assert.False(applyEnabled);
+        Assert.True(setupEnabled);
+        Assert.False(processingEnabled);
+        Assert.Contains("press Analyze", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ExplicitAnalyzePreservesAChangedPreparationChoice()
+    {
+        bool removeDc = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main);
+
+            bool result = true;
+            Wpf.Show(new RestorationWorkbenchDialog(document, main), window =>
+            {
+                var apply = (Button)window.FindName("applyBtn");
+                Analyze(window).RaiseEvent(new RoutedEventArgs(
+                    System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                Assert.True(PumpUntil(() => apply.IsEnabled), "the initial analysis never finished");
+
+                var workbench = (RestorationWorkbenchDialog)window;
+                workbench.removeDcEnabled.IsChecked = false;
+                Assert.False(apply.IsEnabled);
+                Assert.True(Analyze(window).IsEnabled);
+
+                Analyze(window).RaiseEvent(new RoutedEventArgs(
+                    System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                Assert.True(PumpUntil(() => apply.IsEnabled), "the updated analysis never finished");
+                result = workbench.removeDcEnabled.IsChecked == true;
+            });
+            return result;
+        });
+
+        Assert.False(removeDc);
+    }
+
+    [Fact]
+    public void RejectedFlatModeLeavesTheCompletedEqualizedAnalysisIntact()
+    {
+        (int sourceMode, bool applyEnabled) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main);
+            document.Doc.ReplaceAllOwned(
+                document.Doc.Channels.Select(channel => (float[])channel.Clone()).ToArray(),
+                "Playback Equalization", DiscSignalState.PlaybackEqualized);
+
+            (int SourceMode, bool ApplyEnabled) result = default;
+            Wpf.Show(new RestorationWorkbenchDialog(document, main), window =>
+            {
+                var workbench = (RestorationWorkbenchDialog)window;
+                Analyze(window).RaiseEvent(new RoutedEventArgs(
+                    System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                Assert.True(PumpUntil(() => workbench.applyBtn.IsEnabled),
+                    "the equalized analysis never finished");
+
+                window.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    foreach (Window owned in window.OwnedWindows)
+                        if (owned is InfoDialog) owned.Close();
+                }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                workbench.sourceModeCombo.SelectedIndex = 1;
+
+                result = (workbench.sourceModeCombo.SelectedIndex, workbench.applyBtn.IsEnabled);
+            });
+            return result;
+        });
+
+        Assert.Equal(0, sourceMode);
+        Assert.True(applyEnabled);
+    }
+
+    [Fact]
+    public void FlatModeIsRevalidatedWhenAnalysisStartsAfterTheDocumentChanges()
+    {
+        (int sourceMode, bool applyEnabled, bool analyzeEnabled) = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main);
+            var dialog = new RestorationWorkbenchDialog(document, main);
+
+            (int SourceMode, bool ApplyEnabled, bool AnalyzeEnabled) result = default;
+            Wpf.Show(dialog, window =>
+            {
+                dialog.sourceModeCombo.SelectedIndex = 1;
+                document.Doc.ReplaceAllOwned(
+                    document.Doc.Channels.Select(channel => (float[])channel.Clone()).ToArray(),
+                    "Playback Equalization", DiscSignalState.PlaybackEqualized);
+                Wpf.Pump();
+
+                window.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    foreach (Window owned in window.OwnedWindows)
+                        if (owned is InfoDialog) owned.Close();
+                }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                dialog.analyzeBtn.RaiseEvent(new RoutedEventArgs(
+                    System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+
+                result = (dialog.sourceModeCombo.SelectedIndex,
+                    dialog.applyBtn.IsEnabled, dialog.analyzeBtn.IsEnabled);
+            });
+            return result;
+        });
+
+        Assert.Equal(0, sourceMode);
+        Assert.False(applyEnabled);
+        Assert.True(analyzeEnabled);
+    }
+
     /// <summary>
     /// An edit to the recording invalidates the analysis, and the window says so where the range it
     /// analysed is printed rather than waiting to refuse a commit it has already spent a render on.
@@ -142,8 +280,8 @@ public sealed class RestorationWorkbenchModelessTests : IDisposable
             {
                 var reanalyze = Reanalyze(window);
                 var apply = (Button)window.FindName("applyBtn");
-                // Apply becoming available is the only signal that the first analysis finished; the
-                // Re-analyze button is enabled from the outset, so waiting on it waits for nothing.
+                Analyze(window).RaiseEvent(new RoutedEventArgs(
+                    System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
                 Assert.True(PumpUntil(() => apply.IsEnabled), "the first analysis never finished");
 
                 document.SetSelection(Rate / 2, Rate);
@@ -184,6 +322,8 @@ public sealed class RestorationWorkbenchModelessTests : IDisposable
             Wpf.Show(dialog, window =>
             {
                 var apply = (Button)window.FindName("applyBtn");
+                Analyze(window).RaiseEvent(new RoutedEventArgs(
+                    System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
                 Assert.True(PumpUntil(() => apply.IsEnabled), "the analysis never enabled Apply");
 
                 apply.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
@@ -254,28 +394,28 @@ public sealed class RestorationWorkbenchModelessTests : IDisposable
     }
 
     [Fact]
-    public void FlatModeRequestedDuringAnalysisIsQueuedAndReanalyzed()
+    public void SelectingFlatModeWhileIdleDoesNotStartAnalysis()
     {
-        bool selected = Wpf.Run(() =>
+        (bool selected, bool applyEnabled, string analyzeLabel) = Wpf.Run(() =>
         {
             using var main = new MainViewModel();
             DocumentViewModel document = Open(main);
             RestorationWorkbenchDialog dialog = RestorationWorkbenchDialog.ShowFor(document, main, null);
             Wpf.Pump();
 
-            RestorationWorkbenchDialog same = RestorationWorkbenchDialog.ShowFor(
-                document, main, null, startWithFlatTransfer: true);
-            Assert.Same(dialog, same);
-            Assert.True(PumpUntil(() => dialog.sourceModeCombo.SelectedIndex == 1 &&
-                                        dialog.applyBtn.IsEnabled, 45_000),
-                "the queued flat mode never replaced the in-flight equalized analysis");
+            dialog.sourceModeCombo.SelectedIndex = 1;
+            Wpf.Pump();
 
-            bool result = dialog.sourceModeCombo.SelectedIndex == 1;
+            var result = (dialog.sourceModeCombo.SelectedIndex == 1,
+                dialog.applyBtn.IsEnabled, dialog.analyzeBtn.Content?.ToString() ?? "");
             dialog.Close();
             Assert.True(PumpUntil(() => !dialog.IsVisible, 15_000));
             return result;
         });
 
         Assert.True(selected);
+        Assert.False(applyEnabled);
+        Assert.Equal("Analyze", analyzeLabel);
     }
+
 }

@@ -14,6 +14,14 @@ public sealed class FlatVinylWorkflowTests
     private static AudioDocument Document() => new(
         [new float[48_000], new float[48_000]], 48_000, 24);
 
+    private static RestorationWorkbenchDialog FlatDialog(
+        DocumentViewModel document, MainViewModel main)
+    {
+        var dialog = new RestorationWorkbenchDialog(document, main);
+        dialog.sourceModeCombo.SelectedIndex = 1;
+        return dialog;
+    }
+
     private static bool PumpUntil(Func<bool> ready, int timeoutMs = 30_000)
     {
         long deadline = Environment.TickCount64 + timeoutMs;
@@ -28,11 +36,14 @@ public sealed class FlatVinylWorkflowTests
         {
             using var main = new MainViewModel();
             var document = new DocumentViewModel(Document());
-            var dialog = new RestorationWorkbenchDialog(document, main, startWithFlatTransfer: true);
+            var dialog = FlatDialog(document, main);
 
             Assert.Equal(1, dialog.sourceModeCombo.SelectedIndex);
             Assert.Equal(0, dialog.curveCombo.SelectedIndex);
-            Assert.Equal(true, dialog.curveCombo.ReadLocalValue(UIElement.IsEnabledProperty));
+            Assert.True(dialog.curveCombo.IsEnabled);
+            Assert.True(dialog.removeDcEnabled.IsEnabled);
+            Assert.False(dialog.clickEnabled.IsEnabled);
+            Assert.True(dialog.analyzeBtn.IsEnabled);
             Assert.Equal(100, dialog.globalMix.Value);
             Assert.False(dialog.globalMix.IsEnabled);
             Assert.False(dialog.keepRemovedCheck.IsEnabled);
@@ -58,6 +69,91 @@ public sealed class FlatVinylWorkflowTests
     }
 
     [Fact]
+    public void EqualizedWorkflowPreservesAudioSelectionScopeAndDiscState()
+    {
+        Wpf.Run(() =>
+        {
+            const int rate = 48_000;
+            var left = new float[rate * 2];
+            var right = new float[left.Length];
+            for (int sample = 0; sample < left.Length; sample++)
+                left[sample] = right[sample] =
+                    (float)(0.2 * Math.Sin(2 * Math.PI * 10_000 * sample / rate));
+            var originalLeft = (float[])left.Clone();
+            var originalRight = (float[])right.Clone();
+
+            using var main = new MainViewModel();
+            var audio = new AudioDocument([left, right], rate, 24)
+            {
+                DiscSignalState = DiscSignalState.PlaybackEqualized,
+            };
+            main.AddDocument(audio);
+            DocumentViewModel document = main.ActiveDocument!;
+            document.SetSelection(rate / 2, rate + rate / 2);
+            var dialog = new RestorationWorkbenchDialog(document, main);
+            dialog.removeDcEnabled.IsChecked = false;
+
+            Wpf.Show(dialog, window =>
+            {
+                var workbench = (RestorationWorkbenchDialog)window;
+                workbench.analyzeBtn.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.True(PumpUntil(() => workbench.applyBtn.IsEnabled),
+                    "the equalized analysis never enabled Apply");
+
+                workbench.declipEnabled.IsChecked = false;
+                workbench.clickEnabled.IsChecked = false;
+                workbench.decrackleEnabled.IsChecked = false;
+                workbench.subsonicEnabled.IsChecked = false;
+                workbench.verticalEnabled.IsChecked = false;
+                workbench.humEnabled.IsChecked = false;
+                workbench.noiseEnabled.IsChecked = false;
+
+                workbench.applyBtn.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.True(PumpUntil(() => !window.IsVisible),
+                    "the equalized restoration never completed");
+            });
+
+            Assert.Equal("Vinyl Restoration", document.Doc.NextUndoName);
+            Assert.Equal(DiscSignalState.PlaybackEqualized, document.Doc.DiscSignalState);
+            Assert.False(Assert.Single(document.Doc.GetHistory().Entries).OwnsFullDocument);
+            Assert.Equal(originalLeft, document.Doc.Channels[0]);
+            Assert.Equal(originalRight, document.Doc.Channels[1]);
+        });
+    }
+
+    [Fact]
+    public void ChangingFlatCurvePhaseInvalidatesTheAnalysis()
+    {
+        Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            var document = new DocumentViewModel(Document());
+            var dialog = FlatDialog(document, main);
+
+            Wpf.Show(dialog, window =>
+            {
+                var workbench = (RestorationWorkbenchDialog)window;
+                workbench.analyzeBtn.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.True(PumpUntil(() => workbench.applyBtn.IsEnabled),
+                    "the flat analysis never enabled Apply");
+
+                workbench.curvePhaseCombo.SelectedIndex = 1;
+                Wpf.Pump();
+
+                Assert.False(workbench.applyBtn.IsEnabled);
+                Assert.Equal("Analyze", workbench.analyzeBtn.Content);
+                Assert.Contains("curve changed", workbench.statusText.Text,
+                    StringComparison.OrdinalIgnoreCase);
+
+                workbench.analyzeBtn.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Assert.True(PumpUntil(() => workbench.applyBtn.IsEnabled),
+                    "the linear-phase analysis never enabled Apply");
+                Assert.Equal(1, workbench.curvePhaseCombo.SelectedIndex);
+            });
+        });
+    }
+
+    [Fact]
     public void FlatWorkflowAppliesPlaybackRiaaAsPartOfItsSingleUndoableEdit()
     {
         Wpf.Run(() =>
@@ -71,11 +167,12 @@ public sealed class FlatVinylWorkflowTests
             using var main = new MainViewModel();
             main.AddDocument(new AudioDocument([left, right], rate, 24));
             DocumentViewModel document = main.ActiveDocument!;
-            var dialog = new RestorationWorkbenchDialog(document, main, startWithFlatTransfer: true);
+            var dialog = FlatDialog(document, main);
 
             Wpf.Show(dialog, window =>
             {
                 var workbench = (RestorationWorkbenchDialog)window;
+                workbench.analyzeBtn.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 var apply = (Button)window.FindName("applyBtn");
                 Assert.True(PumpUntil(() => apply.IsEnabled), "the flat-transfer analysis never enabled Apply");
 
@@ -99,19 +196,4 @@ public sealed class FlatVinylWorkflowTests
         });
     }
 
-    [Fact]
-    public void AnEqualizedDocumentCannotStartAnotherFlatPass()
-    {
-        Wpf.Run(() =>
-        {
-            using var main = new MainViewModel();
-            AudioDocument audio = Document();
-            audio.ReplaceAllOwned(audio.Channels.Select(channel => (float[])channel.Clone()).ToArray(),
-                "Flat Vinyl Transfer", DiscSignalState.PlaybackEqualized);
-            var document = new DocumentViewModel(audio);
-            var dialog = new RestorationWorkbenchDialog(document, main, startWithFlatTransfer: true);
-
-            Assert.Equal(0, dialog.sourceModeCombo.SelectedIndex);
-        });
-    }
 }
