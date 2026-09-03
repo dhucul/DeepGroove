@@ -72,8 +72,8 @@ internal sealed class RunOutDetector
     public const double MaximumHoldSeconds = 60;
     public const double DefaultHoldSeconds = 12;
 
-    /// <summary>Audio kept after an ordinary level run-out; a falling fade keeps the full hold.</summary>
-    public const double KeepAfterProgramSeconds = 2;
+    /// <summary>Safety margin kept after the last programme block or detected fade endpoint.</summary>
+    public const double KeepAfterProgramSeconds = 4;
 
     private readonly double _holdSeconds;
     private readonly int _sampleRate;
@@ -200,23 +200,24 @@ internal sealed class RunOutDetector
             if (++_subBlockFill >= _subBlockFrames) CompleteSubBlock();
             if (++_blockFill < _blockFrames) continue;
 
-            if (CompleteBlock(out double activityDb))
+            bool program = CompleteBlock(out double activityDb);
+            // A flat transfer can fall from the programme gate to the groove in less
+            // than the three-second trend window. Retain the recent music too, so the
+            // first below-gate block can recognize a fade already in progress.
+            if (program || HasHeardProgram) ObserveTailLevel(activityDb);
+
+            if (program)
             {
                 // The block just ended, so everything up to its end is
                 // programme; anything read past it starts the next hold.
                 _samplesSinceProgram = 0;
                 _pendingBlockSamples = 0;
                 HasHeardProgram = true;
-                ResetTailTrend();
+                ResetFadeHold();
             }
             else
             {
-                bool fading = false;
-                if (HasHeardProgram)
-                {
-                    ObserveTailLevel(activityDb);
-                    fading = TailIsStillFading();
-                }
+                bool fading = HasHeardProgram && TailIsStillFading();
 
                 if (fading)
                 {
@@ -313,7 +314,9 @@ internal sealed class RunOutDetector
 
     private void ObserveTailLevel(double activityDb)
     {
-        if (!double.IsFinite(activityDb)) return;
+        // Silence occupies real time too: skipping it would leave an old falling
+        // window in place indefinitely instead of allowing the trend to settle.
+        if (!double.IsFinite(activityDb)) activityDb = double.NegativeInfinity;
 
         if (_tailLevelCount < TailTrendBlocks)
         {
@@ -345,9 +348,8 @@ internal sealed class RunOutDetector
                && middle - recent >= MinimumFadeSegmentDropDb;
     }
 
-    private void ResetTailTrend()
+    private void ResetFadeHold()
     {
-        _tailLevelCount = 0;
         _samplesSinceFadeEnd = 0;
         _fadeSettlementComplete = false;
         PreservedFadingTail = false;

@@ -801,6 +801,19 @@ shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
   The regression calculates its expected endpoint from the complete input buffer, fails if capture
   stops before consuming it, and rejects an untrimmed safety hold with an upper bound.
   `AFlatBassHeavyFadeIsKeptUntilItEnds` and `TrimKeepsTwoSecondsPastTheLastProgramme` pin the two paths.
+- **The fade history must include music above the programme gate.** Read-only replay of the user's
+  auto-trimmed `Super Do Nothing Day.wav` (178.650 s, 44.1 kHz stereo) found the next failure: history
+  was cleared at every programme block, so the three-second fade detector only started collecting
+  evidence after the level fell below the gate. This flat fade reached the groove floor before that
+  history filled, and fade protection never latched. The detector now retains recent block levels
+  across programme/quiet transitions, resetting only hold state when music returns. The same source
+  first latches fade protection at 174.4 s; its candidate retained endpoint moves from about 178.6 s
+  to 181.0 s with the current four-second margin. That is a candidate, not recovered audio: the
+  provided file was already auto-trimmed. `AFlatFadeUsesItsHistoryBeforeCrossingTheProgrammeGate`
+  fails on the old logic at both 5 and 12 s holds and passes on the new. Dynamic music ending abruptly
+  may now conservatively incur the existing fade-settlement delay; ordinary run-out, hum, clicks,
+  startup silence, and digital silence still have bounded stop tests. `RunOutRecordingTests` replays
+  the external fixture when `WAVELAB_RUNOUT_PROBE` names it; no recording data is written.
 - **Reviewing the fix found that it had introduced a worse failure than the one it removed, and the
   mechanism is the ratchet.** The floor only ever moves down, so unlike the window it replaced it
   cannot recover from one bad reading — and **arming the recorder and then cueing the stylus by hand

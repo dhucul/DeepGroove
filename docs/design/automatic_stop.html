@@ -113,7 +113,7 @@
       <div class="sec mt">AUTOMATIC STOP</div>
       <div class="card">
         <div class="cb on"><span class="box"></span><span>Stop when the side runs out</span></div>
-        <div class="hint">Keeps 2&nbsp;s after the ending. A continuing fade defers the wait until it settles.</div>
+        <div class="hint">Keeps 4&nbsp;s after the ending. A continuing fade defers the wait until it settles.</div>
         <div class="subrow">
           <span>Wait</span><span class="num">12</span><span>s of run-out before stopping</span>
         </div>
@@ -148,7 +148,7 @@
       <div class="sec">AUTOMATIC STOP</div>
       <div class="card dim">
         <div class="cb on"><span class="box"></span><span>Stop when the side runs out</span></div>
-        <div class="hint">Keeps 2&nbsp;s after the ending. A continuing fade defers the wait until it settles.</div>
+        <div class="hint">Keeps 4&nbsp;s after the ending. A continuing fade defers the wait until it settles.</div>
         <div class="subrow"><span>Wait</span><span class="num">12</span><span>s of run-out before stopping</span></div>
         <div class="divider"></div>
         <div class="inline">
@@ -193,7 +193,7 @@
       <div class="sec">AUTOMATIC STOP</div>
       <div class="card">
         <div class="cb off"><span class="box"></span><span>Stop when the side runs out</span></div>
-        <div class="hint">Keeps 2&nbsp;s after the ending. A continuing fade defers the wait until it settles.</div>
+        <div class="hint">Keeps 4&nbsp;s after the ending. A continuing fade defers the wait until it settles.</div>
         <div class="subrow disabled"><span>Wait</span><span class="num">12</span><span>s of run-out before stopping</span></div>
         <div class="divider"></div>
         <div class="inline">
@@ -206,7 +206,7 @@
       <div class="sec mt">AUTOMATIC STOP — BOTH OFF</div>
       <div class="card">
         <div class="cb off"><span class="box"></span><span>Stop when the side runs out</span></div>
-        <div class="hint">Keeps 2&nbsp;s after the ending. A continuing fade defers the wait until it settles.</div>
+        <div class="hint">Keeps 4&nbsp;s after the ending. A continuing fade defers the wait until it settles.</div>
         <div class="subrow disabled"><span>Wait</span><span class="num">12</span><span>s of run-out before stopping</span></div>
         <div class="divider"></div>
         <div class="inline" style="opacity:1">
@@ -226,7 +226,7 @@
   <ul>
     <li><b>Threshold is relative, not absolute.</b> Run-out is decided by <code>RecordingLevelAnalyzer</code>'s existing programme-vs-noise-floor classifier, learned from the first seconds of the take — not a fixed dBFS gate. Surface noise, hum and rumble therefore do not hold the recording open.</li>
     <li><b>12 s default hold.</b> Long enough to sit through an inter-track gap or a quiet passage; short enough that the tail is not minutes of run-out. Range 5–60 s.</li>
-    <li><b>The trim point is the last programme block plus 2 s</b>, captured when the hold starts — so the discarded run-out never reaches the document, but a natural fade tail is kept.</li>
+    <li><b>The trim point is the last programme block or detected fade endpoint plus 4 s</b>, captured when the hold starts — so the discarded run-out never reaches the document, but a natural fade tail is kept.</li>
     <li><b>Options lock at capture start.</b> Same rule the needle-drop checkbox already follows; the panel greys out while recording or armed.</li>
     <li><b>The duration cap is independent.</b> It fires from elapsed capture time alone, so a detector that never triggers still cannot run the disk to the existing <code>MaxCaptureBytes</code> ceiling.</li>
     <li><b>Both settings persist</b> to <code>%AppData%\WaveLab\settings.json</code> via <code>AppSettings</code>, like the other record options.</li>

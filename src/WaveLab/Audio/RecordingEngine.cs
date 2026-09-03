@@ -1123,7 +1123,7 @@ public sealed class RecordingEngine : IDisposable
                     Interlocked.Exchange(ref _totalSamples, 0);
                     return null;
                 }
-                // A run-out auto-stop normally keeps two seconds past the last
+                // A run-out auto-stop normally keeps four seconds past the last
                 // programme block. If the below-threshold interval kept falling
                 // like a fade, the confirmed fade endpoint replaces that block.
                 // Trailing blocks stay in the array and

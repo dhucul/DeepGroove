@@ -37,10 +37,12 @@ public sealed class RunOutDetectorTests
         Assert.InRange(held, Hold - 1, Hold + 1.5);
     }
 
-    [Fact]
-    public void TrimKeepsTwoSecondsPastTheLastProgramme()
+    [Theory]
+    [InlineData(5)]
+    [InlineData(12)]
+    public void TrimKeepsFourSecondsPastTheLastProgramme(double holdSeconds)
     {
-        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var detector = new RunOutDetector(SampleRate, Channels, holdSeconds);
         var feed = new Feeder(detector);
         feed.Play(Music, seconds: 20);
         long musicEnd = feed.TotalSamples;
@@ -50,7 +52,7 @@ public sealed class RunOutDetectorTests
 
         Assert.False(detector.PreservedFadingTail);
         Assert.True(kept >= musicEnd, "the trim must never cut into the programme");
-        Assert.InRange(SecondsBetween(musicEnd, kept), 1.4, 2.6);
+        Assert.InRange(SecondsBetween(musicEnd, kept), 3.4, 4.6);
     }
 
     [Fact]
@@ -127,11 +129,13 @@ public sealed class RunOutDetectorTests
     /// the music's own dynamic range, so the fade is trimmed off where it drops
     /// below the song's average level.
     /// </summary>
-    [Fact]
-    public void AFadeOutIsNotARunOut()
+    [Theory]
+    [InlineData(5)]
+    [InlineData(12)]
+    public void AFadeOutIsNotARunOut(double holdSeconds)
     {
         const double FadeSeconds = 15;
-        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var detector = new RunOutDetector(SampleRate, Channels, holdSeconds);
         var feed = new Feeder(detector);
 
         feed.Play(RunOut, seconds: 5);
@@ -154,8 +158,10 @@ public sealed class RunOutDetectorTests
             $"the fade was cut {FadeSeconds - keptPastFadeStart:0.0} s early");
     }
 
-    [Fact]
-    public void AFlatBassHeavyFadeIsKeptUntilItEnds()
+    [Theory]
+    [InlineData(5)]
+    [InlineData(12)]
+    public void AFlatBassHeavyFadeIsKeptUntilItEnds(double holdSeconds)
     {
         const double ProgramSeconds = 20;
         const double FadeSeconds = 30;
@@ -183,7 +189,7 @@ public sealed class RunOutDetectorTests
             right[frame] += (float)(RunOut(frame + 17) * 0.97);
         }
 
-        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var detector = new RunOutDetector(SampleRate, Channels, holdSeconds);
         var feed = new Feeder(detector);
         feed.Play(RunOut, seconds: 5);
         long fadeEnd = feed.TotalSamples + (long)frames * Channels;
@@ -199,15 +205,52 @@ public sealed class RunOutDetectorTests
         long kept = feed.TotalSamples - detector.TrimBackoffSamples;
         Assert.True(detector.TrimBackoffSamples > 0,
             "a protected fade must still discard the safety hold after its confirmed endpoint");
-        Assert.InRange(SecondsBetween(fadeEnd, kept), 1.0, 3.0);
+        Assert.InRange(SecondsBetween(fadeEnd, kept), 3.0, 5.0);
     }
 
     /// <summary>
-    /// The mechanism behind that failure on its own: ordinary programme has
-    /// enough spread between its loud and quiet blocks to look like a floor and
-    /// a programme, so a quiet passage must not be measured against the loud
-    /// parts of the same music.
+    /// A flat fade can descend from the absolute programme gate into its groove floor
+    /// in less than three seconds. Its trend must include the preceding music blocks.
     /// </summary>
+    [Theory]
+    [InlineData(5)]
+    [InlineData(12)]
+    public void AFlatFadeUsesItsHistoryBeforeCrossingTheProgrammeGate(double holdSeconds)
+    {
+        const double musicSeconds = 12;
+        const double fadeSeconds = 8;
+        int frames = (int)((musicSeconds + fadeSeconds) * SampleRate);
+        var left = new float[frames];
+        var right = new float[frames];
+        for (int frame = 0; frame < frames; frame++)
+        {
+            double t = frame / (double)SampleRate;
+            double through = Math.Clamp((t - musicSeconds) / fadeSeconds, 0, 1);
+            left[frame] = right[frame] = (float)(Music(frame) * Math.Pow(10, -60 * through / 20));
+        }
+        float[][] flat = [left, right];
+        RecordingCurves.Apply(flat, RecordingCurves.Spec(RecordingCurve.Riaa), SampleRate,
+            CurveDirection.Record, CurvePhase.Minimum);
+        for (int frame = 0; frame < frames; frame++)
+        {
+            left[frame] += (float)RunOut(frame);
+            right[frame] += (float)RunOut(frame + 17);
+        }
+
+        var detector = new RunOutDetector(SampleRate, Channels, holdSeconds);
+        var feed = new Feeder(detector);
+        feed.Play(RunOut, seconds: 5);
+        long fadeEnd = feed.TotalSamples + (long)frames * Channels;
+        Assert.True(feed.Play(flat), "capture stopped before the supplied fade finished");
+        Assert.True(detector.PreservedFadingTail,
+            "the fade reached the groove before three below-gate seconds could establish its trend");
+        feed.Play(RunOut, seconds: 40);
+        Assert.True(detector.IsTriggered);
+        long kept = feed.TotalSamples - detector.TrimBackoffSamples;
+        Assert.True(kept >= fadeEnd, "the trim discarded the ending of the fade");
+    }
+
+    /// <summary>The music's own dynamics must not become its noise floor.</summary>
     [Fact]
     public void MusicsOwnDynamicsAreNotItsNoiseFloor()
     {
@@ -237,7 +280,10 @@ public sealed class RunOutDetectorTests
         feed.Play(RunOut, seconds: 40);
 
         Assert.True(detector.IsTriggered);
-        Assert.InRange(SecondsBetween(musicEnd, feed.TotalSamples), Hold - 1, Hold + 1.5);
+        // Recent falling music can now request fade settlement even when the groove
+        // follows abruptly. Allow the bounded trend/settlement delay, never an early stop.
+        Assert.True(detector.PreservedFadingTail);
+        Assert.InRange(SecondsBetween(musicEnd, feed.TotalSamples), Hold - 1, Hold + 6);
     }
 
     /// <summary>
@@ -266,7 +312,10 @@ public sealed class RunOutDetectorTests
         feed.Play(frame => Music(frame) * 0.022, seconds: 40);    // groove floor, about -53 dB
 
         Assert.True(detector.IsTriggered);
-        Assert.InRange(SecondsBetween(musicEnd, feed.TotalSamples), Hold - 1, Hold + 1.5);
+        // Preserve the take-wide-floor invariant while allowing conservative fade
+        // settlement at a music-to-groove transition. It must still actually stop.
+        Assert.True(detector.PreservedFadingTail);
+        Assert.InRange(SecondsBetween(musicEnd, feed.TotalSamples), Hold - 1, Hold + 6);
     }
 
     [Fact]
@@ -332,6 +381,157 @@ public sealed class RunOutDetectorTests
         var packet = new float[PacketFrames];
 
         Assert.Throws<ArgumentException>(() => detector.Process(packet, packet.Length, 1));
+    }
+
+    [Fact]
+    public void DigitalSilenceAfterAFadeDoesNotLeaveAnOldTrendRunning()
+    {
+        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var feed = new Feeder(detector);
+        feed.Play(Music, seconds: 12);
+        long fadeStart = feed.Frames;
+        feed.Play(frame => Music(frame) * Math.Pow(10,
+            -60 * (frame - fadeStart) / (8.0 * SampleRate) / 20), seconds: 8);
+        long fadeEnd = feed.TotalSamples;
+        feed.Play(_ => 0, seconds: 60);
+        Assert.True(detector.IsTriggered);
+        Assert.InRange(SecondsBetween(fadeEnd, feed.TotalSamples), 0, Hold + 6);
+    }
+
+    [Theory]
+    [InlineData(3, false, 5)]
+    [InlineData(5, true, 5)]
+    [InlineData(3, false, 12)]
+    [InlineData(5, true, 12)]
+    public void RenewedFadeRestartsSettlementAndReplacesTheOldTrimPoint(
+        double pauseSeconds, bool countdownStarted, double holdSeconds)
+    {
+        var detector = new RunOutDetector(SampleRate, Channels, holdSeconds);
+        Feeder feed = FeedToPausedFade(detector, pauseSeconds);
+        Assert.Equal(countdownStarted, double.IsFinite(detector.CountdownSeconds));
+        Assert.True(detector.PreservedFadingTail);
+        Assert.False(detector.IsTriggered);
+
+        long resumeStart = feed.Frames;
+        feed.Play(frame => TailTone(frame, 0.0012 * Math.Pow(10,
+            -8 * (frame - resumeStart) / (4.0 * SampleRate) / 20)), seconds: 2);
+        Assert.False(detector.IsTriggered);
+        Assert.True(double.IsNaN(detector.CountdownSeconds),
+            "a renewed falling tail must cancel the old countdown");
+        Assert.Equal(0, detector.SecondsSinceProgram);
+        feed.Play(frame => TailTone(frame, 0.0012 * Math.Pow(10,
+            -8 * (frame - resumeStart) / (4.0 * SampleRate) / 20)), seconds: 2);
+        Assert.False(detector.IsTriggered, "capture stopped inside the renewed fade");
+        long fadeEnd = feed.TotalSamples;
+
+        feed.Play(RunOut, seconds: 40);
+        Assert.True(detector.IsTriggered, "settled run-out never completed its new hold");
+        long kept = feed.TotalSamples - detector.TrimBackoffSamples;
+        Assert.True(kept >= fadeEnd, "the old fade endpoint was reused and cut the resumed ending");
+        Assert.InRange(SecondsBetween(fadeEnd, kept), 0, 7);
+        Assert.True(detector.TrimBackoffSamples > 0, "the safety wait was not trimmed");
+    }
+
+    [Theory]
+    [InlineData(3, false)]
+    [InlineData(5, true)]
+    public void ReturningMusicClearsTheOldFadeAndGetsItsOwnEnding(
+        double pauseSeconds, bool countdownStarted)
+    {
+        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        Feeder feed = FeedToPausedFade(detector, pauseSeconds);
+        Assert.Equal(countdownStarted, double.IsFinite(detector.CountdownSeconds));
+        Assert.True(detector.PreservedFadingTail);
+
+        feed.Play(frame => TailTone(frame, 0.15), seconds: 8);
+        Assert.False(detector.IsTriggered);
+        Assert.False(detector.PreservedFadingTail);
+        Assert.True(double.IsNaN(detector.CountdownSeconds));
+        Assert.Equal(0, detector.SecondsSinceProgram);
+        Assert.Equal(0, detector.TrimBackoffSamples);
+        long musicEnd = feed.TotalSamples;
+
+        feed.Play(RunOut, seconds: 40);
+        Assert.True(detector.IsTriggered);
+        Assert.False(detector.PreservedFadingTail);
+        long kept = feed.TotalSamples - detector.TrimBackoffSamples;
+        Assert.InRange(SecondsBetween(musicEnd, kept), 3.4, 4.6);
+    }
+
+    private static Feeder FeedToPausedFade(RunOutDetector detector, double pauseSeconds)
+    {
+        var feed = new Feeder(detector);
+        feed.Play(RunOut, seconds: 5);
+        feed.Play(frame => TailTone(frame, 0.15), seconds: 12);
+        long fadeStart = feed.Frames;
+        feed.Play(frame => TailTone(frame, 0.15 * Math.Pow(0.0012 / 0.15,
+            (frame - fadeStart) / (10.0 * SampleRate))), seconds: 10);
+        Assert.True(detector.PreservedFadingTail, "fixture never entered fade protection");
+        feed.Play(frame => TailTone(frame, 0.0012), seconds: pauseSeconds);
+        return feed;
+    }
+
+    private static double TailTone(int frame, double amplitude) =>
+        amplitude * Math.Sin(2 * Math.PI * 1000 * frame / SampleRate) + RunOut(frame);
+
+    [Theory]
+    [InlineData(44_100, 1)]
+    [InlineData(44_100, 2)]
+    [InlineData(48_000, 2)]
+    [InlineData(96_000, 2)]
+    public void CompleteFlatCaptureRetainsFadeAndTrimsOnlyTrailingGroove(int rate, int channels)
+    {
+        const double leadInSeconds = 5, musicSeconds = 12, fadeSeconds = 30;
+        double fadeEndSeconds = leadInSeconds + musicSeconds + fadeSeconds;
+        int totalFrames = (int)((fadeEndSeconds + Hold + 8) * rate);
+        var capture = Enumerable.Range(0, channels).Select(_ => new float[totalFrames]).ToArray();
+        for (int frame = 0; frame < totalFrames; frame++)
+        {
+            double t = frame / (double)rate;
+            double gain = t < leadInSeconds ? 0
+                : 1 - Math.Clamp((t - leadInSeconds - musicSeconds) / fadeSeconds, 0, 1);
+            double music = 0.20 * (Math.Sin(2 * Math.PI * 80 * t)
+                                  + 0.55 * Math.Sin(2 * Math.PI * 160 * t)
+                                  + 0.30 * Math.Sin(2 * Math.PI * 320 * t)) / 1.85;
+            for (int channel = 0; channel < channels; channel++)
+                capture[channel][frame] = (float)(music * gain * (channel == 0 ? 1 : 0.97));
+        }
+        RecordingCurves.Apply(capture, RecordingCurves.Spec(RecordingCurve.Riaa), rate,
+            CurveDirection.Record, CurvePhase.Minimum);
+        for (int frame = 0; frame < totalFrames; frame++)
+        for (int channel = 0; channel < channels; channel++)
+        {
+            int noiseFrame = frame + channel * 17;
+            double noise = Hash(noiseFrame) * 0.0012
+                           + 0.010 * Math.Sin(2 * Math.PI * 33 * noiseFrame / rate)
+                           + (Hash(noiseFrame * 7919) > 0.99996 ? 0.25 : 0);
+            capture[channel][frame] += (float)noise;
+        }
+
+        var detector = new RunOutDetector(rate, channels, Hold);
+        int packetFrames = rate / 100;
+        var packet = new float[packetFrames * channels];
+        long capturedSamples = 0;
+        for (int start = 0; start < totalFrames; start += packetFrames)
+        {
+            int frames = Math.Min(packetFrames, totalFrames - start);
+            for (int frame = 0; frame < frames; frame++)
+            for (int channel = 0; channel < channels; channel++)
+                packet[frame * channels + channel] = capture[channel][start + frame];
+            capturedSamples += frames * channels;
+            if (detector.Process(packet, frames * channels, channels)) break;
+        }
+
+        Assert.True(detector.IsTriggered, "the complete recording never reached auto-stop");
+        Assert.True(detector.PreservedFadingTail);
+        Assert.InRange(capturedSamples / (double)channels / rate,
+            fadeEndSeconds + Hold - 1, fadeEndSeconds + Hold + 6);
+        long retainedSamples = capturedSamples - detector.TrimBackoffSamples;
+        Assert.Equal(0, retainedSamples % channels);
+        Assert.InRange(retainedSamples / (double)channels / rate,
+            fadeEndSeconds + 3, fadeEndSeconds + 5);
+        Assert.True(detector.TrimBackoffSamples > 0,
+            "the safety wait must be discarded rather than included in the saved take");
     }
 
     private static double SecondsBetween(long fromSamples, long toSamples) =>
