@@ -101,6 +101,9 @@ public readonly record struct WowFlutterReport(
     public bool Found => Blocks > 0;
 }
 
+/// <summary>A damaged half-open sample range ignored while measuring the time base.</summary>
+public readonly record struct WowFlutterExclusion(int StartSample, int EndSample);
+
 /// <summary>
 /// Measures and corrects wow and flutter: the speed variation of the machine a record was cut or
 /// played on.
@@ -141,6 +144,16 @@ public static class WowFlutter
     /// </summary>
     public const double MinimumCorrectionConfidence = 0.20;
 
+    /// <summary>Cross-corpus floor below which correction remains measurement-only.</summary>
+    public const double MinimumRecommendedConfidence = 0.60;
+
+    /// <summary>Smallest measured RMS variation with repeatable correction benefit.</summary>
+    public const double MinimumRecommendedRmsPercent = 0.80;
+
+    public static bool IsCorrectionRecommended(in WowFlutterReport report) =>
+        report.Found && report.Confidence >= MinimumRecommendedConfidence &&
+        report.RmsPercent >= MinimumRecommendedRmsPercent;
+
     /// <summary>
     /// Measures every channel and keeps the most reliable guide. The resulting time map is still
     /// shared by all channels so stereo alignment cannot move, but a quiet or bandwidth-limited
@@ -180,7 +193,8 @@ public static class WowFlutter
     /// </summary>
     public static (double[] Ratio, int Hop, WowFlutterReport Report) Measure(float[] samples,
         int sampleRate, WowFlutterOptions options = default,
-        CancellationToken cancellationToken = default, IProgress<double>? progress = null)
+        CancellationToken cancellationToken = default, IProgress<double>? progress = null,
+        IReadOnlyList<WowFlutterExclusion>? exclusions = null)
     {
         ArgumentNullException.ThrowIfNull(samples);
         if (options.BlockLength == 0) options = WowFlutterOptions.Default;
@@ -223,6 +237,22 @@ public static class WowFlutter
         var ring = new double[capacity][];
         var ringHolds = new int[capacity];
         Array.Fill(ringHolds, -1);
+        WowFlutterExclusion[] ignored = exclusions == null
+            ? []
+            : exclusions.Where(range => range.EndSample > range.StartSample)
+                .OrderBy(range => range.StartSample).ToArray();
+
+        int FirstIgnoredRangeAtOrAfter(int sample)
+        {
+            int low = 0, high = ignored.Length;
+            while (low < high)
+            {
+                int middle = low + (high - low) / 2;
+                if (ignored[middle].EndSample <= sample) low = middle + 1;
+                else high = middle;
+            }
+            return low;
+        }
 
         double[] SpectrumAt(int index)
         {
@@ -231,7 +261,23 @@ public static class WowFlutter
             if (ringHolds[slot] == index) return spectrum;
 
             int start = index * hop;
-            for (int i = 0; i < block; i++) frame[i] = (float)(samples[start + i] * window[i]);
+            int ignoredIndex = FirstIgnoredRangeAtOrAfter(start);
+            for (int i = 0; i < block; i++)
+            {
+                int sample = start + i;
+                while (ignoredIndex < ignored.Length && ignored[ignoredIndex].EndSample <= sample)
+                    ignoredIndex++;
+                float value = samples[sample];
+                if (ignoredIndex < ignored.Length && ignored[ignoredIndex].StartSample <= sample)
+                {
+                    WowFlutterExclusion range = ignored[ignoredIndex];
+                    int left = Math.Max(0, range.StartSample - 1);
+                    int right = Math.Min(samples.Length - 1, range.EndSample);
+                    double fraction = right == left ? 0 : (sample - left) / (double)(right - left);
+                    value = (float)(samples[left] * (1 - fraction) + samples[right] * fraction);
+                }
+                frame[i] = (float)(value * window[i]);
+            }
             Fft.RealForward(frame, re, im);
             LogSpectrum(re, im, bins, sampleRate, block, lowest, highest, points, spectrum);
             ringHolds[slot] = index;

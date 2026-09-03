@@ -924,10 +924,10 @@ whole result.
   `AnalyzeClipping` from inflated plateaus: removing the rumble moved that transfer's peak by
   **0.09 dB**. In the source-aware chain it now sits after the disc-curve boundary and before side,
   hum and broadband-noise processing. `CleanupAnalyzer` measures rumble on the post-curve analysis
-  copy, and an automatic noise profile is learned only after that measured high-pass has been applied
-  to the copy, so the profile and downstream render still describe the audible band rather than arm
-  resonance. The impulse repairers remain ahead of the boundary, where the flat transfer preserves
-  their evidence.
+  excerpt. The automatic noise profile is learned independently of the optional high-pass, so
+  changing that card does not leave a profile made from a different setting; the render removes any
+  selected subsonic energy before the profile-driven gate runs. The impulse repairers remain ahead
+  of the boundary, where the flat transfer preserves their evidence.
 - **The cost on music is small, and it is the shipped Janssen repair that makes it so.** Over the
   five transfers, de-crackling after the chain costs **0.19 to 0.64 dB** of high-frequency energy. An
   exploration with a cubic bridge in place of Janssen predicted 1.4 dB, which is a measure of how
@@ -2260,21 +2260,28 @@ filled in with something nobody had said.
 ## Flat transfers cross one explicit disc-equalisation boundary
 
 `RestorationWorkbenchDialog` has two source modes. **RIAA already applied** preserves the ordinary
-restoration path. **Flat cartridge transfer** is an end-to-end render ordered as DC removal,
-azimuth, declip, click repair, decrackle, validated wow correction, playback equalisation,
+restoration path. **Flat cartridge transfer** is an end-to-end render ordered as declip, click
+repair, DC removal, azimuth, decrackle, validated wow correction, playback equalisation,
 subsonic removal, side reduction, hum and broadband noise. Click/clipping/crackle analysis stays on
-the raw transfer, where impulse evidence is sharp. `CleanupAnalyzer` and automatic noise profiling
-receive a temporary DC-corrected, azimuth-aligned playback-equalised copy, because their thresholds
-and spectral evidence must describe the domain in which those stages render. The temporary copy is
-discarded after analysis and the document changes only at the final splice.
+the raw transfer, where impulse evidence is sharp. Event plans are consumed before DC can move a
+clip rail or azimuth interpolation can move a coordinate. `CleanupAnalyzer` and automatic noise
+profiling receive a bounded two-minute excerpt centred on a quiet passage; it is impulse-repaired,
+DC-corrected, optionally aligned/de-wowed and playback-equalised in render order. Wow measures the
+whole range while interpolating across known click and clip spans, so it needs no album-sized clone.
 
 The mode owns its curve choice (`RecordingCurves.All`) and defaults to RIAA (1954), playback,
 minimum phase. `Restore > Flat Vinyl Transfer Workflow` opens directly in that mode; the ordinary
 entry point leaves the mode explicit rather than guessing from samples. Azimuth is automatically
-selected only above 80% agreement and 5 µs. Wow is automatically selected only at 60% coverage and
-0.8% RMS, while the engine's 20% confidence remains the absolute safety gate for a user opt-in —
-coverage is not evidence that resampling improves mild material, and the six-corpus result below
-shows why the UI must default to measure-only there.
+selected only above 80% agreement and 5 µs. Wow is actionable only at 60% coverage and 0.8% RMS;
+everything below is measurement-only. Its bounded preview omits wow explicitly because resetting a
+cropped resampler's position cannot reproduce the cumulative map of the whole side.
+
+`AudioDocument.DiscSignalState` is part of every edit's before/after state, so undo, redo and history
+jumps move it with the samples. The application-owned `wlEQ` RIFF/AIFF chunk and Wave64 GUID chunk
+carry it through save and reopen; snapshots, rendered copies, channel tools, sample-rate conversion,
+bit-depth conversion and WAV/AIFF export copy it. A playback-equalised state cannot enter flat mode
+again until the curve-producing edit is undone. Flat mode also hides Apply & Prepare CD: cleanup no
+longer owns a limiter, so loudness/true peak must be decided before the CD handoff rather than after.
 
 The Master rack's Vinyl Cleanup limiter now ships and analyzes bypassed. Restoration does not make
 a delivery-loudness decision; `Edit > Normalize Loudness` remains the one explicit place for that.

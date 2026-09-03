@@ -218,6 +218,7 @@ public static class WavCodec
             FilePath = path,
             Title = Path.GetFileName(path),
             Riff = metadata,
+            DiscSignalState = DiscSignalMetadata.Read(metadata),
         };
     }
 
@@ -431,7 +432,9 @@ public static class WavCodec
 
         // Whatever else the source file carried, written back after the audio. Ancillary chunks sit
         // after data by convention, and a reader that does not recognise one skips it by its length.
-        RiffMetadata metadata = doc.Riff is { IsAiff: false } carried ? carried : new RiffMetadata();
+        RiffMetadata metadata = DiscSignalMetadata.Write(
+            doc.Riff is { IsAiff: false } carried ? carried : new RiffMetadata(),
+            doc.DiscSignalState);
         if (markers is { Count: > 0 })
         {
             // Written into the file rather than only into the sidecar. A .wlmeta.json is invisible

@@ -1,5 +1,13 @@
 namespace WaveLab.Audio;
 
+/// <summary>What disc equalisation, if any, the current undoable document state contains.</summary>
+public enum DiscSignalState
+{
+    Unknown,
+    Flat,
+    PlaybackEqualized,
+}
+
 /// <summary>
 /// In-memory audio document. Samples are stored deinterleaved as 32-bit float
 /// (lossless container for 16-bit and 24-bit PCM sources). All edits go through
@@ -21,6 +29,7 @@ public sealed class AudioDocument
     private int _historyGeneration;
     private int _discardedOlder;
     private int _discardedNewer;
+    private DiscSignalState _discSignalState;
 
     /// <summary>Stable identity for autosave/crash-recovery bookkeeping.</summary>
     public Guid SessionId { get; } = Guid.NewGuid();
@@ -144,6 +153,11 @@ public sealed class AudioDocument
     /// Null when the take was not preceded by a settled check.
     /// </summary>
     public string? CaptureNote { get; set; }
+    public DiscSignalState DiscSignalState
+    {
+        get => _discSignalState;
+        internal set => _discSignalState = value;
+    }
     public bool Dirty { get; private set; }
 
     /// <summary>Increments on every content change; used to skip redundant autosaves.</summary>
@@ -304,7 +318,8 @@ public sealed class AudioDocument
     /// entry retains <paramref name="newData"/>, so the caller must not mutate it
     /// after this method returns.
     /// </summary>
-    public void ReplaceRange(int start, int removeCount, float[][] newData, string opName)
+    public void ReplaceRange(int start, int removeCount, float[][] newData, string opName,
+        DiscSignalState? discSignalState = null)
     {
         ArgumentNullException.ThrowIfNull(newData);
         ArgumentException.ThrowIfNullOrWhiteSpace(opName);
@@ -318,13 +333,15 @@ public sealed class AudioDocument
         // Splice copies out of newData into freshly allocated channels, so the
         // document never aliases it and the edit can retain the caller's array.
         // Cloning here would allocate a second full-size copy of every edit.
+        DiscSignalState afterDiscState = discSignalState ?? _discSignalState;
         var edit = new Edit(opName, start, oldData, newData, false,
-            beforeStateId, afterStateId);
+            beforeStateId, afterStateId, _discSignalState, afterDiscState);
         Splice(channels, start, removeCount, newData);
         _undo.Add(edit);
         DiscardRedo();
         EnforceUndoBudget();
         _currentStateId = afterStateId;
+        _discSignalState = afterDiscState;
         UpdateDirtyFromSavepoint();
         EditVersion++;
         Changed?.Invoke(start, removeCount, newData[0].Length);
@@ -336,7 +353,8 @@ public sealed class AudioDocument
     /// retaining the previous and new arrays as one undoable edit. The caller must
     /// not mutate <paramref name="newData"/> after this method returns.
     /// </summary>
-    public void ReplaceAllOwned(float[][] newData, string opName)
+    public void ReplaceAllOwned(float[][] newData, string opName,
+        DiscSignalState? discSignalState = null)
     {
         ArgumentNullException.ThrowIfNull(newData);
         ArgumentException.ThrowIfNullOrWhiteSpace(opName);
@@ -350,11 +368,14 @@ public sealed class AudioDocument
         int oldLength = oldData[0].Length;
         long beforeStateId = _currentStateId;
         long afterStateId = _nextStateId++;
+        DiscSignalState afterDiscState = discSignalState ?? _discSignalState;
         Volatile.Write(ref _channels, newData);
-        _undo.Add(new Edit(opName, 0, oldData, newData, true, beforeStateId, afterStateId));
+        _undo.Add(new Edit(opName, 0, oldData, newData, true, beforeStateId, afterStateId,
+            _discSignalState, afterDiscState));
         DiscardRedo();
         EnforceUndoBudget();
         _currentStateId = afterStateId;
+        _discSignalState = afterDiscState;
         UpdateDirtyFromSavepoint();
         EditVersion++;
         Changed?.Invoke(0, oldLength, newLength);
@@ -502,6 +523,7 @@ public sealed class AudioDocument
             Splice(e.Start, insertedLen, e.Old);
         _redo.Add(e);
         _currentStateId = e.BeforeStateId;
+        _discSignalState = e.BeforeDiscSignalState;
         return (e.Start, insertedLen, Frames(e.Old));
     }
 
@@ -517,6 +539,7 @@ public sealed class AudioDocument
             Splice(e.Start, oldLen, e.New);
         _undo.Add(e);
         _currentStateId = e.AfterStateId;
+        _discSignalState = e.AfterDiscSignalState;
         return (e.Start, oldLen, Frames(e.New));
     }
 
@@ -845,5 +868,7 @@ public sealed class AudioDocument
         float[][] New,
         bool OwnsFullDocument,
         long BeforeStateId,
-        long AfterStateId);
+        long AfterStateId,
+        DiscSignalState BeforeDiscSignalState,
+        DiscSignalState AfterDiscSignalState);
 }

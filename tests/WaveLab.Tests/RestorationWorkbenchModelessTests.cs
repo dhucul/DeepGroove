@@ -252,4 +252,30 @@ public sealed class RestorationWorkbenchModelessTests : IDisposable
         Assert.True(same);
         Assert.True(closed, "the workbench outlived the test that opened it");
     }
+
+    [Fact]
+    public void FlatModeRequestedDuringAnalysisIsQueuedAndReanalyzed()
+    {
+        bool selected = Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            DocumentViewModel document = Open(main);
+            RestorationWorkbenchDialog dialog = RestorationWorkbenchDialog.ShowFor(document, main, null);
+            Wpf.Pump();
+
+            RestorationWorkbenchDialog same = RestorationWorkbenchDialog.ShowFor(
+                document, main, null, startWithFlatTransfer: true);
+            Assert.Same(dialog, same);
+            Assert.True(PumpUntil(() => dialog.sourceModeCombo.SelectedIndex == 1 &&
+                                        dialog.applyBtn.IsEnabled, 45_000),
+                "the queued flat mode never replaced the in-flight equalized analysis");
+
+            bool result = dialog.sourceModeCombo.SelectedIndex == 1;
+            dialog.Close();
+            Assert.True(PumpUntil(() => !dialog.IsVisible, 15_000));
+            return result;
+        });
+
+        Assert.True(selected);
+    }
 }

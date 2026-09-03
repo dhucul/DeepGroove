@@ -36,6 +36,7 @@ public sealed class FlatVinylWorkflowTests
             Assert.Equal(100, dialog.globalMix.Value);
             Assert.False(dialog.globalMix.IsEnabled);
             Assert.False(dialog.keepRemovedCheck.IsEnabled);
+            Assert.Equal(Visibility.Collapsed, dialog.applyCdBtn.Visibility);
             Assert.Contains("applied once", dialog.curveSummaryText.Text);
         });
     }
@@ -78,9 +79,6 @@ public sealed class FlatVinylWorkflowTests
                 var apply = (Button)window.FindName("applyBtn");
                 Assert.True(PumpUntil(() => apply.IsEnabled), "the flat-transfer analysis never enabled Apply");
 
-                workbench.removeDcEnabled.IsChecked = false;
-                workbench.azimuthEnabled.IsChecked = false;
-                workbench.wowEnabled.IsChecked = false;
                 workbench.declipEnabled.IsChecked = false;
                 workbench.clickEnabled.IsChecked = false;
                 workbench.decrackleEnabled.IsChecked = false;
@@ -94,9 +92,26 @@ public sealed class FlatVinylWorkflowTests
             });
 
             Assert.Equal("Flat Vinyl Transfer", document.Doc.NextUndoName);
+            Assert.Equal(DiscSignalState.PlaybackEqualized, document.Doc.DiscSignalState);
             double outputRms = Math.Sqrt(document.Doc.Channels[0]
                 .Skip(rate / 2).Take(rate).Average(value => value * value));
             Assert.InRange(outputRms, 0.015, 0.06);
+        });
+    }
+
+    [Fact]
+    public void AnEqualizedDocumentCannotStartAnotherFlatPass()
+    {
+        Wpf.Run(() =>
+        {
+            using var main = new MainViewModel();
+            AudioDocument audio = Document();
+            audio.ReplaceAllOwned(audio.Channels.Select(channel => (float[])channel.Clone()).ToArray(),
+                "Flat Vinyl Transfer", DiscSignalState.PlaybackEqualized);
+            var document = new DocumentViewModel(audio);
+            var dialog = new RestorationWorkbenchDialog(document, main, startWithFlatTransfer: true);
+
+            Assert.Equal(0, dialog.sourceModeCombo.SelectedIndex);
         });
     }
 }

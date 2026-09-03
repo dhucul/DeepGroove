@@ -219,7 +219,11 @@ public partial class BatchConvertDialog : Window
                         section.ReplaceChain(chain);
                         var processed = section.ProcessOffline(doc.Channels.ToArray(), doc.SampleRate, token);
                         token.ThrowIfCancellationRequested();
-                        doc = new AudioDocument(processed, doc.SampleRate, doc.SourceBitDepth) { Title = doc.Title };
+                        doc = new AudioDocument(processed, doc.SampleRate, doc.SourceBitDepth)
+                        {
+                            Title = doc.Title,
+                            DiscSignalState = doc.DiscSignalState,
+                        };
                     }
 
                     if (normalizeMode > 0) shortfallDb = Normalize(doc, normalizeMode, token);

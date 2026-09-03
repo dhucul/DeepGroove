@@ -117,19 +117,7 @@ internal static class RestorationRecommendations
         ArgumentNullException.ThrowIfNull(clipping);
         ArgumentNullException.ThrowIfNull(cleanup);
 
-        double minutes = clicks.SamplesAnalyzed /
-            (double)Math.Max(1, clicks.SampleRate) / 60.0;
-        double eventsPerMinute = clicks.Events.Count / Math.Max(1.0 / 60.0, minutes);
-        double averageClickConfidence = Average(clicks.Events, item => item.Confidence);
-        // A damaged record can legitimately contain hundreds of impulses per minute,
-        // so density alone must never make auto mode less sensitive. Back off only a
-        // half-step when an exceptionally dense population also sits close to the
-        // confidence floor; otherwise retain the exploratory 7/10 pass unchanged.
-        double clickSensitivity = clicks.Events.Count > 0 &&
-                                  eventsPerMinute > 120 &&
-                                  averageClickConfidence < 0.68
-            ? ExploratoryClickSensitivity - 0.5
-            : ExploratoryClickSensitivity;
+        double clickSensitivity = RecommendedClickSensitivity(clicks);
 
         // Once an impulse passes the conservative detector, retaining any percentage of
         // its damaged samples leaves a scaled copy of the click behind. Auto restoration
@@ -219,6 +207,18 @@ internal static class RestorationRecommendations
             sideLevel,
             decrackle,
             DefaultDecrackleThreshold);
+    }
+
+    internal static double RecommendedClickSensitivity(ClickAnalysisResult clicks)
+    {
+        ArgumentNullException.ThrowIfNull(clicks);
+        double minutes = clicks.SamplesAnalyzed /
+            (double)Math.Max(1, clicks.SampleRate) / 60.0;
+        double eventsPerMinute = clicks.Events.Count / Math.Max(1.0 / 60.0, minutes);
+        double averageClickConfidence = Average(clicks.Events, item => item.Confidence);
+        return clicks.Events.Count > 0 && eventsPerMinute > 120 && averageClickConfidence < 0.68
+            ? ExploratoryClickSensitivity - 0.5
+            : ExploratoryClickSensitivity;
     }
 
     private static EffectFactory.EffectState? FindState(CleanupAnalysisResult cleanup, string typeId) =>

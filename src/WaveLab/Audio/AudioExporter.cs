@@ -111,7 +111,10 @@ public static class AudioExporter
                         ExportFormat.Wav16 or ExportFormat.Wav16Undithered => 16,
                         _ => 32,
                     };
-                    var snapshot = new AudioDocument(data, rate, depth);
+                    var snapshot = new AudioDocument(data, rate, depth)
+                    {
+                        DiscSignalState = doc.DiscSignalState,
+                    };
                     WavCodec.Save(snapshot, stagePath, depth, dither: format == ExportFormat.Wav16,
                         cancellationToken: cancellationToken);
                     break;
@@ -120,7 +123,10 @@ public static class AudioExporter
                 case ExportFormat.Wave64_24:
                 {
                     int depth = format == ExportFormat.Wave64_24 ? 24 : 32;
-                    var snapshot = new AudioDocument(data, rate, depth);
+                    var snapshot = new AudioDocument(data, rate, depth)
+                    {
+                        DiscSignalState = doc.DiscSignalState,
+                    };
                     Wave64Codec.Save(snapshot, stagePath, depth, dither: false,
                         cancellationToken: cancellationToken);
                     break;
@@ -136,7 +142,10 @@ public static class AudioExporter
                         ExportFormat.Aiff16 or ExportFormat.Aiff16Undithered => 16,
                         _ => 32,
                     };
-                    var snapshot = new AudioDocument(data, rate, depth);
+                    var snapshot = new AudioDocument(data, rate, depth)
+                    {
+                        DiscSignalState = doc.DiscSignalState,
+                    };
                     AiffCodec.Save(snapshot, stagePath, depth,
                         dither: format == ExportFormat.Aiff16,
                         cancellationToken: cancellationToken);

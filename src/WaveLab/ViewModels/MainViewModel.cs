@@ -1297,6 +1297,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Dither16BitOnSave = doc.Dither16BitOnSave,
             RequiresSaveAs = doc.RequiresSaveAs,
             CaptureNote = doc.CaptureNote,
+            DiscSignalState = doc.DiscSignalState,
 
             // Leaving this out would quietly drop the file's broadcast metadata on the first
             // ordinary Save, which is the whole point of carrying it.
@@ -2570,6 +2571,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     AddGeneratedDocument(new AudioDocument(output, sr, sourceBitDepth: 32)
                     {
                         Title = Path.GetFileNameWithoutExtension(doc.Title) + " (rendered copy).wav",
+                        DiscSignalState = doc.DiscSignalState,
                     }, "Effects rack rendered once to a new tab · rack bypassed for an accurate audition · source audio unchanged.");
                 });
         }

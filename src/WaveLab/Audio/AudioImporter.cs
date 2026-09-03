@@ -140,6 +140,7 @@ public static class AudioImporter
             FilePath = null,
             Title = $"{Path.GetFileNameWithoutExtension(path)} ({suffix}).wav",
             Dither16BitOnSave = bitDepth != OpenBitDepth.Pcm16Undithered,
+            DiscSignalState = source.DiscSignalState,
         };
         converted.MarkUnsaved();
         return converted;

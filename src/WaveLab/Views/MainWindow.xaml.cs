@@ -791,6 +791,12 @@ public partial class MainWindow : Window
     {
         var document = Doc;
         if (document == null || document.Doc.Length == 0) return;
+        if (document.Doc.DiscSignalState == DiscSignalState.PlaybackEqualized)
+        {
+            InfoDialog.Show(this, "Flat vinyl transfer",
+                "This document state already contains playback disc equalisation. Undo the flat-transfer or disc-curve step before running it again.");
+            return;
+        }
         RestorationWorkbenchDialog.ShowFor(document, _vm, this, prepareCd =>
         {
             if (prepareCd && _vm.Documents.Contains(document))
@@ -1358,13 +1364,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        string verdict = report.RmsPercent switch
+        if (!WowFlutter.IsCorrectionRecommended(report))
         {
-            < 0.05 => "That is at the floor of what this can measure; there is probably nothing to correct.",
-            < 0.15 => "That is low — audible only on sustained piano or strings, if at all.",
-            < 0.4 => "That is enough to hear on sustained notes.",
-            _ => "That is severe.",
-        };
+            InfoDialog.Show(this, "Correct wow and flutter",
+                $"Speed variation measures {report.RmsPercent:0.000}% rms with {report.Confidence:P0} reliable coverage. " +
+                "That is below the range where correction has shown repeatable benefit, so this result is measurement-only and nothing was changed.");
+            _vm.ReportAction($"Wow and flutter measured at {report.RmsPercent:0.000}% rms · below the validated correction range.");
+            return;
+        }
+
+        string verdict = "That is inside the range where correction has shown repeatable benefit.";
         string reach = $"Only variation faster than {WowFlutterOptions.Default.BaselineSeconds:0} seconds " +
                        "is corrected: a record running consistently fast is at the wrong pitch, which " +
                        "is a different repair.";
@@ -1574,6 +1583,14 @@ public partial class MainWindow : Window
         var direction = choices[1] == 1 ? CurveDirection.Record : CurveDirection.Playback;
         var phase = choices[2] == 1 ? CurvePhase.Linear : CurvePhase.Minimum;
 
+        if (direction == CurveDirection.Playback &&
+            d.Doc.DiscSignalState == DiscSignalState.PlaybackEqualized)
+        {
+            InfoDialog.Show(this, "Disc equalisation curve",
+                "This document state already contains playback disc equalisation. Undo that step before applying another playback curve.");
+            return;
+        }
+
         if (direction == CurveDirection.Record && spec.RumbleUs > 0)
         {
             InfoDialog.Show(this, "Disc equalisation curve",
@@ -1601,7 +1618,10 @@ public partial class MainWindow : Window
                 RecordingCurves.Apply(channels, spec, sampleRate, direction, phase,
                     taps, token, progress);
                 return channels;
-            }, d);
+            }, d, keepRemoved: false, measuredAtVersion: null,
+            resultingDiscSignalState: direction == CurveDirection.Playback
+                ? DiscSignalState.PlaybackEqualized
+                : DiscSignalState.Flat);
     }
 
     /// <summary>
@@ -1710,9 +1730,15 @@ public partial class MainWindow : Window
     /// the commit and slips straight past. What would be spliced in is a correction computed from
     /// audio the document no longer holds, as one undoable edit and without a word.
     /// </param>
+    private Task<bool> RunWholeFileTool(string undoName, string? detail,
+        Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
+        DocumentViewModel target, bool keepRemoved = false, int? measuredAtVersion = null) =>
+        RunWholeFileTool(undoName, detail, transform, target, keepRemoved, measuredAtVersion, null);
+
     private async Task<bool> RunWholeFileTool(string undoName, string? detail,
         Func<float[][], int, IProgress<double>, CancellationToken, float[][]?> transform,
-        DocumentViewModel target, bool keepRemoved = false, int? measuredAtVersion = null)
+        DocumentViewModel target, bool keepRemoved, int? measuredAtVersion,
+        DiscSignalState? resultingDiscSignalState)
     {
         if (LongOperationRunning || target.Doc.Length == 0 || !_vm.Documents.Contains(target))
             return false;
@@ -1750,7 +1776,7 @@ public partial class MainWindow : Window
                     return;
                 }
                 _vm.PrepareForDocumentEdit(target);
-                target.Doc.ReplaceRange(0, length, output, undoName);
+                target.Doc.ReplaceRange(0, length, output, undoName, resultingDiscSignalState);
                 applied = true;
                 if (!keepRemoved) return;
                 await CaptureRemovedAsync(target, channels, output, 0, undoName, token);

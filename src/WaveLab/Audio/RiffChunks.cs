@@ -11,6 +11,29 @@ public readonly record struct RiffChunk(string Id, byte[] Data)
     public override string ToString() => $"{Id} ({Data.Length} bytes)";
 }
 
+/// <summary>Small application-owned chunk preserving the disc-curve state across save and reopen.</summary>
+internal static class DiscSignalMetadata
+{
+    internal const string ChunkId = "wlEQ";
+
+    internal static DiscSignalState Read(RiffMetadata metadata)
+    {
+        RiffChunk? chunk = metadata.Find(ChunkId);
+        return chunk is { Data.Length: >= 2 } && chunk.Value.Data[0] == 1 &&
+               Enum.IsDefined((DiscSignalState)chunk.Value.Data[1])
+            ? (DiscSignalState)chunk.Value.Data[1]
+            : DiscSignalState.Unknown;
+    }
+
+    internal static RiffMetadata Write(RiffMetadata metadata, DiscSignalState state)
+    {
+        RiffMetadata result = metadata.Clone();
+        if (state == DiscSignalState.Unknown) result.Remove(ChunkId);
+        else result.Set(ChunkId, [1, (byte)state]);
+        return result;
+    }
+}
+
 /// <summary>
 /// The chunks of a RIFF file that this app does not itself interpret, carried through a load and a
 /// save unchanged.

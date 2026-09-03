@@ -160,6 +160,7 @@ public static class AiffCodec
             RequiresSaveAs = compressedContainer,
             Title = Path.GetFileName(path),
             Riff = metadata,
+            DiscSignalState = DiscSignalMetadata.Read(metadata),
         };
     }
 
@@ -216,7 +217,9 @@ public static class AiffCodec
 
         // Whatever else the source file carried, written back after the audio — but only if it came
         // from an AIFF. A WAV's chunks are a different vocabulary in a different byte order.
-        RiffMetadata metadata = doc.Riff is { IsAiff: true } carried ? carried : RiffMetadata.ForAiff();
+        RiffMetadata metadata = DiscSignalMetadata.Write(
+            doc.Riff is { IsAiff: true } carried ? carried : RiffMetadata.ForAiff(),
+            doc.DiscSignalState);
         if (markers is { Count: > 0 })
         {
             var marks = new List<BroadcastMetadata.CuePoint>(markers.Count);

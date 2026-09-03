@@ -11,6 +11,17 @@ public sealed class WowFlutterTests(ITestOutputHelper output)
 
     private static WowFlutterOptions Options => WowFlutterOptions.Default;
 
+    [Theory]
+    [InlineData(0.79, 0.90, false)]
+    [InlineData(0.80, 0.59, false)]
+    [InlineData(0.80, 0.60, true)]
+    public void CorrectionRecommendationRequiresBothValidatedFloors(
+        double rmsPercent, double confidence, bool expected)
+    {
+        var report = new WowFlutterReport(1.2, rmsPercent, 100, confidence);
+        Assert.Equal(expected, WowFlutter.IsCorrectionRecommended(report));
+    }
+
     /// <summary>
     /// Programme with several sustained partials and a note change part way through, so the
     /// measurement has to survive material that does not hold still.

@@ -8,7 +8,6 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using WaveLab.Audio;
 using WaveLab.Audio.Dsp;
-using WaveLab.Audio.Effects;
 using WaveLab.Util;
 using WaveLab.ViewModels;
 
@@ -159,6 +158,10 @@ public partial class RestorationWorkbenchDialog : Window
     private bool _closeWhenFinished;
     private bool _sourceStale;
     private bool _rangeStale;
+    private bool _pendingFlatMode;
+    private bool _removeDcChoice = true;
+    private bool? _azimuthChoice;
+    private bool? _wowChoice;
 
     public RestorationWorkbenchDialog(DocumentViewModel document, MainViewModel main,
         bool startWithFlatTransfer = false)
@@ -174,7 +177,10 @@ public partial class RestorationWorkbenchDialog : Window
         foreach (RecordingCurveSpec curve in RecordingCurves.All)
             curveCombo.Items.Add(curve.Name);
         curveCombo.SelectedIndex = 0;
-        sourceModeCombo.SelectedIndex = startWithFlatTransfer ? 1 : 0;
+        sourceModeCombo.SelectedIndex = startWithFlatTransfer &&
+                                        document.Doc.DiscSignalState != DiscSignalState.PlaybackEqualized
+            ? 1
+            : 0;
 
         _previewDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(360) };
         _previewDebounce.Tick += OnPreviewDebounce;
@@ -225,6 +231,10 @@ public partial class RestorationWorkbenchDialog : Window
                 : "Sample-aligned dry / restored";
             preStageLabel.Text = flat ? "REPAIR BEFORE DISC EQUALISATION" : "IMPULSE REPAIR";
             postStageLabel.Text = flat ? "CLEANUP AFTER DISC EQUALISATION" : "CONTINUOUS CLEANUP";
+            applyCdBtn.Visibility = flat ? Visibility.Collapsed : Visibility.Visible;
+            applyCdBtn.ToolTip = flat
+                ? "Apply the transfer first, then make the explicit loudness and true-peak decision before preparing a CD."
+                : null;
 
             // Mixing an unequalised source back into an equalised render is not a wet/dry blend; it
             // is two incompatible transfer functions added together. Flat mode therefore has one
@@ -277,8 +287,18 @@ public partial class RestorationWorkbenchDialog : Window
         {
             if (startWithFlatTransfer && existing.SourceMode != TransferSourceMode.Flat)
             {
-                if (existing._busy)
-                    existing.statusText.Text = "The current analysis is still running · choose Flat cartridge transfer when it finishes.";
+                if (document.Doc.DiscSignalState == DiscSignalState.PlaybackEqualized)
+                    existing.statusText.Text = "Playback disc equalisation is already present · undo it before selecting flat transfer.";
+                else if (existing._busy)
+                {
+                    if (existing._applying)
+                        existing.statusText.Text = "The current render must finish before the transfer mode can change.";
+                    else
+                    {
+                        existing._pendingFlatMode = true;
+                        existing.statusText.Text = "Flat cartridge transfer will be selected when the current analysis finishes.";
+                    }
+                }
                 else
                     existing.sourceModeCombo.SelectedIndex = 1;
             }
@@ -450,6 +470,16 @@ public partial class RestorationWorkbenchDialog : Window
     private async void OnSourceModeChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_initialized || _busy || _closed) return;
+        if (SourceMode == TransferSourceMode.Flat &&
+            _document.Doc.DiscSignalState == DiscSignalState.PlaybackEqualized)
+        {
+            _suppressControlEvents = true;
+            sourceModeCombo.SelectedIndex = 0;
+            _suppressControlEvents = false;
+            InfoDialog.Show(this, "Flat vinyl transfer",
+                "This document state already contains playback disc equalisation. Undo that step before applying another playback curve.");
+            return;
+        }
         UpdateSourceModeUi();
         await ResetAndAnalyzeAsync();
     }
@@ -459,12 +489,28 @@ public partial class RestorationWorkbenchDialog : Window
         if (!_initialized || _busy || _closed) return;
         UpdateSourceModeUi();
         if (SourceMode == TransferSourceMode.Flat)
-            await ResetAndAnalyzeAsync();
+            await ResetAndAnalyzeAsync(resetPreparationChoices: false);
     }
 
-    private async Task ResetAndAnalyzeAsync()
+    private async void OnPreparationChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized || _suppressControlEvents || _busy || _closed) return;
+        _removeDcChoice = removeDcEnabled.IsChecked == true;
+        _azimuthChoice = azimuthEnabled.IsChecked == true;
+        _wowChoice = wowEnabled.IsChecked == true;
+        MarkPresetCustom();
+        await ResetAndAnalyzeAsync(resetPreparationChoices: false);
+    }
+
+    private async Task ResetAndAnalyzeAsync(bool resetPreparationChoices = true)
     {
         if (_busy || _closed) return;
+        if (resetPreparationChoices)
+        {
+            _removeDcChoice = true;
+            _azimuthChoice = null;
+            _wowChoice = null;
+        }
         _main.StopPreview();
         _previewDebounce.Stop();
         _source = null;
@@ -532,14 +578,11 @@ public partial class RestorationWorkbenchDialog : Window
         estimate.Windows > 0 && estimate.Confidence > 0.4 &&
         Math.Abs(estimate.Microseconds(_sampleRate)) >= 5;
 
-    private static bool WowIsUsable(in WowFlutterReport report) =>
-        report.Found && report.Confidence >= WowFlutter.MinimumCorrectionConfidence;
-
     // Validation across the real-audio corpora shows the estimator can add time error at the low
     // end of its range. Confidence says how much of the side was measurable, not that resampling is
     // beneficial, so automatic opt-in is deliberately much stricter than the engine's safety gate.
     private static bool WowIsRecommended(in WowFlutterReport report) =>
-        WowIsUsable(report) && report.Confidence >= 0.60 && report.RmsPercent >= 0.8;
+        WowFlutter.IsCorrectionRecommended(report);
 
     private static (double[] Ratio, int Hop, WowFlutterReport Report) SliceWowMeasurement(
         (double[] Ratio, int Hop, WowFlutterReport Report) measured, int start, int count)
@@ -560,6 +603,72 @@ public partial class RestorationWorkbenchDialog : Window
         return (ratio, measured.Hop, measured.Report);
     }
 
+    private static (float[][] Channels, int Start) BuildCleanupAnalysisExcerpt(
+        IReadOnlyList<float[]> source, int sampleRate, int anchor, CancellationToken cancellationToken)
+    {
+        int total = source.Count == 0 ? 0 : source.Min(channel => channel.Length);
+        int count = Math.Min(total, checked(sampleRate * 120));
+        int start = Math.Clamp(anchor - count / 2, 0, Math.Max(0, total - count));
+        return (CopyChannels(source, start, count, cancellationToken), start);
+    }
+
+    private static WowFlutterExclusion[] WowExclusions(
+        AnalysisBundle analyses, int channel)
+    {
+        return analyses.Clicks.Events
+            .Where(item => item.Channel == channel)
+            .Select(item => new WowFlutterExclusion(item.StartSample, item.EndSample))
+            .Concat(analyses.Clipping.Events
+                .Where(item => item.Channel == channel)
+                .Select(item => new WowFlutterExclusion(item.StartSample, item.EndSample)))
+            .OrderBy(item => item.StartSample)
+            .ToArray();
+    }
+
+    private static (double[] Ratio, int Hop, WowFlutterReport Report) MeasurePreparedWow(
+        IReadOnlyList<float[]> source, AnalysisBundle analyses, int sampleRate,
+        CancellationToken cancellationToken, IProgress<OperationProgress> progress,
+        double start, double span)
+    {
+        (double[] Ratio, int Hop, WowFlutterReport Report) best =
+            ([], 0, WowFlutterReport.None);
+        for (int channel = 0; channel < source.Count; channel++)
+        {
+            var candidate = WowFlutter.Measure(source[channel], sampleRate, WowFlutterOptions.Default,
+                cancellationToken,
+                new FractionProgressAdapter(progress, "Measuring wow and flutter after masking impulses…",
+                    start + span * channel / source.Count, span / source.Count),
+                WowExclusions(analyses, channel));
+            if (!candidate.Report.Found) continue;
+            if (!best.Report.Found || candidate.Report.Confidence > best.Report.Confidence ||
+                (Math.Abs(candidate.Report.Confidence - best.Report.Confidence) < 1e-12 &&
+                 candidate.Report.Blocks > best.Report.Blocks))
+                best = candidate;
+        }
+        return best;
+    }
+
+    private static void RepairImpulsesForAnalysis(float[][] channels, AnalysisBundle analyses,
+        CancellationToken cancellationToken)
+    {
+        if (analyses.Clipping.Events.Count > 0)
+        {
+            Restoration.RepairClippingInPlace(channels, analyses.Clipping.Events,
+                new DeclippingOptions
+                {
+                    Strength = 1,
+                    MaximumReconstructionDb = 6,
+                    Method = DeclipMethod.PeakReconstruction,
+                }, cancellationToken);
+        }
+        if (analyses.Clicks.Events.Count > 0)
+        {
+            Restoration.RepairClicksInPlace(channels, analyses.Clicks.Events,
+                new ClickRepairOptions { Strength = 1, MaximumOvershoot = 1.2 },
+                cancellationToken);
+        }
+    }
+
     private async Task AnalyzeAsync()
     {
         if (_rangeCount <= 0 || _sourceReferences.Length == 0)
@@ -576,6 +685,9 @@ public partial class RestorationWorkbenchDialog : Window
             AppSettings.Instance.NoiseDepthCeilingDb);
         TransferSourceMode sourceMode = SourceMode;
         RecordingCurveSpec discCurve = SelectedDiscCurve;
+        bool removeDcChoice = _removeDcChoice;
+        bool? azimuthChoice = _azimuthChoice;
+        bool? wowChoice = _wowChoice;
         try
         {
             var prepared = await Task.Run(() =>
@@ -592,69 +704,9 @@ public partial class RestorationWorkbenchDialog : Window
                     ? _sourceReferences
                     : CopyChannels(_sourceReferences, _rangeStart, _rangeCount, operation.Token);
 
-                progress.Report(new OperationProgress("Measuring channel bias and alignment…", 0.05));
-                double[] dcOffsets = MeasureDcOffsets(source, operation.Token);
-                AzimuthEstimate azimuth = source.Length == 2
-                    ? Azimuth.Estimate(source[0], source[1], _sampleRate, AzimuthOptions.Default,
-                        operation.Token,
-                        new FractionProgressAdapter(progress, "Measuring stylus azimuth…", 0.06, 0.08))
-                    : AzimuthEstimate.None;
-
-                progress.Report(new OperationProgress("Following the time base for wow and flutter…", 0.14));
-                var wow = WowFlutter.Measure(source, _sampleRate, WowFlutterOptions.Default,
-                    operation.Token,
-                    new FractionProgressAdapter(progress, "Measuring wow and flutter…", 0.14, 0.14));
-
-                // Continuous-noise analysis must see the same spectral domain as the stages that
-                // consume it. A flat capture is copied, de-biased, aligned and playback-equalised
-                // for analysis only; click, clipping and crackle detection below still see the raw
-                // transfer where impulses remain sharp.
-                progress.Report(new OperationProgress(sourceMode == TransferSourceMode.Flat
-                    ? $"Preparing {discCurve.Name} analysis audio…"
-                    : "Preparing cleanup analysis audio…", 0.28));
-                var cleanupSource = CopyChannels(_sourceReferences, 0,
-                    _sourceReferences.Min(channel => channel.Length), operation.Token);
-                RemoveDcInPlace(cleanupSource, MeasureDcOffsets(cleanupSource, operation.Token),
-                    operation.Token);
-                if (azimuth.Windows > 0 && azimuth.Confidence > 0.4 &&
-                    Math.Abs(azimuth.Microseconds(_sampleRate)) >= 5)
-                    Azimuth.Align(cleanupSource, azimuth.DelaySamples);
-                if (sourceMode == TransferSourceMode.Flat)
-                {
-                    RecordingCurves.Apply(cleanupSource, discCurve, _sampleRate,
-                        CurveDirection.Playback, CurvePhase.Minimum, RecordingCurves.DefaultTaps,
-                        operation.Token,
-                        new FractionProgressAdapter(progress,
-                            $"Applying {discCurve.Name} for cleanup analysis…", 0.30, 0.10));
-                }
-
-                var cleanup = CleanupAnalyzer.Analyze(cleanupSource, _sampleRate,
-                    CleanupProfile.VinylCleanup, operation.Token,
-                    new CleanupProgressAdapter(progress, 0.40, 0.13), noiseDepthCeilingDb);
-
-                NoiseProfileResult noise;
-                if (_capturedNoiseProfile != null && sourceMode == TransferSourceMode.Equalized)
-                {
-                    noise = new NoiseProfileResult((float[])_capturedNoiseProfile.Clone(), 0, false);
-                    progress.Report(new OperationProgress("Using the document's learned noise print…", 0.53));
-                }
-                else
-                {
-                    // The render removes supported subsonic energy before broadband reduction. Do
-                    // the same before learning its automatic profile, otherwise a warped record can
-                    // teach the gate that arm resonance is the noise floor it should follow.
-                    EffectFactory.EffectState? highPass = cleanup.RecommendedPreset.Effects
-                        .FirstOrDefault(effect => effect.TypeId == "filter" && effect.Enabled);
-                    if (highPass != null && highPass.Params.TryGetValue("cutoff", out double cutoff))
-                        Restoration.RemoveSubsonic(cleanupSource, _sampleRate, cutoff, 1.0,
-                            operation.Token);
-                    progress.Report(new OperationProgress(sourceMode == TransferSourceMode.Flat
-                        ? "Finding a noise print after disc equalisation…"
-                        : "Scanning the full file for its quietest noise-print passage…", 0.54));
-                    noise = BuildAutomaticNoiseProfile(cleanupSource, _sampleRate, operation.Token);
-                }
-
-                var clickProgress = new DspProgressAdapter(progress, 0.58, 0.17);
+                // Event-based repair must be analyzed before any operation changes rail heights or
+                // sample positions. The renderer consumes these exact raw-domain coordinates first.
+                var clickProgress = new DspProgressAdapter(progress, 0.04, 0.17);
                 var clicks = Restoration.AnalyzeClicks(_sourceReferences, _sampleRate,
                     new ClickAnalysisOptions
                     {
@@ -662,32 +714,104 @@ public partial class RestorationWorkbenchDialog : Window
                         PreserveTransients = true,
                     }, operation.Token, clickProgress);
 
-                var clipProgress = new DspProgressAdapter(progress, 0.76, 0.11);
-                var clipping = Restoration.AnalyzeClipping(_sourceReferences, _sampleRate,
-                    new ClippingAnalysisOptions(), operation.Token, clipProgress);
-                progress.Report(new OperationProgress("Measuring surface crackle independently…", 0.88));
-                RestorationRecommendations.CrackleEvidence crackle = AnalyzeCrackleEvidence(
-                    _sourceReferences, _sampleRate, operation.Token);
-                var recommendations = RestorationRecommendations.Create(
-                    clicks, clipping, cleanup, crackle);
-                if (Math.Abs(recommendations.ClickSensitivity -
+                var rangeAnalyses = SliceAnalyses(
+                    new AnalysisBundle(clicks, new ClippingAnalysisResult([], _rangeCount,
+                        source.Length, _sampleRate, false)), _rangeStart, _rangeCount);
+                double recommendedSensitivity =
+                    RestorationRecommendations.RecommendedClickSensitivity(rangeAnalyses.Clicks);
+                if (Math.Abs(recommendedSensitivity -
                              RestorationRecommendations.ExploratoryClickSensitivity) > 0.001)
                 {
-                    progress.Report(new OperationProgress(
-                        $"Confirming click candidates at {recommendations.ClickSensitivity:0.0}/10 sensitivity...",
-                        0.94));
                     clicks = Restoration.AnalyzeClicks(_sourceReferences, _sampleRate,
                         new ClickAnalysisOptions
                         {
-                            Sensitivity = recommendations.ClickSensitivity,
+                            Sensitivity = recommendedSensitivity,
                             PreserveTransients = true,
                         }, operation.Token,
-                        new DspProgressAdapter(progress, 0.94, 0.05));
-                    recommendations = RestorationRecommendations.Create(clicks, clipping, cleanup, crackle) with
+                        new DspProgressAdapter(progress, 0.21, 0.08));
+                }
+
+                var clipProgress = new DspProgressAdapter(progress, 0.29, 0.10);
+                var clipping = Restoration.AnalyzeClipping(_sourceReferences, _sampleRate,
+                    new ClippingAnalysisOptions(), operation.Token, clipProgress);
+
+                var fullAnalyses = new AnalysisBundle(clicks, clipping);
+                rangeAnalyses = SliceAnalyses(fullAnalyses, _rangeStart, _rangeCount);
+                double[] dcOffsets = MeasureDcOffsets(source, operation.Token);
+
+                // A bounded excerpt keeps a 96 kHz album from being duplicated in memory. It is
+                // centred on the quietest raw passage so it contains both a useful noise print and
+                // adjacent programme, then receives the same preparation as the final render.
+                progress.Report(new OperationProgress("Locating a representative cleanup passage…", 0.40));
+                NoiseProfileResult anchor = BuildAutomaticNoiseProfile(source, _sampleRate, operation.Token);
+                int anchorStart = anchor.Profile == null ? source[0].Length / 2 : anchor.RelativeStart;
+                var excerpt = BuildCleanupAnalysisExcerpt(source, _sampleRate, anchorStart, operation.Token);
+                AnalysisBundle excerptAnalyses = SliceAnalyses(
+                    rangeAnalyses, excerpt.Start, excerpt.Channels[0].Length);
+                RepairImpulsesForAnalysis(excerpt.Channels, excerptAnalyses, operation.Token);
+                if (removeDcChoice)
+                    RemoveDcInPlace(excerpt.Channels, dcOffsets, operation.Token);
+
+                AzimuthEstimate azimuth = excerpt.Channels.Length == 2
+                    ? Azimuth.Estimate(excerpt.Channels[0], excerpt.Channels[1], _sampleRate,
+                        AzimuthOptions.Default, operation.Token,
+                        new FractionProgressAdapter(progress,
+                            "Measuring stylus azimuth after impulse repair…", 0.42, 0.06))
+                    : AzimuthEstimate.None;
+                bool applyAzimuth = azimuth.Windows > 0 && azimuth.Confidence > 0.4 &&
+                                    Math.Abs(azimuth.Microseconds(_sampleRate)) >= 5 &&
+                                    (azimuthChoice ?? azimuth.Confidence > 0.8);
+                if (applyAzimuth) Azimuth.Align(excerpt.Channels, azimuth.DelaySamples);
+
+                progress.Report(new OperationProgress("Following the cleaned time base…", 0.48));
+                var wow = MeasurePreparedWow(source, rangeAnalyses, _sampleRate, operation.Token,
+                    progress, 0.48, 0.14);
+                bool applyWow = WowFlutter.IsCorrectionRecommended(wow.Report) && (wowChoice ?? true);
+                if (applyWow)
+                {
+                    var localWow = SliceWowMeasurement(wow, excerpt.Start, excerpt.Channels[0].Length);
+                    WowFlutter.Correct(excerpt.Channels, localWow, operation.Token);
+                }
+
+                if (sourceMode == TransferSourceMode.Flat)
+                {
+                    RecordingCurves.Apply(excerpt.Channels, discCurve, _sampleRate,
+                        CurveDirection.Playback, CurvePhase.Minimum, RecordingCurves.DefaultTaps,
+                        operation.Token,
+                        new FractionProgressAdapter(progress,
+                            $"Applying {discCurve.Name} for cleanup analysis…", 0.62, 0.10));
+                }
+
+                var cleanup = CleanupAnalyzer.Analyze(excerpt.Channels, _sampleRate,
+                    CleanupProfile.VinylCleanup, operation.Token,
+                    new CleanupProgressAdapter(progress, 0.72, 0.12), noiseDepthCeilingDb);
+
+                NoiseProfileResult noise;
+                if (_capturedNoiseProfile != null && sourceMode == TransferSourceMode.Equalized)
+                {
+                    noise = new NoiseProfileResult((float[])_capturedNoiseProfile.Clone(), 0, false);
+                }
+                else
+                {
+                    progress.Report(new OperationProgress(sourceMode == TransferSourceMode.Flat
+                        ? "Finding a noise print after disc equalisation…"
+                        : "Finding a noise print in the prepared passage…", 0.84));
+                    NoiseProfileResult localNoise = BuildAutomaticNoiseProfile(
+                        excerpt.Channels, _sampleRate, operation.Token);
+                    noise = localNoise with
                     {
-                        ClickSensitivity = recommendations.ClickSensitivity,
+                        RelativeStart = _rangeStart + excerpt.Start + localNoise.RelativeStart,
                     };
                 }
+
+                progress.Report(new OperationProgress("Measuring surface crackle independently…", 0.88));
+                RestorationRecommendations.CrackleEvidence crackle = AnalyzeCrackleEvidence(
+                    source, _sampleRate, operation.Token);
+                var recommendations = RestorationRecommendations.Create(
+                    rangeAnalyses.Clicks, rangeAnalyses.Clipping, cleanup, crackle) with
+                {
+                    ClickSensitivity = recommendedSensitivity,
+                };
                 operation.Token.ThrowIfCancellationRequested();
                 return (Source: source, Noise: noise, Clicks: clicks, Clipping: clipping,
                     Recommendations: recommendations, Cleanup: cleanup, Crackle: crackle,
@@ -789,7 +913,14 @@ public partial class RestorationWorkbenchDialog : Window
             _previewRackBypassed = true;
         }
         var settings = CaptureSettings();
-        var processingSettings = settings with { WetAmount = 1.0, Bypass = false };
+        // A cropped buffer cannot reproduce the full resampler's cumulative source position.
+        // Preview every other selected stage honestly and leave wow for the whole-file render.
+        var processingSettings = settings with
+        {
+            WetAmount = 1.0,
+            Bypass = false,
+            CorrectWowFlutter = false,
+        };
         float[][]? cachedWet = _previewWetCacheSettings == processingSettings
             ? _previewWetCache
             : null;
@@ -852,9 +983,14 @@ public partial class RestorationWorkbenchDialog : Window
             if (!_main.PlayPreview(preview, loop: false))
                 statusText.Text = "Preview is unavailable while recording audio is active or awaiting recovery.";
             else
+            {
+                string wowNote = settings.CorrectWowFlutter
+                    ? " Wow correction is excluded from the bounded audition and is applied only to the whole-file render."
+                    : "";
                 statusText.Text = settings.Bypass
                     ? $"Bypass A/B · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds of the original source (master rack bypassed)."
-                    : $"Live preview · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds at {settings.WetAmount:P0} restored (master rack bypassed).";
+                    : $"Live preview · playing {auditionDescription}, {_previewLength / (double)_sampleRate:0.#} seconds at {settings.WetAmount:P0} restored (master rack bypassed).{wowNote}";
+            }
             progressBar.Value = 1;
         }
         catch (OperationCanceledException)
@@ -956,9 +1092,15 @@ public partial class RestorationWorkbenchDialog : Window
             operation.Token.ThrowIfCancellationRequested();
             _main.PrepareForDocumentEdit(_document);
             if (_rangeStart == 0 && _rangeCount == _document.Doc.Length)
-                _document.Doc.ReplaceAllOwned(result.Audio, operationName);
+                _document.Doc.ReplaceAllOwned(result.Audio, operationName,
+                    settings.SourceMode == TransferSourceMode.Flat
+                        ? DiscSignalState.PlaybackEqualized
+                        : null);
             else
-                _document.Doc.ReplaceRange(_rangeStart, _rangeCount, result.Audio, operationName);
+                _document.Doc.ReplaceRange(_rangeStart, _rangeCount, result.Audio, operationName,
+                    settings.SourceMode == TransferSourceMode.Flat
+                        ? DiscSignalState.PlaybackEqualized
+                        : null);
             committed = true;
             progressBar.Value = 1;
             statusText.Text = $"{operationName} applied as one undoable edit.";
@@ -1029,31 +1171,34 @@ public partial class RestorationWorkbenchDialog : Window
     }
 
     private AnalysisBundle AnalysisForApplyRange(AnalysisBundle fullFile)
+        => SliceAnalyses(fullFile, _rangeStart, _rangeCount);
+
+    private static AnalysisBundle SliceAnalyses(AnalysisBundle fullFile, int start, int count)
     {
-        int absoluteEnd = checked(_rangeStart + _rangeCount);
+        int absoluteEnd = checked(start + count);
         ClickEvent[] clicks = fullFile.Clicks.Events
-            .Where(item => item.StartSample >= _rangeStart + 1 && item.EndSample < absoluteEnd)
+            .Where(item => item.StartSample >= start + 1 && item.EndSample < absoluteEnd)
             .Select(item => item with
             {
-                StartSample = item.StartSample - _rangeStart,
-                EndSample = item.EndSample - _rangeStart,
-                PeakSample = item.PeakSample - _rangeStart,
+                StartSample = item.StartSample - start,
+                EndSample = item.EndSample - start,
+                PeakSample = item.PeakSample - start,
             })
             .ToArray();
         ClippedPeakEvent[] clipping = fullFile.Clipping.Events
-            .Where(item => item.StartSample >= _rangeStart + 1 && item.EndSample < absoluteEnd)
+            .Where(item => item.StartSample >= start + 1 && item.EndSample < absoluteEnd)
             .Select(item => item with
             {
-                StartSample = item.StartSample - _rangeStart,
-                EndSample = item.EndSample - _rangeStart,
-                PeakSample = item.PeakSample - _rangeStart,
+                StartSample = item.StartSample - start,
+                EndSample = item.EndSample - start,
+                PeakSample = item.PeakSample - start,
             })
             .ToArray();
 
         return new AnalysisBundle(
-            new ClickAnalysisResult(clicks, _rangeCount, fullFile.Clicks.ChannelCount,
+            new ClickAnalysisResult(clicks, count, fullFile.Clicks.ChannelCount,
                 fullFile.Clicks.SampleRate),
-            new ClippingAnalysisResult(clipping, _rangeCount, fullFile.Clipping.ChannelCount,
+            new ClippingAnalysisResult(clipping, count, fullFile.Clipping.ChannelCount,
                 fullFile.Clipping.SampleRate, fullFile.Clipping.UsedAutomaticThreshold));
     }
 
@@ -1180,25 +1325,8 @@ public partial class RestorationWorkbenchDialog : Window
         double step = progressSpan / 12.0;
         double at = progressStart;
 
-        if (!settings.Bypass && settings.RemoveDc)
-        {
-            progress.Report(new OperationProgress("Removing measured DC offset…", at));
-            RemoveDcInPlace(work, _dcOffsets, cancellationToken);
-        }
-        at += step;
-
-        if (!settings.Bypass && settings.CorrectAzimuth && AzimuthIsUsable(_azimuthEstimate))
-        {
-            progress.Report(new OperationProgress(
-                $"Correcting {_azimuthEstimate.Microseconds(_sampleRate):0.0} µs stylus azimuth…", at));
-            Azimuth.Align(work, _azimuthEstimate.DelaySamples);
-        }
-        at += step;
-
-        // Declipping runs before any mid/side mix. Scaling the side blends both input channels into
-        // both outputs: a plateau present in only one channel would otherwise be copied into the
-        // other, while the event plan still named only the original channel. It also changes the
-        // shoulders and rail height the reconstruction was analysed from.
+        // Event plans carry raw sample coordinates and clipping rail heights. Consume them before
+        // DC subtraction or fractional channel shifts can invalidate either part of that contract.
         if (!settings.Bypass && settings.Declip && settings.DeclipStrength > 0 && clipping.Count > 0)
         {
             progress.Report(new OperationProgress("Reconstructing clipped peaks…", at));
@@ -1221,6 +1349,21 @@ public partial class RestorationWorkbenchDialog : Window
                     Strength = settings.ClickStrength,
                     MaximumOvershoot = 1.2,
                 }, cancellationToken);
+        }
+        at += step;
+
+        if (!settings.Bypass && settings.RemoveDc)
+        {
+            progress.Report(new OperationProgress("Removing measured DC offset…", at));
+            RemoveDcInPlace(work, _dcOffsets, cancellationToken);
+        }
+        at += step;
+
+        if (!settings.Bypass && settings.CorrectAzimuth && AzimuthIsUsable(_azimuthEstimate))
+        {
+            progress.Report(new OperationProgress(
+                $"Correcting {_azimuthEstimate.Microseconds(_sampleRate):0.0} µs stylus azimuth…", at));
+            Azimuth.Align(work, _azimuthEstimate.DelaySamples);
         }
         at += step;
 
@@ -1266,7 +1409,7 @@ public partial class RestorationWorkbenchDialog : Window
         }
         at += step;
 
-        if (!settings.Bypass && settings.CorrectWowFlutter && WowIsUsable(_wowMeasurement.Report))
+        if (!settings.Bypass && settings.CorrectWowFlutter && WowIsRecommended(_wowMeasurement.Report))
         {
             progress.Report(new OperationProgress("Straightening the measured time base…", at));
             var localWow = SliceWowMeasurement(_wowMeasurement, dryOffset, work[0].Length);
@@ -2061,7 +2204,7 @@ public partial class RestorationWorkbenchDialog : Window
         SelectedCurvePhase,
         removeDcEnabled.IsChecked == true,
         azimuthEnabled.IsChecked == true && AzimuthIsUsable(_azimuthEstimate),
-        wowEnabled.IsChecked == true && WowIsUsable(_wowMeasurement.Report),
+        wowEnabled.IsChecked == true && WowIsRecommended(_wowMeasurement.Report),
         clickEnabled.IsChecked == true,
         clickSensitivity.Value,
         clickStrength.Value / 100.0,
@@ -2096,11 +2239,12 @@ public partial class RestorationWorkbenchDialog : Window
         _suppressControlEvents = true;
         try
         {
-            removeDcEnabled.IsChecked = true;
+            removeDcEnabled.IsChecked = _removeDcChoice;
 
             bool azimuthUsable = AzimuthIsUsable(_azimuthEstimate);
             azimuthEnabled.IsEnabled = azimuthUsable;
-            azimuthEnabled.IsChecked = azimuthUsable && _azimuthEstimate.Confidence > 0.8;
+            azimuthEnabled.IsChecked = azimuthUsable &&
+                                        (_azimuthChoice ?? _azimuthEstimate.Confidence > 0.8);
             azimuthEvidenceText.Text = _azimuthEstimate.Windows == 0
                 ? "Not enough correlated stereo material to measure."
                 : $"{Math.Abs(_azimuthEstimate.Microseconds(_sampleRate)):0.0} µs · " +
@@ -2108,9 +2252,9 @@ public partial class RestorationWorkbenchDialog : Window
                   (azimuthUsable ? "" : " · no correction recommended");
 
             WowFlutterReport wow = _wowMeasurement.Report;
-            bool wowUsable = WowIsUsable(wow);
+            bool wowUsable = WowIsRecommended(wow);
             wowEnabled.IsEnabled = wowUsable;
-            wowEnabled.IsChecked = WowIsRecommended(wow);
+            wowEnabled.IsChecked = wowUsable && (_wowChoice ?? true);
             wowEvidenceText.Text = !wow.Found
                 ? "Not enough sustained material above 1 kHz to measure."
                 : $"{wow.RmsPercent:0.000}% rms · {wow.Confidence:P0} coverage" +
@@ -2389,6 +2533,15 @@ public partial class RestorationWorkbenchDialog : Window
             UpdateUiState();
         }
         operation.Dispose();
+        if (!_busy && _pendingFlatMode && !_closed &&
+            _document.Doc.DiscSignalState != DiscSignalState.PlaybackEqualized)
+        {
+            _pendingFlatMode = false;
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (!_closed) sourceModeCombo.SelectedIndex = 1;
+            }, DispatcherPriority.Background);
+        }
         if (!_busy && _closeWhenFinished && !_closed)
         {
             _closeWhenFinished = false;
@@ -2420,7 +2573,7 @@ public partial class RestorationWorkbenchDialog : Window
         // a render of the old samples over the new ones, so it is refused at the button.
         bool canApply = ready && !_busy && !_sourceStale && bypassCheck.IsChecked != true;
         applyBtn.IsEnabled = canApply;
-        applyCdBtn.IsEnabled = canApply;
+        applyCdBtn.IsEnabled = canApply && SourceMode != TransferSourceMode.Flat;
         closeBtn.Content = _busy ? "Cancel" : "Close";
         UpdateSourceModeUi();
         UpdateStaleChrome();

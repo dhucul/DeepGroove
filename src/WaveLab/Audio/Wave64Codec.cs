@@ -38,6 +38,7 @@ public static class Wave64Codec
     private static readonly Guid FmtGuid = new("20746D66-ACF3-11D3-8CD1-00C04F8EDB8A");
     private static readonly Guid DataGuid = new("61746164-ACF3-11D3-8CD1-00C04F8EDB8A");
     private static readonly Guid FactGuid = new("74636166-ACF3-11D3-8CD1-00C04F8EDB8A");
+    private static readonly Guid DiscSignalGuid = new("51456C77-5DA1-4E70-972D-4AE4D5385361");
 
     private const ushort FormatPcm = 1;
     private const ushort FormatIeeeFloat = 3;
@@ -96,6 +97,7 @@ public static class Wave64Codec
         ushort format = 0;
         int channels = 0, sampleRate = 0, bits = 0;
         long dataStart = -1, dataBytes = 0;
+        DiscSignalState discSignalState = DiscSignalState.Unknown;
 
         long position = FileHeaderBytes;
         long limit = statedSize > 0 ? Math.Min(statedSize, stream.Length) : stream.Length;
@@ -153,6 +155,13 @@ public static class Wave64Codec
                 dataStart = position + ChunkHeaderBytes;
                 dataBytes = payload;
             }
+            else if (id == DiscSignalGuid && payload >= 2)
+            {
+                byte version = reader.ReadByte();
+                byte state = reader.ReadByte();
+                if (version == 1 && Enum.IsDefined((DiscSignalState)state))
+                    discSignalState = (DiscSignalState)state;
+            }
 
             position += size + PadTo(size);
         }
@@ -202,6 +211,7 @@ public static class Wave64Codec
             // file opened as "Untitled" and Save silently became Save As.
             FilePath = path,
             Title = Path.GetFileName(path),
+            DiscSignalState = discSignalState,
         };
     }
 
@@ -255,11 +265,15 @@ public static class Wave64Codec
                 const int fmtPayload = 18;                     // WAVEFORMATEX with cbSize = 0
                 long fmtSize = ChunkHeaderBytes + fmtPayload;
                 long factSize = isFloat ? ChunkHeaderBytes + 4 : 0;
+                long discSignalSize = doc.DiscSignalState == DiscSignalState.Unknown
+                    ? 0
+                    : ChunkHeaderBytes + 2;
                 long dataSize = ChunkHeaderBytes + dataBytes;
 
                 long total = FileHeaderBytes
                              + fmtSize + PadTo(fmtSize)
                              + (isFloat ? factSize + PadTo(factSize) : 0)
+                             + (discSignalSize > 0 ? discSignalSize + PadTo(discSignalSize) : 0)
                              + dataSize + PadTo(dataSize);
 
                 WriteGuid(writer, RiffGuid);
@@ -285,6 +299,15 @@ public static class Wave64Codec
                     writer.Write(factSize);
                     writer.Write(frames);
                     Pad(writer, factSize);
+                }
+
+                if (discSignalSize > 0)
+                {
+                    WriteGuid(writer, DiscSignalGuid);
+                    writer.Write(discSignalSize);
+                    writer.Write((byte)1);
+                    writer.Write((byte)doc.DiscSignalState);
+                    Pad(writer, discSignalSize);
                 }
 
                 WriteGuid(writer, DataGuid);

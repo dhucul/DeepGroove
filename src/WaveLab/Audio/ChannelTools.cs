@@ -121,6 +121,7 @@ public static class ChannelTools
         return new AudioDocument(mono, doc.SampleRate, sourceBitDepth: 32)
         {
             Title = Base(doc) + " (mono).wav",
+            DiscSignalState = doc.DiscSignalState,
         };
     }
 
@@ -132,6 +133,7 @@ public static class ChannelTools
         return new AudioDocument(stereo, doc.SampleRate, doc.SourceBitDepth)
         {
             Title = Base(doc) + " (stereo).wav",
+            DiscSignalState = doc.DiscSignalState,
         };
     }
 
@@ -143,6 +145,7 @@ public static class ChannelTools
         return new AudioDocument(mono, doc.SampleRate, doc.SourceBitDepth)
         {
             Title = $"{Base(doc)} ({suffix}).wav",
+            DiscSignalState = doc.DiscSignalState,
         };
     }
 
@@ -155,6 +158,7 @@ public static class ChannelTools
         return new AudioDocument(data, targetRate, sourceBitDepth: 32)
         {
             Title = $"{Base(doc)} ({targetRate / 1000.0:0.#} kHz).wav",
+            DiscSignalState = doc.DiscSignalState,
         };
     }
 
