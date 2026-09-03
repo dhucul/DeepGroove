@@ -27,7 +27,7 @@ public sealed class ClickTrack : IDisposable
         }
         catch
         {
-            try { output?.Dispose(); } catch { }
+            if (output != null) _ = DisposeOutputAsync(output);
             throw;
         }
     }
@@ -37,11 +37,25 @@ public sealed class ClickTrack : IDisposable
         var output = _out;
         _out = null;
         if (output == null) return;
-        try { output.Stop(); } catch { }
-        try { output.Dispose(); } catch { }
+        // WasapiPlayer.DisposeAsync signals its render thread before yielding.
+        // Let the join and endpoint release finish away from the Record dialog's
+        // dispatcher so Stop, Cancel and the end of a count-in stay responsive.
+        _ = DisposeOutputAsync(output);
     }
 
     public void Dispose() => Stop();
+
+    private static async Task DisposeOutputAsync(IWavePlayer output)
+    {
+        try
+        {
+            if (output is IAsyncDisposable asyncDisposable)
+                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+            else
+                await Task.Run(output.Dispose).ConfigureAwait(false);
+        }
+        catch { }
+    }
 
     private sealed class ClickProvider(double bpm, int beatsPerBar) : ISampleProvider
     {

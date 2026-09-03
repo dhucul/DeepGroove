@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Reflection;
 using WaveLab.Audio;
 using Xunit;
 
@@ -5,6 +7,63 @@ namespace WaveLab.Tests;
 
 public sealed class PlaybackEngineTests
 {
+    [Fact]
+    public void PlaybackDoesNotOpenAnotherStreamWhenCleanupTimesOut()
+    {
+        using var engine = new PlaybackEngine();
+        var cleanupGate = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        PendingCleanups(engine).Add(cleanupGate.Task);
+        var document = new AudioDocument([[0f]], 48_000, 32);
+
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            var error = Assert.Throws<InvalidOperationException>(
+                () => engine.Play(document, 0, document.Length));
+            watch.Stop();
+
+            Assert.Equal(
+                "The previous output stream is still releasing its device. Try Play again in a moment.",
+                error.Message);
+            Assert.True(watch.Elapsed < TimeSpan.FromMilliseconds(3_500),
+                $"Play spent more than one cleanup budget ({watch.Elapsed.TotalMilliseconds:0} ms).");
+        }
+        finally
+        {
+            cleanupGate.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public void StopDoesNotWaitForPendingEndpointCleanup()
+    {
+        using var engine = new PlaybackEngine();
+        var cleanupGate = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        PendingCleanups(engine).Add(cleanupGate.Task);
+
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            engine.Stop();
+            watch.Stop();
+
+            Assert.True(watch.Elapsed < TimeSpan.FromMilliseconds(500),
+                $"Stop waited {watch.Elapsed.TotalMilliseconds:0} ms for endpoint cleanup.");
+        }
+        finally
+        {
+            cleanupGate.TrySetResult();
+        }
+    }
+
+    private static List<Task> PendingCleanups(PlaybackEngine engine) =>
+        Assert.IsType<List<Task>>(
+            typeof(PlaybackEngine)
+                .GetField("_pendingCleanupTasks", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(engine));
+
     [Fact]
     public void PresentedPositionStaysAtStartDuringPreRollThenAdvancesContinuously()
     {

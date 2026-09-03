@@ -17,7 +17,7 @@ public sealed class PlaybackEngine : IDisposable
     private readonly object _stateLock = new();
     private readonly object _cleanupLock = new();
     private readonly List<Task> _pendingCleanupTasks = [];
-    /// <summary>Upper bound on how long a UI-thread Play/Stop may wait for endpoint teardown.</summary>
+    /// <summary>Upper bound on the single endpoint-cleanup barrier before playback starts.</summary>
     private static readonly TimeSpan CleanupDrainTimeout = TimeSpan.FromSeconds(2);
     private long _positionClockAccumulatedTicks;
     private long _positionClockStartedAt;
@@ -182,11 +182,18 @@ public sealed class PlaybackEngine : IDisposable
     public long Play(AudioDocument doc, int startSample, int? endSample)
     {
         ArgumentNullException.ThrowIfNull(doc);
-        DrainPendingCleanups();
         lock (_controlLock)
         {
             StopCore();
-            DrainPendingCleanups();
+            // One barrier covers both cleanup already queued by an earlier stop
+            // and the stream StopCore may just have released. Keeping it here,
+            // after StopCore, avoids charging a rapid Stop -> Play twice for the
+            // same endpoint teardown.
+            if (!DrainPendingCleanups())
+            {
+                throw new InvalidOperationException(
+                    "The previous output stream is still releasing its device. Try Play again in a moment.");
+            }
             lock (_stateLock) LastPlaybackError = null;
             long playbackSession = ++_nextPlaybackSession;
             var provider = new DocumentProvider(
@@ -262,7 +269,9 @@ public sealed class PlaybackEngine : IDisposable
                     if (output != null && handler != null)
                         output.PlaybackStopped -= handler;
                     QueueOutputCleanup(output, device);
-                    DrainPendingCleanups();
+                    // Cleanup has been signalled. Leave it queued for the next
+                    // playback barrier instead of spending a second timeout on
+                    // the same Play action after initialization has already failed.
                 }
                 throw;
             }
@@ -314,7 +323,11 @@ public sealed class PlaybackEngine : IDisposable
     public void Stop()
     {
         lock (_controlLock) StopCore();
-        DrainPendingCleanups();
+        // DisposeAsync has already signalled the render thread to stop. Do not
+        // join it from the dispatcher: endpoint teardown can take up to the
+        // driver's buffer/timeout and made the Stop button visibly hang. Play
+        // drains this queue before opening another stream, which preserves the
+        // exclusive-mode handoff without putting cleanup latency on Stop.
     }
 
     private void StopCore()
@@ -377,29 +390,32 @@ public sealed class PlaybackEngine : IDisposable
         lock (_cleanupLock) _pendingCleanupTasks.Add(cleanup);
     }
 
-    private void DrainPendingCleanups()
+    private bool DrainPendingCleanups()
     {
         // An event subscriber can synchronously call Stop/Dispose from WASAPI's
         // callback thread. Waiting there could deadlock with player disposal,
-        // which may join that same thread. A later non-callback Stop/Dispose drains it.
-        if (_playbackCallbackDepth > 0) return;
+        // which may join that same thread. A later Play or Dispose owns the cleanup.
+        if (_playbackCallbackDepth > 0) return true;
 
+        long startedAt = Stopwatch.GetTimestamp();
         while (true)
         {
             Task[] pending;
             lock (_cleanupLock)
             {
-                if (_pendingCleanupTasks.Count == 0) return;
+                if (_pendingCleanupTasks.Count == 0) return true;
                 pending = [.. _pendingCleanupTasks];
                 _pendingCleanupTasks.Clear();
             }
 
             bool completed;
-            // Bounded: Play() and Stop() reach this from the UI thread, and the
-            // queued teardown (the player joins its render thread) is at the
-            // driver's mercy once an endpoint has been invalidated.
-            try { completed = Task.WhenAll(pending).Wait(CleanupDrainTimeout); }
-            catch { completed = true; /* DisposeOutput is best-effort; cleanup must not block shutdown. */ }
+            // One absolute budget covers every batch observed by this drain. A
+            // completion callback can queue another cleanup while Play is here;
+            // giving each batch a fresh timeout would recreate the multi-wait stall.
+            Task all = Task.WhenAll(pending);
+            TimeSpan remaining = CleanupDrainTimeout - Stopwatch.GetElapsedTime(startedAt);
+            try { completed = all.IsCompleted || (remaining > TimeSpan.Zero && all.Wait(remaining)); }
+            catch { completed = true; /* DisposeOutput is best-effort; a cleanup fault must not block playback. */ }
             if (completed) continue;
 
             // Re-queue whatever is still running so a later Stop/Dispose drains it.
@@ -410,7 +426,7 @@ public sealed class PlaybackEngine : IDisposable
                     if (!task.IsCompleted) _pendingCleanupTasks.Add(task);
                 }
             }
-            return;
+            return false;
         }
     }
 
