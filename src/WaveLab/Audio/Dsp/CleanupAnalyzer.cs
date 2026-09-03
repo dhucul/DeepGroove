@@ -230,12 +230,13 @@ public static class CleanupAnalyzer
 
         EffectFactory.EffectState limiter = State(recommended, "limiter");
         ConfigureLimiter(limiter, global, targetLufs: -18, maximumDriveDb: 4);
+        limiter.Enabled = false;
         double limiterConfidence = global.Frames >= sampleRate * 3 ? 0.9 : 0.45;
         recommendations.Add(Recommendation(
             baseline, limiter, "Precision Limiter",
-            $"Measured {FormatLufs(global.IntegratedLufs)} with {FormatDb(global.TruePeakDb, "dBTP")} true peak; drive is capped conservatively.",
-            LimiterText(State(baseline, "limiter")), LimiterText(limiter),
-            limiterConfidence, true));
+            $"Measured {FormatLufs(global.IntegratedLufs)} with {FormatDb(global.TruePeakDb, "dBTP")} true peak. Loudness and limiting belong to the delivery stage after restoration.",
+            LimiterText(State(baseline, "limiter")), "Deferred to Normalize Loudness",
+            limiterConfidence, false));
 
         metrics.Add(new CleanupMetric("LOW-FREQUENCY RUMBLE",
             rumble.Detected ? $"Strong below {rumble.Cutoff:0} Hz" : "No distinct rumble",

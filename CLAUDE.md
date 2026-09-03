@@ -922,10 +922,12 @@ whole result.
   collapse then de-crackle gives 15 ticks and 4.2% of samples repaired; collapse then de-crackle then
   high-pass gives 14 and 4.4% — the same answer either way round. Nor does it rescue
   `AnalyzeClipping` from inflated plateaus: removing the rumble moved that transfer's peak by
-  **0.09 dB**. It runs first so that every downstream *measurement* — the automatic noise profile,
-  the per-block robust scales, the levels on the cards — is taken on the audible band rather than on
-  the rumble. That is a reason about the readouts and not about the audio, and it is written up as
-  such rather than as more.
+  **0.09 dB**. In the source-aware chain it now sits after the disc-curve boundary and before side,
+  hum and broadband-noise processing. `CleanupAnalyzer` measures rumble on the post-curve analysis
+  copy, and an automatic noise profile is learned only after that measured high-pass has been applied
+  to the copy, so the profile and downstream render still describe the audible band rather than arm
+  resonance. The impulse repairers remain ahead of the boundary, where the flat transfer preserves
+  their evidence.
 - **The cost on music is small, and it is the shipped Janssen repair that makes it so.** Over the
   five transfers, de-crackling after the chain costs **0.19 to 0.64 dB** of high-frequency energy. An
   exploration with a cubic bridge in place of Janssen predicted 1.4 dB, which is a measure of how
@@ -1248,24 +1250,16 @@ restoration residual, because the tab necessarily sounded as though the filter a
   whole-file pass agree to **−145 dB**, so fixing the phase residual did not replace the old cold-IIR
   boundary thump with a centred-filter seam.
 
-### The mix was the binding constraint, and nothing on screen said so
+### The mix was the binding constraint, so restoration now defaults fully wet
 
-- **The workbench's output mix ships at 90% restored, and that is a 20 dB ceiling on every stage in
-  the chain.** The blend is applied once, to the whole chain output — `out = dry·(1−wet) +
-  processed·wet` — so whatever share of the original it returns is a floor under everything the
-  chain removed. On the transfer above, the high-pass's own **40 dB at 10 Hz came out as 19.7**. It
-  is not specific to this stage: the notch bank's measured **42 dB of hum is capped at the same 20**,
-  and so is anything else that works deeper than that. The ceiling was found by measuring a residual
-  rather than by reading the code, which is the whole argument for saying it out loud — a stage
-  underperforming its own recorded figures reads as a broken stage.
-- **The readout says it; the default does not move** (design: `docs/design/output_mix_ceiling.png`).
-  “Ceiling 20.0 dB · 10% dry returns over every stage”, from
-  `RestorationWorkbenchDialog.DescribeOutputMix`, pure and unit-tested without a window exactly as
-  the declip and noise-depth lines are. 90% stays the shipped value: it is a defensible safety
-  margin for a chain doing five destructive things at once, and the answer for someone who wants the
-  full effect is a slider they can now see the reason to move. **Amber is on `Bypassed` and on a
-  fully dry mix only** — a ceiling is a fact about a setting, and colouring a fact like a fault is
-  already on record here as teaching users to distrust the colour.
+- **A dry share is a ceiling on every repair, and the workbench now ships at 100% restored.** The
+  blend is applied once, to the whole chain output — `out = dry·(1−wet) + processed·wet` — so the
+  former 90% default returned every removed click, hum and rumble at −20 dB. The readout remains for
+  intentional parallel blends, but a cleanup render no longer silently undoes part of each repair.
+- **Flat transfer mode cannot expose this control at all.** Mixing an unequalised cartridge signal
+  with playback-equalised output is not a gentler restoration; it combines incompatible transfer
+  functions. Flat mode fixes the output at 100%, disables the slider and also disables the combined
+  removed-material tab, whose `dry − wet` meaning would otherwise include the RIAA curve itself.
 - **The widest wording is the fully dry line, not any ceiling**, because the deepest ceilings carry
   the shortest detail — a mix near full has almost no dry share left to describe. `OutputMixRenderProbe`
   measures that line in the built control at the dialog's 860 px minimum: **330 px of room, 282 px
@@ -2262,6 +2256,28 @@ filled in with something nobody had said.
   all. It asserts the count of `PERFORMER` lines, not just their presence — a disc line plus one
   track line for three tracks of which two are anonymous — because "contains the right string" would
   pass a writer that emitted a default for the other two.
+
+## Flat transfers cross one explicit disc-equalisation boundary
+
+`RestorationWorkbenchDialog` has two source modes. **RIAA already applied** preserves the ordinary
+restoration path. **Flat cartridge transfer** is an end-to-end render ordered as DC removal,
+azimuth, declip, click repair, decrackle, validated wow correction, playback equalisation,
+subsonic removal, side reduction, hum and broadband noise. Click/clipping/crackle analysis stays on
+the raw transfer, where impulse evidence is sharp. `CleanupAnalyzer` and automatic noise profiling
+receive a temporary DC-corrected, azimuth-aligned playback-equalised copy, because their thresholds
+and spectral evidence must describe the domain in which those stages render. The temporary copy is
+discarded after analysis and the document changes only at the final splice.
+
+The mode owns its curve choice (`RecordingCurves.All`) and defaults to RIAA (1954), playback,
+minimum phase. `Restore > Flat Vinyl Transfer Workflow` opens directly in that mode; the ordinary
+entry point leaves the mode explicit rather than guessing from samples. Azimuth is automatically
+selected only above 80% agreement and 5 µs. Wow is automatically selected only at 60% coverage and
+0.8% RMS, while the engine's 20% confidence remains the absolute safety gate for a user opt-in —
+coverage is not evidence that resampling improves mild material, and the six-corpus result below
+shows why the UI must default to measure-only there.
+
+The Master rack's Vinyl Cleanup limiter now ships and analyzes bypassed. Restoration does not make
+a delivery-loudness decision; `Edit > Normalize Loudness` remains the one explicit place for that.
 
 ## The workbench holds an analysis, which is a harder thing to be modeless about
 

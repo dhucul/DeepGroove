@@ -93,8 +93,37 @@ public sealed class EffectFactoryPresetTests
         Assert.False(State(preset, "filter").Enabled);
         Assert.False(State(preset, "dehum").Enabled);
         Assert.False(State(preset, "denoise").Enabled);
+        Assert.False(State(preset, "limiter").Enabled);
         Assert.Equal(1, Param(State(preset, "filter"), "phase"));
         Assert.Equal(1, Param(State(preset, "filter"), "slope"));
+    }
+
+    [Fact]
+    public void PublishedVinylCleanupMovesTheOldDeliveryLimiterToBypass()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"WaveLab.Tests.{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            EffectFactory.ChainPreset previous = EffectFactory.CreateFactoryPreset("Vinyl Cleanup");
+            EffectFactory.EffectState limiter = State(previous, "limiter");
+            limiter.Enabled = true;
+            limiter.Params["thresh"] = -1.5;
+            string path = Path.Combine(directory, "Vinyl Cleanup.chain.json");
+            File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(previous));
+
+            EffectFactory.EnsureFactoryPresets(directory);
+
+            EffectFactory.ChainPreset upgraded =
+                System.Text.Json.JsonSerializer.Deserialize<EffectFactory.ChainPreset>(File.ReadAllText(path))!;
+            Assert.False(State(upgraded, "limiter").Enabled);
+            Assert.Equal(0, Param(State(upgraded, "limiter"), "thresh"));
+        }
+        finally
+        {
+            foreach (string file in Directory.GetFiles(directory)) File.Delete(file);
+            Directory.Delete(directory);
+        }
     }
 
     [Fact]

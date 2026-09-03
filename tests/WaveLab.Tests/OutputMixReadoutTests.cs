@@ -11,9 +11,9 @@ namespace WaveLab.Tests;
 /// <para>
 /// <b>The mix is applied once, to the whole chain output</b>, so the share of the original it
 /// returns is a floor under everything the chain removed — and therefore a ceiling on every stage
-/// in it. At the shipped 90% default that ceiling is <b>20 dB</b>, which is well inside the range
-/// the deeper stages work in: the subsonic high-pass measures 40 dB at 10 Hz on a real transfer and
-/// lands at 19.7 through the dialog, and the notch bank's 42 dB of hum is capped at the same 20.
+/// in it. A 90% setting creates a <b>20 dB</b> ceiling, which is well inside the range the deeper
+/// stages work in: the subsonic high-pass measures 40 dB at 10 Hz on a real transfer and lands at
+/// 19.7 through that blend, and the notch bank's 42 dB of hum is capped at the same 20.
 /// </para>
 /// <para>
 /// It was found by measuring a residual rather than by reading the code, which is the argument for
@@ -27,11 +27,12 @@ public sealed class OutputMixReadoutTests(ITestOutputHelper output)
         RestorationWorkbenchDialog.DescribeOutputMix(restoredPercent / 100.0, bypass).ToString();
 
     /// <summary>
-    /// The default, and the number this whole line was added for: ten percent dry returning is
-    /// twenty decibels, and twenty decibels is less than three of the stages achieve on their own.
+    /// Ten percent dry returning is twenty decibels, and twenty decibels is less than three of the
+    /// stages achieve on their own. Restoration now defaults fully wet, but the optional blend must
+    /// still state the ceiling it introduces.
     /// </summary>
     [Fact]
-    public void TheShippedDefaultReportsATwentyDecibelCeiling()
+    public void A90PercentBlendReportsATwentyDecibelCeiling()
     {
         string line = Line(90);
         output.WriteLine(line);

@@ -1,7 +1,7 @@
 ﻿<Window x:Class="WaveLab.Views.RestorationWorkbenchDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Vinyl Restoration" Width="960" Height="760" MinWidth="860" MinHeight="680"
+        Title="Vinyl Transfer Workflow" Width="1000" Height="800" MinWidth="900" MinHeight="720"
         WindowStartupLocation="CenterOwner" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Foreground="{StaticResource Text}"
         FontFamily="{StaticResource UiFont}" FontSize="12.5" ShowInTaskbar="False"
@@ -47,8 +47,8 @@
                                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <StackPanel Margin="11,0,0,0">
-                            <TextBlock Text="Vinyl Restoration" FontSize="14" FontWeight="SemiBold"/>
-                            <TextBlock Text="Full-file offline analysis · optional audition · one-step undo"
+                            <TextBlock Text="Vinyl Transfer Workflow" FontSize="14" FontWeight="SemiBold"/>
+                            <TextBlock Text="Source-aware restoration · disc equalisation · one-step undo"
                                        Margin="0,2,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"/>
                         </StackPanel>
                     </StackPanel>
@@ -62,7 +62,9 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="18"/>
-                    <ColumnDefinition Width="250"/>
+                    <ColumnDefinition Width="230"/>
+                    <ColumnDefinition Width="18"/>
+                    <ColumnDefinition Width="230"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="APPLY RANGE" Style="{StaticResource UpperLabel}"/>
@@ -89,6 +91,15 @@
                     </Grid>
                 </StackPanel>
                 <Grid Grid.Column="2">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="5"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <TextBlock Text="SOURCE SIGNAL" Style="{StaticResource UpperLabel}"/>
+                    <ComboBox x:Name="sourceModeCombo" Grid.Row="2" Height="33" SelectedIndex="0"
+                              SelectionChanged="OnSourceModeChanged">
+                        <ComboBoxItem Content="RIAA already applied"/>
+                        <ComboBoxItem Content="Flat cartridge transfer"/>
+                    </ComboBox>
+                </Grid>
+                <Grid Grid.Column="4">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                     <TextBlock Text="RESTORATION PRESET" Style="{StaticResource UpperLabel}" VerticalAlignment="Center"/>
                     <ComboBox x:Name="presetCombo" Grid.Column="2" Height="33" SelectedIndex="1"
@@ -105,6 +116,38 @@
             <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                           Margin="20,0,12,0">
                 <StackPanel x:Name="controlsHost" Margin="0,0,8,14" IsEnabled="False">
+                    <!-- Transfer preparation is deliberately outside the repair grid. These stages
+                         establish the channel geometry and time base consumed by every repairer. -->
+                    <Border Style="{StaticResource Card}" Padding="14,12" Margin="0,0,0,10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="1"/>
+                                <ColumnDefinition Width="*"/><ColumnDefinition Width="1"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <CheckBox x:Name="removeDcEnabled" Content="Remove DC offset" IsChecked="True"
+                                          Checked="OnToolChanged" Unchecked="OnToolChanged"/>
+                                <TextBlock Text="Subtracts the measured channel bias before analysis-dependent repair."
+                                           Style="{StaticResource CardCaption}"/>
+                            </StackPanel>
+                            <Border Grid.Column="1" Background="{StaticResource LineSoft}" Margin="14,0"/>
+                            <StackPanel Grid.Column="2">
+                                <CheckBox x:Name="azimuthEnabled" Content="Correct stylus azimuth" IsChecked="False"
+                                          Checked="OnToolChanged" Unchecked="OnToolChanged"/>
+                                <TextBlock x:Name="azimuthEvidenceText" Text="Measuring channel timing…"
+                                           Style="{StaticResource CardCaption}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <Border Grid.Column="3" Background="{StaticResource LineSoft}" Margin="14,0"/>
+                            <StackPanel Grid.Column="4">
+                                <CheckBox x:Name="wowEnabled" Content="Correct wow &amp; flutter" IsChecked="False"
+                                          Checked="OnToolChanged" Unchecked="OnToolChanged"/>
+                                <TextBlock x:Name="wowEvidenceText" Text="Measuring time-base variation…"
+                                           Style="{StaticResource CardCaption}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
                     <!-- analysis overview -->
                     <Border Style="{StaticResource Card}" Padding="14,12" Margin="0,0,0,10">
                         <Grid>
@@ -133,10 +176,21 @@
 
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="8"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="10"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="10"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="10"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="8"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="10"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock x:Name="preStageLabel" Grid.ColumnSpan="3" Text="REPAIR BEFORE DISC EQUALISATION"
+                                   Style="{StaticResource UpperLabel}"/>
 
                         <!-- click / pop repair -->
-                        <Border Style="{StaticResource Card}">
+                        <Border Grid.Row="2" Style="{StaticResource Card}">
                             <StackPanel>
                                 <Grid>
                                     <TextBlock Text="Click &amp; Pop Repair" FontSize="14" FontWeight="SemiBold"/>
@@ -163,7 +217,7 @@
                         </Border>
 
                         <!-- declip -->
-                        <Border Grid.Column="2" Style="{StaticResource Card}">
+                        <Border Grid.Row="2" Grid.Column="2" Style="{StaticResource Card}">
                             <StackPanel>
                                 <Grid>
                                     <TextBlock Text="Declip Distorted Peaks" FontSize="14" FontWeight="SemiBold"/>
@@ -204,8 +258,53 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- surface crackle remains before the disc curve so impulses stay sharp. -->
+                        <Border Grid.Row="4" Style="{StaticResource Card}">
+                            <StackPanel>
+                                <Grid>
+                                    <TextBlock Text="Surface Crackle" FontSize="14" FontWeight="SemiBold"/>
+                                    <CheckBox x:Name="decrackleEnabled" HorizontalAlignment="Right" IsChecked="False"
+                                              Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
+                                </Grid>
+                                <TextBlock Text="The dense population of tiny defects below the click detector's reach, found on the prediction residual because music is predictable and dirt is not."
+                                           Style="{StaticResource CardCaption}"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
+                                    <TextBlock Text="Detection threshold" Foreground="{StaticResource Muted}"/>
+                                    <TextBlock x:Name="decrackleThresholdText" Grid.Column="1" Style="{StaticResource ValueReadout}"/>
+                                </Grid>
+                                <Slider x:Name="decrackleThreshold" Minimum="2" Maximum="8" Value="3.5"
+                                        ValueChanged="OnParameterChanged"/>
+                                <TextBlock x:Name="decrackleEvidenceText" Margin="0,8,0,0" FontSize="10.5"
+                                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- A flat transfer crosses this boundary exactly once. Cleanup analysis is
+                             performed in the same post-curve domain that the stages below receive. -->
+                        <Border x:Name="curveCard" Grid.Row="6" Grid.ColumnSpan="3" Style="{StaticResource Card}" Padding="14,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="220"/><ColumnDefinition Width="12"/><ColumnDefinition Width="180"/></Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="DISC EQUALISATION BOUNDARY" Style="{StaticResource UpperLabel}"/>
+                                    <TextBlock x:Name="curveSummaryText" Text="The source is already equalised; no disc curve will be applied."
+                                               Margin="0,5,0,0" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                                </StackPanel>
+                                <ComboBox x:Name="curveCombo" Grid.Column="2" Height="32" SelectedIndex="0"
+                                          SelectionChanged="OnCurveChanged"/>
+                                <ComboBox x:Name="curvePhaseCombo" Grid.Column="4" Height="32" SelectedIndex="0"
+                                          SelectionChanged="OnToolChanged">
+                                    <ComboBoxItem Content="Minimum phase"/>
+                                    <ComboBoxItem Content="Linear phase"/>
+                                </ComboBox>
+                            </Grid>
+                        </Border>
+
+                        <TextBlock x:Name="postStageLabel" Grid.Row="8" Grid.ColumnSpan="3" Text="CLEANUP AFTER DISC EQUALISATION"
+                                   Style="{StaticResource UpperLabel}"/>
+
                         <!-- noise / hiss -->
-                        <Border Grid.Row="2" Style="{StaticResource Card}">
+                        <Border Grid.Row="10" Style="{StaticResource Card}">
                             <StackPanel>
                                 <Grid>
                                     <TextBlock Text="Noise &amp; Hiss Reduction" FontSize="14" FontWeight="SemiBold"/>
@@ -236,7 +335,7 @@
                         </Border>
 
                         <!-- hum -->
-                        <Border Grid.Row="2" Grid.Column="2" Style="{StaticResource Card}">
+                        <Border Grid.Row="10" Grid.Column="2" Style="{StaticResource Card}">
                             <StackPanel>
                                 <Grid>
                                     <TextBlock Text="Hum Removal" FontSize="14" FontWeight="SemiBold"/>
@@ -283,7 +382,7 @@
                         </Border>
 
                         <!-- subsonic rumble -->
-                        <Border Grid.Row="4" Style="{StaticResource Card}">
+                        <Border Grid.Row="12" Style="{StaticResource Card}">
                             <StackPanel>
                                 <Grid>
                                     <TextBlock Text="Subsonic Rumble" FontSize="14" FontWeight="SemiBold"/>
@@ -305,7 +404,7 @@
                         </Border>
 
                         <!-- vertical surface noise -->
-                        <Border Grid.Row="4" Grid.Column="2" Style="{StaticResource Card}">
+                        <Border Grid.Row="12" Grid.Column="2" Style="{StaticResource Card}">
                             <StackPanel>
                                 <Grid>
                                     <TextBlock Text="Vertical Surface Noise" FontSize="14" FontWeight="SemiBold"/>
@@ -326,27 +425,6 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- surface crackle -->
-                        <Border Grid.Row="6" Style="{StaticResource Card}">
-                            <StackPanel>
-                                <Grid>
-                                    <TextBlock Text="Surface Crackle" FontSize="14" FontWeight="SemiBold"/>
-                                    <CheckBox x:Name="decrackleEnabled" HorizontalAlignment="Right" IsChecked="False"
-                                              Content="Enabled" Checked="OnToolChanged" Unchecked="OnToolChanged"/>
-                                </Grid>
-                                <TextBlock Text="The dense population of tiny defects below the click detector's reach, found on the prediction residual because music is predictable and dirt is not."
-                                           Style="{StaticResource CardCaption}"/>
-                                <Grid>
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
-                                    <TextBlock Text="Detection threshold" Foreground="{StaticResource Muted}"/>
-                                    <TextBlock x:Name="decrackleThresholdText" Grid.Column="1" Style="{StaticResource ValueReadout}"/>
-                                </Grid>
-                                <Slider x:Name="decrackleThreshold" Minimum="2" Maximum="8" Value="3.5"
-                                        ValueChanged="OnParameterChanged"/>
-                                <TextBlock x:Name="decrackleEvidenceText" Margin="0,8,0,0" FontSize="10.5"
-                                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-                            </StackPanel>
-                        </Border>
                     </Grid>
 
                     <!-- audition / output -->
@@ -356,15 +434,15 @@
                             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                             <StackPanel>
                                 <TextBlock Text="OUTPUT MIX" Style="{StaticResource UpperLabel}"/>
-                                <TextBlock Text="Sample-aligned dry / restored" Margin="0,5,0,0" Foreground="{StaticResource Muted}" FontSize="10.5"/>
+                                <TextBlock x:Name="mixCaptionText" Text="Sample-aligned dry / restored" Margin="0,5,0,0" Foreground="{StaticResource Muted}" FontSize="10.5"/>
                             </StackPanel>
                             <Grid Grid.Column="1" Margin="14,0">
                                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <Grid>
                                     <TextBlock Text="Dry" Foreground="{StaticResource Faint}"/>
-                                    <TextBlock x:Name="mixText" Text="90% restored" Style="{StaticResource ValueReadout}"/>
+                                    <TextBlock x:Name="mixText" Text="100% restored" Style="{StaticResource ValueReadout}"/>
                                 </Grid>
-                                <Slider x:Name="globalMix" Grid.Row="1" Minimum="0" Maximum="100" Value="90"
+                                <Slider x:Name="globalMix" Grid.Row="1" Minimum="0" Maximum="100" Value="100"
                                         ValueChanged="OnParameterChanged"/>
                                 <!-- The blend is applied once to the whole chain output, so the dry
                                      share it returns is a ceiling on every stage below. Saying so is

@@ -787,6 +787,17 @@ public partial class MainWindow : Window
         });
     }
 
+    private void OnFlatVinylWorkflow(object sender, RoutedEventArgs e)
+    {
+        var document = Doc;
+        if (document == null || document.Doc.Length == 0) return;
+        RestorationWorkbenchDialog.ShowFor(document, _vm, this, prepareCd =>
+        {
+            if (prepareCd && _vm.Documents.Contains(document))
+                CdTransferDialog.ShowFor(document, _vm, this);
+        }, startWithFlatTransfer: true);
+    }
+
     /// <summary>
     /// Run a data-transforming op off the UI thread, then commit it as an undoable edit.
     /// <paramref name="target"/> is the document the caller validated *before* it showed its
@@ -2849,6 +2860,7 @@ public partial class MainWindow : Window
             new("Mix Down to Mono", null, () => OnMonoMixdown(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Learn Noise Profile from Selection", null, () => OnLearnNoise(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Vinyl Restoration & CD Transfer…", null, () => OnVinylWorkflow(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
+            new("Flat Vinyl Transfer Workflow…", null, () => OnFlatVinylWorkflow(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Prepare Tracks for Audio CD…", null, () => OnPrepareAudioCd(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Reduce Noise…", null, () => OnReduceNoise(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             VmCommand("Interpolate Selection", null, _vm.InterpolateRepairCommand),

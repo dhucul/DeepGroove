@@ -357,7 +357,7 @@ public sealed class CleanupAnalyzerTests
     }
 
     [Fact]
-    public void ApplyingEveryDefaultRecommendationToSilenceKeepsCleanupProcessorsBypassed()
+    public void ApplyingEveryDefaultRecommendationToSilenceKeepsCleanupAndDeliveryProcessorsBypassed()
     {
         float[][] input = [new float[SampleRate * 2], new float[SampleRate * 2]];
         CleanupAnalysisResult result = CleanupAnalyzer.Analyze(
@@ -373,7 +373,7 @@ public sealed class CleanupAnalyzerTests
         foreach (string typeId in (string[])["filter", "dehum", "denoise", "eq"])
             Assert.False(State(applied, typeId).Enabled);
 
-        Assert.True(State(applied, "limiter").Enabled);
+        Assert.False(State(applied, "limiter").Enabled);
     }
 
     [Fact]

@@ -332,7 +332,7 @@ public static class EffectFactory
                  DisabledState("dehum", ("frequency", 60.0), ("harmonics", 6.0), ("q", 40.0), ("amount", 0.75)),
                  DisabledState("denoise", ("threshold", -62.0), ("reduction", 8.0), ("hiss", 6.0), ("release", 350.0)),
                  State("eq", ("lowGain", 0.5), ("midGain", 0.5), ("highGain", 1.0)),
-                 State("limiter", ("thresh", -1.5), ("ceiling", -1.0))],
+                 DisabledState("limiter", ("thresh", 0.0), ("ceiling", -1.0))],
             "Mono Record Presence" =>
                 [State("mono-stereo", ("amount", 0.38), ("delay", 11.0), ("bass", 160.0), ("safety", 0.9)),
                  State("stereo-width", ("width", 1.15), ("monoBass", 140.0), ("safety", 1.0)),
@@ -463,8 +463,9 @@ public static class EffectFactory
             ChainPreset legacy = CreateLegacyFactoryPreset(name);
             ChainPreset previous = CreatePreviousFactoryPreset(name);
             ChainPreset oldest = CreateOldestFactoryPreset(name);
+            ChainPreset preWorkflow = CreatePreTransferWorkflowFactoryPreset(name);
             if ((PresetStatesEqual(existing, legacy) || PresetStatesEqual(existing, previous) ||
-                 PresetStatesEqual(existing, oldest)) &&
+                 PresetStatesEqual(existing, oldest) || PresetStatesEqual(existing, preWorkflow)) &&
                 !PresetStatesEqual(existing, currentFactoryPreset))
                 WritePresetAtomically(currentFactoryPreset, path, overwrite: true);
         }
@@ -481,6 +482,22 @@ public static class EffectFactory
         name = name.Trim();
         foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
         return PresetPath(AppSettings.PresetsDir, name);
+    }
+
+    /// <summary>
+    /// Recreates the generated preset immediately before restoration and delivery were separated.
+    /// User-edited files still fail the semantic comparison and are preserved byte for byte.
+    /// </summary>
+    private static ChainPreset CreatePreTransferWorkflowFactoryPreset(string name)
+    {
+        ChainPreset previous = CreateFactoryPreset(name);
+        if (name == "Vinyl Cleanup")
+        {
+            EffectState limiter = previous.Effects.First(effect => effect.TypeId == "limiter");
+            limiter.Enabled = true;
+            limiter.Params["thresh"] = -1.5;
+        }
+        return previous;
     }
 
     private static string PresetPath(string directory, string name)
