@@ -788,6 +788,19 @@ shipped detector (six transfers from `Music\mymusic`, 44.1 kHz stereo float).
   recommendation*, where the same weakness costs a slightly wrong `NoiseFloorDb` readout rather than
   destroying audio. `ProgramBlockClassifier.ThresholdAboveFloor` is the shared gate; the percentile
   entry point stays for that caller.
+- **A fixed trim margin is still unsafe for a flat, bass-heavy fade.** A regression built as music,
+  passed through the RIAA record curve, mixed with surface noise and faded over 30 seconds reproduced
+  the report. The first test version only protected the final trim; review caught that capture could
+  still stop during a longer fade, and that the test silently moved its expected endpoint when its
+  feeder returned early. Both are fixed. The detector compares three consecutive one-second medians;
+  while each falls by at least 0.15 dB and the last remains above the learned floor margin, the block
+  advances the content point instead of spending the run-out hold. After any detected fade it must
+  remain settled for three seconds before the ordinary hold begins. The first settled block is kept
+  as the candidate fade endpoint while that confirmation and hold run; if the fade resumes, the
+  candidate is discarded. Finalization trims both paths to two seconds after their confirmed ending.
+  The regression calculates its expected endpoint from the complete input buffer, fails if capture
+  stops before consuming it, and rejects an untrimmed safety hold with an upper bound.
+  `AFlatBassHeavyFadeIsKeptUntilItEnds` and `TrimKeepsTwoSecondsPastTheLastProgramme` pin the two paths.
 - **Reviewing the fix found that it had introduced a worse failure than the one it removed, and the
   mechanism is the ratchet.** The floor only ever moves down, so unlike the window it replaced it
   cannot recover from one bad reading — and **arming the recorder and then cueing the stylus by hand

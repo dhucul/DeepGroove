@@ -32,6 +32,13 @@ internal sealed class RunOutDetector
 {
     private const double SubBlockSeconds = 0.01;
     private const int SubBlocksPerBlock = 10;
+    // Three one-second medians make a falling tail a sequence, not a comparison
+    // between two possibly unrepresentative endpoints.
+    private const int TailTrendSegmentBlocks = 10;
+    private const int TailTrendBlocks = TailTrendSegmentBlocks * 3;
+    private const double MinimumFadeSegmentDropDb = 0.15;
+    private const double FadeFloorMarginDb = 1.5;
+    private const double FadeSettlementSeconds = 3;
     // Classification rules live in ProgramBlockClassifier, shared with the offline
     // RecordingLevelAnalyzer. Only the minimum peak is local: this detector merely
     // has to notice that the music stopped, so it accepts quieter programme than
@@ -65,7 +72,7 @@ internal sealed class RunOutDetector
     public const double MaximumHoldSeconds = 60;
     public const double DefaultHoldSeconds = 12;
 
-    /// <summary>Audio kept after the last programme block, so a fade tail survives the trim.</summary>
+    /// <summary>Audio kept after an ordinary level run-out; a falling fade keeps the full hold.</summary>
     public const double KeepAfterProgramSeconds = 2;
 
     private readonly double _holdSeconds;
@@ -78,6 +85,7 @@ internal sealed class RunOutDetector
     private readonly bool[] _hasPreviousActivitySample;
     private readonly long[] _blockZeroCrossings;
     private readonly double[] _subBlockLevelsDb = new double[SubBlocksPerBlock];
+    private readonly double[] _tailLevelsDb = new double[TailTrendBlocks];
 
     /// <summary>The take's quietest qualifying blocks so far, ascending.</summary>
     private readonly double[] _quietestDb = new double[FloorBlocks];
@@ -90,6 +98,9 @@ internal sealed class RunOutDetector
 
     private long _samplesSinceProgram;
     private long _pendingBlockSamples;
+    private long _samplesSinceFadeEnd;
+    private int _tailLevelCount;
+    private bool _fadeSettlementComplete;
 
     public RunOutDetector(int sampleRate, int channels, double holdSeconds = DefaultHoldSeconds)
     {
@@ -114,6 +125,12 @@ internal sealed class RunOutDetector
 
     /// <summary>True once the run-out hold has elapsed; latched.</summary>
     public bool IsTriggered { get; private set; }
+
+    /// <summary>
+    /// True when the final below-threshold interval contained a continuing fade.
+    /// Such blocks defer the run-out hold until their level settles.
+    /// </summary>
+    public bool PreservedFadingTail { get; private set; }
 
     public double HoldSeconds => _holdSeconds;
 
@@ -152,7 +169,8 @@ internal sealed class RunOutDetector
         {
             if (!IsTriggered) return 0;
             long keep = (long)Math.Round(KeepAfterProgramSeconds * _sampleRate) * _channels;
-            return Math.Max(0, _samplesSinceProgram - keep);
+            long tail = PreservedFadingTail ? _samplesSinceFadeEnd : _samplesSinceProgram;
+            return Math.Max(0, tail - keep);
         }
     }
 
@@ -182,16 +200,49 @@ internal sealed class RunOutDetector
             if (++_subBlockFill >= _subBlockFrames) CompleteSubBlock();
             if (++_blockFill < _blockFrames) continue;
 
-            if (CompleteBlock())
+            if (CompleteBlock(out double activityDb))
             {
                 // The block just ended, so everything up to its end is
                 // programme; anything read past it starts the next hold.
                 _samplesSinceProgram = 0;
                 _pendingBlockSamples = 0;
                 HasHeardProgram = true;
+                ResetTailTrend();
             }
             else
             {
+                bool fading = false;
+                if (HasHeardProgram)
+                {
+                    ObserveTailLevel(activityDb);
+                    fading = TailIsStillFading();
+                }
+
+                if (fading)
+                {
+                    // This block remains part of a descending musical tail. Move
+                    // the last-content point forward and do not spend any of the
+                    // run-out hold until the level has settled near the groove.
+                    _samplesSinceProgram = 0;
+                    _pendingBlockSamples = 0;
+                    _samplesSinceFadeEnd = 0;
+                    _fadeSettlementComplete = false;
+                    PreservedFadingTail = true;
+                    continue;
+                }
+
+                if (PreservedFadingTail && !_fadeSettlementComplete)
+                {
+                    _samplesSinceFadeEnd += _pendingBlockSamples;
+                    _samplesSinceProgram = 0;
+                    _pendingBlockSamples = 0;
+                    if (SamplesToSeconds(_samplesSinceFadeEnd) >= FadeSettlementSeconds)
+                        _fadeSettlementComplete = true;
+                    continue;
+                }
+
+                if (PreservedFadingTail)
+                    _samplesSinceFadeEnd += _pendingBlockSamples;
                 _samplesSinceProgram += _pendingBlockSamples;
                 _pendingBlockSamples = 0;
                 if (HasHeardProgram && SecondsSinceProgram >= _holdSeconds)
@@ -238,11 +289,11 @@ internal sealed class RunOutDetector
         _subBlockActivityPower = 0;
     }
 
-    /// <summary>Classifies the finished block against the sliding window, then clears the accumulators.</summary>
-    private bool CompleteBlock()
+    /// <summary>Classifies the finished block against the learned floor, then clears the accumulators.</summary>
+    private bool CompleteBlock(out double activityDb)
     {
         int levels = Math.Min(_subBlockIndex, SubBlocksPerBlock);
-        double activityDb = levels > 0 ? Median(_subBlockLevelsDb, levels) : double.NegativeInfinity;
+        activityDb = levels > 0 ? Median(_subBlockLevelsDb, levels) : double.NegativeInfinity;
         double peakDb = ToDb(_blockPeak);
         double crossingsPerSecond = _blockZeroCrossings.Max() / (_blockFill / (double)_sampleRate);
 
@@ -259,6 +310,51 @@ internal sealed class RunOutDetector
         Array.Clear(_blockZeroCrossings);
         return program;
     }
+
+    private void ObserveTailLevel(double activityDb)
+    {
+        if (!double.IsFinite(activityDb)) return;
+
+        if (_tailLevelCount < TailTrendBlocks)
+        {
+            _tailLevelsDb[_tailLevelCount++] = activityDb;
+            return;
+        }
+
+        Array.Copy(_tailLevelsDb, 1, _tailLevelsDb, 0, TailTrendBlocks - 1);
+        _tailLevelsDb[TailTrendBlocks - 1] = activityDb;
+    }
+
+    private bool TailIsStillFading()
+    {
+        if (_tailLevelCount < TailTrendBlocks) return false;
+
+        double opening = Median(_tailLevelsDb, 0, TailTrendSegmentBlocks);
+        double middle = Median(_tailLevelsDb, TailTrendSegmentBlocks, TailTrendSegmentBlocks);
+        double recent = Median(_tailLevelsDb, TailTrendSegmentBlocks * 2, TailTrendSegmentBlocks);
+        if (!double.IsFinite(opening) || !double.IsFinite(middle) || !double.IsFinite(recent))
+            return false;
+
+        if (_quietCount >= FloorBlocks
+            && recent <= _quietestDb[FloorBlocks - 1] + FadeFloorMarginDb)
+        {
+            return false;
+        }
+
+        return opening - middle >= MinimumFadeSegmentDropDb
+               && middle - recent >= MinimumFadeSegmentDropDb;
+    }
+
+    private void ResetTailTrend()
+    {
+        _tailLevelCount = 0;
+        _samplesSinceFadeEnd = 0;
+        _fadeSettlementComplete = false;
+        PreservedFadingTail = false;
+    }
+
+    private double SamplesToSeconds(long samples) =>
+        (double)samples / _channels / _sampleRate;
 
     private bool IsProgram(double activityDb, double peakDb, double crossingsPerSecond) =>
         ProgramBlockClassifier.IsProgram(
@@ -313,11 +409,12 @@ internal sealed class RunOutDetector
         _quietestDb[index] = activityDb;
     }
 
-    private static double Median(double[] values, int count)
+    private static double Median(double[] values, int count) => Median(values, 0, count);
+
+    private static double Median(double[] values, int offset, int count)
     {
-        Span<double> copy = stackalloc double[SubBlocksPerBlock];
-        values.AsSpan(0, count).CopyTo(copy);
-        Span<double> used = copy[..count];
+        Span<double> used = stackalloc double[count];
+        values.AsSpan(offset, count).CopyTo(used);
         used.Sort();
         return count % 2 == 1
             ? used[count / 2]

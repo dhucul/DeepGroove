@@ -165,7 +165,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 // trimmed and handed over exactly as a manual stop would be.
                 try { await StopAndFinishSessionAsync(info.SessionId); }
                 catch (Exception ex) { failure = ex; }
-                if (failure == null) NoteAutoStopReason(info.Reason);
+                if (failure == null) NoteAutoStopReason(info);
                 AutoStopped?.Invoke(info, failure);
             });
         };
@@ -176,14 +176,17 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     /// closes on an auto-stop, so this is where the reason survives; a banner
     /// would vanish with the window.
     /// </summary>
-    private void NoteAutoStopReason(AutoStopReason reason)
+    private void NoteAutoStopReason(AutoStopInfo info)
     {
-        string note = reason switch
+        string note = info switch
         {
-            AutoStopReason.RunOut =>
+            { Reason: AutoStopReason.RunOut, PreservedFadingTail: true } =>
+                $"Stopped automatically at the run-out groove; the complete fading ending was preserved and "
+                + $"{RunOutDetector.KeepAfterProgramSeconds:0.#} s was kept after it.",
+            { Reason: AutoStopReason.RunOut } =>
                 $"Stopped automatically at the run-out groove; {RunOutDetector.KeepAfterProgramSeconds:0.#} s "
                 + "was kept after the last programme content and the rest of the run-out discarded.",
-            AutoStopReason.DurationLimit =>
+            { Reason: AutoStopReason.DurationLimit } =>
                 $"Stopped automatically at the {_autoStopMinutes} minute take limit; all captured audio was kept.",
             _ => "",
         };

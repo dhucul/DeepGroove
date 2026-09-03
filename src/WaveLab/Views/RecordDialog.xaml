@@ -484,7 +484,7 @@
                                   Checked="OnAutoStopOptionChanged" Unchecked="OnAutoStopOptionChanged"
                                   ToolTip="Listens for the run-out groove — surface noise with no music in it"
                                   AutomationProperties.Name="Stop recording at the run-out groove"/>
-                        <TextBlock Text="Listens for surface noise with no music in it. Keeps 2 s past the last programme content and trims the rest."
+                        <TextBlock Text="Keeps 2 s after the ending. A continuing fade defers the wait until it settles."
                                    Margin="22,4,0,0" FontSize="10.5" Foreground="{StaticResource Faint}"
                                    TextWrapping="Wrap"/>
                         <StackPanel x:Name="runOutHoldRow" Orientation="Horizontal" Margin="25,10,0,0">

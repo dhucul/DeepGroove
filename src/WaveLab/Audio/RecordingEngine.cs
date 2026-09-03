@@ -18,7 +18,10 @@ public enum AutoStopReason
     DurationLimit,
 }
 
-public sealed record AutoStopInfo(long SessionId, AutoStopReason Reason);
+public sealed record AutoStopInfo(
+    long SessionId,
+    AutoStopReason Reason,
+    bool PreservedFadingTail = false);
 
 /// <summary>WASAPI capture into memory; produces a new AudioDocument on stop.</summary>
 public sealed class RecordingEngine : IDisposable
@@ -843,7 +846,11 @@ public sealed class RecordingEngine : IDisposable
         }
         if (needleDropTriggered) RaiseNeedleDropTriggered(session.Id);
         if (autoStopReason != AutoStopReason.None)
-            RaiseAutoStopTriggered(new AutoStopInfo(session.Id, autoStopReason));
+        {
+            bool preservedFade = autoStopReason == AutoStopReason.RunOut
+                                 && session.RunOut?.PreservedFadingTail == true;
+            RaiseAutoStopTriggered(new AutoStopInfo(session.Id, autoStopReason, preservedFade));
+        }
     }
 
     /// <summary>
@@ -1116,9 +1123,10 @@ public sealed class RecordingEngine : IDisposable
                     Interlocked.Exchange(ref _totalSamples, 0);
                     return null;
                 }
-                // A run-out auto-stop keeps only what it measured, so the take
-                // ends a couple of seconds past the music instead of carrying
-                // the whole hold period. Trailing blocks stay in the array and
+                // A run-out auto-stop normally keeps two seconds past the last
+                // programme block. If the below-threshold interval kept falling
+                // like a fade, the confirmed fade endpoint replaces that block.
+                // Trailing blocks stay in the array and
                 // are simply not read: BuildDocument stops at the frame count.
                 // Deliberately independent of whether the owner acted on the
                 // notification: the trim describes what the detector measured,

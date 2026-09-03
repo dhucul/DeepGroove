@@ -1,4 +1,5 @@
 using WaveLab.Audio;
+using WaveLab.Audio.Dsp;
 using Xunit;
 
 namespace WaveLab.Tests;
@@ -47,6 +48,7 @@ public sealed class RunOutDetectorTests
 
         long kept = feed.TotalSamples - detector.TrimBackoffSamples;
 
+        Assert.False(detector.PreservedFadingTail);
         Assert.True(kept >= musicEnd, "the trim must never cut into the programme");
         Assert.InRange(SecondsBetween(musicEnd, kept), 1.4, 2.6);
     }
@@ -150,6 +152,54 @@ public sealed class RunOutDetectorTests
         Assert.True(
             keptPastFadeStart >= FadeSeconds,
             $"the fade was cut {FadeSeconds - keptPastFadeStart:0.0} s early");
+    }
+
+    [Fact]
+    public void AFlatBassHeavyFadeIsKeptUntilItEnds()
+    {
+        const double ProgramSeconds = 20;
+        const double FadeSeconds = 30;
+        int frames = (int)((ProgramSeconds + FadeSeconds) * SampleRate);
+        var left = new float[frames];
+        var right = new float[frames];
+        for (int frame = 0; frame < frames; frame++)
+        {
+            double t = frame / (double)SampleRate;
+            double through = Math.Clamp((t - ProgramSeconds) / FadeSeconds, 0, 1);
+            double fade = 1 - through;
+            double music = 0.20 * (Math.Sin(2 * Math.PI * 80 * t)
+                                   + 0.55 * Math.Sin(2 * Math.PI * 160 * t)
+                                   + 0.30 * Math.Sin(2 * Math.PI * 320 * t)) / 1.85;
+            left[frame] = (float)(music * fade);
+            right[frame] = (float)(music * fade * 0.97);
+        }
+
+        float[][] flat = [left, right];
+        RecordingCurves.Apply(flat, RecordingCurves.Spec(RecordingCurve.Riaa), SampleRate,
+            CurveDirection.Record, CurvePhase.Minimum);
+        for (int frame = 0; frame < frames; frame++)
+        {
+            left[frame] += (float)RunOut(frame);
+            right[frame] += (float)(RunOut(frame + 17) * 0.97);
+        }
+
+        var detector = new RunOutDetector(SampleRate, Channels, Hold);
+        var feed = new Feeder(detector);
+        feed.Play(RunOut, seconds: 5);
+        long fadeEnd = feed.TotalSamples + (long)frames * Channels;
+        bool consumedCompleteFade = feed.Play(flat);
+
+        Assert.True(consumedCompleteFade,
+            $"recording stopped {SecondsBetween(feed.TotalSamples, fadeEnd):0.0} s before the flat fade ended");
+        Assert.Equal(fadeEnd, feed.TotalSamples);
+        feed.Play(RunOut, seconds: 40);
+
+        Assert.True(detector.IsTriggered);
+        Assert.True(detector.PreservedFadingTail);
+        long kept = feed.TotalSamples - detector.TrimBackoffSamples;
+        Assert.True(detector.TrimBackoffSamples > 0,
+            "a protected fade must still discard the safety hold after its confirmed endpoint");
+        Assert.InRange(SecondsBetween(fadeEnd, kept), 1.0, 3.0);
     }
 
     /// <summary>
@@ -354,6 +404,27 @@ public sealed class RunOutDetectorTests
                 TotalSamples += packet.Length;
                 if (detector.Process(packet, packet.Length, Channels)) return;
             }
+        }
+
+        public bool Play(float[][] channels)
+        {
+            Assert.Equal(Channels, channels.Length);
+            Assert.Equal(channels[0].Length, channels[1].Length);
+            var packet = new float[PacketFrames * Channels];
+            for (int offset = 0; offset < channels[0].Length; offset += PacketFrames)
+            {
+                int packetFrames = Math.Min(PacketFrames, channels[0].Length - offset);
+                for (int frame = 0; frame < packetFrames; frame++)
+                {
+                    packet[frame * Channels] = channels[0][offset + frame];
+                    packet[frame * Channels + 1] = channels[1][offset + frame];
+                }
+                int samples = packetFrames * Channels;
+                _frame += packetFrames;
+                TotalSamples += samples;
+                if (detector.Process(packet, samples, Channels)) return false;
+            }
+            return true;
         }
     }
 }
