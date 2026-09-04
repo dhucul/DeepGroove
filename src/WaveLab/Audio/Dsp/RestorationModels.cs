@@ -9,7 +9,8 @@ public enum ImpulseDefectKind
 
 /// <summary>
 /// A detected impulsive defect. <see cref="EndSample"/> is exclusive and all sample
-/// positions are relative to the buffers supplied to the analyser.
+/// positions are relative to the buffers supplied to the analyser. <see cref="SampleRate"/>
+/// travels with the event so later repair guards remain the same duration at every source rate.
 /// </summary>
 public readonly record struct ClickEvent(
     int Channel,
@@ -20,7 +21,8 @@ public readonly record struct ClickEvent(
     float Confidence,
     float Severity,
     float PeakAmplitude,
-    float DetectionThreshold)
+    float DetectionThreshold,
+    int SampleRate = 0)
 {
     public int Length => Math.Max(0, EndSample - StartSample);
 }

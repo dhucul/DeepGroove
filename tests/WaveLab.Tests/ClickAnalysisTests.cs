@@ -59,6 +59,44 @@ public sealed class ClickAnalysisTests
     }
 
     [Fact]
+    public void AnalysisKeepsTheCompleteEnvelopeOfAShortRingingPop()
+    {
+        float[][] audio = ComplexProgram(seconds: 2);
+        int start = SampleRate;
+        const int secondLobe = 150; // ringing lobe within the five-millisecond pop contract
+        const int lobeLength = 18;
+        for (int offset = 0; offset < lobeLength; offset++)
+        {
+            double decay = Math.Exp(-offset / 7.0);
+            audio[0][start + offset] += (float)(0.78 * decay * (offset % 2 == 0 ? 1 : -1));
+            audio[0][start + secondLobe + offset] +=
+                (float)(0.58 * decay * (offset % 2 == 0 ? -1 : 1));
+        }
+
+        ClickAnalysisResult result = Analyze(audio, sensitivity: 7);
+
+        Assert.Contains(result.Events, item =>
+            item.StartSample <= start + 1 &&
+            item.EndSample >= start + secondLobe + lobeLength - 1);
+    }
+
+    [Fact]
+    public void CompactCoreDoesNotRestoreAnEnvelopeRejectedForPoorRecovery()
+    {
+        float[][] audio = Program(seconds: 2);
+        int click = SampleRate;
+        int attack = click + 70;
+        audio[0][click] += 0.82f;
+        for (int index = attack; index < attack + 500; index++)
+            audio[0][index] += 0.40f;
+
+        ClickAnalysisResult result = Analyze(audio, sensitivity: 7);
+
+        Assert.DoesNotContain(result.Events, item =>
+            item.StartSample <= click + 1 && item.EndSample >= attack);
+    }
+
+    [Fact]
     public void RepairRemovesMostOfAnObviousShortPop()
     {
         float[][] clean = Program(seconds: 2);
@@ -163,6 +201,35 @@ public sealed class ClickAnalysisTests
     }
 
     [Fact]
+    public void PopRepairIncludesAQuieterLobeOutsideTheDetectedCore()
+    {
+        float[][] clean = ComplexProgram(seconds: 2);
+        float[][] damaged = [clean[0].ToArray()];
+        int coreStart = SampleRate;
+        const int leadingLobe = 28;
+        const int coreLength = 20;
+        for (int offset = -leadingLobe; offset < coreLength; offset++)
+        {
+            double distance = offset < 0 ? -offset : offset;
+            double amplitude = offset < 0 ? 0.30 : 0.75;
+            damaged[0][coreStart + offset] +=
+                (float)(amplitude * Math.Exp(-distance / 10.0) * (offset % 2 == 0 ? 1 : -1));
+        }
+
+        float[][] repaired = Restoration.RepairClicks(damaged,
+            [Event(channel: 0, coreStart, coreStart + coreLength)],
+            new ClickRepairOptions { Strength = 1 });
+
+        int completeStart = coreStart - leadingLobe;
+        int completeLength = leadingLobe + coreLength;
+        double damagedError = Error(damaged[0], clean[0], completeStart, completeLength);
+        double repairedError = Error(repaired[0], clean[0], completeStart, completeLength);
+        Assert.True(repairedError < damagedError * 0.2,
+            $"Expected the quiet lobe to be included in repair, got " +
+            $"{repairedError / damagedError:P1} error.");
+    }
+
+    [Fact]
     public void ChannelLinkingCanBeDisabledForUnrelatedMultichannelAudio()
     {
         float[] cleanLeft = ComplexProgram(seconds: 2)[0];
@@ -178,6 +245,61 @@ public sealed class ClickAnalysisTests
             new ClickRepairOptions { Strength = 1, LinkChannels = false });
 
         Assert.Equal(cleanRight, repaired[1]);
+    }
+
+    [Fact]
+    public void UnlinkedChannelsBuildIndependentRepairEnvelopes()
+    {
+        ClickEvent[] events =
+        [
+            Event(channel: 0, start: 1_000, end: 1_040,
+                kind: ImpulseDefectKind.Pop, sampleRate: SampleRate),
+            Event(channel: 1, start: 1_010, end: 1_014,
+                kind: ImpulseDefectKind.Click, sampleRate: SampleRate),
+        ];
+
+        ClickEvent[] plan = Restoration.CreateClickRepairPlan(events,
+            channelCount: 2, sampleCount: 4_000, linkChannels: false);
+
+        ClickEvent left = Assert.Single(plan, item => item.Channel == 0);
+        ClickEvent right = Assert.Single(plan, item => item.Channel == 1);
+        Assert.Equal((964, 1_076), (left.StartSample, left.EndSample));
+        Assert.Equal((1_001, 1_023), (right.StartSample, right.EndSample));
+    }
+
+    [Theory]
+    [InlineData(44_100, 33)]
+    [InlineData(96_000, 72)]
+    [InlineData(192_000, 144)]
+    public void PopRepairGuardRepresentsTheSameDurationAtEverySampleRate(
+        int sampleRate, int expectedGuard)
+    {
+        const int start = 1_000;
+        const int end = 1_020;
+        ClickEvent[] plan = Restoration.CreateClickRepairPlan(
+            [Event(0, start, end, ImpulseDefectKind.Pop, sampleRate)],
+            channelCount: 1, sampleCount: 4_000, linkChannels: true);
+
+        ClickEvent item = Assert.Single(plan);
+        Assert.Equal(start - expectedGuard, item.StartSample);
+        Assert.Equal(end + expectedGuard, item.EndSample);
+    }
+
+    [Fact]
+    public void CandidateMergeOrdersAnEarlierAmplitudeEventBeforeComparingOverlap()
+    {
+        var events = new List<ClickEvent>
+        {
+            Event(0, 1_200, 1_210, ImpulseDefectKind.Click, SampleRate),
+        };
+
+        Restoration.AddOrMergeClickEvent(events,
+            Event(0, 1_000, 1_010, ImpulseDefectKind.Click, SampleRate),
+            maximumClickSamples: 17, maximumPopSamples: 240);
+
+        Assert.Collection(events,
+            first => Assert.Equal((1_000, 1_010), (first.StartSample, first.EndSample)),
+            second => Assert.Equal((1_200, 1_210), (second.StartSample, second.EndSample)));
     }
 
     [Fact]
@@ -288,10 +410,11 @@ public sealed class ClickAnalysisTests
     private static bool Covers(ClickEvent item, int sample) =>
         item.StartSample <= sample && item.EndSample > sample;
 
-    private static ClickEvent Event(int channel, int start, int end) =>
-        new(channel, start, end, start, ImpulseDefectKind.Pop,
+    private static ClickEvent Event(int channel, int start, int end,
+        ImpulseDefectKind kind = ImpulseDefectKind.Pop, int sampleRate = 0) =>
+        new(channel, start, end, start, kind,
             Confidence: 0.9f, Severity: 0.9f, PeakAmplitude: 0.8f,
-            DetectionThreshold: 0.05f);
+            DetectionThreshold: 0.05f, SampleRate: sampleRate);
 
     private static double Error(float[] actual, float[] expected, int start, int count)
     {

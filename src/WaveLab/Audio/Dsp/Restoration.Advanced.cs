@@ -129,7 +129,7 @@ public static partial class Restoration
                         end++;
 
                     if (end - start <= maximumPopSamples &&
-                        TryCreateClickEvent(samples, curvature, channelIndex, start, end, peak,
+                        TryCreateClickEnvelopeEvent(samples, curvature, channelIndex, start, end, peak,
                             peakCurvature, threshold, robustScale, localRms, sampleRate,
                             maximumClickSamples, options.PreserveTransients,
                             options.LocalHighFrequencyContrast, options.TrendRelativeRecovery,
@@ -340,11 +340,13 @@ public static partial class Restoration
         return repaired;
     }
 
-    private static ClickEvent[] CreateClickRepairPlan(
+    internal static ClickEvent[] CreateClickRepairPlan(
         IReadOnlyList<ClickEvent> events, int channelCount, int sampleCount,
         bool linkChannels)
     {
         const int alignmentToleranceSamples = 2;
+        const double clickBoundaryGuardSeconds = 0.00018;
+        const double popBoundaryGuardSeconds = 0.00075;
         var chronological = events
             .Where(item => item.Channel >= 0 && item.Channel < channelCount &&
                            item.StartSample >= 1 && item.StartSample < item.EndSample &&
@@ -362,21 +364,38 @@ public static partial class Restoration
             int clusterEnd = chronological[clusterIndex].EndSample;
             int clusterLimit = clusterIndex + 1;
             while (clusterLimit < chronological.Length &&
+                   (linkChannels ||
+                    chronological[clusterLimit].Channel ==
+                        chronological[clusterIndex].Channel) &&
                    chronological[clusterLimit].StartSample <=
-                       clusterEnd + alignmentToleranceSamples)
+                        clusterEnd + alignmentToleranceSamples)
             {
                 clusterEnd = Math.Max(clusterEnd,
                     chronological[clusterLimit].EndSample);
                 clusterLimit++;
             }
 
-            // Include a small clean-context guard on both sides. Clicks are frequently
-            // bipolar: the louder polarity establishes the detected event while a
-            // quieter opposite-polarity lobe sits just beyond that boundary. Without a
-            // guard, interpolation can remove only half of the visible/audible spike.
+            // Include clean-context guards on both sides. Clicks are frequently bipolar: the
+            // louder polarity establishes the detected event while a quieter opposite-polarity
+            // lobe sits just beyond that boundary. Pops get the full guard because their longer,
+            // lower-level ringing is exactly what the compact classifier can leave outside the
+            // accepted core. Without it interpolation removes the spike but leaves the tick.
             int clusterLength = clusterEnd - clusterStart;
+            bool containsPop = false;
+            int sampleRate = 0;
+            for (int index = clusterIndex; index < clusterLimit; index++)
+            {
+                containsPop |= chronological[index].Kind == ImpulseDefectKind.Pop;
+                if (sampleRate <= 0 && chronological[index].SampleRate > 0)
+                    sampleRate = chronological[index].SampleRate;
+            }
+            if (sampleRate <= 0) sampleRate = DefaultLegacySampleRate;
+            int minimumGuard = Math.Max(1, (int)Math.Round(sampleRate *
+                (containsPop ? popBoundaryGuardSeconds : clickBoundaryGuardSeconds)));
+            int maximumGuard = Math.Max(minimumGuard,
+                (int)Math.Round(sampleRate * popBoundaryGuardSeconds));
             int boundaryGuard = Math.Clamp(
-                (int)Math.Ceiling(clusterLength * 0.25), 8, 32);
+                (int)Math.Ceiling(clusterLength * 0.25), minimumGuard, maximumGuard);
             clusterStart = Math.Max(1, clusterStart - boundaryGuard);
             clusterEnd = Math.Min(sampleCount - 1, clusterEnd + boundaryGuard);
 
@@ -935,14 +954,89 @@ public static partial class Restoration
         }
     }
 
-    private static bool TryCreateClickEvent(float[] samples, float[] curvature,
+    private enum ClickRejectionReason
+    {
+        None,
+        InvalidBounds,
+        Duration,
+        HighFrequencyContrast,
+        Recovery,
+    }
+
+    /// <summary>
+    /// Classify the complete curvature envelope, falling back to the strongest compact lobe when
+    /// ringing makes the whole envelope look too long or spectrally diffuse. Classification still
+    /// has to accept a real impulse; only the coordinates offered to reconstruction retain the
+    /// complete, already bounded envelope. Without this distinction a multi-lobed stylus pop is
+    /// accepted as a tiny click while its quieter leading or trailing damage is left audible.
+    /// </summary>
+    private static bool TryCreateClickEnvelopeEvent(float[] samples, float[] curvature,
         int channel, int start, int end, int peak, float peakCurvature,
         float threshold, double robustScale, double localRms, int sampleRate,
         int maximumClickSamples, bool preserveTransients, bool localContrast,
         bool trendRelativeRecovery, double minimumRecovery, out ClickEvent result)
     {
+        if (TryCreateClickEvent(samples, curvature, channel, start, end, peak, peakCurvature,
+                threshold, robustScale, localRms, sampleRate, maximumClickSamples,
+                preserveTransients, localContrast, trendRelativeRecovery, minimumRecovery,
+                out result, out ClickRejectionReason rejection))
+            return true;
+
+        // Recovery is the transient-protection decision: retrying a shorter window after it fails
+        // can turn the sharp edge of a musical attack into a "click" and then remove the complete
+        // attack envelope. Only duration and HF dilution are properties a compact view can safely
+        // clarify; invalid coordinates and failed recovery remain final.
+        if (rejection is not (ClickRejectionReason.Duration or
+                              ClickRejectionReason.HighFrequencyContrast))
+            return false;
+
+        int envelopeLength = end - start;
+        int coreLength = Math.Min(envelopeLength, Math.Max(3, maximumClickSamples));
+        if (coreLength >= envelopeLength) return false;
+
+        int coreStart = Math.Clamp(peak - coreLength / 2, start, end - coreLength);
+        int coreEnd = coreStart + coreLength;
+        if (!TryCreateClickEvent(samples, curvature, channel, coreStart, coreEnd, peak,
+                peakCurvature, threshold, robustScale, localRms, sampleRate,
+                maximumClickSamples, preserveTransients, localContrast,
+                trendRelativeRecovery, minimumRecovery, out ClickEvent core))
+            return false;
+
+        result = core with
+        {
+            StartSample = start,
+            EndSample = end,
+            Kind = envelopeLength <= maximumClickSamples
+                ? ImpulseDefectKind.Click
+                : ImpulseDefectKind.Pop,
+        };
+        return true;
+    }
+
+    private static bool TryCreateClickEvent(float[] samples, float[] curvature,
+        int channel, int start, int end, int peak, float peakCurvature,
+        float threshold, double robustScale, double localRms, int sampleRate,
+        int maximumClickSamples, bool preserveTransients, bool localContrast,
+        bool trendRelativeRecovery, double minimumRecovery, out ClickEvent result)
+        => TryCreateClickEvent(samples, curvature, channel, start, end, peak, peakCurvature,
+            threshold, robustScale, localRms, sampleRate, maximumClickSamples,
+            preserveTransients, localContrast, trendRelativeRecovery, minimumRecovery,
+            out result, out _);
+
+    private static bool TryCreateClickEvent(float[] samples, float[] curvature,
+        int channel, int start, int end, int peak, float peakCurvature,
+        float threshold, double robustScale, double localRms, int sampleRate,
+        int maximumClickSamples, bool preserveTransients, bool localContrast,
+        bool trendRelativeRecovery, double minimumRecovery, out ClickEvent result,
+        out ClickRejectionReason rejection)
+    {
         result = default;
-        if (start < 2 || end >= samples.Length - 1 || end <= start) return false;
+        rejection = ClickRejectionReason.None;
+        if (start < 2 || end >= samples.Length - 1 || end <= start)
+        {
+            rejection = ClickRejectionReason.InvalidBounds;
+            return false;
+        }
 
         int spanLength = end - start;
         int left = start - 1;
@@ -952,7 +1046,11 @@ public static partial class Restoration
         // Genuine clicks are extremely short. Anything beyond ~50 samples
         // (~1ms at 48kHz) is almost certainly musical, not a click.
         int maxClickSpan = Math.Max(maximumClickSamples, (int)(sampleRate * 0.001));
-        if (spanLength > maxClickSpan * 3) return false;
+        if (spanLength > maxClickSpan * 3)
+        {
+            rejection = ClickRejectionReason.Duration;
+            return false;
+        }
 
         // ── 2. High-frequency energy ratio ────────────────────────
         // A vinyl click is a broadband impulse with strong HF content.
@@ -1129,7 +1227,11 @@ public static partial class Restoration
         confidence *= 1.0 - attackPenalty;
 
         // Hard gates: must have reasonable HF content AND return to baseline
-        if (hfScore < 0.15) return false;
+        if (hfScore < 0.15)
+        {
+            rejection = ClickRejectionReason.HighFrequencyContrast;
+            return false;
+        }
         // The return-to-baseline test is the strongest thing separating a defect from an instrument,
         // and it was skipped for spans of three samples or fewer - which is exactly the shape a
         // sharp musical attack makes. Short candidates are now held to it too, a little more
@@ -1137,7 +1239,11 @@ public static partial class Restoration
         double recoveryFloor = trendRelativeRecovery
             ? minimumRecovery * (spanLength > 3 ? 1.0 : 0.6)
             : (spanLength > 3 ? 0.2 : 0.12);
-        if (recoveryScore < recoveryFloor) return false;
+        if (recoveryScore < recoveryFloor)
+        {
+            rejection = ClickRejectionReason.Recovery;
+            return false;
+        }
 
         double severityRatio = clickAmplitude / Math.Max(1e-6, localRms);
         float severity = (float)Math.Clamp(1.0 - Math.Exp(-severityRatio * 0.5), 0.0, 1.0);
@@ -1145,42 +1251,76 @@ public static partial class Restoration
             ? ImpulseDefectKind.Click
             : ImpulseDefectKind.Pop;
         result = new ClickEvent(channel, start, end, peak, kind,
-            (float)Math.Clamp(confidence, 0.0, 1.0), severity, samples[peak], threshold);
+            (float)Math.Clamp(confidence, 0.0, 1.0), severity, samples[peak], threshold,
+            sampleRate);
         return true;
     }
 
-    private static void AddOrMergeClickEvent(List<ClickEvent> events, ClickEvent next,
+    internal static void AddOrMergeClickEvent(List<ClickEvent> events, ClickEvent next,
         int maximumClickSamples, int maximumPopSamples)
     {
-        if (events.Count == 0 || events[^1].Channel != next.Channel ||
-            next.StartSample > events[^1].EndSample + 1)
-        {
-            events.Add(next);
-            return;
-        }
+        // Detector passes do not arrive in one timeline: the curvature pass reaches the end of a
+        // block before the amplitude pass scans that same block again from its beginning. Insert
+        // first, then merge both neighbours, instead of assuming `next` follows events[^1].
+        int eventIndex = events.Count;
+        while (eventIndex > 0 && CompareClickEvents(events[eventIndex - 1], next) > 0)
+            eventIndex--;
+        events.Insert(eventIndex, next);
 
-        var previous = events[^1];
-        int start = Math.Min(previous.StartSample, next.StartSample);
-        int end = Math.Max(previous.EndSample, next.EndSample);
+        while (eventIndex > 0 && EventsTouch(events[eventIndex - 1], events[eventIndex]))
+        {
+            events[eventIndex - 1] = MergeClickEvents(events[eventIndex - 1],
+                events[eventIndex], maximumClickSamples, maximumPopSamples);
+            events.RemoveAt(eventIndex);
+            eventIndex--;
+        }
+        while (eventIndex + 1 < events.Count &&
+               EventsTouch(events[eventIndex], events[eventIndex + 1]))
+        {
+            events[eventIndex] = MergeClickEvents(events[eventIndex], events[eventIndex + 1],
+                maximumClickSamples, maximumPopSamples);
+            events.RemoveAt(eventIndex + 1);
+        }
+    }
+
+    private static int CompareClickEvents(ClickEvent left, ClickEvent right)
+    {
+        int byChannel = left.Channel.CompareTo(right.Channel);
+        if (byChannel != 0) return byChannel;
+        int byStart = left.StartSample.CompareTo(right.StartSample);
+        return byStart != 0 ? byStart : left.EndSample.CompareTo(right.EndSample);
+    }
+
+    private static bool EventsTouch(ClickEvent left, ClickEvent right) =>
+        left.Channel == right.Channel &&
+        (long)right.StartSample <= (long)left.EndSample + 1;
+
+    private static ClickEvent MergeClickEvents(ClickEvent left, ClickEvent right,
+        int maximumClickSamples, int maximumPopSamples)
+    {
+        int start = Math.Min(left.StartSample, right.StartSample);
+        int end = Math.Max(left.EndSample, right.EndSample);
         // Several detector passes can nominate slightly different spans for the same
         // disturbance. Do not let a chain of overlaps turn those individually repairable
         // candidates into a sustained musical passage: MaximumPopLengthMs is the public
         // contract for the longest span analysis may offer to reconstruction. When the
         // connected run exceeds it, retain the strongest local candidate instead.
         if (end - start > maximumPopSamples)
-        {
-            if (next.Severity > previous.Severity)
-                events[^1] = next;
-            return;
-        }
-        bool useNextPeak = next.Severity > previous.Severity;
-        events[^1] = new ClickEvent(previous.Channel, start, end,
-            useNextPeak ? next.PeakSample : previous.PeakSample,
+            return right.Severity > left.Severity ? right : left;
+
+        bool useRightPeak = right.Severity > left.Severity;
+        ClickEvent strongest = useRightPeak ? right : left;
+        int sampleRate = strongest.SampleRate > 0
+            ? strongest.SampleRate
+            : useRightPeak ? left.SampleRate : right.SampleRate;
+        return new ClickEvent(left.Channel, start, end,
+            strongest.PeakSample,
             end - start <= maximumClickSamples ? ImpulseDefectKind.Click : ImpulseDefectKind.Pop,
-            Math.Max(previous.Confidence, next.Confidence),
-            Math.Max(previous.Severity, next.Severity),
-            useNextPeak ? next.PeakAmplitude : previous.PeakAmplitude,
-            Math.Min(previous.DetectionThreshold, next.DetectionThreshold));
+            Math.Max(left.Confidence, right.Confidence),
+            Math.Max(left.Severity, right.Severity),
+            strongest.PeakAmplitude,
+            Math.Min(left.DetectionThreshold, right.DetectionThreshold),
+            sampleRate);
     }
 
     private static void InterpolateImpulse(float[] samples, int start, int end,
@@ -1943,7 +2083,7 @@ public static partial class Restoration
                 : ImpulseDefectKind.Pop;
 
             var clickEvent = new ClickEvent(channel, start, end, peakSample, kind,
-                (float)confidence, severity, samples[peakSample], 0);
+                (float)confidence, severity, samples[peakSample], 0, sampleRate);
 
             AddOrMergeClickEvent(events, clickEvent, maximumClickSamples,
                 maximumPopSamples);
