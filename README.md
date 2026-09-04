@@ -24,6 +24,8 @@ A sleek audio editor and mastering suite for Windows, built with WPF on .NET 10.
 
 **Workflow** — advanced audio-hardware settings with explicit or Windows-role-following input/output routing, WASAPI shared/exclusive modes, event/poll scheduling, independent 3–500 ms playback/capture buffer requests, live endpoint format/period/volume/exclusive-rate diagnostics, refresh, a non-destructive output-path tone test and a discard-only input peak/RMS test; autosave and export defaults with restore-defaults; searchable command palette (Ctrl+Shift+P); window placement memory; CPU/RAM readouts; drag-and-drop and command-line file open.
 
+**Finding a stubborn ringing click** — roughly select up to 10 seconds around the sound, then use **Find defect** beside **Heal** (also in the Restore menu). It highlights a possible time/frequency repair area and zooms to it in the split view. Listen, then press **Heal** to apply an undoable repair. Find defect only selects; it does not change the recording.
+
 ## Building
 
 Requires the .NET 10 SDK (ships with Visual Studio 2026).

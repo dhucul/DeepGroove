@@ -19,7 +19,7 @@ using WaveLab.Views.Controls;
 
 namespace WaveLab.ViewModels;
 
-public sealed class MainViewModel : ObservableObject, IDisposable
+public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private sealed class RestorationFractionProgress(IProgress<double> target)
         : IProgress<RestorationProgress>
@@ -179,6 +179,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RemoveDcCommand = new RelayCommand(() => ApplyToRange(Processing.RemoveDcOffset), () => CanMutateAudio);
         InterpolateRepairCommand = new RelayCommand(
             () => _ = InterpolateRepairAsync(), () => CanInterpolateRepair);
+        FindSpectralDefectCommand = new RelayCommand(
+            () => _ = FindSpectralDefectAsync(), () => CanFindSpectralDefect);
         InsertSilenceCommand = new RelayCommand(() => WithDoc(d =>
         {
             PrepareForDocumentEdit(d);
@@ -521,7 +523,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Raise(nameof(MonitorGainText));
             // A time-frequency region belongs to the file it was drawn on; carrying it to another
             // tab would offer a repair at a position that means nothing there.
-            SpectralSelection = SpectralSelection.None;
+            ResetSpectralSearchState(forgetDocument: false);
+            Set(ref _spectralSelection, SpectralSelection.None, nameof(SpectralSelection));
+            RestoreSpectralSearchState();
             // Raised again unconditionally: the setter above says nothing when the region was
             // already empty, and the tab switched to has a time selection of its own to report.
             RaiseSpectralSelectionState();
@@ -718,6 +722,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Raise(nameof(ShowsSpectralScale));
             Raise(nameof(ShowsBinsPerOctave));
             Raise(nameof(SpectralToolHint));
+            Raise(nameof(ShowsSpectralPatternAction));
             EditorViewChanged?.Invoke();
         }
     }
@@ -756,6 +761,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (!Set(ref _shellWidth, value)) return;
             Raise(nameof(ShowsSpectralScale));
             Raise(nameof(ShowsBinsPerOctave));
+            Raise(nameof(ShowsSpectralPatternAction));
         }
     }
 
@@ -764,9 +770,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Measured rather than chosen. With the tools, the four actions, both rules and a drawn band's
-    /// readout the bar's children want <b>1314 px</b>, and the window is 28 px wider than the panel
-    /// they sit in — so everything fits from about 1342 px, and this is that rounded up. Below it a
+    /// With Find Defect beside Heal, the previous 1350 px threshold needs another 106 px for the
+    /// button and its margin. The shell is 28 px wider than the panel. Below the new threshold a
     /// <c>ClipToBounds</c> Border was cutting <c>CONSTANT-Q</c> mid-glyph, which this repo already
     /// records as reading like a drawing fault rather than like a control that did not fit.
     /// </para>
@@ -777,7 +782,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// declared minimum is 1180 and its default is 1680, so this only bites in between.
     /// </para>
     /// </remarks>
-    public const double SpectralScaleMinimumWidth = 1350;
+    public const double SpectralScaleMinimumWidth = 1460;
+
+    /// <summary>At narrow widths, pattern learning remains in Restore so the repair band stays readable.</summary>
+    public bool ShowsSpectralPatternAction => !ShowsSpectrogram || _shellWidth >= 1280;
 
     /// <summary>Whether the bar has room for the scale switch as well as everything else in it.</summary>
     public bool ShowsSpectralScale => ShowsSpectrogram && _shellWidth >= SpectralScaleMinimumWidth;
@@ -895,6 +903,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (!Set(ref _spectralSelection, value ?? SpectralSelection.None)) return;
+            // Setting a drawn spectral region is a deliberate manual target, independent of Find.
+            if (!_spectralSelection.IsEmpty || _spectralSearchArea is null)
+                ResetSpectralSearchState();
+            else
+            {
+                // Clearing a proposed patch is not consent to heal its entire rough search area.
+                _automaticSpectralSelection = null;
+                _blockSpectralTimeFallback = true;
+            }
             RaiseSpectralSelectionState();
         }
     }
@@ -983,7 +1000,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         get
         {
-            if (!_spectralSelection.IsEmpty) return null;
+            if (_blockSpectralTimeFallback || !_spectralSelection.IsEmpty) return null;
             if (_active is not { } d || d.Doc.Length == 0 || !d.HasSelection) return null;
             int start = Math.Clamp(Math.Min(d.SelStart, d.SelEnd), 0, d.Doc.Length);
             int end = Math.Clamp(Math.Max(d.SelStart, d.SelEnd), 0, d.Doc.Length);
@@ -2430,6 +2447,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnActiveDocumentEdited(int start, int removed, int inserted)
     {
+        SpectralSearchAudioChanged();
         if (!_suppressEditReport && _active?.Doc.NextUndoName is { } operation)
             ReportAction($"{operation} applied · Undo available{TakeReleasedHistoryNote()}.");
         Raise(nameof(HasAudioDocument));
@@ -2483,7 +2501,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // The spectral actions read the time selection when nothing is drawn on the spectrogram, so
         // they follow it. HasSelection is re-raised whenever either edge moves, which is what makes
         // this enough — see DocumentViewModel.RaiseSelection.
-        if (e.PropertyName == nameof(DocumentViewModel.HasSelection)) RaiseSpectralSelectionState();
+        if (e.PropertyName == nameof(DocumentViewModel.HasSelection))
+        {
+            SpectralSearchTimeSelectionChanged();
+            RaiseSpectralSelectionState();
+        }
     }
 
     /// <summary>
@@ -2531,6 +2553,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ReverseCommand.RaiseCanExecuteChanged();
         RemoveDcCommand.RaiseCanExecuteChanged();
         InterpolateRepairCommand.RaiseCanExecuteChanged();
+        FindSpectralDefectCommand.RaiseCanExecuteChanged();
         InsertSilenceCommand.RaiseCanExecuteChanged();
         AddMarkerCommand.RaiseCanExecuteChanged();
         AddRegionCommand.RaiseCanExecuteChanged();

@@ -273,6 +273,10 @@
                     <Separator/>
                     <MenuItem Header="Interpolate Selection" Command="{Binding InterpolateRepairCommand}"
                               ToolTip="Select roughly around a short defect; Deep Groove isolates and reconstructs it"/>
+                    <MenuItem Header="Find Defect for Heal" Command="{Binding FindSpectralDefectCommand}"
+                              ToolTip="Select up to 10 seconds around a ringing click. Find Defect highlights a possible repair area without changing the audio."/>
+                    <MenuItem Header="Learn Pattern from Selection…" Click="OnSpectralLearnPattern"
+                              IsEnabled="{Binding HasSpectralSelection}"/>
                     <MenuItem Header="Remove Clicks &amp; Pops…" Click="OnRemoveClicks"/>
                     <MenuItem Header="Remove Surface Crackle…" Click="OnRemoveCrackle"/>
                     <MenuItem Header="Remove Hum…" Click="OnRemoveHum"/>
@@ -585,6 +589,11 @@
                         Visibility="{Binding ShowsSpectrogram, Converter={StaticResource BoolToVis}}"/>
                 <!-- MinWidth rather than Padding: neither the ToolButton nor the AccentButton
                      template binds Padding, so it is silently ignored on both. -->
+                <Button x:Name="spectralFindDefect" DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Find defect"
+                        Width="Auto" MinWidth="100" Height="30" Margin="0,0,6,0"
+                        Command="{Binding FindSpectralDefectCommand}"
+                        ToolTip="Make a rough waveform selection around the sound (up to 10 seconds). Find Defect highlights a possible ringing defect, ready for Heal. Audio is unchanged until you apply a repair."
+                        AutomationProperties.Name="Find defect for Heal"/>
                 <Button x:Name="spectralHeal" DockPanel.Dock="Left" Style="{StaticResource AccentButton}" Content="Heal"
                         Height="30" MinWidth="84"
                         Click="OnSpectralHeal" IsEnabled="{Binding HasSpectralSelection}"
@@ -603,6 +612,7 @@
                         AutomationProperties.Name="Gain spectral selection"/>
                 <Button DockPanel.Dock="Left" Style="{StaticResource ToolButton}" Content="Learn pattern…"
                         Width="Auto" MinWidth="128" Height="30" Margin="6,0,0,0"
+                        Visibility="{Binding ShowsSpectralPatternAction, Converter={StaticResource BoolToVis}}"
                         Click="OnSpectralLearnPattern" IsEnabled="{Binding HasSpectralSelection}"
                         ToolTip="Learn this sound's signature and remove it from elsewhere in the file. Learns from a region drawn on the spectrogram, or from a range selected on the waveform across the whole frequency band."
                         AutomationProperties.Name="Learn pattern from spectral selection"/>

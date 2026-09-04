@@ -518,6 +518,7 @@ public sealed class SpectralEditorView : FrameworkElement
         float[][] channels = vm.Doc.Channels.ToArray();
         int sampleRate = vm.Doc.SampleRate;
         int width = _pixelWidth, height = _pixelHeight;
+        double viewWidth = ActualWidth;
         double viewStart = vm.ViewStart, samplesPerPixel = vm.SamplesPerPixel;
         SpectrogramSettings settings = Settings;
         SpectrogramImageSettings image = EffectiveImageSettings;
@@ -530,7 +531,10 @@ public sealed class SpectralEditorView : FrameworkElement
         {
             float[] mono = Mix(channels, channel);
             int from = (int)Math.Max(0, viewStart);
-            int count = (int)Math.Min(mono.Length - from, Math.Max(1, width * samplesPerPixel));
+            // SamplesPerPixel uses WPF display units, while the bitmap uses physical pixels.
+            // At 200% scaling, using bitmap width here analysed twice the visible time span:
+            // the spectral picture showed a defect halfway to the position its selection marked.
+            int count = (int)Math.Min(mono.Length - from, Math.Max(1, viewWidth * samplesPerPixel));
             if (count <= 0) return;
 
             int hop = HopFor(settings, count, width);
