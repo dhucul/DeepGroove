@@ -35,6 +35,31 @@ public static class Processing
     public static void Gain(AudioDocument doc, int start, int count, double db) =>
         ApplyGain(doc, start, count, db, $"Gain {db:+0.0;-0.0} dB");
 
+    /// <summary>Exact digital gain on an owned buffer; no limiting, normalization, or disc-curve change.</summary>
+    public static double AdjustGainInPlace(float[][] channels, double db,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        if (!double.IsFinite(db) || db < -60 || db > 60)
+            throw new ArgumentOutOfRangeException(nameof(db));
+        double gain = Math.Pow(10, db / 20.0);
+        double peak = 0;
+        foreach (float[] channel in channels)
+        {
+            ArgumentNullException.ThrowIfNull(channel);
+            for (int sample = 0; sample < channel.Length; sample++)
+            {
+                if ((sample & 0xffff) == 0) cancellationToken.ThrowIfCancellationRequested();
+                float scaled = (float)(channel[sample] * gain);
+                if (!float.IsFinite(scaled))
+                    throw new InvalidOperationException("Gain adjustment encountered an invalid or overflowing sample. Nothing was applied.");
+                channel[sample] = scaled;
+                peak = Math.Max(peak, Math.Abs((double)scaled));
+            }
+        }
+        return peak;
+    }
+
     /// <summary>
     /// The name a matched-loudness edit commits under.
     /// </summary>

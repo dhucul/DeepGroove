@@ -922,6 +922,9 @@ public partial class MainWindow : Window
                     var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
                     return transform(input, sr, progress, token);
                 }, token);
+                // A worker can finish normally after its last token check, or cancellation
+                // can arrive while this continuation is waiting for the dispatcher.
+                token.ThrowIfCancellationRequested();
                 if (output == null) return;
                 if (!_vm.Documents.Contains(d) || d.Doc.EditVersion != sourceVersion ||
                     start + count > d.Doc.Length)
@@ -929,8 +932,17 @@ public partial class MainWindow : Window
                     _vm.ReportAction($"{undoName} abandoned · the source changed while processing.");
                     return;
                 }
+                // Range tools preserve channel topology even when they cover the whole file.
+                if (output.Length != channels.Length)
+                    throw new InvalidOperationException("The processed audio changed the channel count.");
                 _vm.PrepareForDocumentEdit(d);
-                d.Doc.ReplaceRange(start, count, output, undoName);
+                token.ThrowIfCancellationRequested();
+                if (start == 0 && count == d.Doc.Length)
+                    // Transfer ownership instead of cloning the old and new full recording
+                    // again on the UI thread. Undo retains the original channel arrays.
+                    d.Doc.ReplaceAllOwned(output, undoName);
+                else
+                    d.Doc.ReplaceRange(start, count, output, undoName);
                 applied = true;
                 if (!keepRemoved) return;
                 // After the commit, so a tool that declines to edit leaves nothing behind either.
@@ -963,6 +975,40 @@ public partial class MainWindow : Window
             LongOperationRunning = false;
         }
         return applied;
+    }
+
+    private async void OnAdjustGain(object sender, RoutedEventArgs e)
+    {
+        var document = Doc;
+        if (LongOperationRunning || document == null || document.Doc.Length == 0) return;
+        var range = document.EditRange();
+        if (range.Count <= 0) return;
+        int version = document.Doc.EditVersion;
+        var dialog = new AdjustGainDialog(document.HasSelection
+            ? $"Selected range · {document.Doc.Title}"
+            : $"Entire recording · {document.Doc.Title}") { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        // Modal dialogs pump async completions. Do not apply a decision to changed audio
+        // or a different selection, and never redirect it to a newly active tab.
+        if (!_vm.Documents.Contains(document) || document.Doc.EditVersion != version ||
+            document.EditRange() != range)
+        {
+            _vm.ReportAction("Gain not applied · the recording or selection changed. Open Adjust Gain again.");
+            return;
+        }
+        double gainDb = dialog.GainDb;
+        double peak = 0;
+        bool applied = await RunRangeTool($"Gain {gainDb:+0.0;-0.0} dB",
+            "Exact digital gain · no normalization or limiting",
+            (data, _, _, token) =>
+            {
+                peak = Processing.AdjustGainInPlace(data, gainDb, token);
+                return data;
+            }, document);
+        if (applied)
+            _vm.ReportAction(peak > 1
+                ? $"Gain {gainDb:+0.0;-0.0} dB applied · sample peak {20 * Math.Log10(peak):+0.0;-0.0} dBFS exceeds full scale. Reduce gain before PCM export to avoid clipping."
+                : $"Gain {gainDb:+0.0;-0.0} dB applied as one undoable edit.");
     }
 
     // ── normalization ────────────────────────────────────────────
@@ -2853,6 +2899,7 @@ public partial class MainWindow : Window
             new("Manage Markers & Regions…", null, () => OnManageMarkers(this, new RoutedEventArgs()), () => _vm.HasDocument),
             VmCommand("Gain +3 dB", null, _vm.GainUpCommand),
             VmCommand("Gain −3 dB", null, _vm.GainDownCommand),
+            new("Adjust Gain…", null, () => OnAdjustGain(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             VmCommand("Normalize Peak…", null, _vm.NormalizeCommand),
             VmCommand("Normalize Loudness…", null, _vm.NormalizeLoudnessCommand),
             VmCommand("Match Loudness Across Tabs…", null, _vm.MatchLoudnessCommand),

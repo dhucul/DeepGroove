@@ -234,6 +234,7 @@
                 <MenuItem Header="_Process" IsEnabled="{Binding HasAudioDocument}">
                     <MenuItem Header="Gain +3 dB" Command="{Binding GainUpCommand}"/>
                     <MenuItem Header="Gain −3 dB" Command="{Binding GainDownCommand}"/>
+                    <MenuItem Header="Adjust Gain…" Click="OnAdjustGain"/>
                     <MenuItem Header="Normalize Peak…" Command="{Binding NormalizeCommand}"/>
                     <MenuItem Header="Normalize Loudness…" Command="{Binding NormalizeLoudnessCommand}"/>
                     <MenuItem Header="Match Loudness Across Tabs…" Command="{Binding MatchLoudnessCommand}"/>
