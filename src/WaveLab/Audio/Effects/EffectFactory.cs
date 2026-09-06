@@ -301,6 +301,7 @@ public static class EffectFactory
         "Mono Record Presence", "Clean Transfer",
         "Record to CD - Gentle Clarity", "Record to CD - Dull Source Rescue",
         "Record to CD - Warm Record Open-Up",
+        "Record to CD - Natural Space",
     ];
 
     /// <summary>
@@ -339,6 +340,11 @@ public static class EffectFactory
                  State("eq", ("lowGain", 0.5), ("midGain", 0.8), ("highGain", 1.2)),
                  State("compressor", ("thresh", -16.0), ("ratio", 1.6), ("attack", 30.0), ("release", 280.0)),
                  State("limiter", ("thresh", -1.0), ("ceiling", -1.0))],
+            "Record to CD - Natural Space" =>
+                [State("trim", ("gain", -1.5)),
+                 State("mono-stereo", ("algorithm", 3.0), ("amount", 0.28),
+                     ("delay", 12.0), ("bass", 180.0), ("safety", 0.9)),
+                 TransferLimiter()],
             "Clean Transfer" =>
                 [State("channel-balance"),
                  State("dehum", ("amount", 0.65)),
@@ -685,6 +691,51 @@ public static class EffectFactory
         if (normalized.Effects.Count == 0)
             throw new ArgumentException("A preset must contain at least one valid effect.", nameof(preset));
         WritePresetAtomically(normalized, PresetPath(normalized.Name), overwrite: true);
+    }
+
+    /// <summary>Persist one captured effect without creating or configuring a plugin just to save it.</summary>
+    public static void SaveEffectPreset(ChainPreset preset, string path)
+    {
+        ValidateEffectPreset(preset);
+        WritePresetAtomically(preset, Path.GetFullPath(path), overwrite: true);
+    }
+
+    /// <summary>Validate the selected card's type before any plugin or response file is loaded.</summary>
+    public static IAudioEffect LoadEffectPreset(string path, string expectedTypeId)
+    {
+        var preset = JsonSerializer.Deserialize<ChainPreset>(File.ReadAllText(path));
+        ValidateEffectPreset(preset);
+        var state = preset!.Effects[0];
+        if (!string.Equals(state.TypeId, expectedTypeId, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("This preset belongs to a different effect. Load it from that effect's card.");
+
+        IAudioEffect effect = Create(expectedTypeId);
+        try
+        {
+            // Restore the complete state before the exposed parameter overrides, as chain presets do.
+            if (effect is Vst3Effect plugin && !string.IsNullOrEmpty(state.State))
+            {
+                if (!plugin.ApplyStateNow(state.State))
+                    throw new InvalidDataException("The plugin could not restore this preset's saved state.");
+            }
+            else if (effect is IEffectState stateful) stateful.RestoreStateText(state.State);
+            foreach (var (key, value) in state.Params) effect.SetParam(key, value);
+            effect.Enabled = state.Enabled;
+            return effect;
+        }
+        catch
+        {
+            if (effect is IDisposable disposable) disposable.Dispose();
+            throw;
+        }
+    }
+
+    private static void ValidateEffectPreset(ChainPreset? preset)
+    {
+        if (preset?.Effects is not { Count: 1 } || preset.Effects[0] is not { } state
+            || !IsValidPresetName(preset.Name) || !IsKnownTypeId(state.TypeId)
+            || state.Params == null || state.Params.Any(p => string.IsNullOrWhiteSpace(p.Key) || !double.IsFinite(p.Value)))
+            throw new InvalidDataException("Choose a valid preset containing exactly one effect.");
     }
 
     private static void WritePresetAtomically(ChainPreset preset, string finalPath, bool overwrite)

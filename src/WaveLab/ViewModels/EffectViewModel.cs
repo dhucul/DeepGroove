@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using WaveLab.Audio.Effects;
 using WaveLab.Audio.Vst3;
 using WaveLab.Util;
@@ -14,6 +16,76 @@ public sealed class EffectParamViewModel(IAudioEffect fx, EffectParam param, Act
     public double SmallChange => param.Step > 0 ? param.Step : 0.1;
     public double LargeChange => param.Step > 0 ? param.Step : 1;
     public bool SnapsToTicks => param.Step > 0;
+
+    // Plugin values are normalized; their display strings need not be numeric or invertible.
+    // Explicitly offer slider position for those, never guess a dB/Hz conversion from the text.
+    public bool EntryIsPluginPosition => fx is Vst3Effect;
+    private double EntryScale => EntryIsPluginPosition || param.Format == (Func<double, string>)EffectParam.Pct ? 100 : 1;
+    public string EntryUnit
+    {
+        get
+        {
+            if (EntryScale == 100) return "%";
+            if (param.Format == (Func<double, string>)EffectParam.Hz) return "Hz";
+            // Numeric custom formatters include e.g. fractional milliseconds. Restrict this
+            // to a single number plus unit, so a named mode such as "CD 50/15 µs" is not a unit.
+            var match = Regex.Match(param.Format(param.Max), @"^[+\-−]?\d+(?:[.,]\d+)?\s*(kHz|Hz|ms|dB|:1)$");
+            return match.Success ? match.Groups[1].Value.Replace("kHz", "Hz") : "";
+        }
+    }
+
+    public string EntryText => (Value * EntryScale).ToString("G15", CultureInfo.CurrentCulture);
+    public string EntryHint
+    {
+        get
+        {
+            string range = $"Enter {Min * EntryScale:G} to {Max * EntryScale:G} {EntryUnit}.".Replace(" .", ".");
+            if (EntryIsPluginPosition)
+                return $"Slider position: 0–100%. The plugin's displayed value is {ValueText}.";
+            if (param.Step > 0) range += $" Step: {param.Step * EntryScale:G} {EntryUnit}.".Replace(" .", ".");
+            return range + $"\nMinimum: {param.Format(Min)} · Maximum: {param.Format(Max)}";
+        }
+    }
+
+    public string FormatEntryValue(double value)
+    {
+        if (EntryIsPluginPosition) return param.Format(value);
+        string number = (value * EntryScale).ToString("G15", CultureInfo.CurrentCulture);
+        if (EntryUnit.Length > 0) return $"{number} {EntryUnit}";
+        return param.Format == (Func<double, string>)EffectParam.Plain
+            ? number : $"{number} ({param.Format(value)})";
+    }
+
+    public bool TryParseEntry(string text, out double value, out string error)
+    {
+        value = 0;
+        error = EntryHint;
+        string number = text.Trim().Replace('−', '-');
+        double scale = EntryScale;
+        string unit = EntryUnit;
+        if (unit == "Hz" && number.EndsWith("kHz", StringComparison.OrdinalIgnoreCase))
+        {
+            number = number[..^3].TrimEnd();
+            scale = 0.001;
+        }
+        else if (unit.Length > 0 && number.EndsWith(unit, StringComparison.OrdinalIgnoreCase))
+            number = number[..^unit.Length].TrimEnd();
+
+        if (!(double.TryParse(number, NumberStyles.Float, CultureInfo.CurrentCulture, out double entered)
+            || double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out entered))
+            || !double.IsFinite(entered)) return false;
+        value = entered / scale;
+        if (!double.IsFinite(value) || value < Min || value > Max) return false;
+        if (param.Step > 0)
+        {
+            double steps = (value - Min) / param.Step;
+            double nearest = Math.Round(steps, MidpointRounding.AwayFromZero);
+            if (Math.Abs(steps - nearest) > 1e-8) return false;
+            value = Math.Clamp(Min + nearest * param.Step, Min, Max);
+        }
+        error = "";
+        return true;
+    }
 
     public double Value
     {

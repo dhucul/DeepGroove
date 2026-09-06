@@ -19,6 +19,7 @@ public sealed class EffectFactoryPresetTests
         "Record to CD - Gentle Clarity",
         "Record to CD - Dull Source Rescue",
         "Record to CD - Warm Record Open-Up",
+        "Record to CD - Natural Space",
     };
 
     private static readonly string[] RecordToCdNames =

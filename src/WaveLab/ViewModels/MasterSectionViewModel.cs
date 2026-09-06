@@ -382,6 +382,42 @@ public sealed class MasterSectionViewModel : ObservableObject
         NotifyTopologyChanged(expandedMonoBefore);
     }
 
+    public void SaveEffectPreset(EffectViewModel vm, string path)
+    {
+        string name = System.IO.Path.GetFileNameWithoutExtension(path);
+        if (name.EndsWith(".effect", StringComparison.OrdinalIgnoreCase)) name = name[..^7];
+        var preset = _master.CaptureEffectPreset(vm.Effect, name);
+        EffectFactory.SaveEffectPreset(preset, path);
+        RackStatusText = $"{vm.DisplayName} preset ‘{name}’ saved.";
+    }
+
+    public void LoadEffectPreset(EffectViewModel vm, string path)
+    {
+        IAudioEffect replacement = EffectFactory.LoadEffectPreset(path, vm.Effect.TypeId);
+        bool adopted = false;
+        try
+        {
+            IAudioEffect[] chain = _master.ChainSnapshot;
+            int index = Array.IndexOf(chain, vm.Effect);
+            if (index < 0) throw new InvalidOperationException("This effect is no longer in the rack.");
+            bool expandedMonoBefore = _master.ExpandsMonoToStereo;
+            replacement.Enabled = vm.Effect.Enabled;
+            EffectRemoving?.Invoke(vm); // close its plugin editor before releasing the old instance
+            chain[index] = replacement;
+            _master.ReplaceChain(chain); // configures only the new effect; neighbours keep their state
+            adopted = true;
+            ResumePreviewForRackEdit();
+            MarkChainCustom();
+            SyncFromMaster();
+            RackStatusText = $"{replacement.DisplayName} preset loaded · other effects unchanged.";
+            NotifyTopologyChanged(expandedMonoBefore);
+        }
+        finally
+        {
+            if (!adopted && replacement is IDisposable disposable) disposable.Dispose();
+        }
+    }
+
     public void SavePresetAs(string name)
     {
         name = new string((name ?? "").Trim().Where(ch => !char.IsControl(ch)).Take(80).ToArray());

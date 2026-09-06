@@ -346,6 +346,15 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         }
     }
 
+    public EffectFactory.ChainPreset CaptureEffectPreset(IAudioEffect effect, string name)
+    {
+        lock (_chainLock)
+        {
+            if (!_chain.Contains(effect)) throw new InvalidOperationException("This effect is no longer in the rack.");
+            return EffectFactory.Capture(name, [effect]);
+        }
+    }
+
     public void ReplaceChain(IEnumerable<IAudioEffect> effects)
     {
         // configure (allocates delay/reverb buffers) OUTSIDE the lock so the audio

@@ -4,22 +4,24 @@ namespace WaveLab.Audio.Effects;
 
 /// <summary>
 /// Advanced mono-to-stereo enhancer with multiple decorrelation algorithms:
-/// delay-based, all-pass filter network, and micro-pitch shift.
+/// delay-based, all-pass filter network, micro-pitch shift, and diffuse early reflections.
 /// Includes mono bass keep, correlation safety limiter, and frequency-dependent spread.
 /// </summary>
 public sealed class MonoToStereoEffect : EffectBase
 {
+    private const double MinimumActiveAmount = 1e-9;
     private static readonly EffectParam[] P =
     [
         new("amount", "AMOUNT", 0, 1, 0.45, EffectParam.Pct),
         new("delay", "SPACE", 3, 25, 12, v => $"{v:0.0} ms"),
         new("bass", "MONO BASS", 40, 400, 140, EffectParam.Hz),
         new("safety", "MONO SAFE", 0, 1, 0.85, EffectParam.Pct),
-        new("algorithm", "ALGORITHM", 0, 2, 0, v => ((int)v) switch
+        new("algorithm", "ALGORITHM", 0, 3, 0, v => ((int)v) switch
         {
             0 => "DELAY",
             1 => "ALL-PASS",
-            _ => "PITCH",
+            2 => "PITCH",
+            _ => "NATURAL SPACE",
         }),
     ];
 
@@ -34,10 +36,17 @@ public sealed class MonoToStereoEffect : EffectBase
     private double _pitchPhase;
     private float[] _pitchDelayLine = [];
     private int _pitchWritePos;
+    private Biquad[] _spaceLeft = [], _spaceRight = [];
+    private double _spaceBass1, _spaceBass2, _spaceTreble, _spaceDelay;
+    private int _activeAlgorithm = -1;
 
     public override string TypeId => "mono-stereo";
     public override string DisplayName => "Mono-to-Stereo Enhancer";
     public override IReadOnlyList<EffectParam> Params => P;
+    // The dry path has no latency. Copy renders retain the short reflection/filter decay.
+    public override int TailSamples => ChannelCount >= 2 && (int)GetParam("algorithm") == 3
+        && GetParam("amount") > MinimumActiveAmount
+        ? (int)Math.Ceiling(SampleRate * 0.25) : 0;
     public override string? Readout => ChannelCount < 2
         ? "STEREO OUTPUT REQUIRED"
         : $"SPREAD {_spread * 100:0}%";
@@ -48,6 +57,10 @@ public sealed class MonoToStereoEffect : EffectBase
         _pitchDelayLine = new float[Math.Max(32, (int)Math.Ceiling(SampleRate * 0.05) + 2)];
         _allPassFilters = new Biquad[4];
         RebuildAllPasses();
+        _spaceLeft = [Biquad.AllPass(SampleRate, 330, 0.707),
+            Biquad.AllPass(SampleRate, 1100, 0.707), Biquad.AllPass(SampleRate, 3300, 0.707)];
+        _spaceRight = [Biquad.AllPass(SampleRate, 470, 0.707),
+            Biquad.AllPass(SampleRate, 1600, 0.707), Biquad.AllPass(SampleRate, 4700, 0.707)];
     }
 
     private void RebuildAllPasses()
@@ -60,6 +73,7 @@ public sealed class MonoToStereoEffect : EffectBase
 
     public override void ResetState()
     {
+        _activeAlgorithm = -1;
         Array.Clear(_delayLine);
         Array.Clear(_pitchDelayLine);
         _writePosition = 0;
@@ -73,11 +87,26 @@ public sealed class MonoToStereoEffect : EffectBase
         // Indexed, not foreach: Biquad is a struct, so foreach would reset copies
         // and the previous take's tail would leak into the synthetic side signal.
         for (int i = 0; i < _allPassFilters.Length; i++) _allPassFilters[i].Reset();
+        for (int i = 0; i < _spaceLeft.Length; i++) _spaceLeft[i].Reset();
+        for (int i = 0; i < _spaceRight.Length; i++) _spaceRight[i].Reset();
+        _spaceBass1 = _spaceBass2 = _spaceTreble = 0;
+        _spaceDelay = GetParam("delay") * SampleRate / 1000.0;
     }
 
     public override void Process(float[] buffer, int offset, int count)
     {
-        if (ChannelCount < 2 || _delayLine.Length == 0) return;
+        if (ChannelCount < 2 || count < ChannelCount || _delayLine.Length == 0) return;
+
+        int algorithm = (int)GetParam("algorithm");
+        if (algorithm != _activeAlgorithm)
+        {
+            // Each branch owns filters/delays that stop advancing while another branch runs.
+            // Clear that frozen history on the audio thread before entering the new mode.
+            // The first block also picks up settings applied after Configure, matching an
+            // offline clone whose settings were restored before Configure.
+            ResetState();
+            _activeAlgorithm = algorithm;
+        }
 
         double amount = GetParam("amount");
         double delaySamples = Math.Clamp(GetParam("delay") * SampleRate / 1000.0, 1, _delayLine.Length - 2);
@@ -86,7 +115,8 @@ public sealed class MonoToStereoEffect : EffectBase
         double safety = GetParam("safety");
         double reduceCoefficient = Math.Exp(-1.0 / (SampleRate * 0.005));
         double recoverCoefficient = Math.Exp(-1.0 / (SampleRate * 0.12));
-        int algorithm = (int)GetParam("algorithm");
+        double spaceSmoothing = 1 - Math.Exp(-1.0 / (SampleRate * 0.02));
+        double trebleAlpha = 1 - Math.Exp(-2 * Math.PI * Math.Min(6500, SampleRate * 0.4) / SampleRate);
 
         int frames = count / ChannelCount;
         for (int frame = 0; frame < frames; frame++)
@@ -102,6 +132,10 @@ public sealed class MonoToStereoEffect : EffectBase
             double decorrelated;
             switch (algorithm)
             {
+                case 3:
+                    _spaceDelay += spaceSmoothing * (delaySamples - _spaceDelay);
+                    decorrelated = NaturalSpaceDecorrelation(highPassAlpha, trebleAlpha);
+                    break;
                 case 1: // All-pass network
                     decorrelated = AllPassDecorrelation(mid);
                     break;
@@ -131,7 +165,7 @@ public sealed class MonoToStereoEffect : EffectBase
             double syntheticSide = decorrelated * amount * _safetyGain;
             _spread = amount * _safetyGain;
 
-            if (amount > 1e-9)
+            if (amount > MinimumActiveAmount)
             {
                 double side = originalSide + syntheticSide;
                 buffer[index] = (float)(mid + side);
@@ -140,6 +174,39 @@ public sealed class MonoToStereoEffect : EffectBase
 
             if (++_writePosition == _delayLine.Length) _writePosition = 0;
         }
+    }
+
+    private double NaturalSpaceDecorrelation(double bassAlpha, double trebleAlpha)
+    {
+        // Two differently timed and diffused copies, with no pitch modulation or long reverb.
+        // Unlike mid-minus-delay widening, neither branch contains the immediate dry signal:
+        // broadband transients stay centred instead of acquiring a persistent level bias.
+        float left = (float)ReadSpaceDelay(_spaceDelay * 0.61);
+        float right = (float)ReadSpaceDelay(_spaceDelay);
+        for (int i = 0; i < _spaceLeft.Length; i++)
+        {
+            left = _spaceLeft[i].Process(left);
+            right = _spaceRight[i].Process(right);
+        }
+        double side = (left - right) * 0.5;
+        // Two high-pass stages protect bass; gently darken reflections to avoid spreading hiss.
+        _spaceBass1 += bassAlpha * (side - _spaceBass1);
+        side -= _spaceBass1;
+        _spaceBass2 += bassAlpha * (side - _spaceBass2);
+        side -= _spaceBass2;
+        _spaceTreble += trebleAlpha * (side - _spaceTreble);
+        // The caller adds +/- side around the unchanged mid and original stereo side.
+        return _spaceTreble;
+    }
+
+    private double ReadSpaceDelay(double samples)
+    {
+        double position = _writePosition - Math.Clamp(samples, 1, _delayLine.Length - 2);
+        if (position < 0) position += _delayLine.Length;
+        int first = (int)position;
+        int next = (first + 1) % _delayLine.Length;
+        double fraction = position - first;
+        return _delayLine[first] * (1 - fraction) + _delayLine[next] * fraction;
     }
 
     private double DelayBasedDecorrelation(double mid, double delaySamples, double highPassAlpha)

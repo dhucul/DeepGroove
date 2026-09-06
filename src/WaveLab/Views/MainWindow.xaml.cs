@@ -787,6 +787,50 @@ public partial class MainWindow : Window
         });
     }
 
+    private void OnEnterRackValue(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: EffectParamViewModel parameter }) return;
+        e.Handled = true;
+        new RackValueDialog(parameter) { Owner = this }.ShowDialog();
+    }
+
+    private void OnSaveEffectPreset(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: EffectViewModel effect }) return;
+        string fileName = effect.DisplayName;
+        foreach (char c in Path.GetInvalidFileNameChars()) fileName = fileName.Replace(c, '_');
+        var dialog = new SaveFileDialog
+        {
+            Title = $"Save {effect.DisplayName} preset",
+            Filter = "Effect preset (*.effect.json)|*.effect.json",
+            DefaultExt = ".effect.json", AddExtension = true, OverwritePrompt = true,
+            FileName = fileName + ".effect.json", InitialDirectory = AppSettings.PresetsDir,
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try { _vm.Master.SaveEffectPreset(effect, dialog.FileName); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Save effect preset", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void OnLoadEffectPreset(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: EffectViewModel effect }) return;
+        var dialog = new OpenFileDialog
+        {
+            Title = $"Load {effect.DisplayName} preset",
+            Filter = "Effect preset (*.effect.json)|*.effect.json",
+            InitialDirectory = AppSettings.PresetsDir,
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try { _vm.Master.LoadEffectPreset(effect, dialog.FileName); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Load effect preset", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     /// <summary>
     /// Run a data-transforming op off the UI thread, then commit it as an undoable edit.
     /// <paramref name="target"/> is the document the caller validated *before* it showed its
