@@ -509,11 +509,7 @@ public sealed class MontageLaneView : FrameworkElement
             if (_drag == DragKind.TrimHead)
             {
                 int snapped = vm.SnapSource(clip.SourceIndex, clip.SourceStart);
-                int delta = snapped - clip.SourceStart;
-                clip.SourceStart = snapped;
-                clip.TimelineStart += delta;
-                clip.Length = Math.Max(1, clip.Length - delta);
-                vm.Touch();
+                vm.TrimClip(clip, head: true, clip.TimelineStart + snapped - clip.SourceStart);
             }
             else if (_drag == DragKind.TrimTail)
             {

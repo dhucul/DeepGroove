@@ -29,7 +29,29 @@ public sealed class PlaybackEngine : IDisposable
     public bool IsPaused { get; private set; }
     public AudioDocument? SourceDocument { get; private set; }
     public Exception? LastPlaybackError { get; private set; }
-    public bool Loop { get; set; }
+    private bool _loop;
+    public bool Loop
+    {
+        get { lock (_stateLock) return _loop; }
+        set
+        {
+            lock (_stateLock)
+            {
+                if (_loop == value) return;
+                if (_provider != null)
+                {
+                    int position = PositionSamples;
+                    _provider.Loop = value;
+                    // Preserve the current loop phase when changing between wrapped and
+                    // linear playback, including after several complete iterations.
+                    long frames = position - _provider.StartSample + _provider.InitialPreRollFrames + Master.LiveLatencySamples;
+                    _positionClockAccumulatedTicks = (long)(frames * (double)Stopwatch.Frequency / _provider.WaveFormat.SampleRate);
+                    if (_positionClockRunning) _positionClockStartedAt = Stopwatch.GetTimestamp();
+                }
+                _loop = value;
+            }
+        }
+    }
 
     public event Action<long, AudioDocument, int>? PlaybackStopped;
     public event Action<long, AudioDocument, Exception>? PlaybackFailed;
@@ -45,7 +67,7 @@ public sealed class PlaybackEngine : IDisposable
                 int position = CalculatePresentedPosition(
                     _provider.StartSample,
                     _provider.EndSample,
-                    _provider.InitialPreRollFrames,
+                    _provider.InitialPreRollFrames + Master.LiveLatencySamples,
                     timelineFrames,
                     _provider.WaveFormat.SampleRate,
                     _provider.WaveFormat.SampleRate,
@@ -230,6 +252,7 @@ public sealed class PlaybackEngine : IDisposable
                     _out = output;
                     _outDevice = device;
                     _provider = provider;
+                    provider.Loop = _loop;
                     _playbackStoppedHandler = handler;
                     SourceDocument = doc;
                     LastPlaybackError = null;
@@ -572,7 +595,12 @@ public sealed class PlaybackEngine : IDisposable
                 doc.SampleRate, _expandMonoToStereo ? 2 : _channels.Length);
         }
 
-        public bool Loop { get; set; }
+        private int _loop;
+        public bool Loop
+        {
+            get => Volatile.Read(ref _loop) != 0;
+            set => Volatile.Write(ref _loop, value ? 1 : 0);
+        }
         public WaveFormat WaveFormat { get; }
         public int StartSample => _start;
         public int EndSample => _end;

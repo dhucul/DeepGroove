@@ -249,7 +249,7 @@ public sealed class MontageViewModel : TabViewModel
         if (head)
         {
             int limit = clip.TimelineEnd - 1;
-            int start = Math.Clamp(timelinePosition, clip.TimelineStart - clip.SourceStart, limit);
+            int start = Math.Clamp(timelinePosition, Math.Max(0, clip.TimelineStart - clip.SourceStart), limit);
             int delta = start - clip.TimelineStart;
 
             clip.TimelineStart = start;

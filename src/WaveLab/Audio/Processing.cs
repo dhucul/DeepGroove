@@ -170,34 +170,6 @@ public static class Processing
     public static void FadeOut(AudioDocument doc, int start, int count, int curveType = 0) =>
         Fade(doc, start, count, $"Fade Out ({CurveName(curveType)})", from: 1f, to: 0f, curveType);
 
-    public static void Crossfade(AudioDocument doc, int position, int overlapSamples)
-    {
-        if (overlapSamples < 8) return;
-        int start = Math.Max(0, position - overlapSamples / 2);
-        int end = Math.Min(doc.Length, position + overlapSamples / 2);
-        int actualOverlap = end - start;
-        if (actualOverlap < 8) return;
-
-        Apply(doc, start, actualOverlap, "Crossfade", data =>
-        {
-            foreach (var ch in data)
-            {
-                int n = ch.Length;
-                for (int i = 0; i < n; i++)
-                {
-                    double t = (double)i / (n - 1);
-                    // Equal-power crossfade curve
-                    double fadeOut = Math.Cos(t * Math.PI / 2);
-                    double fadeIn = Math.Sin(t * Math.PI / 2);
-                    // The pair sums to unity in *power*, and one buffer holds both
-                    // sides of the join. Summing the amplitudes instead would put a
-                    // +3.01 dB bulge at the centre of the window and clip hot material.
-                    ch[i] *= (float)Math.Sqrt(fadeOut * fadeOut + fadeIn * fadeIn);
-                }
-            }
-        });
-    }
-
     private static string CurveName(int curveType) => curveType switch
     {
         1 => "Linear",

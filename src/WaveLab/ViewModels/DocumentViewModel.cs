@@ -5,7 +5,7 @@ using WaveLab.Util;
 namespace WaveLab.ViewModels;
 
 /// <summary>Per-tab state: the document plus view window, selection, cursor, playhead, markers and regions.</summary>
-public sealed class DocumentViewModel : TabViewModel
+public sealed class DocumentViewModel : TabViewModel, IDocumentEditState
 {
     private double _viewStart;
     private double _spp = 512;
@@ -25,6 +25,7 @@ public sealed class DocumentViewModel : TabViewModel
     private MarkerSaveRequest? _pendingMarkerSave;
     private MarkerSaveRequest? _failedMarkerSave;
     private bool _markerSaveRunning;
+    private bool _anchorsChanged;
 
     private sealed record MarkerSaveRequest(string Path, List<Marker> Markers, List<NamedRegion> Regions);
 
@@ -34,6 +35,8 @@ public sealed class DocumentViewModel : TabViewModel
         Peaks = prebuiltPeaks ?? new PeakStore();
         if (prebuiltPeaks == null) ScheduleRebuild();
         doc.Changed += OnDocChanged;
+        doc.TimelineChanged += OnTimelineChanged;
+        doc.EditState = this;
         var (markers, regions) = MarkerStore.Load(doc.FilePath);
 
         // Failing that, the marks the file itself carries. The sidecar wins where both exist,
@@ -207,38 +210,21 @@ public sealed class DocumentViewModel : TabViewModel
         _markersVersion++;
         Raise(nameof(MarkersVersion));
         Raise(nameof(IsDirty));
-        QueueMarkerSave();
+        // Markers share the audio's save transaction. Autosave preserves unsaved metadata;
+        // writing it beside the original audio here would persist anchors from a different timeline.
     }
 
     /// <summary>
-    /// Writes the current marker snapshot to the document's present sidecar path without claiming
-    /// that the marker data itself changed. Save As uses this after assigning the new audio path.
+    /// Persists the exact anchors captured alongside a completed audio save, even if the
+    /// live document has acquired newer edits while that save was writing.
     /// </summary>
-    internal void PersistMarkers() => QueueMarkerSave();
-
-    private void QueueMarkerSave()
+    internal void PersistMarkers(string path, List<Marker> markers, List<NamedRegion> regions)
     {
-        var path = Doc.FilePath;
-        if (path == null) return;
-        // snapshot for the background write so UI mutations can't tear the serialization,
-        // and chain writes so they always land in order (latest state wins)
-        var markers = Markers.Select(m => new Marker
-        {
-            Name = SafeName(m.Name, "Marker"), Position = Math.Clamp(m.Position, 0, Doc.Length),
-        }).ToList();
-        var regions = Regions.Select(r => new NamedRegion
-        {
-            Name = SafeName(r.Name, "Region"),
-            Start = Math.Clamp(r.Start, 0, Doc.Length),
-            End = Math.Clamp(r.End, 0, Doc.Length),
-            CdTrackOrder = r.CdTrackOrder is > 0 ? r.CdTrackOrder : null,
-        }).Where(r => r.End > r.Start).ToList();
         lock (_markerSaveLock)
         {
             _pendingMarkerSave = new MarkerSaveRequest(path, markers, regions);
-            _failedMarkerSave = null; // this newer snapshot supersedes any retained failure
-            if (_markerSaveRunning) return;
-            StartMarkerSaveWorkerLocked();
+            _failedMarkerSave = null;
+            if (!_markerSaveRunning) StartMarkerSaveWorkerLocked();
         }
     }
 
@@ -554,7 +540,7 @@ public sealed class DocumentViewModel : TabViewModel
         return editStart + Math.Min(value - editStart, insertedCount);
     }
 
-    private void OnDocChanged(int start, int removed, int inserted)
+    private void OnTimelineChanged(int start, int removed, int inserted)
     {
         int mappedCursor = MapEditAnchor(_cursor, start, removed, inserted);
         int mappedPlayhead = MapEditAnchor(_playhead, start, removed, inserted);
@@ -595,10 +581,9 @@ public sealed class DocumentViewModel : TabViewModel
                     changed = true;
                 }
             }
-            if (changed) NotifyMarkersChanged();
+            _anchorsChanged |= changed;
         }
 
-        ScheduleRebuild();
         Cursor = Math.Clamp(mappedCursor, 0, Math.Max(0, Doc.Length - 1));
         PlayheadSample = Math.Clamp(mappedPlayhead, 0, Doc.Length);
         if (mappedSelectionStart >= 0 && mappedSelectionEnd > mappedSelectionStart)
@@ -617,6 +602,16 @@ public sealed class DocumentViewModel : TabViewModel
             SelStart = SelEnd = -1;
         }
         ClampView();
+    }
+
+    private void OnDocChanged(int start, int removed, int inserted)
+    {
+        if (_anchorsChanged)
+        {
+            _anchorsChanged = false;
+            NotifyMarkersChanged();
+        }
+        ScheduleRebuild();
         Raise(nameof(Title));
         Raise(nameof(IsDirty));
         Raise(nameof(FormatText));
@@ -642,5 +637,47 @@ public sealed class DocumentViewModel : TabViewModel
     /// together while nothing else refers to the document, which is why this was never a
     /// leak, but it was the one subscription in the view layer with no matching detach.
     /// </remarks>
-    public void Unhook() => Doc.Changed -= OnDocChanged;
+    public void Unhook()
+    {
+        Doc.Changed -= OnDocChanged;
+        Doc.TimelineChanged -= OnTimelineChanged;
+        if (ReferenceEquals(Doc.EditState, this)) Doc.EditState = null;
+    }
+
+    private sealed record AnchorState(
+        (Marker Item, int Position)[] Markers,
+        (NamedRegion Item, int Start, int End, int Index)[] Regions);
+
+    object IDocumentEditState.Capture() => new AnchorState(
+        Markers.Select(m => (m, m.Position)).ToArray(),
+        Regions.Select((r, i) => (r, r.Start, r.End, i)).ToArray());
+
+    void IDocumentEditState.Restore(object state, object counterpart)
+    {
+        var target = (AnchorState)state;
+        var other = (AnchorState)counterpart;
+        // Preserve object identity and independent name edits. Newly added anchors are mapped
+        // by TimelineChanged; only anchors belonging to this audio edit are restored here.
+        foreach (var (marker, position) in target.Markers)
+            if (Markers.Contains(marker) && marker.Position != position)
+            {
+                marker.Position = position;
+                _anchorsChanged = true;
+            }
+        foreach (var (region, _, _, _) in other.Regions)
+            if (!target.Regions.Any(r => ReferenceEquals(r.Item, region)) && Regions.Remove(region))
+                _anchorsChanged = true;
+        foreach (var (region, start, end, index) in target.Regions)
+        {
+            if (!Regions.Contains(region))
+            {
+                if (other.Regions.Any(r => ReferenceEquals(r.Item, region))) continue;
+                Regions.Insert(Math.Min(index, Regions.Count), region);
+                _anchorsChanged = true;
+            }
+            if (region.Start != start || region.End != end) _anchorsChanged = true;
+            region.Start = start;
+            region.End = end;
+        }
+    }
 }

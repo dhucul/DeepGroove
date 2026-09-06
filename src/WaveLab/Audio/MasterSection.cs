@@ -14,6 +14,10 @@ public sealed class MasterSection : ISampleProvider, IDisposable
     private ISampleProvider? _source;
     private readonly object _chainLock = new();
     private readonly List<IAudioEffect> _chain = [];
+    private readonly HashSet<IAudioEffect> _pendingResets = [];
+    private bool _sourceEnded;
+    private bool _sourceHadSamples;
+    private int _drainFramesRemaining;
     private bool _rackEnabled = true;
     /// <summary>
     /// Scope/goniometer trace history. A power of two so the write index advances with a mask
@@ -82,17 +86,12 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         get { lock (_chainLock) return _rackEnabled; }
         set
         {
-            IAudioEffect[] toReset;
             lock (_chainLock)
             {
                 if (_rackEnabled == value) return;
                 _rackEnabled = value;
-                toReset = [.. _chain];
+                foreach (var effect in _chain) _pendingResets.Add(effect);
             }
-            // Outside the lock Read holds: clearing a reverb tail or a convolver's
-            // history is real work, and doing it in here stalled the audio callback
-            // for as long as it took.
-            foreach (IAudioEffect fx in toReset) fx.ResetState();
         }
     }
 
@@ -105,14 +104,12 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         get { lock (_chainLock) return _msMode; }
         set
         {
-            IAudioEffect[] toReset;
             lock (_chainLock)
             {
                 if (_msMode == value) return;
                 _msMode = value;
-                toReset = [.. _chain];
+                foreach (var effect in _chain) _pendingResets.Add(effect);
             }
-            foreach (IAudioEffect fx in toReset) fx.ResetState();
         }
     }
 
@@ -156,74 +153,47 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         {
             oldB = _snapshotB;
             _snapshotB = CloneAll(_chain);
-            _isComparingB = false;
+            _isComparingB = true;
         }
         Retire(oldB);
     }
 
     /// <summary>
     /// Toggle between snapshot A and the current chain for A/B comparison.
-    /// Returns true if toggling to B (snapshot), false if returning to current.
+    /// Returns true when displaying B, false when displaying A. Changes made to the
+    /// departing side are retained in that side's slot.
     /// </summary>
     public bool ToggleCompare()
     {
-        List<IAudioEffect>? displaced = null;
-        List<IAudioEffect>? discarded = null;
-        List<IAudioEffect>? incoming = null;
+        List<IAudioEffect> incoming;
+        List<IAudioEffect> current;
         bool showingB;
-
         lock (_chainLock)
         {
             if (_snapshotA == null) return false;
-
-            var current = CloneAll(_chain);
-            displaced = [.. _chain];
-
-            if (_isComparingB)
-            {
-                // Restore current chain from snapshot A
-                incoming = CloneAll(_snapshotA);
-                discarded = _snapshotA;
-                _snapshotA = current;
-                _isComparingB = false;
-                showingB = false;
-            }
-            else
-            {
-                // Save current as A, show B (or swap if B exists)
-                if (_snapshotB != null)
-                {
-                    incoming = CloneAll(_snapshotB);
-                    discarded = _snapshotB;
-                    _snapshotB = current;
-                }
-                else
-                {
-                    // Nothing came out of the chain here — it is still the one that was playing.
-                    _snapshotB = current;
-                    displaced = null;
-                }
-                _isComparingB = true;
-                showingB = true;
-            }
+            showingB = _snapshotB != null && !_isComparingB;
+            incoming = CloneAll(showingB ? _snapshotB! : _snapshotA);
+            try { current = CloneAll(_chain); }
+            catch { Retire(incoming); throw; }
         }
-
-        if (incoming != null)
+        try
         {
-            // Configured before it is published, never after and never under the lock.
-            // For a plugin this is setActive(false) / setState / setActive(true) inside
-            // somebody else's code, and running it while Read holds the same lock is a
-            // dropout for however long the plugin takes to come back.
             foreach (IAudioEffect fx in incoming) fx.Configure(_sampleRate, _channels);
-            lock (_chainLock)
-            {
-                _chain.Clear();
-                _chain.AddRange(incoming);
-            }
         }
-
-        // Every list that has just stopped being reachable, released outside the lock. For plugins
-        // these are reference drops: the clones that replaced them hold the same instance.
+        catch { Retire(incoming); Retire(current); throw; }
+        List<IAudioEffect> displaced;
+        List<IAudioEffect>? discarded;
+        lock (_chainLock)
+        {
+            displaced = [.. _chain];
+            discarded = showingB ? _snapshotA : _snapshotB;
+            if (showingB) _snapshotA = current;
+            else _snapshotB = current;
+            _chain.Clear();
+            _pendingResets.Clear();
+            _chain.AddRange(incoming);
+            _isComparingB = showingB;
+        }
         Retire(displaced);
         Retire(discarded);
         return showingB;
@@ -270,6 +240,7 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         lock (_chainLock)
         {
             if (!_chain.Remove(fx)) return false;
+            _pendingResets.Remove(fx);
             fx.Enabled = false;
         }
 
@@ -342,6 +313,7 @@ public sealed class MasterSection : ISampleProvider, IDisposable
             if (_snapshotA != null) owned.AddRange(_snapshotA);
             if (_snapshotB != null) owned.AddRange(_snapshotB);
             _chain.Clear();
+            _pendingResets.Clear();
             _snapshotA = null;
             _snapshotB = null;
             _isComparingB = false;
@@ -357,12 +329,8 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         {
             if (!_chain.Contains(fx) || fx.Enabled == enabled) return false;
             fx.Enabled = enabled;
+            _pendingResets.Add(fx);
         }
-
-        // Reset outside the lock, as the rack and M/S switches do. An effect that has
-        // just been disabled is skipped by Read regardless, and one being enabled starts
-        // from the state this clears either way.
-        fx.ResetState();
         return true;
     }
 
@@ -401,6 +369,7 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         {
             replaced = [.. _chain];
             _chain.Clear();
+            _pendingResets.Clear();
             _chain.AddRange(list);
         }
 
@@ -424,6 +393,10 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         _sampleRate = source.WaveFormat.SampleRate;
         _channels = source.WaveFormat.Channels;
         ConfigureChain();
+        lock (_chainLock) _pendingResets.Clear();
+        _sourceEnded = false;
+        _sourceHadSamples = false;
+        _drainFramesRemaining = 0;
         Loudness.Configure(_sampleRate, _channels);
         _startRampFrames = Math.Max(1, _sampleRate / 100); // 10 ms
         _startRampPosition = 0;
@@ -432,6 +405,11 @@ public sealed class MasterSection : ISampleProvider, IDisposable
 
     /// <summary>Release the current playback source after its output has stopped.</summary>
     public void ClearSource() => Volatile.Write(ref _source, null);
+
+    public int LiveLatencySamples
+    {
+        get { lock (_chainLock) return _rackEnabled ? checked(_chain.Where(f => f.Enabled).Sum(f => Math.Max(0, f.LatencySamples))) : 0; }
+    }
 
     public void ResetMeters()
     {
@@ -448,20 +426,44 @@ public sealed class MasterSection : ISampleProvider, IDisposable
         // winding down, so keep one stable reference for this entire read.
         var source = Volatile.Read(ref _source);
         if (source == null) return 0;
+        if (destination.Length < _channels) return 0;
         if (_processingBuffer.Length < destination.Length)
             _processingBuffer = new float[destination.Length];
         float[] buffer = _processingBuffer;
         const int offset = 0;
         int read = source.Read(buffer.AsSpan(0, destination.Length));
-        if (read <= 0)
-        {
-            Loudness.FlushTruePeak();
-            PeakL = PeakR = RmsL = RmsR = 0;
-            return read;
-        }
-
         lock (_chainLock)
         {
+            // The callback owns mutable DSP state, including resets. Publishing a flag on
+            // the UI thread must never let Process race a reset of the same delay buffers.
+            foreach (var effect in _pendingResets) effect.ResetState();
+            _pendingResets.Clear();
+            if (read > 0)
+            {
+                _sourceHadSamples = true;
+                _sourceEnded = false;
+            }
+            else
+            {
+                if (!_sourceEnded)
+                {
+                    var enabled = _rackEnabled ? _chain.Where(f => f.Enabled).ToArray() : [];
+                    _drainFramesRemaining = _sourceHadSamples
+                        ? checked(enabled.Sum(f => Math.Max(0, f.LatencySamples)) + TailForCopyRender(enabled, _sampleRate))
+                        : 0;
+                    _sourceEnded = true;
+                }
+                int drainFrames = Math.Min(_drainFramesRemaining, destination.Length / _channels);
+                if (drainFrames == 0)
+                {
+                    Loudness.FlushTruePeak();
+                    PeakL = PeakR = RmsL = RmsR = 0;
+                    return 0;
+                }
+                _drainFramesRemaining -= drainFrames;
+                read = drainFrames * _channels;
+                Array.Clear(buffer, 0, read);
+            }
             if (_rackEnabled)
             {
                 if (_msMode && _channels >= 2)

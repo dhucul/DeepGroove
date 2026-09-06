@@ -168,6 +168,10 @@ public sealed class AudioDocument
     /// <summary>Raised after any content change (start, removedCount, insertedCount).</summary>
     public event Action<int, int, int>? Changed;
 
+    /// <summary>Each exact splice, including every step of a batched history jump.</summary>
+    public event Action<int, int, int>? TimelineChanged;
+    internal IDocumentEditState? EditState { get; set; }
+
     /// <summary>
     /// Records that something other than the audio changed — a tag, a broadcast timestamp — so an
     /// ordinary Save writes it out.
@@ -329,6 +333,8 @@ public sealed class AudioDocument
 
         long beforeStateId = _currentStateId;
         long afterStateId = _nextStateId++;
+        var stateOwner = removeCount != newData[0].Length ? EditState : null;
+        var beforeAnchors = stateOwner?.Capture();
         var oldData = CopyRange(channels, start, removeCount);
         // Splice copies out of newData into freshly allocated channels, so the
         // document never aliases it and the edit can retain the caller's array.
@@ -344,6 +350,10 @@ public sealed class AudioDocument
         _discSignalState = afterDiscState;
         UpdateDirtyFromSavepoint();
         EditVersion++;
+        TimelineChanged?.Invoke(start, removeCount, newData[0].Length);
+        edit.StateOwner = stateOwner;
+        edit.BeforeAnchors = beforeAnchors;
+        edit.AfterAnchors = stateOwner?.Capture();
         Changed?.Invoke(start, removeCount, newData[0].Length);
     }
 
@@ -368,16 +378,23 @@ public sealed class AudioDocument
         int oldLength = oldData[0].Length;
         long beforeStateId = _currentStateId;
         long afterStateId = _nextStateId++;
+        var stateOwner = oldLength != newLength ? EditState : null;
+        var beforeAnchors = stateOwner?.Capture();
         DiscSignalState afterDiscState = discSignalState ?? _discSignalState;
         Volatile.Write(ref _channels, newData);
-        _undo.Add(new Edit(opName, 0, oldData, newData, true, beforeStateId, afterStateId,
-            _discSignalState, afterDiscState));
+        var edit = new Edit(opName, 0, oldData, newData, true, beforeStateId, afterStateId,
+            _discSignalState, afterDiscState);
+        _undo.Add(edit);
         DiscardRedo();
         EnforceUndoBudget();
         _currentStateId = afterStateId;
         _discSignalState = afterDiscState;
         UpdateDirtyFromSavepoint();
         EditVersion++;
+        TimelineChanged?.Invoke(0, oldLength, newLength);
+        edit.StateOwner = stateOwner;
+        edit.BeforeAnchors = beforeAnchors;
+        edit.AfterAnchors = stateOwner?.Capture();
         Changed?.Invoke(0, oldLength, newLength);
     }
 
@@ -409,17 +426,15 @@ public sealed class AudioDocument
     /// <para>
     /// A jump is a run of ordinary undo/redo steps that raises <b>one</b> <see cref="Changed"/> and
     /// bumps <see cref="EditVersion"/> <b>once</b>. That is not an optimisation. Every step of a
-    /// per-step run would re-enter the peak rebuild, queue its own marker sidecar write, requery
+    /// per-step run would re-enter the peak rebuild, requery
     /// three dozen commands and push a different operation name onto the status line — so a
     /// ten-step jump would cost ten of each and settle on the right answer only at the end.
     /// </para>
     /// <para>
     /// The single event carries the composition of the run: the first offset that differs, the
-    /// length of the changed span before the jump, and its length after. Anything anchored to the
-    /// timeline is remapped through that triple, so it has to be tight — a lazy whole-document
-    /// triple would collapse every marker to sample 0. A run of same-length edits composes to
-    /// <c>removed == inserted</c> and moves no markers at all, and a run containing a whole-document
-    /// render composes to the whole document, which is exactly what that step raises on its own.
+    /// length of the changed span before the jump, and its length after. This envelope is for
+    /// invalidating audio views, not transforming coordinates. Anchors receive the exact splices
+    /// through <see cref="TimelineChanged"/> and their reversible metadata state at each step.
     /// </para>
     /// <para>
     /// The budget is enforced once, at the end. Enforcing it mid-run could release entries while the
@@ -524,6 +539,9 @@ public sealed class AudioDocument
         _redo.Add(e);
         _currentStateId = e.BeforeStateId;
         _discSignalState = e.BeforeDiscSignalState;
+        TimelineChanged?.Invoke(e.Start, insertedLen, Frames(e.Old));
+        if (e.BeforeAnchors != null && e.AfterAnchors != null)
+            e.StateOwner?.Restore(e.BeforeAnchors, e.AfterAnchors);
         return (e.Start, insertedLen, Frames(e.Old));
     }
 
@@ -540,6 +558,9 @@ public sealed class AudioDocument
         _undo.Add(e);
         _currentStateId = e.AfterStateId;
         _discSignalState = e.AfterDiscSignalState;
+        TimelineChanged?.Invoke(e.Start, oldLen, Frames(e.New));
+        if (e.AfterAnchors != null && e.BeforeAnchors != null)
+            e.StateOwner?.Restore(e.AfterAnchors, e.BeforeAnchors);
         return (e.Start, oldLen, Frames(e.New));
     }
 
@@ -870,5 +891,10 @@ public sealed class AudioDocument
         long BeforeStateId,
         long AfterStateId,
         DiscSignalState BeforeDiscSignalState,
-        DiscSignalState AfterDiscSignalState);
+        DiscSignalState AfterDiscSignalState)
+    {
+        public IDocumentEditState? StateOwner { get; set; }
+        public object? BeforeAnchors { get; set; }
+        public object? AfterAnchors { get; set; }
+    }
 }

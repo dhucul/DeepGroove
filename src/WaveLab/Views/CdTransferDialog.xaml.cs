@@ -153,6 +153,7 @@ public partial class CdTransferDialog : Window
     private readonly HashSet<NamedRegion> _knownPlanRegions = new(ReferenceEqualityComparer.Instance);
     private CancellationTokenSource? _operation;
     private bool _busy;
+    private IDisposable? _operationLease;
     private bool _closeWhenFinished;
     private bool _dialogReady;
     private bool _syncingRack;
@@ -241,7 +242,7 @@ public partial class CdTransferDialog : Window
 
         // Everything this window shows is a view of state the main window can still change while it
         // is open. Each subscription keeps one of those in step; all three come off again on close.
-        document.Doc.Changed += OnSourceEdited;
+        document.Doc.TimelineChanged += OnSourceEdited;
         main.Master.PropertyChanged += OnMasterChanged;
         main.Documents.CollectionChanged += OnDocumentsChanged;
 
@@ -254,7 +255,7 @@ public partial class CdTransferDialog : Window
         Closing += OnDialogClosing;
         Closed += (_, _) =>
         {
-            document.Doc.Changed -= OnSourceEdited;
+            document.Doc.TimelineChanged -= OnSourceEdited;
             main.Master.PropertyChanged -= OnMasterChanged;
             main.Documents.CollectionChanged -= OnDocumentsChanged;
             _operation?.Cancel();
@@ -513,7 +514,7 @@ public partial class CdTransferDialog : Window
         }
 
         SetBusy(true, "Analyzing quiet gaps without changing the recording...");
-        _operation = new CancellationTokenSource();
+        _operation = StartOperation();
         try
         {
             var channels = _document.Doc.Channels.ToArray();
@@ -734,7 +735,7 @@ public partial class CdTransferDialog : Window
         }
 
         SetBusy(true, "Trying every setting to see which the tracks hold steadiest at...");
-        _operation = new CancellationTokenSource();
+        _operation = StartOperation();
         try
         {
             var channels = _document.Doc.Channels.ToArray();
@@ -1207,7 +1208,7 @@ public partial class CdTransferDialog : Window
         if (_busy || trackList.SelectedItem is not TrackRow row) return;
         _main.StopPreview();
         SetBusy(true, "Preparing a bounded track preview...");
-        _operation = new CancellationTokenSource();
+        _operation = StartOperation();
         try
         {
             var plan = row.ToPlan();
@@ -1289,7 +1290,7 @@ public partial class CdTransferDialog : Window
 
         _main.StopPreview();
         SetBusy(true, "Preparing CD-compatible tracks...");
-        _operation = new CancellationTokenSource();
+        _operation = StartOperation();
         closeBtn.Content = "Cancel";
         try
         {
@@ -1336,7 +1337,8 @@ public partial class CdTransferDialog : Window
                 DdpResult image = await CdTransfer.ExportDdpAsync(exportSource, plan, picker.FolderName,
                     disc, progress, token);
                 progressBar.Value = 1;
-                InfoDialog.Show(this, "DDP Image Set Ready",
+                if (!_main.OwnedOperations.IsStopping && !_closeWhenFinished)
+                    InfoDialog.Show(this, "DDP Image Set Ready",
                     $"Wrote a {image.Tracks}-track DDP 2.00 image set: {image.ImageBytes / (1024.0 * 1024):0.0} MB of " +
                     "audio plus its PQ descriptor, CD-TEXT and checksum. Send the whole folder to the plant.\n\n" +
                     $"IMAGE.DAT MD5  {image.ImageMd5}",
@@ -1347,7 +1349,8 @@ public partial class CdTransferDialog : Window
                 var result = await CdTransfer.ExportImageAsync(exportSource, plan, picker.FolderName,
                     discTitle.Text, discPerformer.Text, progress, token);
                 progressBar.Value = 1;
-                InfoDialog.Show(this, "CD Image Ready",
+                if (!_main.OwnedOperations.IsStopping && !_closeWhenFinished)
+                    InfoDialog.Show(this, "CD Image Ready",
                     $"Wrote the whole programme as one 16-bit WAV of {new FileInfo(result.WaveFiles[0]).Length / (1024.0 * 1024):0.0} MB " +
                     $"and a CUE sheet indexing {plan.Count} track(s) by their position on the disc. " +
                     "Open the CUE file in your preferred disc-burning application.",
@@ -1358,7 +1361,8 @@ public partial class CdTransferDialog : Window
                 var result = await CdTransfer.ExportPackageAsync(exportSource, plan, picker.FolderName,
                     discTitle.Text, discPerformer.Text, progress, token);
                 progressBar.Value = 1;
-                InfoDialog.Show(this, "CD Package Ready",
+                if (!_main.OwnedOperations.IsStopping && !_closeWhenFinished)
+                    InfoDialog.Show(this, "CD Package Ready",
                     $"Created {result.WaveFiles.Count} sector-aligned CD WAV file(s) and a CUE sheet. Open the CUE file in your preferred disc-burning application.",
                     result.CueFile);
             }
@@ -1366,7 +1370,8 @@ public partial class CdTransferDialog : Window
         catch (OperationCanceledException) { statusText.Text = "CD package export cancelled; staged files were removed."; }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "CD package failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (!_main.OwnedOperations.IsStopping && !_closeWhenFinished)
+                MessageBox.Show(ex.Message, "CD package failed", MessageBoxButton.OK, MessageBoxImage.Warning);
             statusText.Text = "No completed package was published.";
         }
         finally
@@ -1462,6 +1467,18 @@ public partial class CdTransferDialog : Window
             _closeWhenFinished = false;
             Close();
         }
+        if (!busy)
+        {
+            _operationLease?.Dispose();
+            _operationLease = null;
+        }
+    }
+
+    private CancellationTokenSource StartOperation()
+    {
+        var operation = new CancellationTokenSource();
+        _operationLease = _main.OwnedOperations.Register(operation);
+        return operation;
     }
 
     private void OnTrackSelected(object sender, SelectionChangedEventArgs e)

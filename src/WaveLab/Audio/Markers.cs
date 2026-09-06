@@ -31,6 +31,8 @@ public static class MarkerStore
     {
         public List<Marker> Markers { get; set; } = [];
         public List<NamedRegion> Regions { get; set; } = [];
+        public long? AudioLengthBytes { get; set; }
+        public long? AudioWriteUtcTicks { get; set; }
     }
 
     public static string SidecarPath(string audioPath) => audioPath + ".wlmeta.json";
@@ -43,6 +45,12 @@ public static class MarkerStore
             string path = SidecarPath(audioPath);
             if (!File.Exists(path)) return ([], []);
             var meta = JsonSerializer.Deserialize<Meta>(File.ReadAllText(path));
+            if (meta?.AudioLengthBytes is { } length && meta.AudioWriteUtcTicks is { } ticks)
+            {
+                var audio = new FileInfo(audioPath);
+                if (!audio.Exists || audio.Length != length || audio.LastWriteTimeUtc.Ticks != ticks)
+                    return ([], []);
+            }
             return (meta?.Markers ?? [], meta?.Regions ?? []);
         }
         catch { return ([], []); }
@@ -89,6 +97,12 @@ public static class MarkerStore
         ArgumentNullException.ThrowIfNull(regions);
 
         var meta = new Meta { Markers = [.. markers], Regions = [.. regions] };
+        var audioFile = new FileInfo(audioPath);
+        if (audioFile.Exists)
+        {
+            meta.AudioLengthBytes = audioFile.Length;
+            meta.AudioWriteUtcTicks = audioFile.LastWriteTimeUtc.Ticks;
+        }
         string path = Path.GetFullPath(SidecarPath(audioPath));
         string directory = Path.GetDirectoryName(path)
             ?? throw new InvalidOperationException("The marker sidecar path has no directory.");

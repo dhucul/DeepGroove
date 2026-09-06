@@ -149,6 +149,7 @@ public partial class RestorationWorkbenchDialog : Window
     private bool _initialized;
     private bool _initializing;
     private bool _busy;
+    private readonly Dictionary<CancellationTokenSource, IDisposable> _operationLeases = [];
     private bool _applying;
     private bool _previewStarted;
     private bool _previewRackBypassed;
@@ -2541,6 +2542,7 @@ public partial class RestorationWorkbenchDialog : Window
         _previewDebounce.Stop();
         _operation?.Cancel();
         var operation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _operationLeases.Add(operation, _main.OwnedOperations.Register(operation));
         _operation = operation;
         _busy = true;
         _applying = applying;
@@ -2560,6 +2562,7 @@ public partial class RestorationWorkbenchDialog : Window
             UpdateUiState();
         }
         operation.Dispose();
+        if (_operationLeases.Remove(operation, out var lease)) lease.Dispose();
         if (!_busy && _closeWhenFinished && !_closed)
         {
             _closeWhenFinished = false;

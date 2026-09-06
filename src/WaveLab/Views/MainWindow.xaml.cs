@@ -2753,6 +2753,7 @@ public partial class MainWindow : Window
                 {
                     var converted = await Task.Run(
                         () => ChannelTools.ConvertSampleRate(doc, target, token, progress), token);
+                    token.ThrowIfCancellationRequested();
                     _vm.AddGeneratedDocument(converted,
                         $"Sample rate converted to {target / 1000.0:0.###} kHz in a new tab · source audio unchanged.");
                 });

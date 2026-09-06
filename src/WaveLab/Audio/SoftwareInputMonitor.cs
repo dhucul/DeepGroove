@@ -16,6 +16,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
     private MonitorSession? _session;
     private bool _enabled;
     private string? _lastError;
+    private long _generation;
 
     public bool Enabled { get { lock (_sync) return _enabled; } }
     public bool IsActive => Volatile.Read(ref _session) != null;
@@ -25,6 +26,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
     {
         lock (_sync)
         {
+            _generation++;
             _enabled = enabled;
             _lastError = null;
             if (!enabled) StopSession();
@@ -40,7 +42,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
             if (!_enabled) return;
             try
             {
-                MonitorSession session = MonitorSession.Start(inputFormat, OnSessionStopped);
+                MonitorSession session = MonitorSession.Start(inputFormat, OnSessionStopped, _generation);
                 // Published for the capture thread, which reads _session without
                 // ever taking _sync (this lock is held across device open/teardown).
                 Volatile.Write(ref _session, session);
@@ -99,11 +101,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
             ThreadPool.QueueUserWorkItem(static state =>
             {
                 var (monitor, failed, message) = ((SoftwareInputMonitor, MonitorSession, string))state!;
-                lock (monitor._sync)
-                {
-                    monitor._lastError = message;
-                    monitor._enabled = false;
-                }
+                monitor.PublishFailure(failed.Generation, message);
                 try { failed.Dispose(); } catch { }
             }, (this, session, ex.Message));
         }
@@ -115,8 +113,19 @@ internal sealed class SoftwareInputMonitor : IDisposable
         lock (_sync) StopSession();
     }
 
+    private void PublishFailure(long generation, string message)
+    {
+        lock (_sync)
+        {
+            if (_generation != generation || _session != null) return;
+            _lastError = message;
+            _enabled = false;
+        }
+    }
+
     private void StopSession()
     {
+        _generation++;
         MonitorSession? session = Volatile.Read(ref _session);
         Volatile.Write(ref _session, null);
         if (session == null) return;
@@ -134,6 +143,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
 
     private sealed class MonitorSession : IDisposable
     {
+        public long Generation { get; private set; }
         private readonly MMDevice _device;
         private readonly IWavePlayer _output;
         private readonly BufferedWaveProvider _buffer;
@@ -165,7 +175,8 @@ internal sealed class SoftwareInputMonitor : IDisposable
 
         public static MonitorSession Start(
             WaveFormat inputFormat,
-            Action<MonitorSession, Exception?> onUnexpectedStop)
+            Action<MonitorSession, Exception?> onUnexpectedStop,
+            long generation)
         {
             AppSettings settings = AppSettings.Instance;
             Role role = AudioHardwareOptions.ParseRole(settings.OutputDefaultRole, Role.Multimedia);
@@ -212,6 +223,7 @@ internal sealed class SoftwareInputMonitor : IDisposable
                     Math.Clamp(settings.BufferMs, 3, 500));
                 output.Init(provider);
                 session = new MonitorSession(device, output, buffer, onUnexpectedStop);
+                session.Generation = generation;
                 session.StartOutput();
                 return session;
             }

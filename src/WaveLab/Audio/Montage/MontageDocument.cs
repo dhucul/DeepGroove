@@ -203,6 +203,12 @@ public sealed class MontageDocument
         for (int i = 0; i < _clips.Count; i++)
         {
             MontageClip clip = _clips[i];
+            if (clip.TimelineStart < 0 || clip.SourceStart < 0 || (long)clip.TimelineStart + clip.Length > Array.MaxLength)
+            {
+                issues.Add(new(MontageIssueSeverity.Error,
+                    $"Clip {i + 1} has an invalid timeline or source position.", i));
+                continue;
+            }
             if (clip.SourceIndex < 0 || clip.SourceIndex >= _sources.Count)
             {
                 issues.Add(new(MontageIssueSeverity.Error,

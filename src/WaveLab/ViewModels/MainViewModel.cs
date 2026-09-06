@@ -269,6 +269,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     public PlaybackEngine Engine { get; }
+    public OperationLifetime OwnedOperations { get; } = new();
     public MasterSectionViewModel Master { get; }
     /// <summary>
     /// Everything open in a tab: audio documents and montages.
@@ -1398,6 +1399,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
         var markers = MarkerSnapshot(d);
+        var regions = RegionSnapshot(d);
         int markersVersion = d.MarkersVersion;
         string path = doc.FilePath!;
         int depth = doc.SourceBitDepth;
@@ -1414,6 +1416,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             // Do not declare the document fully persisted, or discard its
             // recovery copy, while the latest marker sidecar is still pending
             // (or has failed).
+            d.PersistMarkers(path, markers, regions);
             await d.FlushMarkersAsync();
             _saveFailures.Remove(doc.SessionId);
             if (d.MarkersVersion == markersVersion)
@@ -1481,6 +1484,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         int version = doc.EditVersion;
         var snapshot = SnapshotDoc(doc);
         var markers = MarkerSnapshot(d);
+        var regions = RegionSnapshot(d);
         int markersVersion = d.MarkersVersion;
         try
         {
@@ -1494,7 +1498,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             doc.Dither16BitOnSave = dither16;
             // Generated documents could accumulate markers/regions before they had
             // a path. Persist that in-memory metadata alongside the first Save As.
-            d.PersistMarkers();
+            d.PersistMarkers(dlg.FileName, markers, regions);
             await d.FlushMarkersAsync();
             if (d.MarkersVersion == markersVersion)
                 d.MarkMarkersEmbedded(markersVersion);
@@ -1842,11 +1846,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (_editOperationRunning || !d.HasSelection) return false;
         int start = d.SelStart, count = d.SelEnd - d.SelStart;
         var channels = d.Doc.Channels.ToArray();
+        if (!FitsClipboard(channels.Length, count))
+        {
+            MessageBox.Show(
+                "That selection is too large to hold on the clipboard. Render or export "
+                + "the range instead, or copy it in smaller pieces.",
+                "Copy", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
         int sampleRate = d.Doc.SampleRate;
         SetEditOperationRunning(true);
         try
         {
-            _clipboard = await Task.Run(() =>
+            var captured = await Task.Run(() =>
             {
                 var copy = new float[channels.Length][];
                 for (int c = 0; c < channels.Length; c++)
@@ -1856,18 +1868,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 }
                 return copy;
             });
-            long bytes = (long)_clipboard.Length * count * sizeof(float);
-            if (bytes > MaximumClipboardBytes)
-            {
-                _clipboard = null;
-                _clipboardRate = 0;
-                MessageBox.Show(
-                    "That selection is too large to hold on the clipboard. Render or export "
-                    + "the range instead, or copy it in smaller pieces.",
-                    "Copy", MessageBoxButton.OK, MessageBoxImage.Information);
-                return false;
-            }
-
+            _clipboard = captured;
             _clipboardRate = sampleRate;
             return true;
         }
@@ -2140,6 +2141,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 await FinishTransportRecordingAsync(info.SessionId);
         });
     }
+
+    internal static bool FitsClipboard(int channels, int frames) =>
+        channels > 0 && frames >= 0 && (long)channels * frames <= MaximumClipboardBytes / sizeof(float);
 
     /// <summary>
     /// Couples the selected depth to one transport session. The selector can change after a take,
@@ -2623,6 +2627,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     var input = channels.Select(ch => ch.AsSpan(start, count).ToArray()).ToArray();
                     return Engine.Master.ProcessOffline(input, sr, token, progress);
                 }, token);
+                token.ThrowIfCancellationRequested();
                 if (!Documents.Contains(d) || d.Doc.EditVersion != sourceVersion)
                     throw new InvalidOperationException("The source changed while the master render was running. Try again.");
 
@@ -2636,6 +2641,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 if (start + count <= d.Doc.Length)
                 {
                     PrepareForDocumentEdit(d);
+                    token.ThrowIfCancellationRequested();
                     if (wholeDocument)
                         d.Doc.ReplaceAllOwned(output, "Render Master Chain");
                     else
@@ -3010,6 +3016,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             Progress.CancelAll();
+            OwnedOperations.CancelAll();
+            await OwnedOperations.WaitForIdleAsync();
             await Progress.WaitForIdleAsync();
             if (Engine.IsPlaying || Engine.IsPaused) ReleasePlayback();
             if (!_recordFinalization.IsCompleted) await _recordFinalization;
