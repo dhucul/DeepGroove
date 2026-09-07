@@ -210,6 +210,12 @@ public sealed class RecordingEngine : IDisposable
     }
     public RecordingLevelSnapshot LevelSnapshot => _levelAnalyzer.Snapshot;
 
+    public bool IgnorePopsAndClicks
+    {
+        get => _levelAnalyzer.IgnorePopsAndClicks;
+        set => _levelAnalyzer.IgnorePopsAndClicks = value;
+    }
+
     /// <summary>Peak the level recommendation aims the programme at, in dBTP.</summary>
     public double LevelTargetCeilingDb
     {

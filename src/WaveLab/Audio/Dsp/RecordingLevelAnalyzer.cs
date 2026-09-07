@@ -19,8 +19,9 @@ public enum RecordingLevelStatus
 /// A missing signal level is represented by negative infinity. Noise floor and
 /// crest factor are NaN when the captured programme does not make those values
 /// distinguishable. <see cref="ProgramPeakDb"/> is the click-resistant programme
-/// peak that drives the gain recommendation; <see cref="TruePeakDb"/> remains the
-/// absolute measurement including isolated artifacts.
+/// peak that drives the gain recommendation when click rejection is enabled;
+/// <see cref="TruePeakDb"/> remains the absolute measurement including isolated
+/// artifacts and drives the recommendation when rejection is disabled.
 /// <para><see cref="IntegratedLufs"/> is whole-stream BS.1770 gated loudness — its
 /// own absolute and relative gates exclude lead-in and pauses. That is a different
 /// scope from <see cref="ProgramRmsDb"/>, which is the median of the blocks this
@@ -52,7 +53,11 @@ public sealed record RecordingLevelSnapshot(
     double IntegratedLufs,
     double DcOffsetDb,
     double HumLevelDb,
-    int HumFrequencyHz);
+    int HumFrequencyHz)
+{
+    /// <summary>Overload evidence is confined to likely narrow artifacts, independent of warning preferences.</summary>
+    public bool HasOnlyClickClipping { get; init; }
+}
 
 /// <summary>
 /// Streaming, linked-channel input-level analysis for a representative passage.
@@ -178,6 +183,7 @@ public sealed class RecordingLevelAnalyzer
     private double _peakRight;
     private double _overallPeak;
     private bool _fullDurationScanEnabled;
+    private bool _ignorePopsAndClicks = true;
     private double _targetCeilingDb = DefaultTargetCeilingDb;
 
     // Snapshot memoization: the UI polls every ~33 ms while blocks only complete
@@ -276,11 +282,30 @@ public sealed class RecordingLevelAnalyzer
         double TruePeakDb,
         double IntegratedLufs,
         bool FullDurationScanEnabled,
+        bool IgnorePopsAndClicks,
         double TargetCeilingDb,
         bool HasRepeatedFlatTops,
         ArraySegment<BlockSummary> Blocks);
 
     public RecordingLevelAnalyzer(int sampleRate, int channels) => Configure(sampleRate, channels);
+
+    /// <summary>Exclude likely narrow artifacts from gain advice and clipping warnings.</summary>
+    public bool IgnorePopsAndClicks
+    {
+        get { lock (_sync) return _ignorePopsAndClicks; }
+        set
+        {
+            lock (_sync)
+            {
+                if (_ignorePopsAndClicks == value) return;
+                _ignorePopsAndClicks = value;
+                _cachedSnapshot = null;
+                _cachedSnapshotFrame = 0;
+                _analysisGeneration++;
+                _snapshotBuildGeneration = 0;
+            }
+        }
+    }
 
     /// <summary>
     /// Retain the complete programme history for a deliberate whole-song or
@@ -411,6 +436,7 @@ public sealed class RecordingLevelAnalyzer
             : double.NegativeInfinity,
         _loudness.IntegratedLufs,
         _fullDurationScanEnabled,
+        _ignorePopsAndClicks,
         _targetCeilingDb,
         HasRepeatedFlatTops(),
         _blocks.Publish());
@@ -822,8 +848,9 @@ public sealed class RecordingLevelAnalyzer
                 0,
                 MaximumReserveDb)
             : 0;
-        double projectedPeakDb = double.IsFinite(programPeakDb)
-            ? programPeakDb + reserveDb
+        double recommendationPeakDb = state.IgnorePopsAndClicks ? programPeakDb : truePeakDb;
+        double projectedPeakDb = double.IsFinite(recommendationPeakDb)
+            ? recommendationPeakDb + reserveDb
             : double.NegativeInfinity;
         double suggestedGainDb = 0;
         if (settled && double.IsFinite(projectedPeakDb))
@@ -836,8 +863,8 @@ public sealed class RecordingLevelAnalyzer
             // conservative when only a short passage has been sampled.
             double adjustmentDb = projectedAdjustmentDb >= 0
                 ? projectedAdjustmentDb
-                : double.IsFinite(programPeakDb) && programPeakDb > state.TargetCeilingDb
-                    ? state.TargetCeilingDb - programPeakDb
+                : double.IsFinite(recommendationPeakDb) && recommendationPeakDb > state.TargetCeilingDb
+                    ? state.TargetCeilingDb - recommendationPeakDb
                     : 0;
             suggestedGainDb = RoundHalfDb(Math.Clamp(adjustmentDb, -18, 6));
         }
@@ -867,7 +894,8 @@ public sealed class RecordingLevelAnalyzer
         // the warning when the robust programme peak says they are not a narrow
         // artifact. Clipping that occupies a meaningful part of any single block
         // is sustained overload by definition and overrides that amnesty.
-        bool artifactAmnesty = narrowArtifactOwnsAbsolutePeak && !hasSustainedRailHits;
+        bool likelyClickClipping = narrowArtifactOwnsAbsolutePeak && !hasSustainedRailHits;
+        bool artifactAmnesty = state.IgnorePopsAndClicks && likelyClickClipping;
         if (state.ClippedSamples > 0 && !artifactAmnesty)
             status = RecordingLevelStatus.Clipping;
         else if (state.HasRepeatedFlatTops && !artifactAmnesty)
@@ -909,7 +937,11 @@ public sealed class RecordingLevelAnalyzer
             state.IntegratedLufs,
             dcOffsetDb,
             humLevelDb,
-            humFrequencyHz);
+            humFrequencyHz)
+        {
+            HasOnlyClickClipping = likelyClickClipping
+                && (state.ClippedSamples > 0 || state.HasRepeatedFlatTops || truePeakDb >= 0),
+        };
     }
 
     /// <summary>

@@ -77,6 +77,8 @@ public sealed class AppSettings
     /// </summary>
     public double RecordingTargetCeilingDb { get; set; } = DefaultRecordingTargetCeilingDb;
 
+    public bool RecordingIgnorePopsAndClicks { get; set; } = true;
+
     /// <summary>
     /// Safest level-check outcome per capture device id, so the Recording Level
     /// Assistant can recall — and replay — what a given input needed previously.
@@ -617,6 +619,7 @@ public sealed class AppSettings
         RecordAutoStopOnDuration = d.RecordAutoStopOnDuration;
         RecordAutoStopMinutes = d.RecordAutoStopMinutes;
         RecordingTargetCeilingDb = d.RecordingTargetCeilingDb;
+        RecordingIgnorePopsAndClicks = d.RecordingIgnorePopsAndClicks;
         // Remembered calibrations describe physical inputs, but they are settings
         // the user can only reach through this reset, so it has to clear them.
         InputCalibrations = d.InputCalibrations;

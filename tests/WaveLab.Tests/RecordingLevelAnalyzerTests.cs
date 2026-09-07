@@ -782,6 +782,7 @@ public sealed class RecordingLevelAnalyzerTests
         // programme, so the narrow-artifact amnesty would otherwise apply.
         Assert.True(result.TruePeakDb - result.ProgramPeakDb > 6);
         Assert.Equal(RecordingLevelStatus.Clipping, result.Status);
+        Assert.False(result.HasOnlyClickClipping);
     }
 
     [Fact]
@@ -811,6 +812,19 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.True(result.ClippedSamples > 0);
         Assert.NotEqual(RecordingLevelStatus.Clipping, result.Status);
         Assert.Equal(RecordingLevelStatus.TooLow, result.Status);
+        Assert.True(result.HasOnlyClickClipping);
+
+        // The same captured passage can be re-evaluated without new audio.
+        analyzer.IgnorePopsAndClicks = false;
+        RecordingLevelSnapshot strict = analyzer.Snapshot;
+        Assert.Equal(RecordingLevelStatus.Clipping, strict.Status);
+        Assert.True(strict.HasOnlyClickClipping);
+        Assert.True(strict.SuggestedGainDb < result.SuggestedGainDb);
+        Assert.Equal(result.ClippedSamples, strict.ClippedSamples);
+        Assert.Equal(result.TruePeakDb, strict.TruePeakDb);
+
+        analyzer.IgnorePopsAndClicks = true;
+        Assert.Equal(result, analyzer.Snapshot);
     }
 
     [Fact]

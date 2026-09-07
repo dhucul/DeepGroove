@@ -46,6 +46,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private double _inputLevelStepDb = 0.5;
     private double _inputFineTrimDb;
     private double _targetCeilingDb;
+    private bool _ignorePopsAndClicks;
     // What the analyzer and settings file actually hold, so a drag that ends where it
     // started costs nothing.
     private double _committedTargetCeilingDb;
@@ -90,6 +91,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         catch { }
 
         _engine.LevelTargetCeilingDb = AppSettings.Instance.RecordingTargetCeilingDb;
+        _engine.IgnorePopsAndClicks = _ignorePopsAndClicks = AppSettings.Instance.RecordingIgnorePopsAndClicks;
         // Read back rather than trusting the setting: the analyzer clamps it.
         _targetCeilingDb = _committedTargetCeilingDb = _engine.LevelTargetCeilingDb;
         _recordingBitDepth = NormalizeRecordingBitDepth(AppSettings.Instance.RecordingBitDepth);
@@ -545,6 +547,38 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         : SampleWholeRecord ? "Scan Whole Song" : "Check Levels";
     public double LevelConfidencePercent => _levelSnapshot.Confidence * 100;
 
+    public bool IgnorePopsAndClicks
+    {
+        get => _ignorePopsAndClicks;
+        set
+        {
+            if (_ignorePopsAndClicks == value) return;
+            _engine.IgnorePopsAndClicks = value;
+            _levelSnapshot = _engine.LevelSnapshot;
+            _ignorePopsAndClicks = value;
+            // A held setting belongs to the previous policy. Running checks can
+            // re-derive from their history; stopped checks no longer have blocks.
+            _completedLevelCheckNote = null;
+            _heldRecommendedTotalDb = double.NaN;
+            _heldProgramPeakDb = double.NaN;
+            _recommendationApplied = false;
+            _applyRecommendationStatusText = "";
+            ResetCalibrationWriteThrottle();
+            // A policy change does not interrupt capture or erase live meter history.
+            if (HasStoppedLevelCheck) ResetDisplayedLevels();
+            UpdateHeldRecommendation(_levelSnapshot);
+            HasStoppedLevelCheck = false;
+            bool previous = AppSettings.Instance.RecordingIgnorePopsAndClicks;
+            AppSettings.Instance.RecordingIgnorePopsAndClicks = value;
+            if (!AppSettings.Instance.Save())
+                AppSettings.Instance.RecordingIgnorePopsAndClicks = previous;
+            // Observers must see the new policy and its result together.
+            Raise(nameof(IgnorePopsAndClicks));
+            RaiseLevelProperties();
+            RaiseApplyProperties();
+        }
+    }
+
     /// <summary>
     /// Peak the recommendation aims at; a user preference, settable here as well as in
     /// Settings so a ceiling can be found mid-transfer.
@@ -641,7 +675,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             if (IsWaitingForNeedleDrop) return "Armed for needle drop";
             if (!IsLevelChecking && !IsRecording) return "Check levels before the take";
             if (_levelSnapshot.Status == RecordingLevelStatus.Clipping)
-                return "Digital clipping detected";
+                return _levelSnapshot.HasOnlyClickClipping
+                    ? "Likely pops / clicks reached full scale" : "Input overload detected";
             if (_levelSnapshot.InvalidSamples > 0) return "Input data error detected";
             return _levelSnapshot.Status switch
             {
@@ -652,7 +687,6 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 RecordingLevelStatus.TooLow => "Input level is conservative",
                 RecordingLevelStatus.Good => "Recording level is ready",
                 RecordingLevelStatus.Hot => "Input level is too hot",
-                RecordingLevelStatus.Clipping => "Digital clipping detected",
                 RecordingLevelStatus.UpstreamClipping => "Possible upstream clipping",
                 _ => "Checking recording level",
             };
@@ -691,10 +725,10 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 notes += $" A {snapshot.DcOffsetDb:0.0} dBFS DC offset rides on the input; check cabling and interface grounding.";
             if (snapshot.HumFrequencyHz > 0)
                 notes += $" A {snapshot.HumFrequencyHz} Hz hum ({snapshot.HumLevelDb:0.0} dBFS) dominates the quiet passages; check the turntable ground lead.";
-            if (snapshot.ActiveSeconds >= 10
+            if (IgnorePopsAndClicks && snapshot.ActiveSeconds >= 10
                 && double.IsFinite(snapshot.TruePeakDb) && double.IsFinite(snapshot.ProgramPeakDb)
                 && snapshot.TruePeakDb - snapshot.ProgramPeakDb >= 2)
-                notes += snapshot.ClippedSamples > 0 && snapshot.Status != RecordingLevelStatus.Clipping
+                notes += snapshot.ClippedSamples > 0 && snapshot.HasOnlyClickClipping
                     ? $" {snapshot.ClippedSamples:N0} isolated click sample(s) touched digital full scale, but run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; they are excluded from the gain advice because declicking replaces them later."
                     : $" Isolated clicks run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; the recommendation protects the music, and declicking removes the clicks later.";
             if (SampleWholeRecord && IsLevelChecking)
@@ -1036,19 +1070,38 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             RecordingLevelSnapshot snapshot = _levelSnapshot;
-            if (snapshot.ClippedSamples > 0)
-                return snapshot.Status == RecordingLevelStatus.Clipping
-                    ? $"{snapshot.ClippedSamples:N0} DIGITAL"
-                    : $"{snapshot.ClippedSamples:N0} ISOLATED";
             if (snapshot.InvalidSamples > 0) return $"{snapshot.InvalidSamples:N0} INVALID";
+            if (snapshot.HasOnlyClickClipping)
+                return IgnorePopsAndClicks ? "CLICKS IGNORED" : "LIKELY CLICKS";
+            if (snapshot.ClippedSamples > 0)
+                return $"{snapshot.ClippedSamples:N0} OVERLOAD";
             if (snapshot.Status == RecordingLevelStatus.UpstreamClipping)
                 return $"{snapshot.FlatTopCount:N0} FLAT TOP";
+            if (snapshot.TruePeakDb >= 0) return "PEAK OVER";
             return "NONE";
         }
     }
 
-    public bool HasOnlyIsolatedClipping => _levelSnapshot.ClippedSamples > 0
-        && _levelSnapshot.Status != RecordingLevelStatus.Clipping;
+    public bool HasOnlyIsolatedClipping => IgnorePopsAndClicks && _levelSnapshot.HasOnlyClickClipping
+        && _levelSnapshot.InvalidSamples == 0;
+
+    public string ClippingDetailText
+    {
+        get
+        {
+            RecordingLevelSnapshot snapshot = _levelSnapshot;
+            string counts = $"{snapshot.ClippedSamples:N0} samples reached digital full scale; {snapshot.FlatTopCount:N0} flat-topped peaks. ";
+            if (snapshot.InvalidSamples > 0)
+                return $"{snapshot.InvalidSamples:N0} invalid input samples. " + counts;
+            if (snapshot.HasOnlyClickClipping)
+                return counts + "The signal shape suggests brief pops or clicks.";
+            if (snapshot.ClippedSamples > 0 || snapshot.Status == RecordingLevelStatus.UpstreamClipping)
+                return counts + "Sustained rail hits or repeated flat tops suggest excessive input level.";
+            if (snapshot.TruePeakDb >= 0)
+                return counts + "The estimated peak between samples reached digital full scale.";
+            return counts + "No clipping detected.";
+        }
+    }
 
     public string LevelProgressText
     {
@@ -1677,6 +1730,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         Raise(nameof(HumText));
         Raise(nameof(BalanceText));
         Raise(nameof(ClippingText));
+        Raise(nameof(ClippingDetailText));
         Raise(nameof(HasOnlyIsolatedClipping));
         Raise(nameof(LevelProgressText));
         Raise(nameof(SoftwarePlaythroughStatusText));

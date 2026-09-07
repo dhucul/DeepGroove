@@ -322,12 +322,12 @@
                             </Border>
                             <Border Grid.Column="1" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
                                 <StackPanel><TextBlock Text="PROG PEAK" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
-                                                       ToolTip="Click-resistant programme peak that drives the gain recommendation"/>
+                                                       ToolTip="Music peak with likely narrow pops and clicks excluded"/>
                                     <TextBlock Text="{Binding ProgramPeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
                             <Border Grid.Column="2" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
                                 <StackPanel><TextBlock Text="CLICKS ABOVE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
-                                                       ToolTip="How far isolated clicks sit above the programme; excluded from the recommendation"/>
+                                                       ToolTip="How far the absolute peak sits above the music; excluded from advice when Ignore pops and clicks is enabled"/>
                                     <TextBlock Text="{Binding ClickMarginText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
                             <Border Grid.Column="3" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
@@ -401,8 +401,8 @@
                             </Border>
                             <Border Grid.Column="5" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
                                 <StackPanel><TextBlock Text="CLIPPING" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
-                                                       ToolTip="Sustained digital rail hits warn; isolated stylus clicks are labeled but excluded from gain advice"/>
-                                    <TextBlock Text="{Binding ClippingText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5">
+                                                       ToolTip="Likely pops and clicks are distinguished from input overload. Ignored clicks are informational; sustained overload still warns. This is an estimate from the signal, not a certainty."/>
+                                    <TextBlock x:Name="clippingReadout" Text="{Binding ClippingText}" ToolTip="{Binding ClippingDetailText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5">
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">
                                                 <Setter Property="Foreground" Value="{StaticResource Red}"/>
@@ -411,7 +411,7 @@
                                                         <Setter Property="Foreground" Value="{StaticResource Green}"/>
                                                     </DataTrigger>
                                                     <DataTrigger Binding="{Binding HasOnlyIsolatedClipping}" Value="True">
-                                                        <Setter Property="Foreground" Value="{StaticResource Amber}"/>
+                                                        <Setter Property="Foreground" Value="{StaticResource TealMuted}"/>
                                                     </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
@@ -429,7 +429,13 @@
                                              TargetMinimumDb="{Binding TargetMeterMinimumDb}"
                                              TargetMaximumDb="{Binding TargetMeterMaximumDb}"/>
 
-                        <CheckBox x:Name="wholeRecordCheck" Margin="0,11,0,0"
+                        <CheckBox x:Name="ignorePopsAndClicksCheck" Margin="0,11,0,0"
+                                  Content="Ignore pops and clicks"
+                                  IsChecked="{Binding IgnorePopsAndClicks, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  ToolTip="Base the recommendation on music and suppress warnings for likely pops and clicks. Sustained input overload still warns. Changing this clears a finished check."
+                                  AutomationProperties.Name="Ignore pops and clicks when checking recording levels"/>
+
+                        <CheckBox x:Name="wholeRecordCheck" Margin="0,8,0,0"
                                   Content="Scan the whole song / record side"
                                   IsChecked="{Binding SampleWholeRecord, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                   ToolTip="Play from lead-in through run-out; Deep Groove holds the safest setting found anywhere on the side"

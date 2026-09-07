@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows.Controls;
 using WaveLab.Audio;
+using WaveLab.Audio.Dsp;
 using WaveLab.Util;
 using WaveLab.ViewModels;
 using WaveLab.Views;
@@ -108,6 +109,41 @@ public sealed class RecordingBitDepthFlowTests : IDisposable
 
             punch.IsChecked = true;
             Assert.False(selector.IsEnabled);
+        }));
+    }
+
+    [Fact]
+    public void IgnoreClicksOptionPersistsAndClearsAStoppedCheck()
+    {
+        Wpf.Run(() => Wpf.Show(new RecordDialog(), window =>
+        {
+            var check = Assert.IsType<CheckBox>(window.FindName("ignorePopsAndClicksCheck"));
+            var viewModel = Assert.IsType<RecordViewModel>(window.DataContext);
+            Assert.True(check.IsChecked);
+
+            var analyzer = new RecordingLevelAnalyzer(48_000, 1);
+            var signal = new float[48_000];
+            for (int i = 0; i < signal.Length; i++)
+                signal[i] = (float)(0.25 * Math.Sin(2 * Math.PI * 100 * i / 48_000));
+            signal[600] = 1;
+            for (int i = 0; i < 12; i++) analyzer.Process(signal);
+            typeof(RecordViewModel).GetField("_levelSnapshot",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .SetValue(viewModel, analyzer.Snapshot);
+            Assert.Equal("CLICKS IGNORED", viewModel.ClippingText);
+            Assert.True(viewModel.HasOnlyIsolatedClipping);
+            Assert.Contains("12 samples", viewModel.ClippingDetailText);
+
+            typeof(RecordViewModel).GetProperty(nameof(RecordViewModel.HasStoppedLevelCheck))!
+                .SetValue(viewModel, true);
+
+            check.IsChecked = false;
+            Wpf.Pump();
+
+            Assert.False(viewModel.IgnorePopsAndClicks);
+            Assert.False(viewModel.HasStoppedLevelCheck);
+            AppSettings.AppDataDir = _sandbox;
+            Assert.False(AppSettings.Instance.RecordingIgnorePopsAndClicks);
         }));
     }
 
