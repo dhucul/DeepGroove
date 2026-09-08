@@ -80,11 +80,11 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Theory]
-    [InlineData(10, 6)]
-    [InlineData(30, 4)]
-    [InlineData(60, 3)]
-    [InlineData(120, 2)]
-    public void ReserveFallsAsRepresentativeActiveTimeGrows(int seconds, double expectedReserve)
+    [InlineData(10)]
+    [InlineData(30)]
+    [InlineData(60)]
+    [InlineData(120)]
+    public void ScanDurationDoesNotAddAReserve(int seconds)
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
 
@@ -92,7 +92,9 @@ public sealed class RecordingLevelAnalyzerTests
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.Equal(seconds, result.ActiveSeconds, 8);
-        Assert.Equal(expectedReserve, result.ReserveDb, 8);
+        Assert.Equal(0, result.ReserveDb);
+        Assert.Equal(result.TruePeakDb, result.ProjectedPeakDb, 8);
+        Assert.Equal(4.5, result.SuggestedGainDb);
         Assert.Equal(Math.Min(0.95, 1 - Math.Exp(-seconds / 30.0)), result.Confidence, 10);
     }
 
@@ -106,15 +108,15 @@ public sealed class RecordingLevelAnalyzerTests
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.Equal(130, result.ElapsedSeconds, 8);
         Assert.Equal(120, result.ActiveSeconds, 8);
-        Assert.Equal(2, result.ReserveDb, 8);
+        Assert.Equal(0, result.ReserveDb);
         Assert.Equal(0.95, result.Confidence, 10);
     }
 
     [Theory]
-    [InlineData(-12, RecordingLevelStatus.TooLow, 5.5)]
-    [InlineData(-6, RecordingLevelStatus.Hot, -0.5)]
-    [InlineData(-1, RecordingLevelStatus.Hot, -5.5)]
-    public void SixtySecondScanKeepsTheMeasuredProgrammeInASafeRange(
+    [InlineData(-12, RecordingLevelStatus.TooLow, 10.5)]
+    [InlineData(-6, RecordingLevelStatus.TooLow, 4.5)]
+    [InlineData(-1, RecordingLevelStatus.AboveTarget, -0.5)]
+    public void SixtySecondScanTargetsTheMeasuredPeak(
         double peakDb,
         RecordingLevelStatus expectedStatus,
         double expectedGain)
@@ -126,23 +128,23 @@ public sealed class RecordingLevelAnalyzerTests
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.Equal(expectedStatus, result.Status);
         Assert.InRange(result.TruePeakDb, peakDb - 0.02, peakDb + 0.02);
-        Assert.Equal(result.TruePeakDb + 3, result.ProjectedPeakDb, 10);
+        Assert.Equal(result.TruePeakDb, result.ProjectedPeakDb, 10);
         Assert.Equal(expectedGain, result.SuggestedGainDb);
         Assert.True(result.ProjectedPeakDb + result.SuggestedGainDb <= analyzer.TargetCeilingDb + 1e-6);
     }
 
     [Fact]
-    public void AShortScanRecommendsLoweringToPreserveItsAdvertisedSafetyReserve()
+    public void AShortScanRaisesAnUnclippedProgrammeTowardTheTarget()
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
 
         FeedRepeated(analyzer, SineSecond(-6), seconds: 12);
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
-        Assert.True(result.ReserveDb > 5);
-        Assert.True(result.ProjectedPeakDb > -1);
-        Assert.Equal(RecordingLevelStatus.Hot, result.Status);
-        Assert.True(result.SuggestedGainDb < 0);
+        Assert.Equal(0, result.ReserveDb);
+        Assert.True(result.ProjectedPeakDb < -1);
+        Assert.Equal(RecordingLevelStatus.TooLow, result.Status);
+        Assert.True(result.SuggestedGainDb > 0);
         Assert.True(result.ProjectedPeakDb + result.SuggestedGainDb <= analyzer.TargetCeilingDb + 1e-6);
     }
 
@@ -160,7 +162,7 @@ public sealed class RecordingLevelAnalyzerTests
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.Equal(122, result.ElapsedSeconds, 8);
         Assert.InRange(result.ProgramPeakDb, -3.4, -2.9);
-        Assert.Equal(RecordingLevelStatus.Hot, result.Status);
+        Assert.Equal(RecordingLevelStatus.TooLow, result.Status);
         Assert.True(result.ProjectedPeakDb + result.SuggestedGainDb <= analyzer.TargetCeilingDb + 1e-6);
     }
 
@@ -182,7 +184,7 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.Equal(12.5, final.ElapsedSeconds, 8);
         Assert.True(final.ProgramPeakDb > -2,
             $"Expected the final loud tail in the programme peak, got {final.ProgramPeakDb:0.0} dBTP");
-        Assert.Equal(RecordingLevelStatus.Hot, final.Status);
+        Assert.Equal(RecordingLevelStatus.AboveTarget, final.Status);
     }
 
     [Fact]
@@ -216,7 +218,7 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Fact]
-    public void IntersampleOverIsHotButNotDigitalClipping()
+    public void IntersampleOverIsAboveTargetButNotDigitalClipping()
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
         var signal = new float[64];
@@ -231,7 +233,7 @@ public sealed class RecordingLevelAnalyzerTests
         analyzer.Process(signal);
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
-        Assert.Equal(RecordingLevelStatus.Hot, result.Status);
+        Assert.Equal(RecordingLevelStatus.AboveTarget, result.Status);
         Assert.Equal(0, result.ClippedSamples);
         Assert.True(result.TruePeakDb > 0);
     }
@@ -509,7 +511,7 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.InRange(result.TruePeakDb, -6, 0);
         // …but the recommendation protects the programme.
         Assert.InRange(result.ProgramPeakDb, -12.8, -11.3);
-        Assert.InRange(result.SuggestedGainDb, 5, 6);
+        Assert.InRange(result.SuggestedGainDb, 10.5, 11.5);
     }
 
     [Fact]
@@ -530,7 +532,7 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.True(result.TruePeakDb >= 0);
         Assert.Equal(180, result.ClippedSamples);
         Assert.InRange(result.ProgramPeakDb, -12.8, -11.3);
-        Assert.InRange(result.SuggestedGainDb, 5, 6);
+        Assert.InRange(result.SuggestedGainDb, 10.5, 11.5);
     }
 
     [Fact]
@@ -550,7 +552,7 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.True(result.FlatTopCount >= 60);
         Assert.Equal(RecordingLevelStatus.TooLow, result.Status);
         Assert.InRange(result.ProgramPeakDb, -12.8, -11.3);
-        Assert.InRange(result.SuggestedGainDb, 5, 6);
+        Assert.InRange(result.SuggestedGainDb, 10.5, 11.5);
     }
 
     [Fact]
@@ -573,7 +575,7 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Fact]
-    public void DynamicProgrammeEarnsExtraSafetyReserve()
+    public void DynamicProgrammeDoesNotAddAnUnseenPeakReserve()
     {
         var steady = new RecordingLevelAnalyzer(SampleRate, 1);
         FeedRepeated(steady, SineSecond(-6), seconds: 60);
@@ -590,11 +592,11 @@ public sealed class RecordingLevelAnalyzerTests
 
         RecordingLevelSnapshot steadyResult = steady.Snapshot;
         RecordingLevelSnapshot dynamicResult = dynamic.Snapshot;
-        Assert.Equal(3, steadyResult.ReserveDb, 8);
+        Assert.Equal(0, steadyResult.ReserveDb);
         Assert.True(dynamicResult.CrestFactorDb > 12,
             $"Expected a high programme crest, was {dynamicResult.CrestFactorDb:0.0}");
-        Assert.True(dynamicResult.ReserveDb > steadyResult.ReserveDb,
-            $"Dynamic reserve {dynamicResult.ReserveDb:0.00} should exceed steady {steadyResult.ReserveDb:0.00}");
+        Assert.Equal(0, dynamicResult.ReserveDb);
+        Assert.Equal(dynamicResult.TruePeakDb, dynamicResult.ProjectedPeakDb, 8);
     }
 
     [Theory]
@@ -909,9 +911,9 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Theory]
-    [InlineData(-3, 2.5)]
-    [InlineData(-6, -0.5)]
-    [InlineData(-10, -4.5)]
+    [InlineData(-3, 5.5)]
+    [InlineData(-6, 2.5)]
+    [InlineData(-10, -1.5)]
     public void RecommendationTracksTheConfiguredTargetCeiling(
         double ceilingDb,
         double expectedSuggestionDb)
@@ -921,7 +923,7 @@ public sealed class RecordingLevelAnalyzerTests
         FeedRepeated(analyzer, SineSecond(-9), seconds: 60);
 
         RecordingLevelSnapshot result = analyzer.Snapshot;
-        Assert.Equal(3, result.ReserveDb, 8);
+        Assert.Equal(0, result.ReserveDb);
         Assert.Equal(expectedSuggestionDb, result.SuggestedGainDb, 8);
     }
 
@@ -969,7 +971,7 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Fact]
-    public void SparseLoudPassagesEarnMoreReserveThanSteadyMaterial()
+    public void SparseLoudPassagesCountAsObservedPeaksWithoutAddingAReserve()
     {
         var steady = new RecordingLevelAnalyzer(SampleRate, 1);
         FeedRepeated(steady, SineSecond(-12), seconds: 60);
@@ -983,18 +985,18 @@ public sealed class RecordingLevelAnalyzerTests
         for (int second = 0; second < 60; second++)
             peaky.Process(second % 20 == 0 ? burst : quiet);
 
-        // The recommendation is built on the 99th percentile, which the three
-        // bursts never reach — so the reserve has to cover the gap to the maximum.
-        Assert.Equal(3, steady.Snapshot.ReserveDb, 8);
-        Assert.InRange(peaky.Snapshot.ReserveDb, 7.5, 8.5);
+        Assert.Equal(0, steady.Snapshot.ReserveDb);
+        Assert.Equal(0, peaky.Snapshot.ReserveDb);
+        Assert.True(peaky.Snapshot.SuggestedGainDb < steady.Snapshot.SuggestedGainDb);
+        Assert.True(peaky.Snapshot.TruePeakDb + peaky.Snapshot.SuggestedGainDb < 0);
     }
 
     [Theory]
-    [InlineData(10, 6)]
-    [InlineData(30, 4)]
-    [InlineData(60, 3)]
-    [InlineData(120, 2)]
-    public void ReserveNeverFallsBelowTheTimeSchedule(int seconds, double scheduledReserve)
+    [InlineData(10)]
+    [InlineData(30)]
+    [InlineData(60)]
+    [InlineData(120)]
+    public void MeasuredBurstsNeverIntroduceAHiddenReserve(int seconds)
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
         float[] quiet = SineSecond(-12);
@@ -1003,11 +1005,12 @@ public sealed class RecordingLevelAnalyzerTests
         for (int second = 0; second < seconds; second++)
             analyzer.Process(second % 20 == 0 ? burst : quiet);
 
-        Assert.True(analyzer.Snapshot.ReserveDb >= scheduledReserve);
+        Assert.Equal(0, analyzer.Snapshot.ReserveDb);
+        Assert.True(analyzer.Snapshot.TruePeakDb + analyzer.Snapshot.SuggestedGainDb < 0);
     }
 
     [Fact]
-    public void AStillRisingProgrammeMaximumHoldsExtraReserveAndLowersConfidence()
+    public void AStillRisingProgrammeMaximumLowersConfidenceWithoutExtraAttenuation()
     {
         float[] quiet = SineSecond(-18);
         float[] loud = SineSecond(-6);
@@ -1025,7 +1028,8 @@ public sealed class RecordingLevelAnalyzerTests
 
         // Identical block populations, opposite order: only the novelty term moves.
         Assert.Equal(risingResult.ProgramPeakDb, settledResult.ProgramPeakDb, 8);
-        Assert.Equal(1.0, risingResult.ReserveDb - settledResult.ReserveDb, 6);
+        Assert.Equal(0, risingResult.ReserveDb);
+        Assert.Equal(0, settledResult.ReserveDb);
         Assert.True(risingResult.Confidence < settledResult.Confidence);
     }
 

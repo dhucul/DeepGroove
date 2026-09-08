@@ -85,8 +85,8 @@ public sealed class AppSettings
     /// </summary>
     public Dictionary<string, InputCalibrationInfo> InputCalibrations { get; set; } = [];
 
-    /// <summary>−6 dBTP: a transfer default, not a mastering one. See the property.</summary>
-    public const double DefaultRecordingTargetCeilingDb = -6;
+    /// <summary>A measured target just below digital full scale, without an added reserve.</summary>
+    public const double DefaultRecordingTargetCeilingDb = -1;
 
     /// <summary>
     /// Marked on the ceiling slider. These were the whole choice before it became a

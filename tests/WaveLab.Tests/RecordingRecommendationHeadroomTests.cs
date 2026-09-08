@@ -12,7 +12,7 @@ public sealed class RecordingRecommendationHeadroomTests
     [InlineData(-1, true)]
     [InlineData(-3, false)]
     [InlineData(-3, true)]
-    public void ARecommendedReductionRetainsReserveForALouderPassage(double ceiling, bool ignoreClicks)
+    public void ARecommendedReductionPlacesTheMeasuredPassageAtTheTarget(double ceiling, bool ignoreClicks)
     {
         var check = new RecordingLevelAnalyzer(Rate, 1)
         {
@@ -26,14 +26,14 @@ public sealed class RecordingRecommendationHeadroomTests
             $"Reduction {advice.SuggestedGainDb:0.0} dB leaves projected peak "
             + $"{advice.ProjectedPeakDb + advice.SuggestedGainDb:0.00}, above ceiling {ceiling}");
 
-        // Lower the physical signal, then record. The middle passage is 2 dB
-        // louder than the scan, within its advertised 3 dB reserve.
+        Assert.Equal(0, advice.ReserveDb);
+        // Lower the physical signal and replay the same observed passage.
         check.Reset();
         Feed(check, Tone(-0.25 + advice.SuggestedGainDb), 15);
-        Feed(check, Tone(-0.25 + 2 + advice.SuggestedGainDb), 1);
         RecordingLevelSnapshot recording = check.GetFreshSnapshot();
         Assert.Equal(0, recording.ClippedSamples);
         Assert.True(recording.TruePeakDb < 0);
+        Assert.InRange(recording.TruePeakDb, ceiling - 0.5, ceiling + 1e-6);
         Assert.NotEqual(RecordingLevelStatus.Clipping, recording.Status);
         Assert.NotEqual(RecordingLevelStatus.UpstreamClipping, recording.Status);
     }
@@ -92,10 +92,9 @@ public sealed class RecordingRecommendationHeadroomTests
         RecordingLevelSnapshot result = analyzer.GetFreshSnapshot();
         Assert.False(result.HasOnlyClickClipping);
         if (!wholeSide) Assert.True(result.TruePeakDb - result.ProgramPeakDb > 3.5);
-        // The absolute peak already covers the 4 dB rise. Add only the 3 dB
-        // time reserve, rather than adding that same observed rise again.
-        Assert.Equal(3, result.ReserveDb, 6);
-        Assert.Equal(result.TruePeakDb + 3, result.ProjectedPeakDb, 6);
+        // The observed rise is included once, without any additional margin.
+        Assert.Equal(0, result.ReserveDb);
+        Assert.Equal(result.TruePeakDb, result.ProjectedPeakDb, 6);
         Assert.True(result.ProjectedPeakDb + result.SuggestedGainDb <= analyzer.TargetCeilingDb + 1e-6);
     }
 
@@ -119,13 +118,13 @@ public sealed class RecordingRecommendationHeadroomTests
 
         analyzer.TargetCeilingDb = -6;
         RecordingLevelSnapshot lowerCeiling = analyzer.Snapshot;
-        Assert.Equal(strict.SuggestedGainDb - 3, lowerCeiling.SuggestedGainDb, 6);
+        Assert.Equal(strict.SuggestedGainDb - 5, lowerCeiling.SuggestedGainDb, 6);
 
         analyzer.IgnorePopsAndClicks = true;
         RecordingLevelSnapshot ignoredAgain = analyzer.Snapshot;
         Assert.True(ignoredAgain.HasOnlyClickClipping);
         Assert.NotEqual(RecordingLevelStatus.Clipping, ignoredAgain.Status);
-        Assert.Equal(ignoring.SuggestedGainDb - 3, ignoredAgain.SuggestedGainDb, 6);
+        Assert.Equal(ignoring.SuggestedGainDb - 5, ignoredAgain.SuggestedGainDb, 6);
 
         analyzer.Reset();
         Assert.Equal(-6, analyzer.TargetCeilingDb);
@@ -136,7 +135,7 @@ public sealed class RecordingRecommendationHeadroomTests
     }
 
     [Fact]
-    public void FinishedWholeSongUsesTheMeasuredPeakInsteadOfUnheardPassageReserve()
+    public void BothLiveAndFinishedWholeSongAdviceUseTheMeasuredPeak()
     {
         var analyzer = new RecordingLevelAnalyzer(Rate, 1)
         {
@@ -147,7 +146,7 @@ public sealed class RecordingRecommendationHeadroomTests
         Feed(analyzer, Tone(-7), 2);
         Feed(analyzer, Tone(-18), 30);
         RecordingLevelSnapshot provisional = analyzer.GetFreshSnapshot();
-        Assert.True(provisional.ReserveDb >= 2);
+        Assert.Equal(0, provisional.ReserveDb);
         Assert.False(provisional.IsCompletedFullScan);
 
         RecordingLevelSnapshot completed = analyzer.GetCompletedScanSnapshot();
@@ -155,7 +154,7 @@ public sealed class RecordingRecommendationHeadroomTests
         Assert.Equal(0, completed.ReserveDb);
         Assert.Equal(provisional.ActiveSeconds, completed.ActiveSeconds);
         Assert.Equal(provisional.TruePeakDb, completed.TruePeakDb, 6);
-        Assert.True(completed.SuggestedGainDb > provisional.SuggestedGainDb);
+        Assert.Equal(provisional.SuggestedGainDb, completed.SuggestedGainDb);
         Assert.InRange(completed.TruePeakDb + completed.SuggestedGainDb, -1.5, -1 + 1e-6);
 
         // Rewind and record the same whole song at the final recommended gain.
@@ -170,13 +169,13 @@ public sealed class RecordingRecommendationHeadroomTests
     }
 
     [Fact]
-    public void FinishingAShortCheckDoesNotRemoveItsReserve()
+    public void FinishingAShortCheckDoesNotAddAReserve()
     {
         var analyzer = new RecordingLevelAnalyzer(Rate, 1) { TargetCeilingDb = -1 };
         Feed(analyzer, Tone(-7), 30);
         RecordingLevelSnapshot completed = analyzer.GetCompletedScanSnapshot();
         Assert.False(completed.IsCompletedFullScan);
-        Assert.Equal(4, completed.ReserveDb, 6);
+        Assert.Equal(0, completed.ReserveDb);
     }
 
     [Fact]
@@ -187,7 +186,7 @@ public sealed class RecordingRecommendationHeadroomTests
         analyzer.FullDurationScanEnabled = true;
         RecordingLevelSnapshot incomplete = analyzer.GetCompletedScanSnapshot();
         Assert.False(incomplete.IsCompletedFullScan);
-        Assert.True(incomplete.ReserveDb >= 2);
+        Assert.Equal(0, incomplete.ReserveDb);
 
         analyzer.Reset();
         Feed(analyzer, Tone(-7), 12);
@@ -258,6 +257,43 @@ public sealed class RecordingRecommendationHeadroomTests
         var recording = analyzer.GetFreshSnapshot();
         Assert.True(recording.TruePeakDb < 0);
         Assert.Equal(0, recording.ClippedSamples);
+    }
+
+    [Fact]
+    public void ActualConverterClippingNeverProducesAnIncreaseAfterFineTrim()
+    {
+        var analyzer = new RecordingLevelAnalyzer(Rate, 1);
+        const double FineGain = 0.1;
+        float[] source = Tone(6);
+        long clipped = source.LongCount(value => Math.Abs(value) >= 0.999969);
+        var attenuated = source.Select(value => (float)(Math.Clamp(value, -1, 1) * FineGain)).ToArray();
+        for (int i = 0; i < 12; i++)
+            analyzer.Process(attenuated, 0, attenuated.Length, clipped, FineGain);
+
+        var result = analyzer.GetFreshSnapshot();
+        Assert.Equal(RecordingLevelStatus.Clipping, result.Status);
+        Assert.True(result.TruePeakDb < -10);
+        Assert.True(result.ClippedSamples > 0);
+        Assert.True(result.SuggestedGainDb <= -1);
+        Assert.Equal(0, result.ReserveDb);
+    }
+
+    [Fact]
+    public void ApplyingTheMeasuredAdjustmentDoesNotAskForAnotherReductionOnTheSameSignal()
+    {
+        var analyzer = new RecordingLevelAnalyzer(Rate, 1) { TargetCeilingDb = -1 };
+        float[] signal = Tone(-7);
+        Feed(analyzer, signal, 12);
+        var advice = analyzer.GetFreshSnapshot();
+        double gain = Math.Pow(10, advice.SuggestedGainDb / 20);
+        var adjusted = signal.Select(value => (float)(value * gain)).ToArray();
+        analyzer.Reset();
+        Feed(analyzer, adjusted, 12);
+        var checkedAgain = analyzer.GetFreshSnapshot();
+        Assert.Equal(0, checkedAgain.SuggestedGainDb);
+        Assert.Equal(RecordingLevelStatus.Good, checkedAgain.Status);
+        Assert.Equal(0, checkedAgain.ClippedSamples);
+        Assert.InRange(checkedAgain.TruePeakDb, -1.5, -1 + 1e-6);
     }
 
     private static float[] Tone(double peakDb)

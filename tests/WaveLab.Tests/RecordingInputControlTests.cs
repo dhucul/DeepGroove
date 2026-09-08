@@ -45,7 +45,7 @@ public sealed class RecordingInputControlTests : IDisposable
         vm.InputFineTrimDb = -0.5;
         var result = new RecordingLevelAnalyzer(8_000, 1).Snapshot with
         {
-            Status = RecordingLevelStatus.Hot,
+            Status = RecordingLevelStatus.AboveTarget,
             ActiveSeconds = 12,
             ProgramPeakDb = -0.5,
             SuggestedGainDb = -8,
@@ -190,6 +190,36 @@ public sealed class RecordingInputControlTests : IDisposable
 
         Assert.True(sawBounds);
         Assert.True(vm.CanApplyRecommendedInputSetting);
+    }
+
+    [Fact]
+    public void ANewProvisionalPeakCannotApplyAnOlderGainIncrease()
+    {
+        using var vm = new RecordViewModel();
+        Set(vm, "_selectedDevice", new CaptureDevice("nonexistent-test-endpoint", "Test interface"));
+        ApplyInfo(vm, new AudioInputLevelInfo(true, -12, -96, 0, 1.5, false));
+        Set(vm, "_heldRecommendedTotalDb", -8.0); // earlier advice was to raise by 4 dB
+        Assert.True(vm.CanApplyRecommendedInputSetting);
+        var provisional = new RecordingLevelAnalyzer(8_000, 1).Snapshot with
+        {
+            Status = RecordingLevelStatus.AboveTarget,
+            ActiveSeconds = 2,
+            ProgramPeakDb = -1,
+            TruePeakDb = 0.3,
+            SuggestedGainDb = 0,
+        };
+        Set(vm, "_levelSnapshot", provisional);
+
+        Assert.False(vm.CanApplyRecommendedInputSetting);
+        Assert.Equal("PROVISIONAL", vm.SuggestedGainText);
+        Assert.Equal("PROVISIONAL", vm.RecommendedInputSettingText);
+        Assert.Equal("NONE", vm.ClippingText); // not an actual-clipping warning
+
+        var settled = provisional with { ActiveSeconds = 12, SuggestedGainDb = -1.5 };
+        Set(vm, "_levelSnapshot", settled);
+        typeof(RecordViewModel).GetMethod("UpdateHeldRecommendation", Private)!.Invoke(vm, [settled]);
+        Assert.True(vm.CanApplyRecommendedInputSetting);
+        Assert.Equal("REDUCE 1.5 dB", vm.SuggestedGainText);
     }
 
     private static void ApplyInfo(RecordViewModel vm, AudioInputLevelInfo info) =>

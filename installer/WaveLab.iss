@@ -8,7 +8,7 @@
 ; dotnet publish produces from AssemblyName, and AppId below is what Inno matches an
 ; upgrade on — so an existing install is still recognised and updated in place.
 #define MyAppName "Deep Groove"
-#define MyAppVersion "2.0.62"
+#define MyAppVersion "2.0.63"
 #define MyAppExeName "WaveLab.exe"
 #define PublishDir "..\artifacts\publish"
 

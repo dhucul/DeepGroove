@@ -106,7 +106,7 @@ public sealed class RecordingClickPolicyTests : IDisposable
         using var vm = new RecordViewModel();
         var snapshot = new RecordingLevelAnalyzer(8_000, 1).Snapshot with
         {
-            Status = RecordingLevelStatus.Hot,
+            Status = RecordingLevelStatus.AboveTarget,
             SuggestedGainDb = -0.5,
         };
         Set(vm, "_levelSnapshot", snapshot);
@@ -117,12 +117,13 @@ public sealed class RecordingClickPolicyTests : IDisposable
     }
 
     [Fact]
-    public void NonClickIntersampleOverIsVisibleInTheClippingReadout()
+    public void IntersampleEstimateIsNotReportedAsActualSampleClipping()
     {
         using var vm = new RecordViewModel();
         var empty = new RecordingLevelAnalyzer(8_000, 1).Snapshot;
-        Set(vm, "_levelSnapshot", empty with { Status = RecordingLevelStatus.Hot, TruePeakDb = 0.4 });
-        Assert.Equal("PEAK OVER", vm.ClippingText);
+        Set(vm, "_levelSnapshot", empty with { Status = RecordingLevelStatus.AboveTarget, TruePeakDb = 0.4 });
+        Assert.Equal("NONE", vm.ClippingText);
+        Assert.Contains("No sample clipping", vm.ClippingDetailText);
     }
 
     [Theory]
@@ -188,7 +189,7 @@ public sealed class RecordingClickPolicyTests : IDisposable
         Set(vm, "_levelSnapshot", final);
         Assert.Equal(5.5, Get<double>(vm, "_heldRecommendedTotalDb"));
         Assert.Equal(-9.1, Get<double>(vm, "_heldProgramPeakDb"));
-        Assert.Equal("OPTIONAL +5.5 dB", vm.SuggestedGainText);
+        Assert.Equal("RAISE 5.5 dB", vm.SuggestedGainText);
 
         // A bad final pass must not leave a previously usable setting behind.
         typeof(RecordViewModel).GetMethod("UpdateHeldRecommendation", Private)!
@@ -237,6 +238,95 @@ public sealed class RecordingClickPolicyTests : IDisposable
         });
         Assert.Contains("needs attention", vm.LevelStatusTitle);
         Assert.Contains("no final setting", vm.LevelStatusDetail);
+    }
+
+    [Fact]
+    public void AboveTargetWithoutClippingIsNeverCalledTooHot()
+    {
+        using var vm = new RecordViewModel();
+        Set(vm, "_isLevelChecking", true);
+        Set(vm, "_levelSnapshot", new RecordingLevelAnalyzer(8_000, 1).Snapshot with
+        {
+            Status = RecordingLevelStatus.AboveTarget,
+            ActiveSeconds = 12,
+            TruePeakDb = -0.5,
+            SuggestedGainDb = -0.5,
+        });
+        Assert.Equal("Above selected target (no clipping)", vm.LevelStatusTitle);
+        Assert.Equal("NONE", vm.ClippingText);
+        Assert.Contains("No sample clipping", vm.LevelStatusDetail);
+        Assert.DoesNotContain("safety reserve", vm.LevelStatusDetail);
+    }
+
+    [Fact]
+    public void ChangingTargetImmediatelyReplacesHeldAdviceWithoutMoreAudio()
+    {
+        using var vm = new RecordViewModel();
+        vm.TargetCeilingDb = -6;
+        vm.CommitTargetCeiling();
+        Set(vm, "_inputLevelDb", 0.0);
+        Set(vm, "_inputFineTrimDb", 0.0);
+        var analyzer = Get<RecordingLevelAnalyzer>(Get<RecordingEngine>(vm, "_engine"), "_levelAnalyzer");
+        analyzer.Configure(8_000, 1);
+        var signal = Enumerable.Range(0, 8_000)
+            .Select(i => (float)(Math.Pow(10, -7 / 20.0) * Math.Sin(2 * Math.PI * 100 * i / 8_000))).ToArray();
+        for (int i = 0; i < 12; i++) analyzer.Process(signal);
+        Set(vm, "_isLevelChecking", true);
+        Set(vm, "_levelSnapshot", analyzer.Snapshot);
+        typeof(RecordViewModel).GetMethod("UpdateHeldRecommendation", Private)!.Invoke(vm, [analyzer.Snapshot]);
+        Assert.Equal("RAISE 0.5 dB", vm.SuggestedGainText);
+        Set(vm, "_calibrationSavedTotalDb", 0.5);
+
+        vm.TargetCeilingDb = -1;
+        vm.CommitTargetCeiling();
+        Assert.Equal("RAISE 5.5 dB", vm.SuggestedGainText);
+        Assert.Equal(12, analyzer.Snapshot.ActiveSeconds);
+        Assert.True(double.IsNaN(Get<double>(vm, "_calibrationSavedTotalDb")));
+
+        vm.TargetCeilingDb = -3;
+        vm.CommitTargetCeiling();
+        Assert.Equal("RAISE 3.5 dB", vm.SuggestedGainText);
+        Assert.Equal(12, analyzer.Snapshot.ActiveSeconds);
+    }
+
+    [Theory]
+    [InlineData(RecordingLevelStatus.AboveTarget, "Above selected target (clicks ignored)")]
+    [InlineData(RecordingLevelStatus.Good, "No programme clipping detected")]
+    public void IgnoredClippedClicksAreNotDescribedAsNoSampleClipping(RecordingLevelStatus status, string title)
+    {
+        using var vm = new RecordViewModel();
+        Set(vm, "_isLevelChecking", true);
+        Set(vm, "_levelSnapshot", new RecordingLevelAnalyzer(8_000, 1).Snapshot with
+        {
+            Status = status,
+            ActiveSeconds = 12,
+            ProgramPeakDb = -6,
+            TruePeakDb = 0.3,
+            ClippedSamples = 20,
+            HasOnlyClickClipping = true,
+            SuggestedGainDb = status == RecordingLevelStatus.AboveTarget ? -1 : 0,
+        });
+        Assert.Equal(title, vm.LevelStatusTitle);
+        Assert.Equal("CLICKS IGNORED", vm.ClippingText);
+        Assert.DoesNotContain("No sample clipping was detected", vm.LevelStatusDetail);
+    }
+
+    [Theory]
+    [InlineData(false, "NONE")]
+    [InlineData(true, "CLICKS IGNORED")]
+    public void EstimatedClickOversWithoutRailHitsAreNotActualClipping(bool ignoreClicks, string expected)
+    {
+        using var vm = new RecordViewModel();
+        vm.IgnorePopsAndClicks = ignoreClicks;
+        Set(vm, "_levelSnapshot", new RecordingLevelAnalyzer(8_000, 1).Snapshot with
+        {
+            Status = ignoreClicks ? RecordingLevelStatus.TooLow : RecordingLevelStatus.AboveTarget,
+            TruePeakDb = 0.4,
+            ClippedSamples = 0,
+            HasOnlyClickClipping = true,
+        });
+        Assert.Equal(expected, vm.ClippingText);
+        if (!ignoreClicks) Assert.Contains("No sample clipping", vm.ClippingDetailText);
     }
 
     private static void Set(object target, string name, object value) =>

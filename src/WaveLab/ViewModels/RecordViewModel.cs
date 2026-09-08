@@ -629,23 +629,29 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         _targetCeilingDb = _engine.LevelTargetCeilingDb;
         _committedTargetCeilingDb = _targetCeilingDb;
 
-        // A finished check measured the programme against the old ceiling, and its
-        // blocks are gone — the analyzer is reset on stop — so the held result cannot
-        // be re-derived and must not be shown as if it still applied. A running check
-        // needs nothing: setting the ceiling drops the analyzer's cached snapshot, so
-        // the next tick arrives already re-derived.
+        // Held advice belongs to the old target. Replacing only the analyzer's
+        // snapshot leaves the previous minimum latched in the view model when the
+        // target rises. Re-derive both before publishing the new readout.
+        _levelSnapshot = _engine.LevelSnapshot;
+        _heldRecommendedTotalDb = double.NaN;
+        _heldProgramPeakDb = double.NaN;
+        _completedLevelCheckNote = null;
+        _recommendationApplied = false;
+        _applyRecommendationStatusText = "";
+        ResetCalibrationWriteThrottle();
+        // A stopped check has already released its history and cannot be retargeted.
         if (HasStoppedLevelCheck)
         {
-            HasStoppedLevelCheck = false;
-            _completedLevelCheckNote = null;
-            _levelSnapshot = _engine.LevelSnapshot;
             ResetDisplayedLevels();
+            HasStoppedLevelCheck = false;
         }
+        UpdateHeldRecommendation(_levelSnapshot);
 
         PersistTargetCeiling();
         Raise(nameof(TargetCeilingDb));
         Raise(nameof(TargetCeilingText));
         RaiseLevelProperties();
+        RaiseApplyProperties();
     }
 
     /// <summary>
@@ -664,15 +670,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     /// <summary>True while a finished check is on screen, which changing the ceiling discards.</summary>
     public bool CeilingChangeDiscardsHeldCheck => HasStoppedLevelCheck;
 
-    public double TargetMeterMinimumDb => TargetCeilingDb - 1 - DisplayedReserveDb;
-    public double TargetMeterMaximumDb => TargetCeilingDb + 1 - DisplayedReserveDb;
+    public double TargetMeterMinimumDb => TargetCeilingDb - 0.5;
+    public double TargetMeterMaximumDb => TargetCeilingDb;
 
     // The ceiling is always negative, so the typographic minus is written out
     // rather than left to the format string's ASCII hyphen.
     public string TargetCeilingText => $"TARGET CEILING −{Math.Abs(TargetCeilingDb):0.0} dBTP";
     public string SafetyReserveText => _levelSnapshot.IsCompletedFullScan
         ? "· COMPLETE PASS — MEASURED PEAK"
-        : $"· {DisplayedReserveDb:0.#} dB SAFETY RESERVE";
+        : "· MEASURED PEAK — NO EXTRA RESERVE";
 
     public string LevelStatusTitle
     {
@@ -692,9 +698,11 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 RecordingLevelStatus.Analyzing => SampleWholeRecord
                     ? "Sampling the whole record side…"
                     : "Learning the loudest passage…",
-                RecordingLevelStatus.TooLow => "Input level is conservative",
-                RecordingLevelStatus.Good => "Recording level is ready",
-                RecordingLevelStatus.Hot => "Input level is too hot",
+                RecordingLevelStatus.TooLow => "Below selected target",
+                RecordingLevelStatus.Good => HasOnlyIsolatedClipping
+                    ? "No programme clipping detected" : "No clipping detected",
+                RecordingLevelStatus.AboveTarget => HasOnlyIsolatedClipping
+                    ? "Above selected target (clicks ignored)" : "Above selected target (no clipping)",
                 RecordingLevelStatus.UpstreamClipping => "Possible upstream clipping",
                 _ => "Checking recording level",
             };
@@ -718,7 +726,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             if (IsWaitingForNeedleDrop)
                 return "Lower the stylus onto the lead-in groove. Recording starts from the contact click with a 250 ms safety pre-roll.";
             if (!IsLevelChecking && !IsRecording)
-                return "Cue the loudest passage on the side and play at least 10 seconds. A 30–60 second scan gives a safer recommendation.";
+                return "Cue the loudest passage and play at least 10 seconds. The recommendation places measured peaks just below the selected target, without an extra reserve.";
 
             RecordingLevelSnapshot snapshot = _levelSnapshot;
             if (snapshot.InvalidSamples > 0 && snapshot.Status != RecordingLevelStatus.Clipping)
@@ -742,7 +750,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                     ? $" {snapshot.ClippedSamples:N0} isolated click sample(s) touched digital full scale, but run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; they are excluded from the gain advice because declicking replaces them later."
                     : $" Isolated clicks run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; the recommendation protects the music, and declicking removes the clicks later.";
             if (SampleWholeRecord && IsLevelChecking)
-                notes += " Keep the side playing through the run-out groove, then choose Finish Full Scan. The final setting uses the whole pass; advice while scanning includes reserve for unheard passages.";
+                notes += " Keep the side playing through the run-out groove, then choose Finish Full Scan. The final setting uses the loudest measured passage.";
             return snapshot.Status switch
             {
                 RecordingLevelStatus.WaitingForSignal =>
@@ -751,15 +759,21 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 RecordingLevelStatus.Analyzing =>
                     $"Keep it playing — {Math.Max(0, 10 - snapshot.ActiveSeconds):0.0} more active seconds are needed for a settled result." + notes,
                 RecordingLevelStatus.TooLow =>
-                    $"The capture is usable. Optionally raise the interface input by up to {snapshot.SuggestedGainDb:0.0} dB only if the analogue chain has known headroom; otherwise leave it and normalize after capture." + notes,
+                    $"Raise the interface input by {snapshot.SuggestedGainDb:0.0} dB to place the measured peak just below the selected ceiling, then reset the check." + notes,
                 RecordingLevelStatus.Good =>
-                    $"The measured peak plus a {snapshot.ReserveDb:0.0} dB unseen-transient reserve stays near the safe ceiling." + notes,
-                RecordingLevelStatus.Hot =>
-                    snapshot.SuggestedGainDb < 0
-                        ? $"Reduce the interface or phono-preamp gain by about {Math.Abs(snapshot.SuggestedGainDb):0.0} dB, then restart the check." + notes
-                        : "The estimated intersample peak has crossed 0 dBTP. Lower the hardware input gain and restart the check." + notes,
+                    "The measured peak is at the selected level. No extra safety reserve is being subtracted." + notes,
+                RecordingLevelStatus.AboveTarget =>
+                    (HasOnlyIsolatedClipping
+                        ? "No programme clipping was detected; identified clicks are ignored. "
+                        : "No sample clipping was detected. ")
+                    + (snapshot.SuggestedGainDb < 0
+                        ? $"Reduce gain by {Math.Abs(snapshot.SuggestedGainDb):0.0} dB to match your selected peak target, then reset the check."
+                        : "Keep playing until there is enough music to calculate the adjustment.") + notes,
                 RecordingLevelStatus.Clipping =>
-                    "Lower the hardware input gain and replay the passage. Digital gain after capture cannot repair clipped peaks."
+                    (snapshot.SuggestedGainDb < 0
+                        ? $"Clipping was detected. Reduce hardware gain by at least {Math.Abs(snapshot.SuggestedGainDb):0.0} dB, reset the check, and replay the passage. "
+                        : "Clipping was detected. Lower the hardware gain, reset the check, and replay the passage. ")
+                    + "Clipped samples do not reveal how far the original signal exceeded the limit."
                     + (snapshot.InvalidSamples > 0 ? " The input driver also supplied invalid samples." : "") + notes,
                 RecordingLevelStatus.UpstreamClipping =>
                     "Flat-topped peaks suggest clipping before Deep Groove. Lower the preamp/interface gain and check again." + notes,
@@ -773,18 +787,16 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             RecordingLevelSnapshot snapshot = _levelSnapshot;
-            if (snapshot.Status == RecordingLevelStatus.Clipping) return "LOWER INPUT";
+            if (snapshot.Status == RecordingLevelStatus.Clipping) return snapshot.SuggestedGainDb < 0
+                ? $"REDUCE AT LEAST {Math.Abs(snapshot.SuggestedGainDb):0.0} dB" : "LOWER INPUT";
             if (snapshot.InvalidSamples > 0) return "CHECK DEVICE";
             if (snapshot.Status == RecordingLevelStatus.UpstreamClipping) return "CHECK PREAMP";
-            // Hot without a negative programme suggestion means an intersample
-            // over (possibly from a click): the only honest advice is lower input.
-            if (snapshot.Status == RecordingLevelStatus.Hot && snapshot.SuggestedGainDb >= 0)
-                return "LOWER INPUT";
+            if (HasProvisionalAboveTarget) return "PROVISIONAL";
             double change = HeldSuggestedGainDb;
             if (!double.IsFinite(change)) return "PROVISIONAL";
-            if (change >= 0 && change <= 1) return "NO CHANGE";
+            if (Math.Abs(change) < 0.05) return "NO CHANGE";
             return change > 0
-                ? $"OPTIONAL +{change:0.0} dB"
+                ? $"RAISE {change:0.0} dB"
                 : $"REDUCE {Math.Abs(change):0.0} dB";
         }
     }
@@ -793,7 +805,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     {
         get
         {
-            if (HasImmediateInputWarning()) return SuggestedGainText;
+            if (HasImmediateInputWarning() || HasProvisionalAboveTarget) return SuggestedGainText;
             if (!TryGetRecommendedInputSetting(out AudioInputSettingPlan plan))
                 return double.IsFinite(_heldRecommendedTotalDb) ? SuggestedGainText : "SCAN TO SET";
             return $"{plan.TotalLevelDb:+0.0;-0.0;0.0} dB TOTAL";
@@ -806,13 +818,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         {
             if (HasImmediateInputWarning())
                 return "Reduce hardware gain; fine trim cannot repair input clipping.";
+            if (HasProvisionalAboveTarget)
+                return "Keep playing until the level check has enough music for an updated recommendation.";
             if (!TryGetRecommendedInputSetting(out AudioInputSettingPlan plan))
             {
                 if (_inputLevelBypassed)
                     return "Adjust gain on the interface or in its control app, then reset the level check.";
                 return double.IsFinite(_heldRecommendedTotalDb)
                     ? $"Held whole-scan advice: {SuggestedGainText.ToLowerInvariant()}"
-                    : "Play at least 10 active seconds; scanning the whole side is safest.";
+                    : "Play at least 10 active seconds; scan the whole side to measure its loudest passage.";
             }
             return $"Device {plan.DeviceLevelDb:+0.0;-0.0;0.0} dB | "
                 + $"Fine {plan.FineTrimDb:+0.0;-0.0;0.0} dB | {SuggestedGainText}";
@@ -856,8 +870,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             if (AppSettings.Instance.GetInputCalibration(_selectedDevice.Id) is not { } info) return "";
             if (_inputLevelBypassed && info.HasAppliedSetting)
                 return "The remembered Windows-level setting does not apply to this input mode. Run a new level check.";
-            string gain = info.SuggestedGainDb > 1
-                ? $"raise up to +{info.SuggestedGainDb:0.0} dB"
+            string gain = info.SuggestedGainDb > 0
+                ? $"raise {info.SuggestedGainDb:0.0} dB"
                 : info.SuggestedGainDb < 0
                     ? $"reduce {Math.Abs(info.SuggestedGainDb):0.0} dB"
                     : "no change needed";
@@ -888,6 +902,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         !_refreshingInputLevel && !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing
         && _hasInputLevelControl && !_inputLevelMuted
         && !HasImmediateInputWarning()
+        && !HasProvisionalAboveTarget
         && TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)
         && Math.Abs(plan.TotalLevelDb - CurrentInputTotalDb) > 0.05;
 
@@ -896,6 +911,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         get
         {
             if (_inputLevelBypassed) return "Adjust on interface";
+            if (HasProvisionalAboveTarget) return "Keep checking levels";
             if (_recommendationApplied && !CanApplyRecommendedInputSetting) return "Applied";
             if (!TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)) return "Nothing to apply";
             double change = plan.TotalLevelDb - CurrentInputTotalDb;
@@ -1095,19 +1111,24 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         {
             RecordingLevelSnapshot snapshot = _levelSnapshot;
             if (snapshot.InvalidSamples > 0) return $"{snapshot.InvalidSamples:N0} INVALID";
-            if (snapshot.HasOnlyClickClipping)
+            if (HasReportableClickClipping)
                 return IgnorePopsAndClicks ? "CLICKS IGNORED" : "LIKELY CLICKS";
             if (snapshot.ClippedSamples > 0)
                 return $"{snapshot.ClippedSamples:N0} OVERLOAD";
             if (snapshot.Status == RecordingLevelStatus.UpstreamClipping)
                 return $"{snapshot.FlatTopCount:N0} FLAT TOP";
-            if (snapshot.TruePeakDb >= 0) return "PEAK OVER";
             return "NONE";
         }
     }
 
     public bool HasOnlyIsolatedClipping => IgnorePopsAndClicks && _levelSnapshot.HasOnlyClickClipping
         && _levelSnapshot.InvalidSamples == 0;
+
+    // An estimated intersample over alone is not an actual-clipping event.
+    // Ignored clicks can still be shown as neutral information.
+    private bool HasReportableClickClipping => _levelSnapshot.HasOnlyClickClipping
+        && (IgnorePopsAndClicks || _levelSnapshot.ClippedSamples > 0
+            || _levelSnapshot.Status == RecordingLevelStatus.UpstreamClipping);
 
     public string ClippingDetailText
     {
@@ -1117,12 +1138,12 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             string counts = $"{snapshot.ClippedSamples:N0} samples reached digital full scale; {snapshot.FlatTopCount:N0} flat-topped peaks. ";
             if (snapshot.InvalidSamples > 0)
                 return $"{snapshot.InvalidSamples:N0} invalid input samples. " + counts;
-            if (snapshot.HasOnlyClickClipping)
+            if (HasReportableClickClipping)
                 return counts + "The signal shape suggests brief pops or clicks.";
             if (snapshot.ClippedSamples > 0 || snapshot.Status == RecordingLevelStatus.UpstreamClipping)
                 return counts + "Sustained rail hits or repeated flat tops suggest excessive input level.";
             if (snapshot.TruePeakDb >= 0)
-                return counts + "The estimated peak between samples reached digital full scale.";
+                return counts + "No sample clipping detected. The estimated peak between samples reached digital full scale; see True Peak.";
             return counts + "No clipping detected.";
         }
     }
@@ -1482,13 +1503,10 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     {
         if (SampleWholeRecord || _selectedDevice == null) return;
         if (!force && !IsLevelChecking) return;
-        // Skip a Hot verdict whose programme suggestion is not a reduction: that
-        // combination means an intersample over, which has no stable gain answer
-        // worth remembering for next time.
         bool settledVerdict = snapshot.ActiveSeconds >= 10
             && double.IsFinite(snapshot.ProgramPeakDb)
-            && (snapshot.Status is RecordingLevelStatus.TooLow or RecordingLevelStatus.Good
-                || (snapshot.Status == RecordingLevelStatus.Hot && snapshot.SuggestedGainDb < 0));
+            && snapshot.InvalidSamples == 0
+            && snapshot.Status is RecordingLevelStatus.TooLow or RecordingLevelStatus.Good or RecordingLevelStatus.AboveTarget;
         if (!settledVerdict || !double.IsFinite(_heldRecommendedTotalDb)) return;
 
         // Nothing new to record unless the held setting got safer.
@@ -1573,7 +1591,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         double change = HeldSuggestedGainDb;
         string gain = change > 0 ? $"+{change:0.0}" : $"{change:0.0}";
         TimeSpan scanned = TimeSpan.FromSeconds(snapshot.ElapsedSeconds);
-        return $"Whole-side level scan: safest programme peak {_heldProgramPeakDb:0.0} dBTP, "
+        return $"Whole-side level scan: measured programme peak {_heldProgramPeakDb:0.0} dBTP, "
             + $"suggested input change {gain} dB "
             + $"({(int)scanned.TotalMinutes}:{scanned.Seconds:00} scanned).";
     }
@@ -1701,8 +1719,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private void UpdateHeldRecommendation(RecordingLevelSnapshot snapshot)
     {
         // The completed pass includes its loudest moment. Its final recommendation
-        // replaces the early, more conservative advice; otherwise a 10-second
-        // reserve remains latched even after the entire song has been measured.
+        // replaces provisional advice based on earlier block classifications.
         if (snapshot.IsCompletedFullScan)
         {
             _heldRecommendedTotalDb = double.NaN;
@@ -1712,8 +1729,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             && double.IsFinite(snapshot.ProgramPeakDb)
             && snapshot.InvalidSamples == 0
             && snapshot.Status is not RecordingLevelStatus.Clipping
-                and not RecordingLevelStatus.UpstreamClipping
-            && !(snapshot.Status == RecordingLevelStatus.Hot && snapshot.SuggestedGainDb >= 0);
+                and not RecordingLevelStatus.UpstreamClipping;
         if (!usable) return;
         double nextSetting = HoldSafeInputSetting(
             _heldRecommendedTotalDb,
@@ -1736,12 +1752,17 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             : candidateTotal;
     }
 
+    // An above-target snapshot without a numeric reduction is still collecting
+    // evidence. Do not offer an earlier increase while that result is provisional.
+    // This is an action-availability condition, not an input/clipping warning.
+    private bool HasProvisionalAboveTarget => _levelSnapshot.Status == RecordingLevelStatus.AboveTarget
+        && _levelSnapshot.SuggestedGainDb >= 0;
+
     private bool HasImmediateInputWarning()
     {
         RecordingLevelSnapshot snapshot = _levelSnapshot;
         return snapshot.Status is RecordingLevelStatus.Clipping or RecordingLevelStatus.UpstreamClipping
-            || snapshot.InvalidSamples > 0
-            || snapshot.Status == RecordingLevelStatus.Hot && snapshot.SuggestedGainDb >= 0;
+            || snapshot.InvalidSamples > 0;
     }
 
     private bool TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)
@@ -1815,10 +1836,6 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     private static double ToMeterDb(double value) =>
         double.IsFinite(value) ? Math.Max(-60, value) : -60;
-
-    private double DisplayedReserveDb => _levelSnapshot.ActiveSeconds < 10
-        ? 6
-        : _levelSnapshot.ReserveDb;
 
     private static string FormatDb(double value, string suffix) =>
         double.IsFinite(value) ? $"{value:0.0} {suffix}" : "—";

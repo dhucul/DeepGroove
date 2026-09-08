@@ -85,7 +85,7 @@
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="{Binding DeviceMemoryText}" FontSize="10.5" Foreground="{StaticResource TealMuted}"
                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
-                               ToolTip="The safest level-check outcome remembered for this input"/>
+                               ToolTip="The measured level-check outcome remembered for this input"/>
                     <Button Grid.Column="1" x:Name="useRememberedBtn" Content="Use last setting"
                             Margin="8,0,0,0" FontSize="10.5" Style="{StaticResource MiniButton}"
                             Foreground="{StaticResource Accent}"
@@ -288,7 +288,7 @@
                                     CornerRadius="8" Padding="11,8" VerticalAlignment="Top"
                                     ToolTip="Held conservatively across everything scanned. Play the whole side for a whole-record setting.">
                                 <StackPanel>
-                                    <TextBlock Text="SAFE SETTING FOR THIS SIDE" FontSize="9" FontWeight="Bold"
+                                    <TextBlock Text="RECOMMENDED INPUT LEVEL" FontSize="9" FontWeight="Bold"
                                                Foreground="{StaticResource TealMuted}" HorizontalAlignment="Right"/>
                                     <TextBlock Text="{Binding RecommendedInputSettingText}" Margin="0,4,0,0"
                                                FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Bold"
@@ -302,7 +302,7 @@
                                             IsEnabled="{Binding CanApplyRecommendedInputSetting}"
                                             Click="OnApplyRecommendation"
                                             AutomationProperties.Name="Apply the recommended device level and fine trim"
-                                            ToolTip="Sets the Windows device level and Deep Groove fine trim to the safe setting, then restarts the measurement"/>
+                                            ToolTip="Applies the measured level adjustment, then restarts the check"/>
                                     <TextBlock Text="{Binding ApplyRecommendationStatusText}" Margin="0,5,0,0"
                                                FontFamily="{StaticResource MonoFont}" FontSize="9"
                                                Foreground="{StaticResource TealMuted}" TextWrapping="Wrap" TextAlignment="Right"/>
@@ -331,8 +331,8 @@
                                     <TextBlock Text="{Binding ClickMarginText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
                             <Border Grid.Column="3" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
-                                <StackPanel><TextBlock Text="PROJECTED" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
-                                                       ToolTip="Programme peak plus the unseen-transient safety reserve"/>
+                                <StackPanel><TextBlock Text="LEVEL USED" FontSize="9" FontWeight="Bold" Foreground="{StaticResource TealFaint}"
+                                                       ToolTip="Measured peak used for the recommendation; no extra safety reserve"/>
                                     <TextBlock Text="{Binding ProjectedPeakText}" Margin="0,4,0,0" FontFamily="{StaticResource MonoFont}" FontSize="10.5"/></StackPanel>
                             </Border>
                             <Border Grid.Column="4" Background="{StaticResource TealWell}" BorderBrush="{StaticResource TealWellEdge}" BorderThickness="1" CornerRadius="7" Padding="8" Margin="6,0,0,0">
