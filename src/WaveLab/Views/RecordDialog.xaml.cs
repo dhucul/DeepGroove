@@ -270,9 +270,15 @@ public partial class RecordDialog : Window
 
     private void OnResetLevelCheck(object sender, RoutedEventArgs e)
     {
-        if (_starting || ViewModel.IsRecording || ViewModel.IsWaitingForNeedleDrop
+        if (_starting || _korgToolRunning || ViewModel.IsWaitingForNeedleDrop
             || ViewModel.IsFinalizing) return;
-        if (ViewModel.ResetLevelCheck()) SetSetupControlsEnabled(true);
+        if (ViewModel.ResetLevelCheck()) SetSetupControlsEnabled(!ViewModel.IsRecording);
+    }
+
+    private void OnPauseContinue(object sender, RoutedEventArgs e)
+    {
+        if (_starting || _korgToolRunning || !ViewModel.CanPauseRecording) return;
+        ViewModel.ToggleRecordingPause();
     }
 
     private async void OnStartStop(object sender, RoutedEventArgs e)
@@ -369,9 +375,8 @@ public partial class RecordDialog : Window
             {
                 _starting = false;
                 startBtn.IsEnabled = !ViewModel.IsFinalizing;
-                if (!ViewModel.IsRecording && !ViewModel.IsWaitingForNeedleDrop
-                    && !ViewModel.IsFinalizing)
-                    SetSetupControlsEnabled(true);
+                SetSetupControlsEnabled(!ViewModel.IsRecording && !ViewModel.IsWaitingForNeedleDrop
+                    && !ViewModel.IsFinalizing);
             }
         }
         else
@@ -684,14 +689,18 @@ public partial class RecordDialog : Window
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(RecordViewModel.IsLevelChecking)
-            || e.PropertyName == nameof(RecordViewModel.HasStoppedLevelCheck))
+            || e.PropertyName == nameof(RecordViewModel.HasStoppedLevelCheck)
+            || e.PropertyName == nameof(RecordViewModel.IsRecording)
+            || e.PropertyName == nameof(RecordViewModel.IsRecordingPaused)
+            || e.PropertyName == nameof(RecordViewModel.IsWaitingForNeedleDrop))
         {
             if (!Dispatcher.CheckAccess())
             {
                 Dispatcher.BeginInvoke(() => OnViewModelPropertyChanged(sender, e));
                 return;
             }
-            SetSetupControlsEnabled(!ViewModel.IsRecording && !ViewModel.IsFinalizing);
+            SetSetupControlsEnabled(!_starting && !ViewModel.IsRecording
+                && !ViewModel.IsWaitingForNeedleDrop && !ViewModel.IsFinalizing);
             return;
         }
         if (e.PropertyName != nameof(RecordViewModel.IsFinalizing)) return;
@@ -702,6 +711,8 @@ public partial class RecordDialog : Window
         }
 
         bool finalizing = ViewModel.IsFinalizing;
+        SetSetupControlsEnabled(!_starting && !ViewModel.IsRecording
+            && !ViewModel.IsWaitingForNeedleDrop && !finalizing);
         startBtn.IsEnabled = !finalizing && !_starting;
         cancelBtn.IsEnabled = !finalizing;
         if (finalizing) startText.Text = "Finalizing…";
@@ -722,6 +733,7 @@ public partial class RecordDialog : Window
 
     private void SetSetupControlsEnabled(bool enabled)
     {
+        enabled = enabled && !ViewModel.IsFinalizing && !ViewModel.HasPendingCapture;
         deviceCombo.IsEnabled = enabled && !ViewModel.IsLevelChecking;
         bitDepthCombo.IsEnabled = enabled && !ViewModel.PunchInsertEnabled;
         korgToolBtn.IsEnabled = enabled && !_korgToolRunning
@@ -729,8 +741,9 @@ public partial class RecordDialog : Window
             && !ViewModel.IsWaitingForNeedleDrop
             && !ViewModel.IsFinalizing;
         levelCheckBtn.IsEnabled = enabled && !ViewModel.IsRecording;
-        resetLevelCheckBtn.IsEnabled = enabled
-            && (ViewModel.IsLevelChecking || ViewModel.HasStoppedLevelCheck);
+        resetLevelCheckBtn.IsEnabled = !_starting && !_korgToolRunning && ViewModel.CanResetLevels
+            && (enabled || ViewModel.IsRecording);
+        pauseContinueBtn.IsEnabled = !_starting && !_korgToolRunning && ViewModel.CanPauseRecording;
         // Apply and the two memory buttons sit outside inputGainControls, and their
         // enablement changes mid-scan rather than only on a state transition, so
         // they stay bound to view-model predicates instead of being set here.

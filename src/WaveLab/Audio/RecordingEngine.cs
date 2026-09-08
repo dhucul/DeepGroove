@@ -51,6 +51,8 @@ public sealed class RecordingEngine : IDisposable
     private float _rmsR;
     private double _inputFineTrimDb;
     private float _inputFineTrimGain = 1;
+    private long _levelMeasurementGeneration;
+    private long _discardMeasurementGeneration = -1;
     private Exception? _lastStopError;
     private readonly SemaphoreSlim _stopGate = new(1, 1);
     private readonly SemaphoreSlim _finalizeGate = new(1, 1);
@@ -123,6 +125,13 @@ public sealed class RecordingEngine : IDisposable
         private RunOutDetector? _runOutDetector;
         private long _autoStopTrimSamples = -1;
         private int _autoStopRequested;
+        private int _paused;
+
+        public bool IsPaused
+        {
+            get => Volatile.Read(ref _paused) != 0;
+            set => Volatile.Write(ref _paused, value ? 1 : 0);
+        }
 
         /// <summary>
         /// Written on the capture thread under the block lock, read by the UI
@@ -214,6 +223,7 @@ public sealed class RecordingEngine : IDisposable
 
     /// <summary>The mode actually opened for the owned capture session, until teardown.</summary>
     internal AudioClientShareMode? CaptureShareMode => GetCurrentSession()?.ShareMode;
+    public bool IsPaused => GetCurrentSession()?.IsPaused ?? false;
 
     public bool IgnorePopsAndClicks
     {
@@ -569,6 +579,60 @@ public sealed class RecordingEngine : IDisposable
         }
     }
 
+    /// <summary>Clear live measurements while retaining every recorded sample and the take's clock.</summary>
+    public bool ResetRecordingLevels(long sessionId)
+    {
+        if (sessionId <= 0) return false;
+        lock (_lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            CaptureSession? session = GetCurrentSession();
+            if (session == null || session.Id != sessionId) return false;
+            lock (_blocks)
+            lock (_sessionLock)
+            {
+                if (!CanManageRetainedSession(session)) return false;
+                long generation = Interlocked.Increment(ref _levelMeasurementGeneration);
+                Volatile.Write(ref _discardMeasurementGeneration, generation);
+                _levelAnalyzer.Reset();
+                PeakL = PeakR = RmsL = RmsR = 0;
+                return true;
+            }
+        }
+    }
+
+    /// <summary>Pause saving audio, or continue the same take, while input monitoring remains active.</summary>
+    public bool SetRecordingPaused(long sessionId, bool paused)
+    {
+        if (sessionId <= 0) return false;
+        lock (_lifecycleLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            CaptureSession? session = GetCurrentSession();
+            if (session == null || session.Id != sessionId) return false;
+            lock (_blocks)
+            lock (_sessionLock)
+            {
+                if (!CanManageRetainedSession(session)) return false;
+                if (session.IsPaused == paused) return true;
+                session.IsPaused = paused;
+                // The session still owns a retained take while paused. Changing
+                // its epoch excludes in-flight packets from the wrong side of the
+                // transition; the first resume packet may contain paused audio.
+                session.AdvanceDataState(retainAudio: true, discardFirstPacket: !paused);
+                session.RunOut = null;
+                session.AutoStopTrimSamples = -1;
+                return true;
+            }
+        }
+    }
+
+    // Caller owns the block and session locks.
+    private bool CanManageRetainedSession(CaptureSession session) =>
+        ReferenceEquals(_session, session) && session.AcceptCallbacks
+        && !session.Stopped.Task.IsCompleted && IsRecording && session.RetainAudio
+        && !session.AutoStopRequested && !CapacityReached;
+
     /// <summary>Summarizes a settled level check for the take's metadata; null when no settled check ran.</summary>
     private static string? BuildCaptureNote(RecordingLevelSnapshot snapshot)
     {
@@ -641,6 +705,8 @@ public sealed class RecordingEngine : IDisposable
             Volatile.Write(ref _capacityReached, false);
             LastStopError = null;
             PeakL = PeakR = RmsL = RmsR = 0;
+            Interlocked.Increment(ref _levelMeasurementGeneration);
+            Volatile.Write(ref _discardMeasurementGeneration, -1);
             _levelAnalyzer.Configure(format.SampleRate, format.Channels);
             _inputMonitor.Configure(WaveFormat.CreateIeeeFloatWaveFormat(
                 format.SampleRate, format.Channels));
@@ -712,6 +778,7 @@ public sealed class RecordingEngine : IDisposable
 
     private void OnData(CaptureSession candidate, ReadOnlySpan<byte> data)
     {
+        long measurementGeneration = Volatile.Read(ref _levelMeasurementGeneration);
         CaptureSession? session = GetSessionFor(candidate, out long dataState);
         if (session == null) return;
         bool retainAudio = CaptureDataBoundary.RetainsAudio(dataState);
@@ -776,7 +843,15 @@ public sealed class RecordingEngine : IDisposable
             // monitor boundary guarantees calibration/reset audio cannot cross it.
             if (session.DataBoundary.TryConsumeBoundaryDiscard(dataState)) return;
 
-            if (retainAudio)
+            bool paused = session.IsPaused;
+            bool currentMeasurements = measurementGeneration == Volatile.Read(ref _levelMeasurementGeneration);
+            // Even a callback first delivered after Reset can contain audio from
+            // before the click. Keep that boundary packet in the file, but omit
+            // it from the fresh readout as well as excluding older in-flight work.
+            if (currentMeasurements && Interlocked.CompareExchange(
+                    ref _discardMeasurementGeneration, -1, measurementGeneration) == measurementGeneration)
+                currentMeasurements = false;
+            if (retainAudio && !paused)
             {
                 long maxSamples = MaxCaptureBytes / sizeof(float);
                 if (Interlocked.Read(ref _totalSamples) > maxSamples - samples)
@@ -794,7 +869,8 @@ public sealed class RecordingEngine : IDisposable
                 // The buffer has already been trimmed, so the analyzer is told the
                 // gain as well as the count: it re-detects the rail per sample at
                 // the scaled threshold to get the per-block distribution right.
-                _levelAnalyzer.Process(block, 0, samples, sourceClippedSamples, fineTrimGain);
+                if (currentMeasurements)
+                    _levelAnalyzer.Process(block, 0, samples, sourceClippedSamples, fineTrimGain);
                 SanitizeNonFiniteSamples(block);
                 _inputMonitor.Enqueue(block, samples);
                 if (!retainAudio && session.NeedleDropDetector != null)
@@ -829,9 +905,12 @@ public sealed class RecordingEngine : IDisposable
                 }
                 else if (retainAudio)
                 {
-                    _blocks.Add(block);
-                    Interlocked.Add(ref _totalSamples, samples);
-                    autoStopReason = EvaluateAutoStop(session, block, samples, channels);
+                    if (!paused)
+                    {
+                        _blocks.Add(block);
+                        Interlocked.Add(ref _totalSamples, samples);
+                        autoStopReason = EvaluateAutoStop(session, block, samples, channels);
+                    }
                 }
                 else
                 {
@@ -842,12 +921,17 @@ public sealed class RecordingEngine : IDisposable
             // Outside the capacity test: these describe the packet that just arrived,
             // not what was retained from it. Inside, the meters froze at their last
             // pre-cap values while capture was still running.
-            PeakL = pl;
-            PeakR = channels > 1 ? pr : pl;
-            RmsL = (float)Math.Sqrt(squareL / Math.Max(1, frames));
-            RmsR = channels > 1
-                ? (float)Math.Sqrt(squareR / Math.Max(1, frames))
-                : RmsL;
+            // A pre-reset packet must still be saved, but cannot restore the peak
+            // that the user just cleared.
+            if (currentMeasurements)
+            {
+                PeakL = pl;
+                PeakR = channels > 1 ? pr : pl;
+                RmsL = (float)Math.Sqrt(squareL / Math.Max(1, frames));
+                RmsR = channels > 1
+                    ? (float)Math.Sqrt(squareR / Math.Max(1, frames))
+                    : RmsL;
+            }
         }
 
         if (capacityRejected)

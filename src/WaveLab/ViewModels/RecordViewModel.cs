@@ -33,6 +33,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private RecordingLevelSnapshot _levelSnapshot;
     private CaptureDevice? _selectedDevice;
     private bool _isRecording;
+    private bool _isRecordingPaused;
     private bool _isLevelChecking;
     private bool _isWaitingForNeedleDrop;
     private bool _isFinalizing;
@@ -315,6 +316,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         private set
         {
             if (!Set(ref _isRecording, value)) return;
+            if (!value) IsRecordingPaused = false;
             Raise(nameof(FormatText));
             Raise(nameof(LevelStatusTitle));
             Raise(nameof(LevelStatusDetail));
@@ -332,6 +334,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Raise(nameof(LevelCheckButtonText));
             Raise(nameof(LevelStatusTitle));
             Raise(nameof(LevelStatusDetail));
+            Raise(nameof(CanResetLevels));
         }
     }
 
@@ -345,6 +348,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Raise(nameof(LevelStatusTitle));
             Raise(nameof(LevelStatusDetail));
             Raise(nameof(ElapsedText));
+            RaiseInputActionAvailability();
         }
     }
 
@@ -357,6 +361,34 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             RaiseInputActionAvailability();
         }
     }
+    public bool IsRecordingPaused
+    {
+        get => _isRecordingPaused;
+        private set
+        {
+            if (!Set(ref _isRecordingPaused, value)) return;
+            Raise(nameof(PauseContinueButtonText));
+            Raise(nameof(LevelStatusTitle));
+            Raise(nameof(LevelStatusDetail));
+        }
+    }
+
+    public bool CanPauseRecording => IsRecording && !IsFinalizing && !IsWaitingForNeedleDrop;
+    public bool CanResetLevels => !IsFinalizing && !IsWaitingForNeedleDrop
+        && (IsRecording || IsLevelChecking || HasStoppedLevelCheck);
+    public string PauseContinueButtonText => IsRecordingPaused ? "Continue" : "Pause";
+    public string ResetLevelButtonText => IsRecording ? "Reset Levels" : "Reset Check";
+
+    public bool ToggleRecordingPause()
+    {
+        if (!CanPauseRecording) return false;
+        bool paused = !IsRecordingPaused;
+        if (!_engine.SetRecordingPaused(Interlocked.Read(ref _expectedRecordingSessionId), paused)) return false;
+        IsRecordingPaused = paused;
+        AutoStopStatusText = "";
+        return true;
+    }
+
     public bool SampleWholeRecord
     {
         get => _sampleWholeRecord;
@@ -420,6 +452,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Raise(nameof(LevelStatusTitle));
             Raise(nameof(LevelStatusDetail));
             Raise(nameof(CeilingChangeDiscardsHeldCheck));
+            Raise(nameof(CanResetLevels));
         }
     }
     public bool HasPendingCapture => _engine.HasPendingCapture;
@@ -684,6 +717,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     {
         get
         {
+            if (IsRecordingPaused) return "Recording paused";
             if (HasStoppedLevelCheck) return HasImmediateInputWarning()
                 ? "Stopped level check needs attention" : "Level check stopped";
             if (IsWaitingForNeedleDrop) return "Armed for needle drop";
@@ -713,6 +747,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     {
         get
         {
+            if (IsRecordingPaused)
+                return "Input monitoring continues, but paused audio is not saved. Continue resumes the same take; Reset Levels clears the meter history.";
             if (HasStoppedLevelCheck)
             {
                 if (HasImmediateInputWarning())
@@ -1076,6 +1112,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     /// </summary>
     private void RaiseInputActionAvailability()
     {
+        Raise(nameof(CanPauseRecording));
+        Raise(nameof(CanResetLevels));
+        Raise(nameof(ResetLevelButtonText));
         Raise(nameof(CanApplyRecommendedInputSetting));
         Raise(nameof(CanUseRememberedSetting));
         Raise(nameof(CanForgetDeviceMemory));
@@ -1212,8 +1251,12 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     private bool ResetLevelCheck(bool preserveRecommendation)
     {
-        if (IsRecording || IsWaitingForNeedleDrop || IsFinalizing) return false;
-        if (IsLevelChecking)
+        if (IsWaitingForNeedleDrop || IsFinalizing) return false;
+        if (IsRecording)
+        {
+            if (!_engine.ResetRecordingLevels(Interlocked.Read(ref _expectedRecordingSessionId))) return false;
+        }
+        else if (IsLevelChecking)
         {
             long sessionId = Interlocked.Read(ref _expectedRecordingSessionId);
             if (!_engine.ResetLevelCheck(sessionId)) return false;
@@ -1225,10 +1268,16 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
         _levelSnapshot = _engine.LevelSnapshot;
         ResetDisplayedLevels(clearRecommendation: !preserveRecommendation);
-        if (!preserveRecommendation) _completedLevelCheckNote = null;
+        if (!preserveRecommendation)
+        {
+            if (!IsRecording) _completedLevelCheckNote = null;
+            _recommendationApplied = false;
+            _applyRecommendationStatusText = "";
+        }
         ResetCalibrationWriteThrottle();
         HasStoppedLevelCheck = false;
         RaiseLevelProperties();
+        RaiseApplyProperties();
         return true;
     }
 
@@ -1477,7 +1526,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     /// </summary>
     private void UpdateAutoStopCountdown()
     {
-        if (!IsRecording || !_autoStopOnRunOut) return;
+        if (!IsRecording || IsRecordingPaused || !_autoStopOnRunOut) return;
         double remaining = _engine.AutoStopCountdownSeconds;
         double elapsed = _runOutHoldSeconds - remaining;
         double visibleAfter = Math.Min(CountdownVisibleAfterSeconds, _runOutHoldSeconds / 2);
