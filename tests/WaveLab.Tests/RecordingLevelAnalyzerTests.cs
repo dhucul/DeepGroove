@@ -111,9 +111,9 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Theory]
-    [InlineData(-12, RecordingLevelStatus.TooLow, 6)]
-    [InlineData(-6, RecordingLevelStatus.Good, 0)]
-    [InlineData(-1, RecordingLevelStatus.Hot, -2)]
+    [InlineData(-12, RecordingLevelStatus.TooLow, 5.5)]
+    [InlineData(-6, RecordingLevelStatus.Hot, -0.5)]
+    [InlineData(-1, RecordingLevelStatus.Hot, -5.5)]
     public void SixtySecondScanKeepsTheMeasuredProgrammeInASafeRange(
         double peakDb,
         RecordingLevelStatus expectedStatus,
@@ -128,10 +128,11 @@ public sealed class RecordingLevelAnalyzerTests
         Assert.InRange(result.TruePeakDb, peakDb - 0.02, peakDb + 0.02);
         Assert.Equal(result.TruePeakDb + 3, result.ProjectedPeakDb, 10);
         Assert.Equal(expectedGain, result.SuggestedGainDb);
+        Assert.True(result.ProjectedPeakDb + result.SuggestedGainDb <= analyzer.TargetCeilingDb + 1e-6);
     }
 
     [Fact]
-    public void SafetyReserveDoesNotForceAnAlreadySafeProgrammeLower()
+    public void AShortScanRecommendsLoweringToPreserveItsAdvertisedSafetyReserve()
     {
         var analyzer = new RecordingLevelAnalyzer(SampleRate, 1);
 
@@ -140,8 +141,9 @@ public sealed class RecordingLevelAnalyzerTests
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.True(result.ReserveDb > 5);
         Assert.True(result.ProjectedPeakDb > -1);
-        Assert.Equal(RecordingLevelStatus.Good, result.Status);
-        Assert.Equal(0, result.SuggestedGainDb);
+        Assert.Equal(RecordingLevelStatus.Hot, result.Status);
+        Assert.True(result.SuggestedGainDb < 0);
+        Assert.True(result.ProjectedPeakDb + result.SuggestedGainDb <= analyzer.TargetCeilingDb + 1e-6);
     }
 
     [Fact]
@@ -158,7 +160,8 @@ public sealed class RecordingLevelAnalyzerTests
         RecordingLevelSnapshot result = analyzer.Snapshot;
         Assert.Equal(122, result.ElapsedSeconds, 8);
         Assert.InRange(result.ProgramPeakDb, -3.4, -2.9);
-        Assert.Equal(RecordingLevelStatus.Good, result.Status);
+        Assert.Equal(RecordingLevelStatus.Hot, result.Status);
+        Assert.True(result.ProjectedPeakDb + result.SuggestedGainDb <= analyzer.TargetCeilingDb + 1e-6);
     }
 
     [Fact]
@@ -906,9 +909,9 @@ public sealed class RecordingLevelAnalyzerTests
     }
 
     [Theory]
-    [InlineData(-3, 3.0)]
-    [InlineData(-6, 0.0)]
-    [InlineData(-10, -1.0)]
+    [InlineData(-3, 2.5)]
+    [InlineData(-6, -0.5)]
+    [InlineData(-10, -4.5)]
     public void RecommendationTracksTheConfiguredTargetCeiling(
         double ceilingDb,
         double expectedSuggestionDb)

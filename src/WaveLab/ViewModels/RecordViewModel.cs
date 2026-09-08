@@ -53,6 +53,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     private double _heldRecommendedTotalDb = double.NaN;
     private double _heldProgramPeakDb = double.NaN;
     private bool _hasInputLevelControl;
+    private bool _inputLevelBypassed;
     private bool _inputLevelMuted;
     private string? _inputLevelError;
     private bool _refreshingInputLevel;
@@ -441,7 +442,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             AudioInputLevelInfo result = AudioHardware.SetInputLevel(
                 _selectedDevice.Id,
                 AudioHardwareOptions.ParseRole(settings.InputDefaultRole, NAudio.CoreAudioApi.Role.Console),
-                requested);
+                requested,
+                InputControlShareMode);
             ApplyInputLevelInfo(result);
             if (result.IsAvailable) ResetLevelAnalysisAfterInputChange();
         }
@@ -467,12 +469,15 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     public double InputLevelMaximumDb => _inputLevelMaximumDb;
     public double InputLevelStepDb => _inputLevelStepDb;
     public bool HasInputLevelControl => _hasInputLevelControl;
-    public string InputLevelText => _hasInputLevelControl ? $"{_inputLevelDb:+0.0;-0.0;0.0} dB" : "Unavailable";
+    public string InputLevelText => _inputLevelBypassed ? "Bypassed"
+        : _hasInputLevelControl ? $"{_inputLevelDb:+0.0;-0.0;0.0} dB" : "Unavailable";
     public string InputFineTrimText => $"{_inputFineTrimDb:+0.0;-0.0;0.0} dB";
     public string InputTotalLevelText => _hasInputLevelControl
         ? $"Total input gain {_inputLevelDb + _inputFineTrimDb:+0.0;-0.0;0.0} dB"
         : $"Deep Groove trim {_inputFineTrimDb:+0.0;-0.0;0.0} dB";
-    public string InputLevelStatusText => !_hasInputLevelControl
+    public string InputLevelStatusText => _inputLevelBypassed
+        ? "Windows input level does not affect exclusive capture on this device. Adjust gain on the interface or in its control app."
+        : !_hasInputLevelControl
         ? "This input does not expose a Windows level control"
             + (string.IsNullOrWhiteSpace(_inputLevelError) ? "." : $": {_inputLevelError}")
         : _inputLevelMuted
@@ -665,13 +670,16 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     // The ceiling is always negative, so the typographic minus is written out
     // rather than left to the format string's ASCII hyphen.
     public string TargetCeilingText => $"TARGET CEILING −{Math.Abs(TargetCeilingDb):0.0} dBTP";
-    public string SafetyReserveText => $"· {DisplayedReserveDb:0.#} dB SAFETY RESERVE";
+    public string SafetyReserveText => _levelSnapshot.IsCompletedFullScan
+        ? "· COMPLETE PASS — MEASURED PEAK"
+        : $"· {DisplayedReserveDb:0.#} dB SAFETY RESERVE";
 
     public string LevelStatusTitle
     {
         get
         {
-            if (HasStoppedLevelCheck) return "Level check stopped";
+            if (HasStoppedLevelCheck) return HasImmediateInputWarning()
+                ? "Stopped level check needs attention" : "Level check stopped";
             if (IsWaitingForNeedleDrop) return "Armed for needle drop";
             if (!IsLevelChecking && !IsRecording) return "Check levels before the take";
             if (_levelSnapshot.Status == RecordingLevelStatus.Clipping)
@@ -699,8 +707,10 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         {
             if (HasStoppedLevelCheck)
             {
+                if (HasImmediateInputWarning())
+                    return "The scan stopped with input errors or clipping, so no final setting is available. Correct the input problem and run the check again.";
                 if (_stoppedLevelCheckWasWholeRecord)
-                    return "The whole-side scan is complete and its safest setting is frozen. Rewind the record, adjust to the displayed setting if needed, then start the take.";
+                    return "The whole-side scan is complete. The final setting aims the loudest measured peak at your target ceiling, with likely clicks excluded when enabled. Rewind, adjust to the displayed setting, then record.";
                 return _levelSnapshot.ActiveSeconds >= 10
                     ? "Monitoring is stopped and the completed measurements are frozen. Start recording, or run a new check after changing the input level."
                     : "Monitoring is stopped and the provisional measurements are frozen. Run a new check for at least 10 active seconds before recording.";
@@ -732,7 +742,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                     ? $" {snapshot.ClippedSamples:N0} isolated click sample(s) touched digital full scale, but run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; they are excluded from the gain advice because declicking replaces them later."
                     : $" Isolated clicks run {snapshot.TruePeakDb - snapshot.ProgramPeakDb:0.0} dB above the programme; the recommendation protects the music, and declicking removes the clicks later.";
             if (SampleWholeRecord && IsLevelChecking)
-                notes += " Keep the side playing through the run-out groove; the safest setting encountered anywhere on the side is held.";
+                notes += " Keep the side playing through the run-out groove, then choose Finish Full Scan. The final setting uses the whole pass; advice while scanning includes reserve for unheard passages.";
             return snapshot.Status switch
             {
                 RecordingLevelStatus.WaitingForSignal =>
@@ -772,7 +782,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 return "LOWER INPUT";
             double change = HeldSuggestedGainDb;
             if (!double.IsFinite(change)) return "PROVISIONAL";
-            if (Math.Abs(change) <= 1) return "NO CHANGE";
+            if (change >= 0 && change <= 1) return "NO CHANGE";
             return change > 0
                 ? $"OPTIONAL +{change:0.0} dB"
                 : $"REDUCE {Math.Abs(change):0.0} dB";
@@ -797,9 +807,13 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             if (HasImmediateInputWarning())
                 return "Reduce hardware gain; fine trim cannot repair input clipping.";
             if (!TryGetRecommendedInputSetting(out AudioInputSettingPlan plan))
+            {
+                if (_inputLevelBypassed)
+                    return "Adjust gain on the interface or in its control app, then reset the level check.";
                 return double.IsFinite(_heldRecommendedTotalDb)
                     ? $"Held whole-scan advice: {SuggestedGainText.ToLowerInvariant()}"
                     : "Play at least 10 active seconds; scanning the whole side is safest.";
+            }
             return $"Device {plan.DeviceLevelDb:+0.0;-0.0;0.0} dB | "
                 + $"Fine {plan.FineTrimDb:+0.0;-0.0;0.0} dB | {SuggestedGainText}";
         }
@@ -840,9 +854,11 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         {
             if (_selectedDevice == null) return "";
             if (AppSettings.Instance.GetInputCalibration(_selectedDevice.Id) is not { } info) return "";
+            if (_inputLevelBypassed && info.HasAppliedSetting)
+                return "The remembered Windows-level setting does not apply to this input mode. Run a new level check.";
             string gain = info.SuggestedGainDb > 1
                 ? $"raise up to +{info.SuggestedGainDb:0.0} dB"
-                : info.SuggestedGainDb < -1
+                : info.SuggestedGainDb < 0
                     ? $"reduce {Math.Abs(info.SuggestedGainDb):0.0} dB"
                     : "no change needed";
             return $"Last check {FormatCalibrationAge(info.CheckedUtc)}: {gain} · programme peak {info.ProgramPeakDb:0.0} dBTP";
@@ -860,7 +876,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     /// older ones remember the suggestion but not the setting that produced it.
     /// </summary>
     public bool CanUseRememberedSetting =>
-        !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing
+        !_refreshingInputLevel && !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing
         && _hasInputLevelControl && !_inputLevelMuted
         && RememberedCalibration is { HasAppliedSetting: true } info
         && Math.Abs(info.TotalLevelDb!.Value - CurrentInputTotalDb) > 0.05;
@@ -869,7 +885,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing && RememberedCalibration != null;
 
     public bool CanApplyRecommendedInputSetting =>
-        !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing
+        !_refreshingInputLevel && !IsRecording && !IsWaitingForNeedleDrop && !IsFinalizing
         && _hasInputLevelControl && !_inputLevelMuted
         && !HasImmediateInputWarning()
         && TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)
@@ -879,6 +895,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     {
         get
         {
+            if (_inputLevelBypassed) return "Adjust on interface";
             if (_recommendationApplied && !CanApplyRecommendedInputSetting) return "Applied";
             if (!TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)) return "Nothing to apply";
             double change = plan.TotalLevelDb - CurrentInputTotalDb;
@@ -897,6 +914,10 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     public bool ApplyRecommendedInputSetting()
     {
         if (!CanApplyRecommendedInputSetting) return false;
+        // Recheck before even changing Fine Trim: the stream mode or endpoint
+        // capability may differ from the last UI readout.
+        RefreshInputLevel();
+        if (!CanApplyRecommendedInputSetting) return false;
         if (!TryGetRecommendedInputSetting(out AudioInputSettingPlan plan)) return false;
         return ApplyInputSetting(
             plan, "Applied — play the loudest passage again to confirm.", fromRecommendation: true);
@@ -905,6 +926,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
     /// <summary>Restores the setting remembered for this input from a previous session.</summary>
     public bool UseRememberedSetting()
     {
+        if (!CanUseRememberedSetting) return false;
+        RefreshInputLevel();
         if (!CanUseRememberedSetting) return false;
         if (RememberedCalibration is not { HasAppliedSetting: true } info) return false;
         var plan = new AudioInputSettingPlan(
@@ -977,7 +1000,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 _selectedDevice.Id,
                 AudioHardwareOptions.ParseRole(
                     AppSettings.Instance.InputDefaultRole, NAudio.CoreAudioApi.Role.Console),
-                plan.DeviceLevelDb);
+                plan.DeviceLevelDb,
+                InputControlShareMode);
             if (!result.IsAvailable)
             {
                 InputFineTrimDb = previousFineTrimDb;
@@ -1112,7 +1136,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
                 || (_stoppedLevelCheckWasWholeRecord && HasStoppedLevelCheck))
             {
                 TimeSpan scanned = TimeSpan.FromSeconds(snapshot.ElapsedSeconds);
-                return $"{(int)scanned.TotalMinutes:00}:{scanned.Seconds:00} scanned · whole-side safest setting held";
+                return $"{(int)scanned.TotalMinutes:00}:{scanned.Seconds:00} scanned · "
+                    + (_levelSnapshot.IsCompletedFullScan ? "whole-side peak measured" : "provisional until Finish Full Scan");
             }
             return $"{snapshot.ActiveSeconds:0.0} s active · {snapshot.Confidence:P0} scan maturity";
         }
@@ -1141,6 +1166,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Result = null;
             _levelSnapshot = _engine.LevelSnapshot;
             ResetDisplayedLevels();
+            RefreshInputLevel();
             ResetCalibrationWriteThrottle();
             _completedLevelCheckNote = null;
             _recommendationApplied = false;
@@ -1194,8 +1220,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
         // The stream is now quiescent, so this forced snapshot includes the last
         // completed packet rather than the throttled live-summary cache.
+        _levelSnapshot = stoppedSnapshot;
         UpdateHeldRecommendation(stoppedSnapshot);
-        _stoppedLevelCheckWasWholeRecord = SampleWholeRecord;
+        _stoppedLevelCheckWasWholeRecord = stoppedSnapshot.IsCompletedFullScan;
         if (SampleWholeRecord)
         {
             SaveWholeRecordCalibration(stoppedSnapshot);
@@ -1208,7 +1235,6 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             SaveCalibrationOnceSettled(stoppedSnapshot, force: true);
         }
         Interlocked.CompareExchange(ref _expectedRecordingSessionId, 0, sessionId);
-        _levelSnapshot = stoppedSnapshot;
         HasStoppedLevelCheck = true;
         IsLevelChecking = false;
         RaiseLevelProperties();
@@ -1242,6 +1268,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Result = null;
             _levelSnapshot = _engine.LevelSnapshot;
             ResetDisplayedLevels();
+            RefreshInputLevel();
             HasStoppedLevelCheck = false;
             IsLevelChecking = false;
             IsRecording = true;
@@ -1293,6 +1320,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
             Result = null;
             _levelSnapshot = _engine.LevelSnapshot;
             ResetDisplayedLevels();
+            RefreshInputLevel();
             HasStoppedLevelCheck = false;
             IsLevelChecking = false;
             IsWaitingForNeedleDrop = true;
@@ -1481,7 +1509,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     private void SaveWholeRecordCalibration(RecordingLevelSnapshot snapshot)
     {
-        if (_selectedDevice == null
+        if (!snapshot.IsCompletedFullScan
+            || _selectedDevice == null
             || !double.IsFinite(_heldRecommendedTotalDb)
             || !double.IsFinite(_heldProgramPeakDb)
             || snapshot.InvalidSamples > 0
@@ -1535,7 +1564,10 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     private string? BuildWholeRecordCaptureNote(RecordingLevelSnapshot snapshot)
     {
-        if (!double.IsFinite(_heldRecommendedTotalDb)
+        if (!snapshot.IsCompletedFullScan
+            || snapshot.InvalidSamples > 0
+            || snapshot.Status is RecordingLevelStatus.Clipping or RecordingLevelStatus.UpstreamClipping
+            || !double.IsFinite(_heldRecommendedTotalDb)
             || !double.IsFinite(_heldProgramPeakDb)) return null;
 
         double change = HeldSuggestedGainDb;
@@ -1564,6 +1596,9 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         catch { }
     }
 
+    private NAudio.CoreAudioApi.AudioClientShareMode InputControlShareMode =>
+        _engine.CaptureShareMode ?? AudioHardwareOptions.ParseShareMode(AppSettings.Instance.InputShareMode);
+
     private void RefreshInputLevel()
     {
         if (_selectedDevice == null)
@@ -1576,7 +1611,8 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         AppSettings settings = AppSettings.Instance;
         ApplyInputLevelInfo(AudioHardware.GetInputLevel(
             _selectedDevice.Id,
-            AudioHardwareOptions.ParseRole(settings.InputDefaultRole, NAudio.CoreAudioApi.Role.Console)));
+            AudioHardwareOptions.ParseRole(settings.InputDefaultRole, NAudio.CoreAudioApi.Role.Console),
+            InputControlShareMode));
     }
 
     /// <summary>
@@ -1598,20 +1634,47 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         _refreshingInputLevel = true;
         try
         {
-            Set(ref _inputLevelMinimumDb, info.MinimumDb, nameof(InputLevelMinimumDb));
-            Set(ref _inputLevelMaximumDb, info.MaximumDb, nameof(InputLevelMaximumDb));
-            Set(ref _inputLevelStepDb, info.IncrementDb, nameof(InputLevelStepDb));
-            Set(ref _inputLevelDb, info.LevelDb, nameof(InputLevelDb));
-            Set(ref _hasInputLevelControl, info.IsAvailable, nameof(HasInputLevelControl));
+            bool gainReferenceChanged = _inputLevelBypassed != info.IsBypassed
+                || _hasInputLevelControl != info.IsAvailable;
+            _inputLevelBypassed = info.IsBypassed;
+            _inputLevelMinimumDb = info.MinimumDb;
+            _inputLevelMaximumDb = info.MaximumDb;
+            _inputLevelStepDb = info.IncrementDb;
+            _inputLevelDb = info.LevelDb;
+            _hasInputLevelControl = info.IsAvailable;
             _inputLevelMuted = info.IsMuted;
             _inputLevelError = info.Error;
+            if (gainReferenceChanged)
+            {
+                _heldRecommendedTotalDb = double.NaN;
+                _heldProgramPeakDb = double.NaN;
+                _completedLevelCheckNote = null;
+                _recommendationApplied = false;
+                _applyRecommendationStatusText = "";
+                ResetCalibrationWriteThrottle();
+                if (HasStoppedLevelCheck)
+                {
+                    _levelSnapshot = _engine.LevelSnapshot;
+                    HasStoppedLevelCheck = false;
+                }
+            }
+            // Publish consistent fields together. Keep the refresh guard active
+            // while slider bounds can coerce a two-way-bound value.
+            Raise(nameof(InputLevelMinimumDb));
+            Raise(nameof(InputLevelMaximumDb));
+            Raise(nameof(InputLevelStepDb));
+            Raise(nameof(InputLevelDb));
+            Raise(nameof(HasInputLevelControl));
             Raise(nameof(InputLevelText));
             Raise(nameof(InputLevelStatusText));
             Raise(nameof(InputTotalLevelText));
             Raise(nameof(RecommendedInputSettingText));
             Raise(nameof(RecommendedInputBreakdownText));
+            RaiseLevelProperties();
         }
         finally { _refreshingInputLevel = false; }
+        // Action availability must be published after releasing the refresh guard.
+        RaiseApplyProperties();
     }
 
     /// <summary>
@@ -1637,6 +1700,14 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
 
     private void UpdateHeldRecommendation(RecordingLevelSnapshot snapshot)
     {
+        // The completed pass includes its loudest moment. Its final recommendation
+        // replaces the early, more conservative advice; otherwise a 10-second
+        // reserve remains latched even after the entire song has been measured.
+        if (snapshot.IsCompletedFullScan)
+        {
+            _heldRecommendedTotalDb = double.NaN;
+            _heldProgramPeakDb = double.NaN;
+        }
         bool usable = snapshot.ActiveSeconds >= 10
             && double.IsFinite(snapshot.ProgramPeakDb)
             && snapshot.InvalidSamples == 0
@@ -1689,7 +1760,7 @@ public sealed class RecordViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private double CurrentInputTotalDb => _inputLevelDb + _inputFineTrimDb;
+    private double CurrentInputTotalDb => (_inputLevelBypassed ? 0 : _inputLevelDb) + _inputFineTrimDb;
 
     private double HeldSuggestedGainDb => double.IsFinite(_heldRecommendedTotalDb)
         ? _heldRecommendedTotalDb - CurrentInputTotalDb

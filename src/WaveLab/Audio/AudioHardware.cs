@@ -75,7 +75,11 @@ public sealed record AudioInputLevelInfo(
     double MaximumDb,
     double IncrementDb,
     bool IsMuted,
-    string? Error = null);
+    string? Error = null)
+{
+    /// <summary>The endpoint has a Windows control, but the capture path bypasses it.</summary>
+    public bool IsBypassed { get; init; }
+}
 
 public sealed record AudioInputSettingPlan(
     double DeviceLevelDb,
@@ -233,8 +237,8 @@ public static class AudioHardware
     }
 
     /// <summary>Reads the selected capture endpoint's Windows input-level control.</summary>
-    public static AudioInputLevelInfo GetInputLevel(string? deviceId, Role defaultRole) =>
-        AccessInputLevel(deviceId, defaultRole, requestedLevelDb: null);
+    public static AudioInputLevelInfo GetInputLevel(string? deviceId, Role defaultRole, AudioClientShareMode shareMode) =>
+        AccessInputLevel(deviceId, defaultRole, requestedLevelDb: null, shareMode);
 
     /// <summary>
     /// Changes the selected capture endpoint's Windows input level and returns
@@ -243,13 +247,15 @@ public static class AudioHardware
     public static AudioInputLevelInfo SetInputLevel(
         string? deviceId,
         Role defaultRole,
-        double levelDb) =>
-        AccessInputLevel(deviceId, defaultRole, levelDb);
+        double levelDb,
+        AudioClientShareMode shareMode) =>
+        AccessInputLevel(deviceId, defaultRole, levelDb, shareMode);
 
     private static AudioInputLevelInfo AccessInputLevel(
         string? deviceId,
         Role defaultRole,
-        double? requestedLevelDb)
+        double? requestedLevelDb,
+        AudioClientShareMode shareMode)
     {
         try
         {
@@ -258,6 +264,14 @@ public static class AudioHardware
                 ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, defaultRole)
                 : enumerator.GetDevice(deviceId);
             using AudioEndpointVolume volume = device.AudioEndpointVolume;
+            // Reading back a changed Windows value does not prove that capture
+            // changed. Software endpoint volume is bypassed in exclusive mode.
+            // Reject the control before any write, and report effective unity so
+            // an ignored slider value cannot accumulate into gain recommendations.
+            if (!IsEndpointLevelEffective(shareMode, volume.HardwareSupport))
+                return new AudioInputLevelInfo(false, 0, -96, 0, 0.5, false,
+                    "Windows input level is bypassed in exclusive mode. Adjust gain on the interface or in its control app.")
+                { IsBypassed = true };
             AudioEndpointVolumeVolumeRange range = volume.VolumeRange;
             double minimum = range.MinDecibels;
             double maximum = range.MaxDecibels;
@@ -282,6 +296,9 @@ public static class AudioHardware
             return new AudioInputLevelInfo(false, 0, -96, 0, 0.5, false, ex.Message);
         }
     }
+
+    internal static bool IsEndpointLevelEffective(AudioClientShareMode shareMode, EEndpointHardwareSupport hardwareSupport) =>
+        shareMode == AudioClientShareMode.Shared || (hardwareSupport & EEndpointHardwareSupport.Volume) != 0;
 
     internal static double NormalizeInputLevelDb(
         double levelDb,

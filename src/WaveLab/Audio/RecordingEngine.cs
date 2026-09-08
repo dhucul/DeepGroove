@@ -103,12 +103,14 @@ public sealed class RecordingEngine : IDisposable
         WasapiRecorder capture,
         TaskCompletionSource<StoppedEventArgs> stopped,
         bool retainAudio,
-        WaveFormat waveFormat)
+        WaveFormat waveFormat,
+        AudioClientShareMode shareMode)
     {
         public long Id { get; } = id;
         public WasapiRecorder Capture { get; } = capture;
         public TaskCompletionSource<StoppedEventArgs> Stopped { get; } = stopped;
         public WaveFormat WaveFormat { get; } = waveFormat;
+        public AudioClientShareMode ShareMode { get; } = shareMode;
         public CaptureDataAvailableHandler? DataHandler { get; set; }
         public EventHandler<StoppedEventArgs>? StoppedHandler { get; set; }
         public CaptureDataBoundary DataBoundary { get; } = new(retainAudio);
@@ -209,6 +211,9 @@ public sealed class RecordingEngine : IDisposable
         private set => Volatile.Write(ref _rmsR, value);
     }
     public RecordingLevelSnapshot LevelSnapshot => _levelAnalyzer.Snapshot;
+
+    /// <summary>The mode actually opened for the owned capture session, until teardown.</summary>
+    internal AudioClientShareMode? CaptureShareMode => GetCurrentSession()?.ShareMode;
 
     public bool IgnorePopsAndClicks
     {
@@ -645,7 +650,8 @@ public sealed class RecordingEngine : IDisposable
                 capture,
                 new TaskCompletionSource<StoppedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously),
                 retainAudio,
-                format);
+                format,
+                shareMode);
             session.DataHandler = (data, _, _, _) => OnData(session, data);
             session.StoppedHandler = (_, args) => OnRecordingStopped(session, args);
             capture.DataAvailable += session.DataHandler;
@@ -1240,7 +1246,7 @@ public sealed class RecordingEngine : IDisposable
                 lock (_blocks)
                 {
                     if (captureLevelSnapshot)
-                        finalLevelSnapshot = _levelAnalyzer.GetFreshSnapshot();
+                        finalLevelSnapshot = _levelAnalyzer.GetCompletedScanSnapshot();
                     _blocks.Clear();
                     _pendingSnapshot = null;
                     // Cleared under the block lock because that is where

@@ -19,7 +19,7 @@ public enum RecordingLevelStatus
 /// A missing signal level is represented by negative infinity. Noise floor and
 /// crest factor are NaN when the captured programme does not make those values
 /// distinguishable. <see cref="ProgramPeakDb"/> is the click-resistant programme
-/// peak that drives the gain recommendation when click rejection is enabled;
+/// peak that drives the gain recommendation when likely clicks are excluded;
 /// <see cref="TruePeakDb"/> remains the absolute measurement including isolated
 /// artifacts and drives the recommendation when rejection is disabled.
 /// <para><see cref="IntegratedLufs"/> is whole-stream BS.1770 gated loudness — its
@@ -57,6 +57,8 @@ public sealed record RecordingLevelSnapshot(
 {
     /// <summary>Overload evidence is confined to likely narrow artifacts, independent of warning preferences.</summary>
     public bool HasOnlyClickClipping { get; init; }
+    /// <summary>A deliberately finished full pass whose entire history was retained.</summary>
+    public bool IsCompletedFullScan { get; init; }
 }
 
 /// <summary>
@@ -183,6 +185,7 @@ public sealed class RecordingLevelAnalyzer
     private double _peakRight;
     private double _overallPeak;
     private bool _fullDurationScanEnabled;
+    private bool _historyTruncated;
     private bool _ignorePopsAndClicks = true;
     private double _targetCeilingDb = DefaultTargetCeilingDb;
 
@@ -285,7 +288,9 @@ public sealed class RecordingLevelAnalyzer
         bool IgnorePopsAndClicks,
         double TargetCeilingDb,
         bool HasRepeatedFlatTops,
-        ArraySegment<BlockSummary> Blocks);
+        ArraySegment<BlockSummary> Blocks,
+        bool CompletedFullScan = false,
+        double UnclassifiedTailPeakDb = double.NegativeInfinity);
 
     public RecordingLevelAnalyzer(int sampleRate, int channels) => Configure(sampleRate, channels);
 
@@ -320,7 +325,7 @@ public sealed class RecordingLevelAnalyzer
             {
                 if (_fullDurationScanEnabled == value) return;
                 _fullDurationScanEnabled = value;
-                if (!value) _blocks.Trim(MaximumAnalysisBlocks);
+                if (!value) TrimHistory(MaximumAnalysisBlocks);
                 _cachedSnapshot = null;
                 _cachedSnapshotFrame = 0;
                 _analysisGeneration++;
@@ -372,7 +377,15 @@ public sealed class RecordingLevelAnalyzer
     /// </summary>
     public RecordingLevelSnapshot GetFreshSnapshot() => GetSnapshot(forceRefresh: true);
 
-    private RecordingLevelSnapshot GetSnapshot(bool forceRefresh)
+    /// <summary>
+    /// Finish a deliberate whole-song/side pass after capture has stopped. With
+    /// complete history, aim the measured maximum at the target without a reserve
+    /// for unheard passages. Short checks and truncated histories keep their reserve.
+    /// </summary>
+    public RecordingLevelSnapshot GetCompletedScanSnapshot() =>
+        GetSnapshot(forceRefresh: true, completeFullScan: true);
+
+    private RecordingLevelSnapshot GetSnapshot(bool forceRefresh, bool completeFullScan = false)
     {
         AnalysisState? synchronousState = null;
         AnalysisState? backgroundState = null;
@@ -380,6 +393,12 @@ public sealed class RecordingLevelAnalyzer
 
         lock (_sync)
         {
+            if (completeFullScan)
+            {
+                // An in-flight provisional rebuild must not overwrite the final verdict.
+                _analysisGeneration++;
+                _snapshotBuildGeneration = 0;
+            }
             if (forceRefresh || _cachedSnapshot == null)
             {
                 if (forceRefresh)
@@ -396,6 +415,13 @@ public sealed class RecordingLevelAnalyzer
                     _loudness.FlushTruePeak();
                 }
                 synchronousState = CaptureAnalysisStateLocked();
+                if (completeFullScan && _fullDurationScanEnabled && !_historyTruncated)
+                    synchronousState = synchronousState with
+                    {
+                        CompletedFullScan = true,
+                        UnclassifiedTailPeakDb = _blockFill > 0
+                            ? AmplitudeToDb(_blockPeak) : double.NegativeInfinity,
+                    };
             }
             else
             {
@@ -690,7 +716,7 @@ public sealed class RecordingLevelAnalyzer
         int maximumBlocks = _fullDurationScanEnabled
             ? MaximumFullScanBlocks
             : MaximumAnalysisBlocks;
-        _blocks.Trim(maximumBlocks);
+        TrimHistory(maximumBlocks);
 
         // Percentile-derived content only changes when a block completes, so the
         // live cache is invalidated here rather than once per capture packet. The
@@ -837,46 +863,9 @@ public sealed class RecordingLevelAnalyzer
         double dcOffsetDb = MeasureDcOffset(state.Blocks, activeBlocks);
         AssessHum(state.Blocks, quietBlocks, scratch, out double humLevelDb, out int humFrequencyHz);
 
-        MeasurePeakEvidence(state.Blocks, activeBlocks, activeFrames, programSamplePeakDb,
-            out double tailDb, out double noveltyDb);
-
-        bool settled = activeSeconds + 1e-9 >= MinimumActiveSeconds;
-        double reserveDb = settled
-            ? Math.Clamp(
-                Math.Max(ReserveFor(activeSeconds), tailDb + noveltyDb)
-                    + CrestReservePremiumDb(crestFactorDb),
-                0,
-                MaximumReserveDb)
-            : 0;
-        double recommendationPeakDb = state.IgnorePopsAndClicks ? programPeakDb : truePeakDb;
-        double projectedPeakDb = double.IsFinite(recommendationPeakDb)
-            ? recommendationPeakDb + reserveDb
-            : double.NegativeInfinity;
-        double suggestedGainDb = 0;
-        if (settled && double.IsFinite(projectedPeakDb))
-        {
-            double projectedAdjustmentDb = state.TargetCeilingDb - projectedPeakDb;
-            // Reserve protects an optional increase from unseen peaks, but it
-            // must not force an already-safe measured programme even lower.
-            // Required attenuation is based on the programme itself; this keeps
-            // real takes near the ceiling while still leaving optional increases
-            // conservative when only a short passage has been sampled.
-            double adjustmentDb = projectedAdjustmentDb >= 0
-                ? projectedAdjustmentDb
-                : double.IsFinite(recommendationPeakDb) && recommendationPeakDb > state.TargetCeilingDb
-                    ? state.TargetCeilingDb - recommendationPeakDb
-                    : 0;
-            suggestedGainDb = RoundHalfDb(Math.Clamp(adjustmentDb, -18, 6));
-        }
-        // Time still sets the ceiling on confidence, but a programme whose maximum
-        // is still climbing has not been characterised however long it has run.
-        double confidence = Math.Min(0.95, 1 - Math.Exp(-activeSeconds / 30.0))
-            / (1 + noveltyDb / ConfidenceNoveltyHalfLifeDb);
-
-        // Evidence that the rail was held, not merely touched: without this the
-        // narrow-artifact test below suppresses every warning as soon as one
-        // isolated click outranks the programme, however hard the converter is
-        // actually being driven.
+        // Use one artifact decision for both the recommendation and the warning.
+        // Sustained rail hits must still count even when a louder click owns the
+        // global peak. Without this, advice can exclude the peak that then warns.
         bool hasSustainedRailHits = false;
         foreach (BlockSummary block in state.Blocks)
         {
@@ -885,6 +874,49 @@ public sealed class RecordingLevelAnalyzer
                 (long)(block.Frames * (long)state.Channels * TrimmedPeakFraction));
             if (block.ClippedSamples >= threshold) { hasSustainedRailHits = true; break; }
         }
+        // A tail below the block-classification cutoff can contain the loudest
+        // music. Its absence from the programme statistics is not click evidence.
+        // A completed pass has no reserve to cover that missing peak, so keep the
+        // absolute measurement whenever such a tail exceeds the classified music.
+        bool loudUnclassifiedTail = state.CompletedFullScan
+            && state.UnclassifiedTailPeakDb > programSamplePeakDb;
+        bool likelyClickClipping = narrowArtifactOwnsAbsolutePeak
+            && !hasSustainedRailHits && !loudUnclassifiedTail;
+        bool artifactAmnesty = state.IgnorePopsAndClicks && likelyClickClipping;
+
+        // The absolute peak already contains every observed musical peak. Only
+        // the percentile-based recommendation needs extra reserve for the tail
+        // above it; adding that tail to the absolute peak counts it twice.
+        double evidenceSamplePeakDb = artifactAmnesty ? programSamplePeakDb : samplePeakDb;
+        MeasurePeakEvidence(state.Blocks, activeBlocks, activeFrames, evidenceSamplePeakDb,
+            out double tailDb, out double noveltyDb);
+
+        bool settled = activeSeconds + 1e-9 >= MinimumActiveSeconds;
+        bool completedPass = state.CompletedFullScan && settled;
+        double reserveDb = settled && !completedPass
+            ? Math.Clamp(
+                Math.Max(ReserveFor(activeSeconds), tailDb + noveltyDb)
+                    + CrestReservePremiumDb(crestFactorDb),
+                0,
+                MaximumReserveDb)
+            : 0;
+        double recommendationPeakDb = artifactAmnesty ? programPeakDb : truePeakDb;
+        double projectedPeakDb = double.IsFinite(recommendationPeakDb)
+            ? recommendationPeakDb + reserveDb
+            : double.NegativeInfinity;
+        double suggestedGainDb = 0;
+        if (settled && double.IsFinite(projectedPeakDb))
+        {
+            // The displayed reserve must survive a reduction as well as an
+            // increase. Otherwise a check can recommend a trim that leaves the
+            // louder passage it reserved for at or above digital full scale.
+            double adjustmentDb = state.TargetCeilingDb - projectedPeakDb;
+            suggestedGainDb = RoundDownHalfDb(Math.Clamp(adjustmentDb, -18, 6));
+        }
+        // Time still sets the ceiling on confidence, but a programme whose maximum
+        // is still climbing has not been characterised however long it has run.
+        double confidence = Math.Min(0.95, 1 - Math.Exp(-activeSeconds / 30.0))
+            / (1 + noveltyDb / ConfidenceNoveltyHalfLifeDb);
 
         RecordingLevelStatus status;
         // A stylus click can touch (or interpolate above) full scale while the
@@ -894,8 +926,6 @@ public sealed class RecordingLevelAnalyzer
         // the warning when the robust programme peak says they are not a narrow
         // artifact. Clipping that occupies a meaningful part of any single block
         // is sustained overload by definition and overrides that amnesty.
-        bool likelyClickClipping = narrowArtifactOwnsAbsolutePeak && !hasSustainedRailHits;
-        bool artifactAmnesty = state.IgnorePopsAndClicks && likelyClickClipping;
         if (state.ClippedSamples > 0 && !artifactAmnesty)
             status = RecordingLevelStatus.Clipping;
         else if (state.HasRepeatedFlatTops && !artifactAmnesty)
@@ -908,7 +938,7 @@ public sealed class RecordingLevelAnalyzer
             status = RecordingLevelStatus.WaitingForSignal;
         else if (!settled)
             status = RecordingLevelStatus.Analyzing;
-        else if (suggestedGainDb < -1)
+        else if (suggestedGainDb < 0)
             status = RecordingLevelStatus.Hot;
         else if (suggestedGainDb > 1)
             status = RecordingLevelStatus.TooLow;
@@ -941,6 +971,7 @@ public sealed class RecordingLevelAnalyzer
         {
             HasOnlyClickClipping = likelyClickClipping
                 && (state.ClippedSamples > 0 || state.HasRepeatedFlatTops || truePeakDb >= 0),
+            IsCompletedFullScan = completedPass,
         };
     }
 
@@ -1196,13 +1227,13 @@ public sealed class RecordingLevelAnalyzer
         ArraySegment<BlockSummary> blocks,
         ReadOnlySpan<int> active,
         long activeFrames,
-        double programSamplePeakDb,
+        double referenceSamplePeakDb,
         out double tailDb,
         out double noveltyDb)
     {
         tailDb = 0;
         noveltyDb = 0;
-        if (active.Length == 0 || !double.IsFinite(programSamplePeakDb)) return;
+        if (active.Length == 0 || !double.IsFinite(referenceSamplePeakDb)) return;
 
         long lookbackFrames = (long)(activeFrames * NoveltyLookbackFraction);
         long seenFrames = 0;
@@ -1224,7 +1255,7 @@ public sealed class RecordingLevelAnalyzer
         }
 
         if (!double.IsFinite(runningMaximumDb)) return;
-        tailDb = Math.Max(0, runningMaximumDb - programSamplePeakDb);
+        tailDb = Math.Max(0, runningMaximumDb - referenceSamplePeakDb);
         if (lookbackCaptured && double.IsFinite(lookbackMaximumDb))
         {
             noveltyDb = Math.Clamp(
@@ -1249,8 +1280,10 @@ public sealed class RecordingLevelAnalyzer
     private static double Lerp(double from, double to, double amount) =>
         from + (to - from) * Math.Clamp(amount, 0, 1);
 
-    private static double RoundHalfDb(double value) =>
-        Math.Round(value * 2, MidpointRounding.AwayFromZero) / 2;
+    // Round toward more attenuation so rounding never gives back headroom.
+    // The epsilon only absorbs floating-point noise at an exact half-dB step.
+    private static double RoundDownHalfDb(double value) =>
+        Math.Floor((value + 1e-6) * 2) / 2;
 
     private static double AmplitudeToDb(double amplitude) =>
         amplitude > 0 ? 20 * Math.Log10(amplitude) : double.NegativeInfinity;
@@ -1278,9 +1311,16 @@ public sealed class RecordingLevelAnalyzer
         return low + (high - low) * fraction;
     }
 
+    private void TrimHistory(int maximumBlocks)
+    {
+        if (_blocks.Count > maximumBlocks) _historyTruncated = true;
+        _blocks.Trim(maximumBlocks);
+    }
+
     private void ResetCore(bool resetLoudness)
     {
         _blocks.Clear();
+        _historyTruncated = false;
         _blockFill = 0;
         _blockPower = 0;
         _blockActivityPower = 0;

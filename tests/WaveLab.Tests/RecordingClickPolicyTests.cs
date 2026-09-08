@@ -101,12 +101,43 @@ public sealed class RecordingClickPolicyTests : IDisposable
     }
 
     [Fact]
+    public void RequiredHalfDecibelReductionIsNotPresentedAsNoChange()
+    {
+        using var vm = new RecordViewModel();
+        var snapshot = new RecordingLevelAnalyzer(8_000, 1).Snapshot with
+        {
+            Status = RecordingLevelStatus.Hot,
+            SuggestedGainDb = -0.5,
+        };
+        Set(vm, "_levelSnapshot", snapshot);
+        Set(vm, "_inputLevelDb", 0.0);
+        Set(vm, "_inputFineTrimDb", 0.0);
+        Set(vm, "_heldRecommendedTotalDb", -0.5);
+        Assert.Equal("REDUCE 0.5 dB", vm.SuggestedGainText);
+    }
+
+    [Fact]
     public void NonClickIntersampleOverIsVisibleInTheClippingReadout()
     {
         using var vm = new RecordViewModel();
         var empty = new RecordingLevelAnalyzer(8_000, 1).Snapshot;
         Set(vm, "_levelSnapshot", empty with { Status = RecordingLevelStatus.Hot, TruePeakDb = 0.4 });
         Assert.Equal("PEAK OVER", vm.ClippingText);
+    }
+
+    [Theory]
+    [InlineData(-0.5)]
+    [InlineData(-1.0)]
+    public void RememberedSmallReductionsStillSayReduceAfterReload(double reduction)
+    {
+        Assert.True(AppSettings.Instance.SetInputCalibration("memory-test",
+            new AppSettings.InputCalibrationInfo(reduction, -5.5, DateTime.UtcNow)));
+        AppSettings.AppDataDir = _sandbox;
+        using var vm = new RecordViewModel();
+        Set(vm, "_selectedDevice", new CaptureDevice("memory-test", "Test input"));
+
+        Assert.Contains($"reduce {Math.Abs(reduction):0.0} dB", vm.DeviceMemoryText);
+        Assert.DoesNotContain("no change", vm.DeviceMemoryText);
     }
 
     [Theory]
@@ -134,6 +165,78 @@ public sealed class RecordingClickPolicyTests : IDisposable
             signal[i] = (float)(0.25 * Math.Sin(2 * Math.PI * 100 * i / 8_000));
         signal[600] = 1;
         for (int i = 0; i < 12; i++) analyzer.Process(signal);
+    }
+
+    [Fact]
+    public void FinishedWholeScanReplacesTheConservativeHeldSetting()
+    {
+        using var vm = new RecordViewModel();
+        Set(vm, "_inputLevelDb", 0.0);
+        Set(vm, "_inputFineTrimDb", 0.0);
+        Set(vm, "_heldRecommendedTotalDb", -2.0);
+        Set(vm, "_heldProgramPeakDb", -10.0);
+        var final = new RecordingLevelAnalyzer(8_000, 1).Snapshot with
+        {
+            IsCompletedFullScan = true,
+            Status = RecordingLevelStatus.TooLow,
+            ActiveSeconds = 87.2,
+            ProgramPeakDb = -9.1,
+            TruePeakDb = -6.9,
+            SuggestedGainDb = 5.5,
+        };
+        typeof(RecordViewModel).GetMethod("UpdateHeldRecommendation", Private)!.Invoke(vm, [final]);
+        Set(vm, "_levelSnapshot", final);
+        Assert.Equal(5.5, Get<double>(vm, "_heldRecommendedTotalDb"));
+        Assert.Equal(-9.1, Get<double>(vm, "_heldProgramPeakDb"));
+        Assert.Equal("OPTIONAL +5.5 dB", vm.SuggestedGainText);
+
+        // A bad final pass must not leave a previously usable setting behind.
+        typeof(RecordViewModel).GetMethod("UpdateHeldRecommendation", Private)!
+            .Invoke(vm, [final with { InvalidSamples = 1 }]);
+        Assert.True(double.IsNaN(Get<double>(vm, "_heldRecommendedTotalDb")));
+    }
+
+    [Theory]
+    [InlineData(9)]
+    [InlineData(130)]
+    public void IncompleteFullScanDoesNotOverwriteMemoryOrClaimACompletedCaptureNote(int activeSeconds)
+    {
+        var remembered = new AppSettings.InputCalibrationInfo(-1, -7, DateTime.UtcNow);
+        Assert.True(AppSettings.Instance.SetInputCalibration("incomplete-test", remembered));
+        using var vm = new RecordViewModel();
+        Set(vm, "_selectedDevice", new CaptureDevice("incomplete-test", "Test input"));
+        Set(vm, "_hasInputLevelControl", false);
+        Set(vm, "_heldRecommendedTotalDb", 5.5);
+        Set(vm, "_heldProgramPeakDb", -9.1);
+        var incomplete = new RecordingLevelAnalyzer(8_000, 1).Snapshot with
+        {
+            Status = RecordingLevelStatus.Good,
+            ActiveSeconds = activeSeconds,
+            IsCompletedFullScan = false,
+        };
+
+        typeof(RecordViewModel).GetMethod("SaveWholeRecordCalibration", Private)!.Invoke(vm, [incomplete]);
+        Assert.Equal(remembered, AppSettings.Instance.GetInputCalibration("incomplete-test"));
+        Assert.Null(typeof(RecordViewModel).GetMethod("BuildWholeRecordCaptureNote", Private)!.Invoke(vm, [incomplete]));
+    }
+
+    [Theory]
+    [InlineData(RecordingLevelStatus.Clipping, 0)]
+    [InlineData(RecordingLevelStatus.UpstreamClipping, 0)]
+    [InlineData(RecordingLevelStatus.Good, 1)]
+    public void StoppedFullScanWithInputProblemsDoesNotPromiseAFinalSetting(RecordingLevelStatus status, long invalid)
+    {
+        using var vm = new RecordViewModel();
+        Set(vm, "_levelCheckStopped", true);
+        Set(vm, "_stoppedLevelCheckWasWholeRecord", true);
+        Set(vm, "_levelSnapshot", new RecordingLevelAnalyzer(8_000, 1).Snapshot with
+        {
+            IsCompletedFullScan = true,
+            Status = status,
+            InvalidSamples = invalid,
+        });
+        Assert.Contains("needs attention", vm.LevelStatusTitle);
+        Assert.Contains("no final setting", vm.LevelStatusDetail);
     }
 
     private static void Set(object target, string name, object value) =>

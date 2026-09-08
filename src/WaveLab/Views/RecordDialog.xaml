@@ -438,7 +438,7 @@
                         <CheckBox x:Name="wholeRecordCheck" Margin="0,8,0,0"
                                   Content="Scan the whole song / record side"
                                   IsChecked="{Binding SampleWholeRecord, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                  ToolTip="Play from lead-in through run-out; Deep Groove holds the safest setting found anywhere on the side"
+                                  ToolTip="Play the entire song or side, then choose Finish Full Scan. The final recommendation aims the loudest measured peak at your target; live advice remains provisional."
                                   AutomationProperties.Name="Scan the whole song or record side for recording level"/>
 
                         <Grid Margin="0,12,0,0">
