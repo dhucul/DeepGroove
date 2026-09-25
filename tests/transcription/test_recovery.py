@@ -42,6 +42,23 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result[0]["alternative_text"], "you cut me")
         self.assertTrue(result[0]["needs_review"])
 
+    def test_a_confident_but_conflicting_pool_reading_cannot_replace_the_correct_chorus(self):
+        correct = "You can't catch me, but I'm easy to fool"
+        incorrect = "You can't catch me, but I'll meet you in a pool"
+        primary = [line(16, 22, correct)]
+        retry = line(16, 22, incorrect, probability=.99, logprob=-.01)
+        result = recovery.merge_passes(primary, [retry], "a focused replay")
+        self.assertEqual(result[0]["text"], correct)
+        self.assertEqual(result[0]["alternative_text"], incorrect)
+        self.assertFalse(result[0]["recovered"])
+
+    def test_an_opening_retry_includes_the_missing_line_and_following_context(self):
+        # If the opening at 9.3 seconds was missed, the first recognized phrase
+        # begins at 12.94. The retry must include both the opening and the chorus.
+        windows = recovery.recovery_windows([line(12.94, 15.72, "the next phrase")], 132.5)
+        self.assertTrue(any(start < 9.3 and end > 22 for start, end in windows))
+        self.assertTrue(all(0 <= start < end <= 132.5 and end-start <= 28 for start, end in windows))
+
     def test_later_repeated_choruses_are_retained_but_same_time_duplicates_are_not(self):
         result = recovery.merge_passes([line(2, 5, "sing it again")],
             [line(2, 5, "sing it again"), line(20, 23, "sing it again")], "the original mix")

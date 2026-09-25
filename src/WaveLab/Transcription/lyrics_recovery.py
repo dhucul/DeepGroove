@@ -247,6 +247,16 @@ def recovery_windows(lines, duration):
             start += 12  # Two seconds of shared context avoid cutting boundary words.
         if end - start >= .75:
             result.append((start, end))
+    if lines:
+        first = min(lines, key=lambda line: line["start"])
+        if first["start"] > .75:
+            # A leading-gap retry ended just after the first recognized word, often
+            # cutting the phrase before the decoder had enough context. Shift past
+            # part of a long instrumental introduction and retain the next phrase(s).
+            start = max(0, first["start"] - 6)
+            end = min(duration, start + 28, max(first["end"] + 8, start + 20))
+            if end - start >= .75 and (start, end) not in result:
+                result.insert(0, (start, end))
     return result
 
 

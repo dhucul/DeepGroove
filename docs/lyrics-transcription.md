@@ -59,6 +59,10 @@ voice activity detection; music modes disable it and the speech-specific no-spee
   deletion heuristics so long or uncertain sung words are retained for review. Recognition copies
   retain floating-point precision and use bounded gain to help quieter syllables; source audio
   and vocals-only exports are unchanged.
+Vocal-isolation shifts and decoder sampling use fixed random seeds so identical requests on
+the same model/device do not deliberately choose different random processing paths. Opening
+retries include the following phrase for context instead of ending at the first recognized
+word. Conflicting later readings remain alternatives and do not replace the primary text.
 Previous-text conditioning is disabled to reduce repetition loops; actual repeated choruses
 are retained. When stereo channels strongly cancel, the analysis uses the stronger channel
 for both recognition and separation. The source recording is unchanged.

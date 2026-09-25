@@ -8,6 +8,7 @@ import gc
 import json
 import math
 import os
+import random
 from pathlib import Path
 import sys
 import traceback
@@ -61,6 +62,15 @@ def decode_for_transcription(path):
     return mono, peak, None
 
 
+def seed_inference(numpy, torch, ctranslate2):
+    # Demucs shifts use Python's RNG, while temperature fallback uses CTranslate2's.
+    # Seeding just NumPy/Torch left both stages varying between identical requests.
+    random.seed(0)
+    numpy.random.seed(0)
+    torch.manual_seed(0)
+    ctranslate2.set_random_seed(0)
+
+
 def run(args):
     emit("Loading the local transcription engine…")
     # PyTorch's CUDA wheels contain cuBLAS/cuDNN. Make them visible to CTranslate2 on Windows.
@@ -82,8 +92,7 @@ def run(args):
         return
 
     torch.set_num_threads(max(1, min(8, os.cpu_count() or 1)))
-    np.random.seed(0)
-    torch.manual_seed(0)
+    seed_inference(np, torch, ctranslate2)
     use_cuda = args.device != "cpu" and torch.cuda.is_available() and ctranslate2.get_cuda_device_count() > 0
     device = "cuda" if use_cuda else "cpu"
     original, source_peak, selected_channel = decode_for_transcription(args.input)

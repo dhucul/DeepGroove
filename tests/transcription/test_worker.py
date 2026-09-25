@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import json
 import tempfile
 import unittest
+import random
 from unittest.mock import patch
 
 worker_path = Path(__file__).resolve().parents[2] / "src/WaveLab/Transcription/lyrics_worker.py"
@@ -29,6 +30,22 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(args.vocals_only)
         self.assertTrue(args.isolate)
         self.assertFalse(args.speech)
+
+    def test_identical_jobs_reset_every_inference_rng(self):
+        calls = []
+        numpy = SimpleNamespace(random=SimpleNamespace(seed=lambda value: calls.append(("numpy", value))))
+        torch = SimpleNamespace(manual_seed=lambda value: calls.append(("torch", value)))
+        ctranslate = SimpleNamespace(set_random_seed=lambda value: calls.append(("decoder", value)))
+        previous = random.getstate()
+        try:
+            worker.seed_inference(numpy, torch, ctranslate)
+            first = [random.randint(0, 22050) for _ in range(8)]
+            worker.seed_inference(numpy, torch, ctranslate)
+            second = [random.randint(0, 22050) for _ in range(8)]
+            self.assertEqual(first, second)
+            self.assertEqual(calls, [("numpy", 0), ("torch", 0), ("decoder", 0)] * 2)
+        finally:
+            random.setstate(previous)
 
     def test_uncertain_word_is_flagged_without_rewriting_it(self):
         raw = segment(words=[SimpleNamespace(start=1, end=3, word="together", probability=.2)])
