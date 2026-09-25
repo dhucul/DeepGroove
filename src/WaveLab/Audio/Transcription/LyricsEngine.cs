@@ -1,8 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
-using System.Net.Http;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -15,95 +12,24 @@ public sealed record LyricsProgress(string Message, double? Fraction = null);
 /// <summary>A cancellable, isolated inference process. No audio leaves this computer.</summary>
 public sealed class LyricsEngine
 {
-    private const string UvUrl = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip";
-    private const string UvSha256 = "B23350C79E8AD0192B8124AF13A0F17E8D4E4549524785E1AEF389AE5A06990E";
-    private static readonly SemaphoreSlim SetupGate = new(1, 1);
     private readonly string _root;
     private readonly string _assets;
-    private string Python => Path.Combine(_root, "environment-v1", "Scripts", "python.exe");
-    private string ReadyFile => Path.Combine(_root, "ready-v1.txt");
+    private readonly string _bundle;
+    private string Python => Path.Combine(_bundle, "python", "python.exe");
 
     public LyricsEngine(string? root = null, string? assets = null)
     {
         _root = root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WaveLab", "Lyrics");
         _assets = assets ?? Path.Combine(AppContext.BaseDirectory, "Transcription");
+        _bundle = Path.Combine(_assets, "Engine");
     }
 
-    private string RequirementsFingerprint => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(_assets, "requirements.txt"))));
-    public bool IsReady
-    {
-        get
-        {
-            try { return File.Exists(Python) && File.Exists(ReadyFile) && File.ReadAllText(ReadyFile) == RequirementsFingerprint; }
-            catch (IOException) { return false; }
-            catch (UnauthorizedAccessException) { return false; }
-        }
-    }
-
-    public async Task SetupAsync(bool cpuOnly, IProgress<LyricsProgress> progress, CancellationToken token)
-    {
-        if (!Environment.Is64BitProcess || System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
-            != System.Runtime.InteropServices.Architecture.X64)
-            throw new NotSupportedException("The local lyrics engine currently requires 64-bit Windows on an Intel or AMD processor.");
-        await SetupGate.WaitAsync(token);
-        try
-        {
-            Directory.CreateDirectory(_root);
-            File.Delete(ReadyFile);
-            string uv = await EnsureUvAsync(progress, token);
-            progress.Report(new("Preparing a private Python environment…"));
-            await RunProcessAsync(uv, ["venv", "--allow-existing", "--python", "3.11", Path.GetDirectoryName(Path.GetDirectoryName(Python)!)!],
-                EnvironmentVariables(), progress, token);
-            bool gpu = !cpuOnly && File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "nvidia-smi.exe"));
-            progress.Report(new(gpu ? "Downloading the NVIDIA engine (several GB)…" : "Downloading the CPU engine…"));
-            await RunProcessAsync(uv, ["pip", "install", "--reinstall-package", "torch", "--python", Python, "--index-url",
-                gpu ? "https://download.pytorch.org/whl/cu128" : "https://download.pytorch.org/whl/cpu", "torch==2.8.0"],
-                EnvironmentVariables(), progress, token);
-            progress.Report(new("Installing the lyrics and vocal isolation models' software…"));
-            await RunProcessAsync(uv, ["pip", "install", "--python", Python, "--requirement", Path.Combine(_assets, "requirements.txt")],
-                EnvironmentVariables(), progress, token);
-            await RunProcessAsync(Python, ["-u", Path.Combine(_assets, "lyrics_worker.py"), "--check"],
-                EnvironmentVariables(), progress, token, jsonProgress: true);
-            await File.WriteAllTextAsync(ReadyFile, RequirementsFingerprint, token);
-            progress.Report(new("Local engine ready. Model weights download the first time you transcribe.", 1));
-        }
-        finally { SetupGate.Release(); }
-    }
-
-    private async Task<string> EnsureUvAsync(IProgress<LyricsProgress> progress, CancellationToken token)
-    {
-        string executable = Path.Combine(_root, "uv-0.12.3.exe");
-        if (File.Exists(executable)) return executable;
-        progress.Report(new("Downloading and verifying the local engine installer…"));
-        string archive = Path.Combine(_root, "uv.download");
-        string temporary = executable + ".partial";
-        try
-        {
-            using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(20) };
-            using var response = await client.GetAsync(UvUrl, HttpCompletionOption.ResponseHeadersRead, token);
-            response.EnsureSuccessStatusCode();
-            await using (var stream = File.Create(archive))
-                await response.Content.CopyToAsync(stream, token);
-            await using (var stream = File.OpenRead(archive))
-                if (Convert.ToHexString(await SHA256.HashDataAsync(stream, token)) != UvSha256)
-                    throw new InvalidDataException("The installer download failed its integrity check. Please try setup again.");
-            using (var zip = ZipFile.OpenRead(archive))
-            {
-                var entry = zip.Entries.Single(e => e.Name == "uv.exe");
-                await using var input = entry.Open();
-                await using var output = File.Create(temporary);
-                await input.CopyToAsync(output, token);
-            }
-            File.Move(temporary, executable, overwrite: true);
-            return executable;
-        }
-        finally { TryDeleteFile(archive); TryDeleteFile(temporary); }
-    }
+    public bool IsReady => LyricsBundle.IsReady(_assets);
 
     public async Task<LyricsTranscript> TranscribeAsync(float[][] channels, int rate, int start, int count,
         string title, int editVersion, LyricsOptions options, IProgress<LyricsProgress> progress, CancellationToken token)
     {
-        if (!IsReady) throw new InvalidOperationException("Set up the local engine first.");
+        if (!IsReady) throw new InvalidOperationException("This installation is missing its built-in transcription files. Reinstall Deep Groove or rebuild the complete Release application.");
         if (options.Model is not ("large-v3" or "turbo")) throw new ArgumentException("Choose one of the supported speech models.");
         if (options.Hints.Length > 500) throw new ArgumentException("Keep spelling hints under 500 characters.");
         string working = Path.Combine(_root, "jobs", Guid.NewGuid().ToString("N"));
@@ -113,7 +39,7 @@ public sealed class LyricsEngine
             string input = Path.Combine(working, "input.wav"), output = Path.Combine(working, "result.json");
             progress.Report(new("Preparing the selected audio…", 0));
             await Task.Run(() => LyricsAudio.Write(channels, rate, start, count, input, token), token);
-            var arguments = new List<string> { "-u", Path.Combine(_assets, "lyrics_worker.py"), "--input", input,
+            var arguments = new List<string> { "-I", "-B", "-X", "utf8", "-u", Path.Combine(_assets, "lyrics_worker.py"), "--input", input,
                 "--output", output, "--model", options.Model, "--device", options.CpuOnly ? "cpu" : "auto" };
             if (options.IsolateVocals) arguments.Add("--isolate");
             if (options.Speech) arguments.Add("--speech");
@@ -148,14 +74,13 @@ public sealed class LyricsEngine
         }
     }
 
-    private Dictionary<string, string> EnvironmentVariables() => new()
+    internal Dictionary<string, string> EnvironmentVariables() => new()
     {
-        ["UV_CACHE_DIR"] = Path.Combine(_root, "package-cache"),
-        ["UV_PYTHON_INSTALL_DIR"] = Path.Combine(_root, "python"),
-        ["HF_HOME"] = Path.Combine(_root, "models"),
+        ["HF_HOME"] = Path.Combine(_bundle, "models"),
         ["TORCH_HOME"] = Path.Combine(_root, "torch"),
-        ["HF_HUB_DISABLE_TELEMETRY"] = "1", ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1",
-        ["PYTHONUTF8"] = "1", ["PYTHONUNBUFFERED"] = "1", ["UV_NO_PROGRESS"] = "1",
+        ["HF_HUB_OFFLINE"] = "1", ["TRANSFORMERS_OFFLINE"] = "1",
+        ["HF_HUB_DISABLE_TELEMETRY"] = "1", ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1",
+        ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1",
     };
 
     internal static async Task RunProcessAsync(string executable, IReadOnlyList<string> arguments,
@@ -212,10 +137,7 @@ public sealed class LyricsEngine
         if (process.ExitCode != 0) throw new LyricsProcessException(process.ExitCode, string.Join(Environment.NewLine, errors));
     }
 
-    private static void TryDeleteFile(string path)
-    {
-        try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-    }
+
 }
 
 internal sealed class LyricsProcessException(int exitCode, string detail)

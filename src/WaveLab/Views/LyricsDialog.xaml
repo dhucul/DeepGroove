@@ -68,10 +68,9 @@
                     <StackPanel Margin="0,0,20,0">
                         <TextBlock Text="PRIVATE, ON YOUR PC" Style="{StaticResource UpperLabel}"/>
                         <TextBlock x:Name="engineLabel" Margin="0,6,0,0" TextWrapping="Wrap"/>
-                        <TextBlock Text="First use downloads software and models (allow 20 GB free). Your audio stays on this computer. CPU processing can take much longer than the song."
+                        <TextBlock Text="Vocal isolation and transcription run on your PC. No account, setup, or Internet connection is needed. CPU processing can take longer than the song."
                                    TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,5,0,0"/>
                     </StackPanel>
-                    <Button x:Name="setupButton" Grid.Column="1" Content="Set up local engine" Style="{StaticResource Action}" VerticalAlignment="Center" Click="OnSetup"/>
                 </Grid>
             </Border>
             <StackPanel Grid.Row="2" Margin="0,0,0,12">

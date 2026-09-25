@@ -56,9 +56,8 @@ public partial class LyricsDialog : Window
     private void RefreshControls()
     {
         bool ready = _engine.IsReady;
-        setupButton.IsEnabled = !Busy;
-        setupButton.Content = ready ? "Repair / change engine" : "Set up local engine";
-        engineLabel.Text = ready ? "Local engine installed. Ready to transcribe." : "One-time setup · no account or API key required.";
+        engineLabel.Text = ready ? "Ready to transcribe · built into Deep Groove."
+            : "Transcription files are missing from this installation. Reinstall Deep Groove or rebuild the complete Release app.";
         optionsPanel.IsEnabled = hintsPanel.IsEnabled = !Busy;
         transcribeButton.IsEnabled = ready && !Busy;
         cancelButton.IsEnabled = Busy;
@@ -121,12 +120,6 @@ public partial class LyricsDialog : Window
             RefreshControls();
             if (_closeWhenFinished) Close();
         }
-    }
-
-    private async void OnSetup(object sender, RoutedEventArgs e)
-    {
-        bool cpu = deviceCombo.SelectedIndex == 1;
-        await RunAsync((progress, token) => _engine.SetupAsync(cpu, progress, token));
     }
 
     private async void OnTranscribe(object sender, RoutedEventArgs e)

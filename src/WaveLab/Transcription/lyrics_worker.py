@@ -1,7 +1,7 @@
 """Local-only lyrics inference. stdout is JSONL progress; the result is committed atomically.
 
 Keep heavyweight imports inside run(): protocol/quality tests require only Python's stdlib.
-Audio is never uploaded. Model weights may be downloaded on first use.
+Audio is never uploaded. All runtime models are bundled and loaded offline.
 """
 import argparse
 import gc
@@ -121,7 +121,7 @@ def run(args):
     audio = original
     if args.isolate:
         from demucs.api import Separator
-        emit("Loading the vocal isolation model (first use downloads model files)…", 0.03)
+        emit("Loading the built-in vocal isolation model…", 0.03)
 
         def separation_progress(state):
             if state["state"] != "end":
@@ -131,7 +131,7 @@ def run(args):
                        (state["shift_idx"] + min(1, state["segment_offset"] / max(1, state["audio_length"]))) / 2)
             emit("Isolating the singing voice…", 0.05 + 0.40 * portion / state["models"])
 
-        separator = Separator(model="htdemucs_ft", device=device, shifts=2, overlap=0.5,
+        separator = Separator(model="hf://htdemucs_ft", device=device, shifts=2, overlap=0.5,
                               segment=7, callback=separation_progress)
         samples, rate = sf.read(str(args.input), dtype="float32", always_2d=True)
         # separate_tensor only converts channel count when sample rate changes.
@@ -154,9 +154,9 @@ def run(args):
         if use_cuda:
             torch.cuda.empty_cache()
 
-    emit("Loading the speech model (first use downloads model files)…", 0.48)
+    emit("Loading the built-in speech model…", 0.48)
     compute = "float16" if use_cuda else "int8"
-    model = WhisperModel(args.model, device=device, compute_type=compute,
+    model = WhisperModel(args.model, device=device, compute_type=compute, local_files_only=True,
                          cpu_threads=max(1, min(8, os.cpu_count() or 1)))
     options = dict(beam_size=5, best_of=5, temperature=[0.0, 0.2, 0.4],
                    condition_on_previous_text=False, word_timestamps=True,

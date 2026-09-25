@@ -1,4 +1,4 @@
-﻿# Deep Groove
+# Deep Groove
 
 A sleek audio editor and mastering suite for Windows, built with WPF on .NET 10.
 
@@ -6,7 +6,7 @@ A sleek audio editor and mastering suite for Windows, built with WPF on .NET 10.
 
 ## Features
 
-**Lyrics & Speech (experimental)** — **Tools > Lyrics & Speech…** transcribes a song or selected passage privately on your PC. Fine-tuned vocal isolation and Whisper large-v3 produce editable timed lines with replay/loop, uncertain-line review, alternate readings from the original mix, language/spelling hints, GPU acceleration with CPU fallback, and TXT/LRC/SRT/JSON export. A one-time local engine setup and first-use model downloads are required. See the [setup, quality limits, and workflow](docs/lyrics-transcription.md). Export corrections before closing the audio tab.
+**Lyrics & Speech (experimental)** — **Tools > Lyrics & Speech…** transcribes a song or selected passage privately on your PC. Fine-tuned vocal isolation and Whisper large-v3 produce editable timed lines with replay/loop, uncertain-line review, alternate readings from the original mix, language/spelling hints, GPU acceleration with CPU fallback, and TXT/LRC/SRT/JSON export. The engine and models are included in the Release application and installer; no separate setup, account, or first-use download is required. See the [quality limits and workflow](docs/lyrics-transcription.md). Export corrections before closing the audio tab.
 
 **Formats & files** — sample-accurate WAV (16/24-bit PCM and 32-bit IEEE float) and AIFF/AIFF-C import, with native classic AIFF 16/24/32-bit PCM output, explicit dithered or undithered 16-bit output and Open As conversion to 16/24/32-bit; uncompressed DSD64/DSD128 import from DSF and DSDIFF with filtered 44.1 kHz floating-point working conversion; MP3/FLAC/M4A/WMA import; direct CD-DA track discovery, selection, extraction and import from Windows optical drives; export to WAV, AIFF, MP3, AAC, WMA and FLAC (where Windows provides the encoder) with bitrate choice, sample-rate conversion and selection-only export; batch converter with LUFS/peak normalization and effect-chain processing; recent files, session restore, autosave with crash recovery. AIFF-C and DSD are import-only. Imported AIFF-family files must be saved to a different `.aif` or `.aiff` path so Deep Groove cannot overwrite ancillary metadata it does not preserve; a DSD source always opens as a new PCM working copy and is never overwritten.
 

@@ -1,4 +1,4 @@
-﻿namespace WaveLab.Help;
+namespace WaveLab.Help;
 
 public sealed record HelpSection(string Title, string Body);
 
@@ -220,7 +220,7 @@ public static class HelpCatalog
             "Read difficult lyrics with private local transcription, timed replay, and editable text.",
             "lyrics speech transcription words vocals singing whisper text subtitles lrc srt language",
             Section("Start a transcript",
-                "Open audio and choose Tools > Lyrics & Speech. Set up the local engine once; allow about 20 GB free and an Internet connection for software and first-use model downloads. Your recording stays on your PC. Choose vocal isolation for dense music, the original mix for comparison, or Speech for spoken audio. Accuracy uses large-v3; Speed uses turbo. Select the language if known and add spelling hints for names or unusual words. Requests are limited to 30 minutes; select a verse for a quick test."),
+                "Open audio and choose Tools > Lyrics & Speech. The transcription engine and models are built into the application. Press Transcribe; no setup, account, or Internet connection is needed. Your recording stays on your PC. Choose vocal isolation for dense music, the original mix for comparison, or Speech for spoken audio. Accuracy uses large-v3; Speed uses turbo. Select the language if known and add spelling hints for names or unusual words. Requests are limited to 30 minutes; select a verse for a quick test."),
             Section("Listen and correct",
                 "Select a timed line and Replay line, optionally with Loop. Double-click its text to correct it. Review marks uncertain recognition, not a guaranteed accuracy score. Difficult lines can be checked against the original mix, with an alternate reading offered for you to choose. Singing, overlapping voices and instrumental passages can still produce wrong words. Cancel stops the local worker without changing audio or the previous transcript."),
             Section("Keep the words",

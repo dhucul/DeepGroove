@@ -1,0 +1,26 @@
+<Project>
+  <PropertyGroup>
+    <LyricsBundleDirectory Condition="'$(LyricsBundleDirectory)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\lyrics-bundle</LyricsBundleDirectory>
+  </PropertyGroup>
+  <Target Name="PrepareLyricsBundle" BeforeTargets="PrepareForBuild"
+          Condition="'$(MSBuildProjectName)' == 'WaveLab' and '$(Configuration)' == 'Release' and '$(DesignTimeBuild)' != 'true' and '$(SkipLyricsBundle)' != 'true'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\installer\Prepare-LyricsBundle.ps1&quot; -BundleDirectory &quot;$(LyricsBundleDirectory)&quot;" />
+  </Target>
+  <!-- Copy only into the application, not transitively into every referencing test project. -->
+  <Target Name="CopyLyricsBundle" AfterTargets="Build" DependsOnTargets="PrepareLyricsBundle"
+          Condition="'$(MSBuildProjectName)' == 'WaveLab' and '$(Configuration)' == 'Release' and '$(DesignTimeBuild)' != 'true' and '$(SkipLyricsBundle)' != 'true'">
+    <ItemGroup><_LyricsBundleFiles Include="$(LyricsBundleDirectory)\**\*" /></ItemGroup>
+    <Copy SourceFiles="@(_LyricsBundleFiles)" DestinationFiles="@(_LyricsBundleFiles->'$(TargetDir)Transcription\Engine\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" UseHardlinksIfPossible="true" />
+  </Target>
+  <Target Name="PublishLyricsBundle" BeforeTargets="ComputeFilesToPublish" DependsOnTargets="PrepareLyricsBundle"
+          Condition="'$(MSBuildProjectName)' == 'WaveLab' and '$(Configuration)' == 'Release' and '$(SkipLyricsBundle)' != 'true'">
+    <ItemGroup>
+      <_LyricsPublishFiles Include="$(LyricsBundleDirectory)\**\*" />
+      <ResolvedFileToPublish Include="@(_LyricsPublishFiles)">
+        <RelativePath>Transcription\Engine\%(_LyricsPublishFiles.RecursiveDir)%(_LyricsPublishFiles.Filename)%(_LyricsPublishFiles.Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+</Project>

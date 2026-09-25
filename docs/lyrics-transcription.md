@@ -1,101 +1,95 @@
 # Lyrics & Speech (experimental)
 
 Open a song, optionally select a difficult passage, and choose **Tools > Lyrics & Speech…**.
-The command is also in the command palette. This feature reads the current audio, including
-unsaved edits; it never changes the audio, applies the master rack, or uploads a recording.
+Click **Transcribe**. The engine, vocal separator, and both speech models are included in
+the Release application and installer. There is no separate setup, account, API key, or
+first-use download. Transcription works offline; audio never leaves your computer.
 
-## First use
-
-1. Click **Set up local engine**. No API key or paid account is required.
-2. Allow approximately 20 GB of free disk space, including installation caches and temporary audio. Setup downloads a private Python 3.11
-   environment and inference dependencies; the first transcription downloads model weights.
-   An Internet connection is required for setup and uncached models. Afterwards cached models
-   can run offline. Setup does not alter the system Python installation.
-3. Start with **Music · isolate vocals**, **Accuracy · large-v3**, and the song's language if
-   known. Automatic language detection is available, but can struggle with long instrumental
-   introductions. Select a verse for a quicker first test.
-4. Click **Transcribe**. Review the result while listening. Use **Cancel** to stop a job;
-   closing the window also cancels and waits for the worker to exit.
-
-The current engine installer supports x64 Windows. Automatic processor selection installs
-PyTorch's CUDA 12.8 build when the NVIDIA driver utility is present; otherwise it installs the
-CPU build. A compatible NVIDIA driver and enough available GPU memory are required for GPU
-inference. The 8 GB RTX 5060 development system ran the large-v3 model successfully. Detected
-GPU failures are retried in a fresh CPU process. You can select **CPU only** explicitly;
-use **Repair / change engine** after changing this setting to replace the installed torch
-build. CPU inference, especially fine-tuned vocal separation, can be slow.
-
-Software and model caches live under `%LOCALAPPDATA%\WaveLab\Lyrics`. Software installation
-uses a pinned, SHA-256-verified uv archive from Astral's official release, pinned direct
-dependencies from PyPI, and torch from the official PyTorch index. Models come from their
-upstream Hugging Face repositories (Demucs can fall back to its upstream Meta download host).
-Audio is passed only to a local child process. Working audio and isolated vocals are removed
-after success, failure, or normal cancellation; a system crash can leave files in `Lyrics\jobs`.
+The command also appears in the command palette. It reads the current audio, including
+unsaved edits, without changing the recording or applying the master rack.
 
 ## Reading and correcting
 
-- Double-click a line's text to correct it; select it and click **Replay line** to hear the
-  original mix. **Loop** repeats that line with a little context at each edge.
-- **Stop** also stops song playback that was already running when you opened this window.
-- **Review** is a recognition heuristic, not a calibrated accuracy percentage. It flags weak
-  word probabilities, weak segment likelihood, possible non-voice content, and repetitive
-  decoding. High-confidence output can still be wrong.
-- With vocal isolation enabled, **Check difficult lines against original mix** transcribes
-  uncertain passages a second time from the unseparated audio. When it disagrees, an alternate
-  reading appears below the list. **Use alternate reading** swaps the two texts; nothing is
-  silently rewritten by a language model.
-- Corrections remain with the open audio tab when this window closes. They are not included
-  in audio saves or autosave recovery. **Export before closing the audio tab or app**.
-- If the audio is edited afterwards, the old transcript is retained for export but replay is
-  disabled until it is regenerated, because its timings may no longer match.
+- Start with **Music · isolate vocals** and **Accuracy · large-v3**. Choose the language if
+  known, and optionally supply names or unusual words as spelling hints. Select a verse for
+  a quicker first test. **Speed · turbo** uses the included faster speech model.
+- Double-click a line to correct it. Select a line and click **Replay line** to hear the
+  original mix. **Loop** repeats it with a little context at either edge. **Stop** also
+  stops song playback that was running before you opened this window.
+- **Review** flags uncertain recognition, not a calibrated accuracy percentage. Even
+  high-confidence text can be wrong. Listen while reviewing the result.
+- **Check difficult lines against original mix** transcribes uncertain separated-vocal
+  passages again from the original audio. An alternate reading appears when the results
+  disagree; **Use alternate reading** swaps the two texts. Text is never silently rewritten.
+- **Cancel** stops the worker and keeps the previous transcript. Closing the window also
+  cancels, waits for the worker, and removes temporary audio.
+- Corrections remain with the open audio tab, but are not included in audio saves or
+  autosave recovery. **Export before closing the audio tab or app**. Audio edits retain the
+  old text for export but disable replay until its timings are regenerated.
 
 ## Exports
 
-**Copy text** copies corrected lines. **Export** supports UTF-8 plain text, timed LRC lyrics,
-SRT subtitles, and detailed JSON. Times always refer to the start of the whole source audio,
-including when only a selection was transcribed. JSON retains `model_text` and the original
-model's word timings/probabilities separately from edited `text`; word timings do not realign
-when you correct a line. Timing is approximate, especially for sustained sung syllables.
+Copy corrected text or export UTF-8 TXT, timed LRC lyrics, SRT subtitles, or detailed JSON.
+Times refer to the beginning of the whole source file even when a selection was transcribed.
+JSON preserves original `model_text` and word timing/probability evidence separately from
+edited `text`; editing a line does not realign its word timings. Timing is approximate,
+especially for sustained singing.
 
-## Quality and limits
+## Quality and performance
 
-The default pipeline uses fine-tuned **HTDemucs (`htdemucs_ft`)** with two shift passes and
-50% overlap, followed by **Whisper large-v3 through faster-whisper / CTranslate2**, beam
-search, temperature fallback, and word timestamps. Vocal isolation can help with dense mixes,
-but separation artifacts sometimes hurt recognition; **Music · original mix** is useful for
-comparison. **Speed · turbo** trades some model capacity for speed. **Speech** enables voice
-activity detection; music modes deliberately disable it so held vowels and soft singing are
-not discarded as non-speech. Previous-text conditioning is disabled to reduce repetition loops.
-Actual repeated choruses are retained. Spelling hints supply names and unusual words only.
+The default pipeline uses fine-tuned **HTDemucs (`htdemucs_ft`)**, two shift passes and
+50% overlap, then **Whisper large-v3 through faster-whisper / CTranslate2** with beam search,
+temperature fallback, and word timestamps. Separation can help dense mixes but can also
+introduce artifacts; **Music · original mix** is available for comparison. **Speech** enables
+voice activity detection; music modes disable it to preserve held vowels and soft singing.
+Previous-text conditioning is disabled to reduce repetition loops; actual repeated choruses
+are retained. When stereo channels strongly cancel, the analysis uses the stronger channel
+for both recognition and separation. The source recording is unchanged.
 
-If the stereo channels strongly cancel in mono, the analysis copy uses the stronger channel
-for both recognition and vocal separation. Silence is checked across the source channels;
-ordinary stereo and the original recording are preserved.
+The x64 Windows program uses NVIDIA CUDA when supported, with a CPU fallback. Both paths
+are included; **CPU only** needs no reinstall. CPU processing, especially vocal isolation,
+may take longer than the recording. Requests are limited to **30 minutes** to bound working
+memory and temporary disk use. Use selections for long recordings and album sides.
 
-Work is limited to **30 minutes per request** to bound memory and temporary disk usage. Use
-selections for album sides and long recordings. Mono/stereo is preserved in the analysis copy;
-files with more than two channels are downmixed to mono. This is an experimental transcription
-assistant, not a verified lyrics database. Choirs, harsh vocals, overlapping voices, reverb,
-unfamiliar languages, and instrumental music can still cause omissions or invented words.
-We do not claim best-in-class accuracy across songs without a representative benchmark.
+Models and runtime files are part of the application's `Transcription\Engine` directory.
+Keep that directory with the executable when moving the program. Only temporary jobs and
+runtime caches go under `%LOCALAPPDATA%\WaveLab\Lyrics`; normal cancellation and completion
+remove working audio. A system crash can leave files in its `jobs` directory. A missing or
+damaged payload reports an incomplete installation rather than offering a runtime download.
 
-Implementation references:
+Choirs, overlapping voices, harsh vocals, reverb and instrumental music can still produce
+omissions or invented words. This is a transcription assistant, not a verified lyrics
+database; we do not claim best-in-class song accuracy without a representative benchmark.
 
-- [Demucs upstream and published model results](https://github.com/adefossez/demucs)
-- [faster-whisper options and hardware requirements](https://github.com/SYSTRAN/faster-whisper)
-- [Research on source separation for lyrics transcription](https://arxiv.org/abs/2506.15514)
+## Building and testing
 
-## Development checks
+The ordinary **Release** build prepares the complete bundle and copies it into the normal
+`src\WaveLab\bin\Release\net10.0-windows` application folder. Publishing and the Windows
+installer include that same payload. The first developer build needs Internet access and
+space for the runtime, models and download cache; subsequent unchanged builds reuse the
+verified bundle under `artifacts\lyrics-bundle`. Nothing is downloaded by the running app.
+
+`installer\Prepare-LyricsBundle.ps1` uses a checksum-verified uv release to prepare a
+standalone Python 3.11 distribution (not a virtual environment with absolute machine paths),
+the pinned CPU/CUDA dependencies, and pinned model revisions. Model-cache symlinks are
+materialized into ordinary files. Static compilation libraries are omitted; third-party
+licenses and model cards are retained. The installer uses data slices because the bundled
+models exceed a single installer executable's size limit.
 
 ```powershell
-dotnet test WaveLab.sln -c Release --filter FullyQualifiedName~LyricsTests
-python -m unittest discover -s tests/transcription -p test_worker.py -v
-# Audio decoder checks use the installed local engine's Python and need no model downloads:
-& "$env:LOCALAPPDATA\WaveLab\Lyrics\environment-v1\Scripts\python.exe" -m unittest discover -s tests/transcription -v
+dotnet build src/WaveLab/WaveLab.csproj -c Release
+dotnet test WaveLab.sln -c Release
+& '.\src\WaveLab\bin\Release\net10.0-windows\Transcription\Engine\python\python.exe' -m unittest discover -s tests/transcription -v
 ```
 
-These checks require no downloaded models. They exercise selection offsets, invalid worker
-data, cancellation, audio resampling/channel preservation, stereo phase cancellation, corrected
-text export, stale audio protection, transport control, and the real WPF dialog. Inference smoke tests should also exercise a local voice
-sample, a mix containing that voice, silence, and the CPU path. Those smoke tests establish
-functionality, not singing-recognition accuracy.
+For code-only CI checks, `-p:SkipLyricsBundle=true` avoids downloading/copying the large
+payload; such a build is not distributable with working transcription. Debug builds can
+explicitly use a prepared bundle when testing the engine. Model-free checks cover timing,
+exports, malformed output, phase cancellation, transport, payload validation/relocation,
+and immediate transcription availability in the real WPF dialog. Inference smoke tests
+should exercise both models and vocal isolation with networking disabled and empty user
+caches; these establish functionality, not singing-recognition accuracy.
+
+References: [Demucs](https://github.com/adefossez/demucs),
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper),
+[source-separation research](https://arxiv.org/abs/2506.15514).

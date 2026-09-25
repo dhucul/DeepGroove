@@ -1,4 +1,4 @@
-﻿; Deep Groove — Inno Setup script
+; Deep Groove — Inno Setup script
 ; Build from the repository root. The script validates the paired version, publishes a clean
 ; self-contained win-x64 payload, locates Inno Setup 7, compiles this file and verifies the result.
 ;   powershell -ExecutionPolicy Bypass -File installer\Build-Installer.ps1
@@ -23,6 +23,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=..\src\WaveLab\Assets\wavelab.ico
 Compression=lzma2/max
 SolidCompression=yes
+; The bundled AI models exceed the single-executable installer size limit.
+DiskSpanning=yes
+DiskSliceSize=2000000000
 OutputDir=Output
 OutputBaseFilename=DeepGroove-Setup-{#MyAppVersion}
 ArchitecturesInstallIn64BitMode=x64compatible
