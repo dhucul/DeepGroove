@@ -65,6 +65,6 @@ internal static class LyricsAudio
             }
             return frames * channels;
         }
-        private static float Safe(float sample) => float.IsFinite(sample) ? Math.Clamp(sample, -1, 1) : 0;
+        private static float Safe(float sample) => float.IsFinite(sample) ? sample : 0;
     }
 }

@@ -21,6 +21,7 @@ public partial class LyricsDialog : Window
     private CancellationTokenSource? _cancellation;
     private bool _closeWhenFinished;
     private bool Busy => _cancellation != null;
+    public AudioDocument? IsolatedVocals { get; private set; }
     private LyricsTranscript? Transcript => _document.LyricsTranscript;
     private sealed record LanguageChoice(string Name, string? Code);
 
@@ -59,7 +60,7 @@ public partial class LyricsDialog : Window
         engineLabel.Text = ready ? "Ready to transcribe · built into Deep Groove."
             : "Transcription files are missing from this installation. Reinstall Deep Groove or rebuild the complete Release app.";
         optionsPanel.IsEnabled = hintsPanel.IsEnabled = !Busy;
-        transcribeButton.IsEnabled = ready && !Busy;
+        transcribeButton.IsEnabled = vocalsButton.IsEnabled = ready && !Busy;
         cancelButton.IsEnabled = Busy;
         linesGrid.IsReadOnly = Busy;
         copyButton.IsEnabled = exportButton.IsEnabled = !Busy && Transcript?.Lines.Count > 0;
@@ -140,6 +141,22 @@ public partial class LyricsDialog : Window
             RefreshTranscript();
             statusLabel.Text = result.Lines.Count == 0 ? "No words detected. Try the original mix, a shorter selection, or the song's language."
                 : "Ready. Replay and correct uncertain lines. Export to keep a copy after closing the audio tab.";
+        });
+    }
+
+    private async void OnIsolateVocals(object sender, RoutedEventArgs e)
+    {
+        CommitEdits();
+        int start = selectionCheck.IsChecked == true ? _selectionStart : 0;
+        int count = selectionCheck.IsChecked == true ? _selectionCount : _snapshot[0].Length;
+        bool cpuOnly = deviceCombo.SelectedIndex == 1;
+        await RunAsync(async (progress, token) =>
+        {
+            var vocals = await _engine.IsolateVocalsAsync(_snapshot, _rate, start, count,
+                _document.Title, cpuOnly, progress, token);
+            token.ThrowIfCancellationRequested();
+            IsolatedVocals = vocals;
+            _closeWhenFinished = true;
         });
     }
 

@@ -110,7 +110,17 @@ def run(args):
     result = {"schema_version": 1, "language": args.language or "", "model": args.model,
               "device": device, "isolated_vocals": False, "lines": []}
     # Do not feed digital silence to a language model, which can invent words from it.
-    if source_peak < 1e-5:
+    if args.vocals_only and source_peak < 1e-5:
+        quiet, rate = sf.read(str(args.input), dtype="float32", always_2d=True)
+        if not np.any(quiet):
+            # Digital silence needs no neural inference, but still produces a usable file.
+            sf.write(str(args.output.parent / "vocals.wav"), np.zeros((len(quiet), 2), dtype=np.float32), rate, subtype="FLOAT")
+            result["isolated_vocals"] = True
+            save_result(args.output, result)
+            emit("The selected audio is silent. A silent vocals file is ready.", 1)
+            return
+        del quiet
+    if source_peak < 1e-5 and not args.vocals_only:
         save_result(args.output, result)
         emit("No audible voice was found in this range.", 1)
         return
@@ -129,7 +139,7 @@ def run(args):
             # Four fine-tuned models and two shift passes; keep progress monotonic in the host.
             portion = (state["model_idx_in_bag"] +
                        (state["shift_idx"] + min(1, state["segment_offset"] / max(1, state["audio_length"]))) / 2)
-            emit("Isolating the singing voice…", 0.05 + 0.40 * portion / state["models"])
+            emit("Isolating the singing voice…", 0.05 + (0.90 if args.vocals_only else 0.40) * portion / state["models"])
 
         separator = Separator(model="hf://htdemucs_ft", device=device, shifts=2, overlap=0.5,
                               segment=7, callback=separation_progress)
@@ -146,7 +156,16 @@ def run(args):
         with torch.inference_mode():
             _, stems = separator.separate_tensor(wave, rate)
         vocal_path = args.output.parent / "vocals.wav"
-        sf.write(str(vocal_path), stems["vocals"].cpu().numpy().T, separator.samplerate, subtype="FLOAT")
+        vocals = stems["vocals"].cpu().numpy().T
+        if not np.isfinite(vocals).all():
+            raise RuntimeError(f"{device.upper()} vocal isolation returned non-finite samples.")
+        sf.write(str(vocal_path), vocals, separator.samplerate, subtype="FLOAT")
+        if args.vocals_only:
+            result["isolated_vocals"] = True
+            save_result(args.output, result)
+            emit("Isolated vocals are ready to open in a new audio tab.", 1)
+            return
+        del vocals
         audio, _, _ = decode_for_transcription(vocal_path)
         result["isolated_vocals"] = True
         del separator, stems, samples, wave
@@ -199,9 +218,12 @@ def main():
     parser.add_argument("--language")
     parser.add_argument("--hints", default="")
     parser.add_argument("--isolate", action="store_true")
+    parser.add_argument("--vocals-only", action="store_true")
     parser.add_argument("--speech", action="store_true")
     parser.add_argument("--compare", action="store_true")
     args = parser.parse_args()
+    if args.vocals_only:
+        args.isolate = True
     if not args.check and (not args.input or not args.output):
         parser.error("--input and --output are required")
     try:

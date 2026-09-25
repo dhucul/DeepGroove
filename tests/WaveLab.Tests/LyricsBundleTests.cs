@@ -85,8 +85,20 @@ public sealed class LyricsBundleTests : IDisposable
             {
                 Assert.Null(window.FindName("setupButton"));
                 Assert.True(((Button)window.FindName("transcribeButton")).IsEnabled);
+                Assert.True(((Button)window.FindName("vocalsButton")).IsEnabled);
                 Assert.Contains("built into", ((TextBlock)window.FindName("engineLabel")).Text);
             });
         });
     }
+    [Fact]
+    public async Task CancellingVocalExtractionBeforeLaunchLeavesNoWorkingAudio()
+    {
+        string cache = Path.Combine(_directory, "user");
+        var engine = new LyricsEngine(cache, Assets);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.IsolateVocalsAsync(
+            [new float[44100]], 44100, 0, 44100, "Source.wav", true,
+            new Progress<LyricsProgress>(), new CancellationToken(true)));
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(cache, "jobs")));
+    }
+
 }

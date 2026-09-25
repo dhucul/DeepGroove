@@ -55,4 +55,43 @@ public sealed class LyricsTransportTests : IDisposable
             Assert.False(main.IsDocumentOperationRunning);
         }));
     }
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void VocalExtractionOpensOnlyACompletedResultAndPreservesTheSource(bool completed)
+    {
+        Wpf.Run(() => Wpf.Show(new MainWindow(), shell =>
+        {
+            var main = Assert.IsType<MainViewModel>(shell.DataContext);
+            var original = new AudioDocument([new float[44100]], 44100, 32) { Title = "Original.wav" };
+            main.AddDocument(original);
+            var sourceTab = main.ActiveDocument!;
+            var transcript = new WaveLab.Audio.Transcription.LyricsTranscript();
+            sourceTab.LyricsTranscript = transcript;
+            var result = new AudioDocument([new float[44100], new float[44100]], 44100, 32)
+                { Title = "Original - vocals.wav", RequiresSaveAs = true };
+            shell.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var dialog = shell.OwnedWindows.OfType<LyricsDialog>().Single();
+                if (completed)
+                    typeof(LyricsDialog).GetProperty(nameof(LyricsDialog.IsolatedVocals))!.SetValue(dialog, result);
+                dialog.Close();
+            }), DispatcherPriority.ApplicationIdle);
+            typeof(MainWindow).GetMethod("OnLyrics", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(shell, [shell, new RoutedEventArgs()]);
+            Assert.Equal(completed ? 2 : 1, main.Documents.Count);
+            Assert.Same(transcript, sourceTab.LyricsTranscript);
+            Assert.False(original.Dirty);
+            Assert.Equal(0, original.EditVersion);
+            Assert.False(main.IsDocumentOperationRunning);
+            if (completed)
+            {
+                Assert.Same(result, main.ActiveDocument!.Doc);
+                Assert.True(result.Dirty);
+                Assert.Null(result.FilePath);
+                result.MarkSaved(); // The test shell can close without prompting for this generated file.
+            }
+        }));
+    }
+
 }

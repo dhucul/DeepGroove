@@ -46,17 +46,7 @@ public sealed class LyricsEngine
             if (options.CompareOriginal) arguments.Add("--compare");
             if (!string.IsNullOrWhiteSpace(options.Language)) { arguments.Add("--language"); arguments.Add(options.Language); }
             if (!string.IsNullOrWhiteSpace(options.Hints)) { arguments.Add("--hints"); arguments.Add(options.Hints); }
-            try
-            {
-                await RunProcessAsync(Python, arguments, EnvironmentVariables(), progress, token, jsonProgress: true);
-            }
-            catch (LyricsProcessException ex) when (!options.CpuOnly && ex.IsGpuFailure)
-            {
-                token.ThrowIfCancellationRequested();
-                progress.Report(new("The GPU could not finish. Retrying on the CPU; this will take longer…"));
-                arguments[arguments.IndexOf("--device") + 1] = "cpu";
-                await RunProcessAsync(Python, arguments, EnvironmentVariables(), progress, token, jsonProgress: true);
-            }
+            await RunWorkerAsync(arguments, options.CpuOnly, progress, token);
             token.ThrowIfCancellationRequested();
             var result = JsonSerializer.Deserialize<LyricsTranscript>(await File.ReadAllTextAsync(output, token), LyricsTranscript.JsonOptions)
                 ?? throw new InvalidDataException("No transcript was returned.");
@@ -71,6 +61,74 @@ public sealed class LyricsEngine
             try { Directory.Delete(working, recursive: true); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    /// <summary>Extract a new float audio document, without running speech recognition or changing the source.</summary>
+    public async Task<AudioDocument> IsolateVocalsAsync(float[][] channels, int rate, int start, int count,
+        string title, bool cpuOnly, IProgress<LyricsProgress> progress, CancellationToken token)
+    {
+        if (!IsReady) throw new InvalidOperationException("This installation is missing its built-in transcription files. Reinstall Deep Groove or rebuild the complete Release application.");
+        string working = Path.Combine(_root, "jobs", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(working);
+        try
+        {
+            string input = Path.Combine(working, "input.wav"), output = Path.Combine(working, "result.json");
+            progress.Report(new("Preparing audio for vocal isolation…", 0));
+            await Task.Run(() => LyricsAudio.Write(channels, rate, start, count, input, token), token);
+            var arguments = new List<string> { "-I", "-B", "-X", "utf8", "-u", Path.Combine(_assets, "lyrics_worker.py"),
+                "--input", input, "--output", output, "--vocals-only", "--device", cpuOnly ? "cpu" : "auto" };
+            await RunWorkerAsync(arguments, cpuOnly, progress, token);
+            var vocals = await Task.Run(() => ReadVocals(Path.Combine(working, "vocals.wav"), title,
+                (double)count / rate, start != 0 || count != channels[0].Length, token), token);
+            token.ThrowIfCancellationRequested();
+            return vocals;
+        }
+        finally
+        {
+            try { Directory.Delete(working, recursive: true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    internal static AudioDocument ReadVocals(string path, string title, double duration, bool selection,
+        CancellationToken token)
+    {
+        var vocals = WavCodec.Load(path, token);
+        if (vocals.SampleRate != LyricsAudio.AnalysisRate || vocals.ChannelCount != 2
+            || vocals.SourceBitDepth != 32 || vocals.Length == 0 || Math.Abs(vocals.Duration - duration) > .05)
+            throw new InvalidDataException("The vocal separator returned an unexpected audio format or duration.");
+        foreach (var channel in vocals.Channels)
+        {
+            for (int i = 0; i < channel.Length; i++)
+            {
+                if ((i & 65535) == 0) token.ThrowIfCancellationRequested();
+                if (!float.IsFinite(channel[i])) throw new InvalidDataException("The vocal separator returned invalid samples.");
+            }
+        }
+        // The worker file is temporary. Save must prompt for a new destination, never
+        // point to the job directory or the original recording.
+        vocals.FilePath = null;
+        vocals.RequiresSaveAs = true;
+        vocals.Title = Path.GetFileNameWithoutExtension(title) + (selection ? " - vocals (selection).wav" : " - vocals.wav");
+        vocals.MarkUnsaved();
+        return vocals;
+    }
+
+    private async Task RunWorkerAsync(List<string> arguments, bool cpuOnly, IProgress<LyricsProgress> progress,
+        CancellationToken token)
+    {
+        try
+        {
+            await RunProcessAsync(Python, arguments, EnvironmentVariables(), progress, token, jsonProgress: true);
+        }
+        catch (LyricsProcessException ex) when (!cpuOnly && ex.IsGpuFailure)
+        {
+            token.ThrowIfCancellationRequested();
+            progress.Report(new("The GPU could not finish. Retrying on the CPU; this will take longer…"));
+            arguments[arguments.IndexOf("--device") + 1] = "cpu";
+            await RunProcessAsync(Python, arguments, EnvironmentVariables(), progress, token, jsonProgress: true);
         }
     }
 

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
 worker_path = Path(__file__).resolve().parents[2] / "src/WaveLab/Transcription/lyrics_worker.py"
 spec = importlib.util.spec_from_file_location("lyrics_worker", worker_path)
@@ -20,6 +21,15 @@ def segment(**changes):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_vocals_only_always_enables_separation_without_requiring_transcription_options(self):
+        with patch.object(worker.sys, "argv", ["lyrics_worker", "--vocals-only", "--input", "song.wav", "--output", "result.json"]):
+            with patch.object(worker, "run") as run:
+                worker.main()
+        args = run.call_args.args[0]
+        self.assertTrue(args.vocals_only)
+        self.assertTrue(args.isolate)
+        self.assertFalse(args.speech)
+
     def test_uncertain_word_is_flagged_without_rewriting_it(self):
         raw = segment(words=[SimpleNamespace(start=1, end=3, word="together", probability=.2)])
         line = worker.line_from_segment(raw, 5)

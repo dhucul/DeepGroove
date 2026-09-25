@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -388,14 +388,18 @@ public partial class MainWindow : Window
     {
         if (LongOperationRunning || _vm.ActiveDocument is not { } document || document.Doc.Length == 0
             || _vm.IsTransportRecording || _vm.IsFinalizingRecording || _vm.HasPendingTransportRecording) return;
+        AudioDocument? vocals = null;
         LongOperationRunning = true;
         try
         {
-            new LyricsDialog(document, (audio, loop) => _vm.PlayPreview(audio, loop, bypassRack: true),
-                () => _vm.StopCommand.Execute(null))
-                { Owner = this }.ShowDialog();
+            var dialog = new LyricsDialog(document, (audio, loop) => _vm.PlayPreview(audio, loop, bypassRack: true),
+                () => _vm.StopCommand.Execute(null)) { Owner = this };
+            dialog.ShowDialog();
+            vocals = dialog.IsolatedVocals;
         }
         finally { _vm.StopPreview(); LongOperationRunning = false; }
+        if (vocals != null)
+            _vm.AddGeneratedDocument(vocals, "Isolated vocals opened in a new tab. Use Save As or Export to keep an audio file.");
     }
 
     private void OnHelpCommand(object sender, ExecutedRoutedEventArgs e)

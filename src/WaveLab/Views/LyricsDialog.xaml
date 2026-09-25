@@ -118,6 +118,8 @@
                 </Grid>
                 <DockPanel Margin="0,14,0,0">
                     <Button x:Name="transcribeButton" Content="Transcribe" Style="{StaticResource Action}" Click="OnTranscribe" DockPanel.Dock="Left"/>
+                    <Button x:Name="vocalsButton" Content="Vocals to new tab" Style="{StaticResource Action}" Click="OnIsolateVocals" DockPanel.Dock="Left"
+                            ToolTip="Isolate the singing into a new audio tab, ready for Save As. Uses the whole file or the selected audio only; does not replace your transcript."/>
                     <Button x:Name="cancelButton" Content="Cancel" Style="{StaticResource Action}" Click="OnCancel" IsEnabled="False" DockPanel.Dock="Left"/>
                     <TextBlock x:Name="summaryLabel" VerticalAlignment="Center" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="8,0,0,0"
                                Text="Singing can be ambiguous. Review the result while listening."/>

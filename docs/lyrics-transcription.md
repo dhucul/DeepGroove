@@ -27,6 +27,18 @@ unsaved edits, without changing the recording or applying the master rack.
   autosave recovery. **Export before closing the audio tab or app**. Audio edits retain the
   old text for export but disable replay until its timings are regenerated.
 
+## Vocals-only audio
+
+Click **Vocals to new tab** in the Lyrics & Speech window to extract the singing as audio.
+Use **Selected audio only** for a passage, or turn it off for the whole song. This runs the
+included vocal separator directly and skips speech recognition. Your existing transcript and
+the original audio are preserved. On completion the dialog closes and a new, unsaved
+**song - vocals.wav** tab opens. Use **File > Save As** or **Export** to choose the file location
+and format. The result is stereo, 44.1 kHz, 32-bit float working audio; a selected passage starts
+at zero in its new file. Cancellation opens no new tab and removes temporary output.
+
+Separation can leave backing music or introduce artifacts; listen before saving a final copy.
+
 ## Exports
 
 Copy corrected text or export UTF-8 TXT, timed LRC lyrics, SRT subtitles, or detailed JSON.
