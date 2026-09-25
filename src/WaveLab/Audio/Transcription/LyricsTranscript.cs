@@ -15,11 +15,13 @@ public sealed class LyricsLine : ObservableObject
     public double End { get; set; }
     public string Text { get => _text; set => Set(ref _text, value); }
     public bool NeedsReview { get; set; }
+    public bool Recovered { get; set; }
+    public string RecoveryNote { get; set; } = "";
     public string ModelText { get; set; } = "";
     public string AlternativeText { get; set; } = "";
     public List<LyricsWord> Words { get; set; } = [];
     public string TimeLabel => TimeSpan.FromSeconds(Start).ToString(@"hh\:mm\:ss\.ff", CultureInfo.InvariantCulture);
-    public string ReviewLabel => NeedsReview ? "Review" : "";
+    public string ReviewLabel => Recovered ? "Recovered" : NeedsReview ? "Review" : "";
 }
 
 public sealed class LyricsTranscript

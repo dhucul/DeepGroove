@@ -74,7 +74,7 @@ public partial class LyricsDialog : Window
         if (Transcript is { } result)
         {
             summaryLabel.Text = $"{result.Lines.Count} lines · {result.Language} · {result.Model} · {result.Device} · " +
-                $"{result.Lines.Count(l => l.NeedsReview)} to review";
+                $"{result.Lines.Count(l => l.NeedsReview)} to review · {result.Lines.Count(l => l.Recovered)} recovered";
             if (result.SourceEditVersion != _version)
                 statusLabel.Text = "The audio has changed since this transcript. Export your edits, then transcribe again to restore matching timings.";
         }
@@ -86,9 +86,10 @@ public partial class LyricsDialog : Window
         var line = linesGrid.SelectedItem as LyricsLine;
         playButton.IsEnabled = !Busy && line != null && _play != null && Transcript?.SourceEditVersion == _version;
         alternativeButton.IsEnabled = !Busy && !string.IsNullOrWhiteSpace(line?.AlternativeText);
+        string note = line?.Recovered == true ? line.RecoveryNote : "";
         alternativeLabel.Text = string.IsNullOrWhiteSpace(line?.AlternativeText)
-            ? "Select a line to replay it. ‘Review’ marks uncertain recognition, not a measured accuracy score."
-            : $"Another reading from the original mix: {line.AlternativeText}";
+            ? string.IsNullOrWhiteSpace(note) ? "Select a line to replay it. Review and Recovered lines need a listening check." : note
+            : $"{note} Another reading: {line.AlternativeText}".Trim();
     }
 
     private async Task RunAsync(Func<IProgress<LyricsProgress>, CancellationToken, Task> action)
@@ -140,7 +141,7 @@ public partial class LyricsDialog : Window
             _document.LyricsTranscript = result;
             RefreshTranscript();
             statusLabel.Text = result.Lines.Count == 0 ? "No words detected. Try the original mix, a shorter selection, or the song's language."
-                : "Ready. Replay and correct uncertain lines. Export to keep a copy after closing the audio tab.";
+                : "Ready. Replay Review and Recovered lines, then export to keep your corrections.";
         });
     }
 

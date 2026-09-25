@@ -18,9 +18,11 @@ unsaved edits, without changing the recording or applying the master rack.
   stops song playback that was running before you opened this window.
 - **Review** flags uncertain recognition, not a calibrated accuracy percentage. Even
   high-confidence text can be wrong. Listen while reviewing the result.
-- **Check difficult lines against original mix** transcribes uncertain separated-vocal
-  passages again from the original audio. An alternate reading appears when the results
-  disagree; **Use alternate reading** swaps the two texts. Text is never silently rewritten.
+- **Check for missed words (slower)** compares the whole original recording with the
+  separated-vocal transcript, then retries uncovered or unclear passages in short overlapping
+  windows. Added phrases are marked **Recovered** and need a listening check. If a pass adds
+  words to an existing line, its earlier reading is kept as an alternative. Conflicting readings
+  also remain available with **Use alternate reading**; there is no lyric-completion language model.
 - **Cancel** stops the worker and keeps the previous transcript. Closing the window also
   cancels, waits for the worker, and removes temporary audio.
 - Corrections remain with the open audio tab, but are not included in audio saves or
@@ -53,7 +55,10 @@ The default pipeline uses fine-tuned **HTDemucs (`htdemucs_ft`)**, two shift pas
 50% overlap, then **Whisper large-v3 through faster-whisper / CTranslate2** with beam search,
 temperature fallback, and word timestamps. Separation can help dense mixes but can also
 introduce artifacts; **Music · original mix** is available for comparison. **Speech** enables
-voice activity detection; music modes disable it to preserve held vowels and soft singing.
+voice activity detection; music modes disable it and the speech-specific no-speech/word-duration
+  deletion heuristics so long or uncertain sung words are retained for review. Recognition copies
+  retain floating-point precision and use bounded gain to help quieter syllables; source audio
+  and vocals-only exports are unchanged.
 Previous-text conditioning is disabled to reduce repetition loops; actual repeated choruses
 are retained. When stereo channels strongly cancel, the analysis uses the stronger channel
 for both recognition and separation. The source recording is unchanged.

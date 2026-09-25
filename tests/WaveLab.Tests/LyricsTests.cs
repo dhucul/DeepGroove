@@ -208,4 +208,23 @@ public sealed class LyricsTests
             Assert.Equal("The river calls", doc.LyricsTranscript.Lines[0].Text);
         });
     }
+    [Fact]
+    public void RecoveredLinesKeepTheirEvidenceAndSelectionOffsets()
+    {
+        var result = Transcript();
+        result.Lines[0].Recovered = true;
+        result.Lines[0].NeedsReview = true;
+        result.Lines[0].RecoveryNote = "Found in the original mix.";
+        result.Lines[0].AlternativeText = "The river";
+        result.MapToSource(60, 10);
+        Assert.Equal("Recovered", result.Lines[0].ReviewLabel);
+        Assert.Equal(61.25, result.Lines[0].Start);
+        Assert.Equal(61.25, result.Lines[0].Words[0].Start);
+        string json = result.Export(".json");
+        Assert.Contains("\"recovered\": true", json);
+        Assert.Contains("Found in the original mix.", json);
+        Assert.Contains("The river", json);
+        Assert.Contains("[01:01.25]The river calls", result.Export(".lrc"));
+    }
+
 }

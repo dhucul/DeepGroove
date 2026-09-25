@@ -11,31 +11,18 @@ import os
 from pathlib import Path
 import sys
 import traceback
+import importlib.util
+
+# The host uses Python isolation (-I), so load our shipped helper by its explicit path.
+_spec = importlib.util.spec_from_file_location("lyrics_recovery", Path(__file__).with_name("lyrics_recovery.py"))
+recovery = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(recovery)
+needs_review = recovery.needs_review
+line_from_segment = recovery.line_from_segment
 
 
 def emit(message, fraction=None):
     print(json.dumps({"message": message, "fraction": fraction}, ensure_ascii=False), flush=True)
-
-
-def needs_review(segment, words):
-    return (not words or segment.avg_logprob < -0.8 or segment.no_speech_prob > 0.5
-            or segment.compression_ratio > 2.4
-            or any(w.probability < 0.5 for w in words))
-
-
-def line_from_segment(segment, duration, offset=0):
-    start = max(0, min(duration, segment.start + offset))
-    end = max(start, min(duration, segment.end + offset))
-    text = segment.text.strip()
-    if not text or end <= start or not math.isfinite(start + end):
-        return None
-    words = list(segment.words or [])
-    return {"start": start, "end": end, "text": text, "model_text": text,
-            "needs_review": needs_review(segment, words), "alternative_text": "",
-            "words": [{"start": max(start, min(end, w.start + offset)),
-                       "end": max(start, min(end, w.end + offset)),
-                       "word": w.word, "probability": max(0, min(1, w.probability))}
-                      for w in words]}
 
 
 def save_result(path, result):
@@ -52,16 +39,12 @@ def decode_for_transcription(path):
     Demucs, whose normalization reference is itself a mono channel average.
     """
     import numpy as np
-    import soundfile as sf
-    from faster_whisper.audio import decode_audio
-
-    # Upmixing mono to stereo in FFmpeg attenuates it by 3 dB. Keep the existing
-    # mono path so this stereo safeguard does not change ordinary mono recordings.
-    if sf.info(str(path)).channels == 1:
-        mono = decode_audio(str(path), sampling_rate=16000)
+    channels = recovery.decode_float_channels(path)
+    if len(channels) == 1:
+        mono = channels[0]
         peak = max(abs(float(mono.min())), abs(float(mono.max()))) if len(mono) else 0.0
         return mono, peak, None
-    left, right = decode_audio(str(path), sampling_rate=16000, split_stereo=True)
+    left, right = channels
     if not len(left):
         return left, 0.0, None
     peak = max(abs(float(channel.min())) for channel in (left, right))
@@ -120,7 +103,7 @@ def run(args):
             emit("The selected audio is silent. A silent vocals file is ready.", 1)
             return
         del quiet
-    if source_peak < 1e-5 and not args.vocals_only:
+    if source_peak <= 1e-8 and not args.vocals_only:
         save_result(args.output, result)
         emit("No audible voice was found in this range.", 1)
         return
@@ -177,35 +160,10 @@ def run(args):
     compute = "float16" if use_cuda else "int8"
     model = WhisperModel(args.model, device=device, compute_type=compute, local_files_only=True,
                          cpu_threads=max(1, min(8, os.cpu_count() or 1)))
-    options = dict(beam_size=5, best_of=5, temperature=[0.0, 0.2, 0.4],
-                   condition_on_previous_text=False, word_timestamps=True,
-                   # Speech VAD can discard held vowels and soft singing; music deliberately bypasses it.
-                   vad_filter=args.speech, no_speech_threshold=0.6,
-                   log_prob_threshold=-1.0, compression_ratio_threshold=2.4,
-                   hallucination_silence_threshold=2.0, hotwords=args.hints or None)
-    segments, info = model.transcribe(audio, language=args.language, task="transcribe", **options)
-    result["language"] = info.language
-    for segment in segments:
-        line = line_from_segment(segment, duration)
-        if line:
-            part = audio[int(line["start"] * 16000):int(line["end"] * 16000)]
-            # Omit only effectively silent output, not quiet but intelligible syllables.
-            if len(part) and float(np.sqrt(np.mean(part.astype(np.float64) ** 2))) >= 1e-5:
-                result["lines"].append(line)
-        emit("Transcribing words and timing…", 0.50 + 0.39 * min(1, segment.end / duration))
-
-    if args.compare and args.isolate:
-        uncertain = [line for line in result["lines"] if line["needs_review"]]
-        for index, line in enumerate(uncertain):
-            emit("Checking a difficult line against the original mix…", 0.90 + 0.09 * index / max(1, len(uncertain)))
-            start, end = int(line["start"] * 16000), int(line["end"] * 16000)
-            alternatives, _ = model.transcribe(original[start:end], language=info.language,
-                                                task="transcribe", **{**options, "vad_filter": False})
-            alternative = " ".join(s.text.strip() for s in alternatives).strip()
-            if alternative and alternative.casefold() != line["text"].casefold():
-                line["alternative_text"] = alternative
+    result["lines"], result["language"] = recovery.transcribe(
+        model, audio, original, args.language, args.speech, args.compare, args.isolate, args.hints, emit)
     save_result(args.output, result)
-    emit("Transcription complete. Listen through the lines marked Review.", 1)
+    emit("Transcription complete. Replay lines marked Review or Recovered.", 1)
 
 
 def main():

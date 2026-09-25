@@ -113,7 +113,8 @@
                     </StackPanel>
                     <StackPanel Grid.Column="1" VerticalAlignment="Bottom">
                         <CheckBox x:Name="selectionCheck" Content="Selected audio only" Margin="0,0,0,8"/>
-                        <CheckBox x:Name="compareCheck" Content="Check difficult lines against original mix" IsChecked="True"/>
+                        <CheckBox x:Name="compareCheck" Content="Check for missed words (slower)" IsChecked="True"
+                                  ToolTip="For music: compare the whole original recording and retry uncovered or unclear passages. Added words are marked Recovered for you to verify."/>
                     </StackPanel>
                 </Grid>
                 <DockPanel Margin="0,14,0,0">
@@ -140,7 +141,7 @@
                                 <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTextColumn Header="CHECK" Binding="{Binding ReviewLabel}" IsReadOnly="True" Width="86"/>
+                        <DataGridTextColumn Header="CHECK" Binding="{Binding ReviewLabel}" IsReadOnly="True" Width="110"/>
                     </DataGrid.Columns>
                 </DataGrid>
                 <TextBlock x:Name="emptyLabel" Text="Hear the words behind the music.&#x0a;&#x0a;Choose a song or a short passage, then transcribe."
