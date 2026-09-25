@@ -36,6 +36,7 @@ after success, failure, or normal cancellation; a system crash can leave files i
 
 - Double-click a line's text to correct it; select it and click **Replay line** to hear the
   original mix. **Loop** repeats that line with a little context at each edge.
+- **Stop** also stops song playback that was already running when you opened this window.
 - **Review** is a recognition heuristic, not a calibrated accuracy percentage. It flags weak
   word probabilities, weak segment likelihood, possible non-voice content, and repetitive
   decoding. High-confidence output can still be wrong.
@@ -67,6 +68,10 @@ activity detection; music modes deliberately disable it so held vowels and soft 
 not discarded as non-speech. Previous-text conditioning is disabled to reduce repetition loops.
 Actual repeated choruses are retained. Spelling hints supply names and unusual words only.
 
+If the stereo channels strongly cancel in mono, the analysis copy uses the stronger channel
+for both recognition and vocal separation. Silence is checked across the source channels;
+ordinary stereo and the original recording are preserved.
+
 Work is limited to **30 minutes per request** to bound memory and temporary disk usage. Use
 selections for album sides and long recordings. Mono/stereo is preserved in the analysis copy;
 files with more than two channels are downmixed to mono. This is an experimental transcription
@@ -84,11 +89,13 @@ Implementation references:
 
 ```powershell
 dotnet test WaveLab.sln -c Release --filter FullyQualifiedName~LyricsTests
-python -m unittest discover -s tests/transcription -v
+python -m unittest discover -s tests/transcription -p test_worker.py -v
+# Audio decoder checks use the installed local engine's Python and need no model downloads:
+& "$env:LOCALAPPDATA\WaveLab\Lyrics\environment-v1\Scripts\python.exe" -m unittest discover -s tests/transcription -v
 ```
 
 These checks require no downloaded models. They exercise selection offsets, invalid worker
-data, cancellation, audio resampling/channel preservation, corrected text export, stale audio
-protection, and the real WPF dialog. Inference smoke tests should also exercise a local voice
+data, cancellation, audio resampling/channel preservation, stereo phase cancellation, corrected
+text export, stale audio protection, transport control, and the real WPF dialog. Inference smoke tests should also exercise a local voice
 sample, a mix containing that voice, silence, and the CPU path. Those smoke tests establish
 functionality, not singing-recognition accuracy.

@@ -150,7 +150,7 @@
                 <TextBlock x:Name="alternativeLabel" TextWrapping="Wrap" Foreground="{StaticResource Muted}" MaxHeight="52" TextTrimming="CharacterEllipsis"/>
                 <DockPanel Margin="0,8,0,0">
                     <Button x:Name="playButton" Content="Replay line" Style="{StaticResource Action}" Click="OnReplay" IsEnabled="False" DockPanel.Dock="Left"/>
-                    <Button Content="Stop" Style="{StaticResource Action}" Click="OnStop" DockPanel.Dock="Left"/>
+                    <Button x:Name="stopButton" Content="Stop" Style="{StaticResource Action}" Click="OnStop" DockPanel.Dock="Left"/>
                     <CheckBox x:Name="loopCheck" Content="Loop" VerticalAlignment="Center" Margin="4,0,16,0" DockPanel.Dock="Left"/>
                     <Button x:Name="alternativeButton" Content="Use alternate reading" Style="{StaticResource Action}" Click="OnUseAlternative" IsEnabled="False" DockPanel.Dock="Left"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">

@@ -387,11 +387,12 @@ public partial class MainWindow : Window
     private void OnLyrics(object sender, RoutedEventArgs e)
     {
         if (LongOperationRunning || _vm.ActiveDocument is not { } document || document.Doc.Length == 0
-            || _vm.IsTransportRecording || _vm.IsFinalizingRecording) return;
+            || _vm.IsTransportRecording || _vm.IsFinalizingRecording || _vm.HasPendingTransportRecording) return;
         LongOperationRunning = true;
         try
         {
-            new LyricsDialog(document, (audio, loop) => _vm.PlayPreview(audio, loop, bypassRack: true), _vm.StopPreview)
+            new LyricsDialog(document, (audio, loop) => _vm.PlayPreview(audio, loop, bypassRack: true),
+                () => _vm.StopCommand.Execute(null))
                 { Owner = this }.ShowDialog();
         }
         finally { _vm.StopPreview(); LongOperationRunning = false; }

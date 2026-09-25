@@ -44,6 +44,40 @@ def save_result(path, result):
     os.replace(temporary, path)
 
 
+def decode_for_transcription(path):
+    """Keep stereo channels separate until we know a mono mix will retain their energy.
+
+    Returns mono samples, the peak across the source channels, and the channel selected
+    if cancellation required a fallback. The caller also uses that selection to protect
+    Demucs, whose normalization reference is itself a mono channel average.
+    """
+    import numpy as np
+    import soundfile as sf
+    from faster_whisper.audio import decode_audio
+
+    # Upmixing mono to stereo in FFmpeg attenuates it by 3 dB. Keep the existing
+    # mono path so this stereo safeguard does not change ordinary mono recordings.
+    if sf.info(str(path)).channels == 1:
+        mono = decode_audio(str(path), sampling_rate=16000)
+        peak = max(abs(float(mono.min())), abs(float(mono.max()))) if len(mono) else 0.0
+        return mono, peak, None
+    left, right = decode_audio(str(path), sampling_rate=16000, split_stereo=True)
+    if not len(left):
+        return left, 0.0, None
+    peak = max(abs(float(channel.min())) for channel in (left, right))
+    peak = max(peak, *(abs(float(channel.max())) for channel in (left, right)))
+    mono = (left + right) * 0.5
+    # Double-precision reductions avoid accumulating rounding error on long selections.
+    energies = [float(np.einsum("i,i->", channel, channel, dtype=np.float64)) for channel in (left, right)]
+    strongest = 0 if energies[0] >= energies[1] else 1
+    mixed_energy = float(np.einsum("i,i->", mono, mono, dtype=np.float64))
+    # Averaging with an empty channel already costs 6 dB. Only fall back when
+    # destructive interference loses more than that; ordinary stereo keeps both sides.
+    if mixed_energy < 0.25 * energies[strongest]:
+        return (left, right)[strongest].copy(), peak, strongest
+    return mono, peak, None
+
+
 def run(args):
     emit("Loading the local transcription engine…")
     # PyTorch's CUDA wheels contain cuBLAS/cuDNN. Make them visible to CTranslate2 on Windows.
@@ -57,7 +91,6 @@ def run(args):
     import soundfile as sf
     import ctranslate2
     from faster_whisper import WhisperModel
-    from faster_whisper.audio import decode_audio
 
     if args.check:
         import demucs.api
@@ -70,17 +103,20 @@ def run(args):
     torch.manual_seed(0)
     use_cuda = args.device != "cpu" and torch.cuda.is_available() and ctranslate2.get_cuda_device_count() > 0
     device = "cuda" if use_cuda else "cpu"
-    original = decode_audio(str(args.input), sampling_rate=16000)
+    original, source_peak, selected_channel = decode_for_transcription(args.input)
     duration = len(original) / 16000
     if not 0 < duration <= 1800.25:
         raise ValueError("Select between a fraction of a second and 30 minutes of audio.")
     result = {"schema_version": 1, "language": args.language or "", "model": args.model,
               "device": device, "isolated_vocals": False, "lines": []}
     # Do not feed digital silence to a language model, which can invent words from it.
-    if float(np.max(np.abs(original))) < 1e-5:
+    if source_peak < 1e-5:
         save_result(args.output, result)
         emit("No audible voice was found in this range.", 1)
         return
+
+    if selected_channel is not None:
+        emit("Stereo cancellation detected; using the stronger channel for analysis…")
 
     audio = original
     if args.isolate:
@@ -99,7 +135,10 @@ def run(args):
                               segment=7, callback=separation_progress)
         samples, rate = sf.read(str(args.input), dtype="float32", always_2d=True)
         # separate_tensor only converts channel count when sample rate changes.
-        if samples.shape[1] == 1:
+        if selected_channel is not None and samples.shape[1] == 2:
+            # Preserve the original file. Only the analysis tensor is made dual mono.
+            samples = np.repeat(samples[:, selected_channel:selected_channel + 1], 2, axis=1)
+        elif samples.shape[1] == 1:
             samples = np.repeat(samples, 2, axis=1)
         elif samples.shape[1] != 2:
             samples = np.repeat(samples.mean(axis=1, keepdims=True), 2, axis=1)
@@ -108,7 +147,7 @@ def run(args):
             _, stems = separator.separate_tensor(wave, rate)
         vocal_path = args.output.parent / "vocals.wav"
         sf.write(str(vocal_path), stems["vocals"].cpu().numpy().T, separator.samplerate, subtype="FLOAT")
-        audio = decode_audio(str(vocal_path), sampling_rate=16000)
+        audio, _, _ = decode_for_transcription(vocal_path)
         result["isolated_vocals"] = True
         del separator, stems, samples, wave
         gc.collect()
