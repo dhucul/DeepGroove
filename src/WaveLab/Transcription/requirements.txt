@@ -1,0 +1,6 @@
+# Inference only. Torch is installed separately from the official CPU or CUDA 12.8 index.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+demucs==4.1.0
+soundfile==0.14.0
+torch==2.8.0

@@ -17,3 +17,7 @@ installer/Output/
 
 # Listening-pass renders
 listening/
+
+# Local transcription tests / Python bytecode
+__pycache__/
+*.pyc

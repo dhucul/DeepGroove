@@ -1,0 +1,169 @@
+<Window x:Class="WaveLab.Views.LyricsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Lyrics &amp; Speech" Width="1080" Height="800" MinWidth="920" MinHeight="740"
+        WindowStartupLocation="CenterOwner" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" Foreground="{StaticResource Text}" FontFamily="{StaticResource UiFont}"
+        FontSize="12.5" ShowInTaskbar="False" Closing="OnClosing">
+    <Window.Resources>
+        <Style x:Key="Action" TargetType="Button" BasedOn="{StaticResource AccentButton}">
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{StaticResource Panel2}"/>
+            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="BorderBrush" Value="{StaticResource LineSoft}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+        </Style>
+        <Style TargetType="DataGridRow">
+            <Setter Property="Background" Value="{StaticResource Panel2}"/>
+            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="MinHeight" Value="42"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource AccentWell}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="DataGridCell">
+            <Setter Property="Padding" Value="10,7"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource WindowEdge}" BorderThickness="1" CornerRadius="14">
+        <Grid Margin="22,16">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <Grid MouseLeftButtonDown="OnDragMove" Background="Transparent" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Text="Lyrics &amp; Speech" FontSize="21" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="sourceLabel" Foreground="{StaticResource Muted}" Margin="0,5,40,0" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+                <Button Content="&#x00D7;" HorizontalAlignment="Right" VerticalAlignment="Top" Style="{StaticResource CaptionCloseButton}" Click="OnClose"/>
+            </Grid>
+            <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,0,0,14">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,20,0">
+                        <TextBlock Text="PRIVATE, ON YOUR PC" Style="{StaticResource UpperLabel}"/>
+                        <TextBlock x:Name="engineLabel" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                        <TextBlock Text="First use downloads software and models (allow 20 GB free). Your audio stays on this computer. CPU processing can take much longer than the song."
+                                   TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,5,0,0"/>
+                    </StackPanel>
+                    <Button x:Name="setupButton" Grid.Column="1" Content="Set up local engine" Style="{StaticResource Action}" VerticalAlignment="Center" Click="OnSetup"/>
+                </Grid>
+            </Border>
+            <StackPanel Grid.Row="2" Margin="0,0,0,12">
+                <Grid x:Name="optionsPanel">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="1.2*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,12,0">
+                        <TextBlock Text="AUDIO" Style="{StaticResource UpperLabel}"/>
+                        <ComboBox x:Name="modeCombo" SelectedIndex="0" Margin="0,6,0,0" AutomationProperties.Name="Audio type">
+                            <ComboBoxItem Content="Music · isolate vocals"/>
+                            <ComboBoxItem Content="Music · original mix"/>
+                            <ComboBoxItem Content="Speech"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Margin="0,0,12,0">
+                        <TextBlock Text="QUALITY" Style="{StaticResource UpperLabel}"/>
+                        <ComboBox x:Name="qualityCombo" SelectedIndex="0" Margin="0,6,0,0" AutomationProperties.Name="Transcription quality">
+                            <ComboBoxItem Content="Accuracy · large-v3"/>
+                            <ComboBoxItem Content="Speed · turbo"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Margin="0,0,12,0">
+                        <TextBlock Text="LANGUAGE" Style="{StaticResource UpperLabel}"/>
+                        <ComboBox x:Name="languageCombo" Margin="0,6,0,0" DisplayMemberPath="Name" SelectedValuePath="Code" AutomationProperties.Name="Song language"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="3">
+                        <TextBlock Text="PROCESSOR" Style="{StaticResource UpperLabel}"/>
+                        <ComboBox x:Name="deviceCombo" SelectedIndex="0" Margin="0,6,0,0" AutomationProperties.Name="Processor">
+                            <ComboBoxItem Content="Automatic · GPU / CPU"/>
+                            <ComboBoxItem Content="CPU only"/>
+                        </ComboBox>
+                    </StackPanel>
+                </Grid>
+                <Grid x:Name="hintsPanel" Margin="0,12,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,16,0">
+                        <TextBlock Text="SPELLING HINTS (OPTIONAL)" Style="{StaticResource UpperLabel}"/>
+                        <TextBox x:Name="hintsText" MaxLength="500" Height="30" Margin="0,6,0,0" VerticalContentAlignment="Center"
+                                 ToolTip="Names or unusual words you expect to hear. Do not paste instructions or complete lyrics."
+                                 AutomationProperties.Name="Names and spelling hints"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Bottom">
+                        <CheckBox x:Name="selectionCheck" Content="Selected audio only" Margin="0,0,0,8"/>
+                        <CheckBox x:Name="compareCheck" Content="Check difficult lines against original mix" IsChecked="True"/>
+                    </StackPanel>
+                </Grid>
+                <DockPanel Margin="0,14,0,0">
+                    <Button x:Name="transcribeButton" Content="Transcribe" Style="{StaticResource Action}" Click="OnTranscribe" DockPanel.Dock="Left"/>
+                    <Button x:Name="cancelButton" Content="Cancel" Style="{StaticResource Action}" Click="OnCancel" IsEnabled="False" DockPanel.Dock="Left"/>
+                    <TextBlock x:Name="summaryLabel" VerticalAlignment="Center" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="8,0,0,0"
+                               Text="Singing can be ambiguous. Review the result while listening."/>
+                </DockPanel>
+            </StackPanel>
+            <Grid Grid.Row="3">
+                <DataGrid x:Name="linesGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                          CanUserReorderColumns="False" CanUserSortColumns="False" HeadersVisibility="Column"
+                          SelectionMode="Single" SelectionUnit="FullRow" Background="{StaticResource Panel2}"
+                          BorderBrush="{StaticResource LineSoft}" BorderThickness="1" GridLinesVisibility="Horizontal"
+                          HorizontalGridLinesBrush="{StaticResource LineSoft}" RowHeaderWidth="0" SelectionChanged="OnLineChanged"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          AutomationProperties.Name="Timed transcript; double-click text to correct it">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="TIME" Binding="{Binding TimeLabel}" IsReadOnly="True" Width="122"/>
+                        <DataGridTextColumn Header="WORDS · double-click to edit" Binding="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Width="*">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Header="CHECK" Binding="{Binding ReviewLabel}" IsReadOnly="True" Width="86"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+                <TextBlock x:Name="emptyLabel" Text="Hear the words behind the music.&#x0a;&#x0a;Choose a song or a short passage, then transcribe."
+                           HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" Foreground="{StaticResource Muted}"
+                           IsHitTestVisible="False"/>
+            </Grid>
+            <StackPanel Grid.Row="4" Margin="0,10,0,0">
+                <TextBlock x:Name="alternativeLabel" TextWrapping="Wrap" Foreground="{StaticResource Muted}" MaxHeight="52" TextTrimming="CharacterEllipsis"/>
+                <DockPanel Margin="0,8,0,0">
+                    <Button x:Name="playButton" Content="Replay line" Style="{StaticResource Action}" Click="OnReplay" IsEnabled="False" DockPanel.Dock="Left"/>
+                    <Button Content="Stop" Style="{StaticResource Action}" Click="OnStop" DockPanel.Dock="Left"/>
+                    <CheckBox x:Name="loopCheck" Content="Loop" VerticalAlignment="Center" Margin="4,0,16,0" DockPanel.Dock="Left"/>
+                    <Button x:Name="alternativeButton" Content="Use alternate reading" Style="{StaticResource Action}" Click="OnUseAlternative" IsEnabled="False" DockPanel.Dock="Left"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="copyButton" Content="Copy text" Style="{StaticResource Action}" Click="OnCopy" IsEnabled="False"/>
+                        <Button x:Name="exportButton" Content="Export…" Style="{StaticResource Action}" Click="OnExport" IsEnabled="False"/>
+                    </StackPanel>
+                </DockPanel>
+            </StackPanel>
+            <StackPanel Grid.Row="5" Margin="0,12,0,0">
+                <ProgressBar x:Name="progressBar" Height="3" Minimum="0" Maximum="1"/>
+                <TextBlock x:Name="statusLabel" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="11"
+                           Text="Edits are kept with this open tab. Export a copy before closing the audio file."/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

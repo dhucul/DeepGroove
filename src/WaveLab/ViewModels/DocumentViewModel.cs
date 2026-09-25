@@ -64,6 +64,8 @@ public sealed class DocumentViewModel : TabViewModel, IDocumentEditState
     }
 
     public AudioDocument Doc { get; }
+    /// <summary>Corrections remain with this tab. The source version guards replay after audio edits.</summary>
+    public Audio.Transcription.LyricsTranscript? LyricsTranscript { get; set; }
     public PeakStore Peaks { get; }
     public int PeaksVersion => Peaks.Version;
 

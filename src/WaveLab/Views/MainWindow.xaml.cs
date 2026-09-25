@@ -384,6 +384,19 @@ public partial class MainWindow : Window
         new StatisticsDialog(_vm.ActiveDocument.Doc) { Owner = this }.ShowDialog();
     }
 
+    private void OnLyrics(object sender, RoutedEventArgs e)
+    {
+        if (LongOperationRunning || _vm.ActiveDocument is not { } document || document.Doc.Length == 0
+            || _vm.IsTransportRecording || _vm.IsFinalizingRecording) return;
+        LongOperationRunning = true;
+        try
+        {
+            new LyricsDialog(document, (audio, loop) => _vm.PlayPreview(audio, loop, bypassRack: true), _vm.StopPreview)
+                { Owner = this }.ShowDialog();
+        }
+        finally { _vm.StopPreview(); LongOperationRunning = false; }
+    }
+
     private void OnHelpCommand(object sender, ExecutedRoutedEventArgs e)
     {
         ShowHelp(HelpCatalog.StartTopicId);
@@ -2974,6 +2987,7 @@ public partial class MainWindow : Window
             new("Detect Pitch (Tuner)", null, () => OnTuner(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Detect Tempo (BPM)", null, () => OnBpm(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             VmCommand("Audio Statistics…", null, _vm.StatisticsCommand),
+            new("Lyrics & Speech…", null, () => OnLyrics(this, new RoutedEventArgs()), () => _vm.HasAudioDocument),
             new("Analyze & Tune Vinyl Cleanup…", null, () => ShowCleanupAnalysis(CleanupProfile.VinylCleanup), () => _vm.CanAnalyzeCleanup),
             new("Analyze & Tune Clean Transfer…", null, () => ShowCleanupAnalysis(CleanupProfile.CleanTransfer), () => _vm.CanAnalyzeCleanup),
             VmCommand("Render in Place (Undoable)", null, _vm.ApplyChainCommand),

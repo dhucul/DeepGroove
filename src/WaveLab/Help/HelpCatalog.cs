@@ -216,6 +216,16 @@ public static class HelpCatalog
             Section("Audio Statistics",
                 "Analyze > Audio Statistics scans the document and reports duration, format, sample peak, RMS, DC offset, clipping/full-scale counts, and related channel data. Copy places the report on the clipboard. Statistics describe the stored document, while live rack meters describe playback through the current chain.")),
 
+        Topic("lyrics", "TRANSCRIPTION", "Lyrics & Speech",
+            "Read difficult lyrics with private local transcription, timed replay, and editable text.",
+            "lyrics speech transcription words vocals singing whisper text subtitles lrc srt language",
+            Section("Start a transcript",
+                "Open audio and choose Tools > Lyrics & Speech. Set up the local engine once; allow about 20 GB free and an Internet connection for software and first-use model downloads. Your recording stays on your PC. Choose vocal isolation for dense music, the original mix for comparison, or Speech for spoken audio. Accuracy uses large-v3; Speed uses turbo. Select the language if known and add spelling hints for names or unusual words. Requests are limited to 30 minutes; select a verse for a quick test."),
+            Section("Listen and correct",
+                "Select a timed line and Replay line, optionally with Loop. Double-click its text to correct it. Review marks uncertain recognition, not a guaranteed accuracy score. Difficult lines can be checked against the original mix, with an alternate reading offered for you to choose. Singing, overlapping voices and instrumental passages can still produce wrong words. Cancel stops the local worker without changing audio or the previous transcript."),
+            Section("Keep the words",
+                "Copy text or export TXT, LRC, SRT or detailed JSON. Selection transcripts keep timings relative to the whole source file. Corrections stay with the open tab but are not saved inside audio or autosave recovery, so export before closing the tab or app. If you edit the audio, the old text remains available but replay is disabled until you regenerate its timings.")),
+
         Topic("tools", "TOOLS", "Time, pitch, sample rate, tuner, BPM, and batch conversion",
             "Use the utility commands and know which operations create or modify audio.",
             "time stretch pitch shift resample sample rate tuner bpm tempo batch converter",

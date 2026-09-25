@@ -288,6 +288,8 @@
                     <MenuItem Header="Correct Wow &amp; Flutter…" Click="OnCorrectWowFlutter"/>
                 </MenuItem>
                 <MenuItem Header="_Tools">
+                    <MenuItem Header="Lyrics &amp; Speech…" Click="OnLyrics" IsEnabled="{Binding HasAudioDocument}"/>
+                    <Separator/>
                     <MenuItem Header="Time Stretch…" Click="OnTimeStretch" IsEnabled="{Binding HasAudioDocument}"/>
                     <MenuItem Header="Pitch Shift…" Click="OnPitchShift" IsEnabled="{Binding HasAudioDocument}"/>
                     <MenuItem Header="Convert Sample Rate…" Click="OnConvertRate" IsEnabled="{Binding HasAudioDocument}"/>
