@@ -13,6 +13,7 @@ import traceback
 
 BASE_ID = "openai/whisper-large-v3"
 BASE_REVISION = "06f233fe06e710322aca913c1bc4249a0d71fce1"
+LABEL_RECIPE = "whisper-nospeech-conditional-eos-v2"
 
 
 def atomic_json(path, value):
@@ -37,6 +38,8 @@ def validate_manifest(rows):
             raise ValueError("Invalid split or segment duration")
         if row["kind"] not in ("a", "b", "d") or "*" in row["text"] or "?" in row["text"]:
             raise ValueError("Uncertain or overlapping annotations must not train the model")
+        if bool(row["text"].strip()) == (row["kind"] == "d"):
+            raise ValueError("Vocal labels need text; instrumental labels must be empty")
 
 
 def feature_key(row):
@@ -49,6 +52,32 @@ def audio_interval(start_seconds, end_seconds, sample_rate, frame_count):
     if start < 0 or start >= frame_count or end <= start or end > frame_count + round(.1 * sample_rate):
         raise ValueError("Annotation extends outside audio")
     return start, min(end, frame_count)
+
+
+def training_targets(tokenizer, row):
+    start = tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+    if row["kind"] == "d":
+        # Whisper predicts no-speech immediately after SOT, before language/task.
+        # An empty English transcript teaches the wrong target at that position.
+        no_speech = tokenizer.convert_tokens_to_ids("<|nospeech|>")
+        if no_speech is None or no_speech == tokenizer.unk_token_id:
+            raise ValueError("Tokenizer is missing Whisper's no-speech token")
+        prompt = tokenizer("").input_ids
+        if prompt[0] != start or prompt[-1] != tokenizer.eos_token_id or len(prompt) < 3:
+            raise ValueError("Missing transcription prompt for instrumental supervision")
+        # Also teach EOS when English/transcribe is explicitly supplied, as in
+        # WaveLab. Do not supervise language/task tokens on instrumental audio:
+        # that would counteract the no-speech target at the SOT position.
+        decoder = prompt[:-1]
+        labels = [-100] * len(decoder)
+        labels[0], labels[-1] = no_speech, tokenizer.eos_token_id
+        return labels, decoder
+    labels = tokenizer(row["text"]).input_ids
+    if labels[0] == start:
+        labels = labels[1:]
+    if len(labels) > 448:
+        raise ValueError("Training transcript exceeds decoder context")
+    return labels, [start] + labels[:-1]
 
 
 def run(args, update):
@@ -92,9 +121,16 @@ def run(args, update):
     cache.mkdir(parents=True, exist_ok=True)
 
     def features(row):
+        label_ids, decoder_ids = training_targets(processor.tokenizer, row)
+        labels = torch.tensor(label_ids, dtype=torch.long)
+        decoder = torch.tensor(decoder_ids, dtype=torch.long)
         path = cache / (feature_key(row) + ".pt")
         if path.exists():
-            return torch.load(path, map_location="cpu", weights_only=True)
+            value = torch.load(path, map_location="cpu", weights_only=True)
+            # Cached acoustics can be reused; always regenerate labels for this recipe.
+            value["labels"] = labels
+            value["decoder"] = decoder
+            return value
         with sf.SoundFile(row["audio"]) as audio:
             start, end = audio_interval(row["start"], row["end"], audio.samplerate, len(audio))
             rate = audio.samplerate
@@ -110,13 +146,8 @@ def run(args, update):
         if not np.isfinite(mono).all():
             raise ValueError("Audio contains non-finite samples")
         encoded = processor.feature_extractor(mono, sampling_rate=16000, return_tensors="pt", return_attention_mask=True)
-        labels = processor.tokenizer(row["text"]).input_ids
-        if labels[0] == processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>"):
-            labels = labels[1:]
-        if len(labels) > 448:
-            raise ValueError("Training transcript exceeds decoder context")
         value = {"features": encoded.input_features[0].half(), "mask": encoded.attention_mask[0],
-                 "labels": torch.tensor(labels, dtype=torch.long)}
+                 "labels": labels, "decoder": decoder}
         temporary = path.with_suffix(".tmp")
         torch.save(value, temporary)
         temporary.replace(path)
@@ -125,7 +156,8 @@ def run(args, update):
     update(phase="loading_model", train_examples=len(train_rows), validation_examples=len(validation_rows),
            evaluation_examples=len(evaluation), train_songs=len({r['song'] for r in train_rows}),
            validation_songs=len({r['song'] for r in validation_rows}), manifest_sha256=manifest_hash,
-           base_model=args.model_id, base_revision=args.model_revision, planned_steps=args.steps)
+           base_model=args.model_id, base_revision=args.model_revision, planned_steps=args.steps,
+           label_recipe=LABEL_RECIPE)
     base = WhisperForConditionalGeneration.from_pretrained(args.base_model, local_files_only=True,
         torch_dtype=dtype, attn_implementation="sdpa", low_cpu_mem_usage=True)
     base.config.use_cache = False
@@ -165,7 +197,8 @@ def run(args, update):
                 mel = value["features"].unsqueeze(0).to("cuda", dtype=dtype)
                 mask = value["mask"].unsqueeze(0).to("cuda")
                 labels = value["labels"].unsqueeze(0).to("cuda")
-                output = model(input_features=mel, attention_mask=mask, labels=labels)
+                output = model(input_features=mel, attention_mask=mask, labels=labels,
+                               decoder_input_ids=value["decoder"].unsqueeze(0).to("cuda"))
                 loss_sum += float(output.loss)
                 tokens = model.generate(input_features=mel, attention_mask=mask, language="en", task="transcribe",
                                         return_timestamps=False, max_new_tokens=128, num_beams=3, use_cache=True)
@@ -194,10 +227,12 @@ def run(args, update):
                     "step": step, "micro_step": micro_step, "best_wer": best_wer,
                     "manifest_sha256": manifest_hash, "accumulation": args.accumulation,
                     "model_id": args.model_id, "model_revision": args.model_revision,
+                    "label_recipe": LABEL_RECIPE,
                     "torch_rng": torch.get_rng_state(),
                     "cuda_rng": torch.cuda.get_rng_state_all()}, path / "training-state.pt")
         atomic_json(path / "checkpoint.json", {"step": step, "micro_step": micro_step,
-            "base_model": args.model_id, "base_revision": args.model_revision, "manifest_sha256": manifest_hash})
+            "base_model": args.model_id, "base_revision": args.model_revision, "manifest_sha256": manifest_hash,
+            "label_recipe": LABEL_RECIPE})
         atomic_json(args.output / f"{name}-checkpoint.json", {"path": str(path), "step": step})
         return str(path)
 
@@ -206,6 +241,8 @@ def run(args, update):
         state = torch.load(args.resume / "training-state.pt", map_location="cpu", weights_only=True)
         if state["manifest_sha256"] != manifest_hash:
             raise ValueError("Cannot resume against a different dataset")
+        if state.get("label_recipe") != LABEL_RECIPE:
+            raise ValueError("Cannot resume a checkpoint trained with a different label recipe; start fresh")
         if state.get("accumulation") != args.accumulation or state.get("model_id") != args.model_id or state.get("model_revision") != args.model_revision:
             raise ValueError("Resume settings must match the original model and gradient accumulation")
         optimizer.load_state_dict(state["optimizer"])
@@ -239,7 +276,8 @@ def run(args, update):
         with torch.autocast("cuda", dtype=dtype):
             result = model(input_features=value["features"].unsqueeze(0).to("cuda", dtype=dtype),
                            attention_mask=value["mask"].unsqueeze(0).to("cuda"),
-                           labels=value["labels"].unsqueeze(0).to("cuda"))
+                           labels=value["labels"].unsqueeze(0).to("cuda"),
+                           decoder_input_ids=value["decoder"].unsqueeze(0).to("cuda"))
             loss = result.loss
         if not torch.isfinite(loss):
             raise RuntimeError("Non-finite loss; refusing to continue")

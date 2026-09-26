@@ -1,6 +1,8 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 import tempfile
 import unittest
 import zipfile
@@ -17,6 +19,8 @@ def module(name):
 
 prepare = module("prepare_musdb")
 train = module("train_adapter")
+sys.modules["train_adapter"] = train
+evaluate = module("evaluate_adapter")
 
 
 class PipelineTests(unittest.TestCase):
@@ -71,6 +75,56 @@ class PipelineTests(unittest.TestCase):
         for start, end in ((20, 26.2), (-1, 4), (27, 28), (20, 19)):
             with self.subTest(start=start, end=end), self.assertRaises(ValueError):
                 train.audio_interval(start, end, 1000, 25949)
+
+    def test_evaluation_uses_only_reserved_rows_and_marks_paired_selection_clips(self):
+        training = dict(song="Training song", artist="Training singer", split="train",
+                        start=0, end=4, kind="a", text="words", source="mixture")
+        reserved = {**training, "song": "Reserved song", "artist": "Reserved singer", "split": "validation"}
+        rows = [training, reserved, {**reserved, "source": "vocals"}, {**reserved, "start": 4, "end": 8}]
+        selected = evaluate.select_validation(rows, [reserved])
+        self.assertEqual(len(selected), 3)
+        self.assertEqual(sum(r["used_for_selection"] for r in selected), 2)
+        self.assertEqual(sum(r["first_annotated_phrase"] for r in selected), 2)
+        self.assertTrue(all(r["split"] == "validation" for r in selected))
+
+    def test_evaluation_counts_missing_words_and_instrumental_hallucinations(self):
+        rows = [dict(song="One", text="one two", prediction="one", truncated=False),
+                dict(song="Two", text="", prediction="invented words", truncated=False)]
+        result = evaluate.metrics(rows, str.strip)
+        self.assertEqual(result["reference_words"], 2)
+        self.assertEqual(result["deletions"], 1)
+        self.assertEqual(result["insertions"], 2)
+        self.assertEqual(result["negative_false_positives"], 1)
+        self.assertEqual(result["words_on_negatives"], 2)
+        self.assertEqual(result["wer"], 1.5)
+        self.assertIsNone(evaluate.metrics(rows[1:], str.strip)["wer"])
+
+    def test_cap_recheck_includes_both_models_failures_without_other_excerpts(self):
+        row = dict(song="Song", source="mixture", start=0, end=4, truncated=True)
+        vocal = {**row, "source": "vocals"}
+        unrelated = {**row, "start": 8, "end": 12, "truncated": False}
+        ids = evaluate.capped_excerpt_ids({"base": [row, unrelated], "adapted": [vocal, unrelated]})
+        self.assertEqual(ids, {evaluate.excerpt_id(row), evaluate.excerpt_id(vocal)})
+
+    def test_instrumentals_train_no_speech_at_the_start_without_language_prefix(self):
+        class Tokenizer:
+            unk_token_id = eos_token_id = 50257
+            def convert_tokens_to_ids(self, token):
+                return {"<|nospeech|>": 50363, "<|startoftranscript|>": 50258}[token]
+            def __call__(self, text):
+                return SimpleNamespace(input_ids=[50258, 50259, 50360, 50364] + ([100] if text else []) + [50257])
+        tokenizer = Tokenizer()
+        labels, decoder = train.training_targets(tokenizer, {"kind": "d", "text": ""})
+        self.assertEqual(labels, [50363, -100, -100, 50257])
+        self.assertEqual(decoder, [50258, 50259, 50360, 50364])
+        self.assertEqual(train.training_targets(tokenizer, {"kind": "a", "text": "word"}),
+                         ([50259, 50360, 50364, 100, 50257], [50258, 50259, 50360, 50364, 100]))
+
+    def test_instrumental_annotation_cannot_silently_discard_real_text(self):
+        training = dict(song="Training", artist="Singer", split="train", start=0, end=4, kind="a", text="words")
+        invalid = {**training, "song": "Reserved", "artist": "Another singer", "split": "validation", "kind": "d"}
+        with self.assertRaisesRegex(ValueError, "instrumental labels"):
+            train.validate_manifest([training, invalid])
 
 
 if __name__ == "__main__":

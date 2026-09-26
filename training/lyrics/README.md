@@ -5,6 +5,9 @@ singing recordings. Training runs locally on an NVIDIA GPU, requires no API key,
 and never modifies the application or its bundled Release engine. All downloads,
 features, logs, checkpoints, and transcript reports stay under ignored `artifacts/`.
 
+See [RESULTS.md](RESULTS.md) for the first pilot's measured gains and regressions.
+It was not promoted to Release. A corrected training run was started after evaluation.
+
 ## Data and evaluation
 
 - Audio: [MUSDB18-HQ](https://zenodo.org/records/3338373).
@@ -67,10 +70,25 @@ rank-16 decoder attention adapters, learning rate 0.0001, 5% warmup, and fixed s
 validation clips are checked every 100 steps. No data from the user's music library
 is used for this pilot.
 
+The current label recipe is `whisper-nospeech-conditional-eos-v2`. Instrumentals
+teach `<|nospeech|>` immediately after the start token, following Whisper's
+[training format](https://cdn.openai.com/papers/whisper.pdf). They also teach EOS
+under an explicitly supplied language/transcription prompt, since that is how the
+application decodes. Language/task targets on instrumental inputs are masked so
+they do not contradict the no-speech target. Explicit decoder inputs keep this
+conditioning separate from the supervised labels. This additional conditional-EOS
+objective is our research adaptation, not a claim about OpenAI's original recipe.
+
+Acoustic features can be reused, but labels/decoder inputs are regenerated when
+loading the cache. Resume rejects checkpoints from the old label recipe. Start
+fresh from the base model when switching recipes; do not resume the first pilot.
+
 ## Inspect, stop, and resume
 
 For the initial background run started on September 25, 2026, use
 `artifacts/lyrics-training/runs/large-v3-lora-pilot-20260925` as `$run`.
+The corrected run uses
+`artifacts/lyrics-training/runs/large-v3-lora-nospeech-20260925`.
 The trainer owns its log file; `status.json` is replaced atomically after every
 optimizer step. A running job cannot reuse an existing output directory.
 
@@ -104,3 +122,70 @@ Before considering a replacement model, evaluate all reserved songs using the
 application's mixture/vocal workflow, inspect missing opening lines and repeated
 choruses, check hallucinations and speech regressions, and resolve redistribution
 rights. Keep an independent test set for final evaluation after model selection.
+
+## Broader validation and application-engine check
+
+After the pilot, evaluate all 504 reserved mixture/vocal examples against the frozen
+base. The evaluator waits for the training run to complete, then selects the saved
+best checkpoint. Both comparisons use the same base weights, preprocessing, and
+three-beam decoding as the development check. Generation is capped at 128 new
+tokens; the report counts any truncated outputs, which need a longer-cap rerun
+before drawing conclusions. No training examples enter evaluation.
+
+```powershell
+& $python training/lyrics/evaluate_adapter.py `
+  --training-run $run `
+  --manifest artifacts/lyrics-training/musdb/manifest.jsonl `
+  --base-model artifacts/lyrics-training/base-large-v3 `
+  --output artifacts/lyrics-training/evaluations/full-validation
+```
+
+Read `status.json` for progress and `comparison.json` for grouped results. Reports
+separate mixtures, clean vocal stems, missing words, instrumental hallucinations,
+first annotated phrases, and individual songs. `unseen_excerpts` excludes every
+interval used for model selection, including its paired vocal/mixture view. These
+are still the same reserved artists as development validation, not an independent
+final test. Ground-truth vocal stems also differ from estimated Demucs vocals.
+
+If either model reaches the output cap, recheck the union of those examples with a
+440-token cap. Both models rerun the same affected excerpts. This command writes
+the original full-set metrics again with those predictions replaced; its
+`*-all-predictions.json` files preserve the combined complete set. Any remaining
+cap hits must still be reported as bounded/repetitive output.
+
+```powershell
+& $python training/lyrics/evaluate_adapter.py `
+  --training-run $run `
+  --manifest artifacts/lyrics-training/musdb/manifest.jsonl `
+  --base-model artifacts/lyrics-training/base-large-v3 `
+  --only-capped-from artifacts/lyrics-training/evaluations/full-validation `
+  --max-new-tokens 440 `
+  --output artifacts/lyrics-training/evaluations/full-validation-cap-check
+```
+
+For an application-engine regression check, install `requirements-export.txt` into
+the research environment and export the selected checkpoint. Export merges on CPU
+in FP32 before converting to FP16 CTranslate2. Only `artifacts/` destinations are
+accepted; the Release model and source checkpoint are never overwritten.
+
+```powershell
+$checkpoint = (Get-Content "$run/best-checkpoint.json" -Raw | ConvertFrom-Json).path
+& $python -m pip install -r training/lyrics/requirements-export.txt
+& $python training/lyrics/export_adapter.py `
+  --checkpoint $checkpoint `
+  --base-model artifacts/lyrics-training/base-large-v3 `
+  --output artifacts/lyrics-training/exports/pilot-best
+
+$bundle = (Resolve-Path src/WaveLab/bin/Release/net10.0-windows/Transcription/Engine).Path
+& "$bundle/python/python.exe" -I training/lyrics/compare_pipeline.py `
+  --bundle $bundle --input 'C:/path/to/song.wav' `
+  --candidate artifacts/lyrics-training/exports/pilot-best/ctranslate2 `
+  --output artifacts/lyrics-training/evaluations/song-regression
+```
+
+Run this GPU comparison after the broader evaluation finishes. It isolates vocals
+once and applies the unchanged timed-lyrics recovery pipeline with both models,
+including the original-mix and focused-replay passes. No lyric hints or reference
+words are fed into the recognizer. The resulting transcripts require comparison
+with a verified reference or human listening; line counts alone do not establish
+accuracy. Speech regressions and an independent final set remain separate checks.

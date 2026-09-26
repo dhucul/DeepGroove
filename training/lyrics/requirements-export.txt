@@ -1,0 +1,2 @@
+-r requirements.txt
+ctranslate2==4.8.2
