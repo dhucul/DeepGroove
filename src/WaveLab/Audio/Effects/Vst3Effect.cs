@@ -173,7 +173,8 @@ public sealed class Vst3Effect : IAudioEffect, IEffectState, IDisposable
     }
 
     /// <summary>False when the plugin refused the sample rate or channel count it was given.</summary>
-    public bool Configured { get; private set; }
+    private bool _configured;
+    public bool Configured { get => _configured && _shared.Plugin.IsProcessing; private set => _configured = value; }
 
     public void ResetState()
     {
@@ -198,14 +199,13 @@ public sealed class Vst3Effect : IAudioEffect, IEffectState, IDisposable
     {
         get
         {
-            if (Volatile.Read(ref _disposed) != 0) return 0;
+            if (Volatile.Read(ref _disposed) != 0 || !Configured) return 0;
             try { return Math.Max(0, _shared.Plugin.LatencySamples); }
             catch { return 0; }
         }
     }
 
-    // VST3 does not expose a reliable tail length through the interfaces this host supports.
-    public int TailSamples => 0;
+    public int TailSamples => Volatile.Read(ref _disposed) == 0 && Configured ? _shared.Plugin.TailSamples : 0;
 
     /// <summary>
     /// Only ever non-null when something is wrong, because a silent failure inside somebody else's
@@ -213,7 +213,7 @@ public sealed class Vst3Effect : IAudioEffect, IEffectState, IDisposable
     /// </summary>
     public string? Readout =>
         Volatile.Read(ref _disposed) != 0 ? null
-        : !Configured ? "refused this sample rate"
+        : !Configured ? "refused this sample rate or channel layout"
         : _lastProcessFailed ? "returned no audio"
         : null;
 

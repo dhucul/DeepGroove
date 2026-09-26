@@ -365,6 +365,20 @@ public sealed class AudioDocument
     /// </summary>
     public void ReplaceAllOwned(float[][] newData, string opName,
         DiscSignalState? discSignalState = null)
+        => ReplaceAllOwnedCore(newData, opName, discSignalState, null);
+
+    /// <summary>Keep a copied range as one undoable edit, preserving its original timeline offset.</summary>
+    public void TrimRangeOwned(int start, float[][] kept, string opName = "Trim")
+    {
+        ValidateReplacementData(kept, ChannelCount, opName);
+        ValidateRange(start, kept[0].Length, Length);
+        if (start == 0 && kept[0].Length == Length) return;
+        TimelineSplice[] splices = [new(0, start, 0), new(kept[0].Length, Length - start - kept[0].Length, 0)];
+        ReplaceAllOwnedCore(kept, opName, null, splices);
+    }
+
+    private void ReplaceAllOwnedCore(float[][] newData, string opName,
+        DiscSignalState? discSignalState, TimelineSplice[]? splices)
     {
         ArgumentNullException.ThrowIfNull(newData);
         ArgumentException.ThrowIfNullOrWhiteSpace(opName);
@@ -383,7 +397,7 @@ public sealed class AudioDocument
         DiscSignalState afterDiscState = discSignalState ?? _discSignalState;
         Volatile.Write(ref _channels, newData);
         var edit = new Edit(opName, 0, oldData, newData, true, beforeStateId, afterStateId,
-            _discSignalState, afterDiscState);
+            _discSignalState, afterDiscState) { Timeline = splices };
         _undo.Add(edit);
         DiscardRedo();
         EnforceUndoBudget();
@@ -391,7 +405,7 @@ public sealed class AudioDocument
         _discSignalState = afterDiscState;
         UpdateDirtyFromSavepoint();
         EditVersion++;
-        TimelineChanged?.Invoke(0, oldLength, newLength);
+        NotifyTimeline(edit, undo: false);
         edit.StateOwner = stateOwner;
         edit.BeforeAnchors = beforeAnchors;
         edit.AfterAnchors = stateOwner?.Capture();
@@ -539,7 +553,7 @@ public sealed class AudioDocument
         _redo.Add(e);
         _currentStateId = e.BeforeStateId;
         _discSignalState = e.BeforeDiscSignalState;
-        TimelineChanged?.Invoke(e.Start, insertedLen, Frames(e.Old));
+        NotifyTimeline(e, undo: true);
         if (e.BeforeAnchors != null && e.AfterAnchors != null)
             e.StateOwner?.Restore(e.BeforeAnchors, e.AfterAnchors);
         return (e.Start, insertedLen, Frames(e.Old));
@@ -558,10 +572,29 @@ public sealed class AudioDocument
         _undo.Add(e);
         _currentStateId = e.AfterStateId;
         _discSignalState = e.AfterDiscSignalState;
-        TimelineChanged?.Invoke(e.Start, oldLen, Frames(e.New));
+        NotifyTimeline(e, undo: false);
         if (e.AfterAnchors != null && e.BeforeAnchors != null)
             e.StateOwner?.Restore(e.AfterAnchors, e.BeforeAnchors);
         return (e.Start, oldLen, Frames(e.New));
+    }
+
+    private void NotifyTimeline(Edit edit, bool undo)
+    {
+        if (edit.Timeline is not { } splices)
+        {
+            TimelineChanged?.Invoke(edit.Start, Frames(undo ? edit.New : edit.Old),
+                Frames(undo ? edit.Old : edit.New));
+            return;
+        }
+        // Trim removes the prefix first, then the suffix. Undo reverses those exact steps;
+        // the edit's anchor snapshots additionally restore positions lost inside removed audio.
+        for (int i = 0; i < splices.Length; i++)
+        {
+            var splice = splices[undo ? splices.Length - 1 - i : i];
+            if (splice.Removed == 0 && splice.Inserted == 0) continue;
+            TimelineChanged?.Invoke(splice.Start, undo ? splice.Inserted : splice.Removed,
+                undo ? splice.Removed : splice.Inserted);
+        }
     }
 
     /// <summary>
@@ -882,6 +915,8 @@ public sealed class AudioDocument
             throw new ArgumentOutOfRangeException(nameof(count));
     }
 
+    private readonly record struct TimelineSplice(int Start, int Removed, int Inserted);
+
     private sealed record Edit(
         string Name,
         int Start,
@@ -893,6 +928,7 @@ public sealed class AudioDocument
         DiscSignalState BeforeDiscSignalState,
         DiscSignalState AfterDiscSignalState)
     {
+        public TimelineSplice[]? Timeline { get; init; }
         public IDocumentEditState? StateOwner { get; set; }
         public object? BeforeAnchors { get; set; }
         public object? AfterAnchors { get; set; }

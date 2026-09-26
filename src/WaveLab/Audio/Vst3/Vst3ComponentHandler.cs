@@ -31,9 +31,10 @@ internal sealed unsafe class Vst3ComponentHandler : IDisposable
     private static readonly Guid FUnknownIid = new("00000000-0000-0000-c000-000000000046");
 
     /// <summary>Restart flags worth acting on.</summary>
-    public const int RestartParameterValuesChanged = 1 << 3;
-    public const int RestartLatencyChanged = 1 << 5;
-    public const int RestartParameterTitlesChanged = 1 << 1;
+    public const int RestartIoChanged = 1 << 1;
+    public const int RestartParameterValuesChanged = 1 << 2;
+    public const int RestartLatencyChanged = 1 << 3;
+    public const int RestartParameterTitlesChanged = 1 << 4;
 
     private static void** _vtable;
     private static readonly object Gate = new();

@@ -76,7 +76,7 @@ internal static class Vst3Abi
     public const int ProcessModeOffline = 2;
 
     /// <summary>Speaker arrangement bits: the two this host asks for.</summary>
-    public const ulong SpeakerMono = 0x1;
+    public const ulong SpeakerMono = 1UL << 19;
 
     /// <summary>Left and right.</summary>
     public const ulong SpeakerStereo = 0x1 | 0x2;

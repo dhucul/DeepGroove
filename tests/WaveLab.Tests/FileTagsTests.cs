@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 using WaveLab.Audio;
 using WaveLab.ViewModels;
@@ -347,11 +347,13 @@ public sealed class FileTagsTests(ITestOutputHelper output) : IDisposable
             document, plan, folder, new DdpDiscInfo("Disc"));
 
         long imageFrames = result.ImageBytes / (DdpImage.SamplesPerFrame * 4L);
-        output.WriteLine($"sheet says {layout.LeadOutFrame - CdTransfer.LeadInFrames}, image holds {imageFrames}");
-        Assert.Equal(imageFrames, layout.LeadOutFrame - CdTransfer.LeadInFrames);
+        output.WriteLine($"sheet says {layout.LeadOutFrame}, image holds {imageFrames}");
+        Assert.Equal(imageFrames, layout.LeadOutFrame);
 
-        string sheet = File.ReadAllText(Path.Combine(folder, "PQDESCR"));
-        Assert.Contains(layout.Tracks[1].StartTimecode, sheet);
-        Assert.Contains(layout.LeadOutTimecode, sheet);
+        var pq = DdpTestReader.ReadPq(Path.Combine(folder, "PQDESCR"));
+        Assert.Equal(layout.Tracks[1].StartTimecode,
+            DdpImage.Timecode(Assert.Single(pq, p => p.Track == "02" && p.Index == 1).Sector));
+        Assert.Equal(layout.LeadOutTimecode,
+            DdpImage.Timecode(Assert.Single(pq, p => p.Track == "AA").Sector));
     }
 }

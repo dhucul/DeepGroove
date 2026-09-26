@@ -1,5 +1,6 @@
 ﻿using System.IO;
 using System.Security.Cryptography;
+using System.Globalization;
 using System.Text;
 using WaveLab.Audio.Dsp;
 
@@ -144,15 +145,13 @@ public sealed record DdpResult(
 /// travels with the audio so a corrupted transfer is caught before glass is cut.
 /// </para>
 /// <para>
-/// The set is five files. <c>DDPID</c> identifies the whole thing; <c>DDPMS</c> is the map, one
-/// stream descriptor per part; <c>PQDESCR</c> is the PQ sheet, one line per track; <c>IMAGE.DAT</c>
-/// is the audio as one interleaved big-endian stream; <c>CDTEXT.BIN</c> carries the titles. The MD5
-/// of the image is written alongside, which is what lets the plant prove it received what was sent.
+/// <c>DDPID</c> identifies the master; <c>DDPMS</c> maps the streams; <c>PQDESCR</c> carries track
+/// and index records; <c>IMAGE.DAT</c> is interleaved little-endian audio. Optional <c>CDTEXT.BIN</c>
+/// carries titles. <c>CHECKSUM.MD5</c> covers the complete set; the image also keeps its own checksum.
 /// </para>
 /// <para>
-/// <b>Big-endian.</b> A DDP image is CD-DA byte order, which is the opposite of WAV's. Getting it
-/// backwards produces a file of exactly the right length, full of noise, that no check short of
-/// listening will catch.
+/// The image includes the initial 150-sector pause. DDPID and DDPMS use fixed 128-byte records;
+/// PQDESCR uses 64-byte records. These are machine records, not a printable PQ report.
 /// </para>
 /// </remarks>
 public static class DdpImage
@@ -191,13 +190,29 @@ public static class DdpImage
             if (track[0].Length != track[1].Length)
                 throw new ArgumentException(
                     $"Track {t + 1} has channels of different lengths.", nameof(tracks));
+            if (track[0].Length == 0 || info[t].PregapFrames < 0 ||
+                (long)info[t].PregapFrames * SamplesPerFrame >= track[0].Length)
+                throw new ArgumentException($"Track {t + 1} has no audio after its pregap.", nameof(info));
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var starts = new int[tracks.Count];
+        long sectors = LeadInFrames;
+        for (int t = 0; t < tracks.Count; t++)
+        {
+            starts[t] = checked((int)sectors);
+            sectors += ((long)tracks[t][0].Length + SamplesPerFrame - 1) / SamplesPerFrame;
+        }
+        if (sectors >= 100 * 60 * FramesPerSecond)
+            throw new ArgumentException("The DDP programme exceeds its two-digit CD minute field.", nameof(tracks));
+        int totalFrames = (int)sectors;
+        byte[] pq = BuildPqDescriptors(starts, totalFrames, info, disc);
+        byte[] cdText = BuildCdText(info, disc);
 
         Directory.CreateDirectory(folder);
         var written = new List<string>();
 
         string imagePath = Path.Combine(folder, "IMAGE.DAT");
-        var starts = new int[tracks.Count];
         long total = 0;
         bool applyDither = dither ?? NeedsDither(tracks, cancellationToken);
         var quantizer = applyDither
@@ -210,13 +225,21 @@ public static class DdpImage
         using (var hash = MD5.Create())
         using (var crypto = new CryptoStream(stream, hash, CryptoStreamMode.Write, leaveOpen: true))
         {
+            // The DDP stream explicitly includes index 00 of track 1. The map states that
+            // these 150 pause sectors are already present, so a reader must not add them again.
+            byte[] silence = new byte[SamplesPerFrame * 4];
+            for (int i = 0; i < LeadInFrames; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                crypto.Write(silence);
+                total += silence.Length;
+            }
             for (int t = 0; t < tracks.Count; t++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 progress?.Report((double)t / tracks.Count);
 
                 float[][] track = tracks[t];
-                starts[t] = (int)(total / (SamplesPerFrame * 4L));
                 total += WriteTrack(crypto, track, quantizer, cancellationToken);
             }
 
@@ -225,11 +248,19 @@ public static class DdpImage
         }
         written.Add(imagePath);
 
-        int totalFrames = (int)(total / (SamplesPerFrame * 4L));
-        written.Add(WriteText(folder, "DDPID", BuildDdpId(disc)));
-        written.Add(WriteText(folder, "DDPMS", BuildDdpMs(totalFrames, md5)));
-        written.Add(WriteText(folder, "PQDESCR", BuildPqSheet(starts, totalFrames, info, disc)));
-        written.Add(WriteBinary(folder, "CDTEXT.BIN", BuildCdText(info, disc)));
+        written.Add(WriteBinary(folder, "DDPID", BuildDdpId(disc)));
+        written.Add(WriteBinary(folder, "DDPMS", BuildDdpMs(totalFrames, pq.Length, cdText.Length)));
+        written.Add(WriteBinary(folder, "PQDESCR", pq));
+        if (cdText.Length > 0) written.Add(WriteBinary(folder, "CDTEXT.BIN", cdText));
+        var checksums = new StringBuilder();
+        foreach (string file in written)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var input = File.OpenRead(file);
+            string digest = file == imagePath ? md5 : Convert.ToHexString(MD5.HashData(input)).ToLowerInvariant();
+            checksums.Append(digest).Append(" *").Append(Path.GetFileName(file)).Append("\r\n");
+        }
+        written.Add(WriteText(folder, "CHECKSUM.MD5", checksums.ToString()));
         written.Add(WriteText(folder, "IMAGE.DAT.md5", $"{md5} *IMAGE.DAT{Environment.NewLine}"));
 
         progress?.Report(1);
@@ -237,7 +268,7 @@ public static class DdpImage
     }
 
     /// <summary>
-    /// Writes one track as interleaved big-endian 16-bit, padded to a whole CD frame.
+    /// Writes one track as interleaved little-endian 16-bit, padded to a whole CD frame.
     /// </summary>
     private static long WriteTrack(Stream stream, float[][] track, Dither? quantizer,
         CancellationToken cancellationToken)
@@ -246,16 +277,16 @@ public static class DdpImage
 
         // Padded up to a frame boundary: a track that does not fill its last frame would otherwise
         // push every track after it off the frame grid, and a CD has no way to represent that.
-        int padded = (frames + SamplesPerFrame - 1) / SamplesPerFrame * SamplesPerFrame;
+        long padded = ((long)frames + SamplesPerFrame - 1) / SamplesPerFrame * SamplesPerFrame;
         var buffer = new byte[SamplesPerFrame * 4];
 
-        for (int start = 0; start < padded; start += SamplesPerFrame)
+        for (long start = 0; start < padded; start += SamplesPerFrame)
         {
             cancellationToken.ThrowIfCancellationRequested();
             int at = 0;
             for (int i = 0; i < SamplesPerFrame; i++)
             {
-                int index = start + i;
+                long index = start + i;
                 for (int c = 0; c < 2; c++)
                 {
                     float sample = index < frames ? track[c][index] : 0f;
@@ -265,9 +296,8 @@ public static class DdpImage
                     int value = Math.Clamp((int)Math.Round(quantized * 32768.0),
                         short.MinValue, short.MaxValue);
 
-                    // Big-endian: CD-DA byte order, the opposite of a WAV's.
-                    buffer[at++] = (byte)(value >> 8);
                     buffer[at++] = (byte)value;
+                    buffer[at++] = (byte)(value >> 8);
                 }
             }
             stream.Write(buffer, 0, buffer.Length);
@@ -300,101 +330,162 @@ public static class DdpImage
 
     // ── the descriptor files ─────────────────────────────────────
 
-    private static string BuildDdpId(DdpDiscInfo disc)
+    // Field offsets are the DDP 2.00 on-disk layout. Interoperability is checked with
+    // Andreas Ruge's independent cue2ddp/ddpinfo, including decoded audio and CD-TEXT.
+    private static byte[] BuildDdpId(DdpDiscInfo disc)
     {
-        var text = new StringBuilder();
-        text.Append("DDP 2.00LEVEL A ");
-        text.Append(Fixed(disc.Title, 32));
-        text.Append(Fixed(disc.NormalisedUpc, 13));
-        text.Append(Fixed("DEEP GROOVE", 16));
-        text.AppendLine();
-        return text.ToString();
+        byte[] record = BlankRecord(128);
+        Field(record, 0, 8, "DDP 2.00");
+        Field(record, 8, 13, disc.NormalisedUpc);
+        Field(record, 38, 48, Fixed(disc.Title, 48));
+        Field(record, 87, 2, "CD");
+        return record;
     }
 
-    private static string BuildDdpMs(int totalFrames, string md5)
+    private static byte[] BuildDdpMs(int sectors, int pqBytes, int cdTextBytes)
     {
-        var text = new StringBuilder();
-        text.AppendLine($"VVVMSUP  IMAGE.DAT   {totalFrames:D8}  CDDA        MD5={md5}");
-        return text.ToString();
+        using var output = new MemoryStream();
+        if (cdTextBytes > 0) WriteMap("S0", "CDTEXT", "CDTEXT.BIN", cdTextBytes);
+        WriteMap("S0", "PQ DESCR", "PQDESCR", pqBytes);
+        WriteMap("D0", "", "IMAGE.DAT", sectors);
+        return output.ToArray();
+
+        void WriteMap(string type, string subcode, string file, int length)
+        {
+            byte[] record = BlankRecord(128);
+            Field(record, 0, 4, "VVVM");
+            Field(record, 4, 2, type);
+            Field(record, 14, 8, length.ToString(CultureInfo.InvariantCulture).PadLeft(8));
+            Field(record, 30, 8, subcode);
+            if (type == "D0")
+            {
+                Field(record, 38, 4, "DA71"); // CD-DA, complete 2352-byte sectors
+                Field(record, 46, 4, LeadInFrames.ToString(CultureInfo.InvariantCulture).PadLeft(4));
+            }
+            else if (subcode == "CDTEXT") Field(record, 55, 2, "00");
+            Field(record, 71, 3, " 17");
+            Field(record, 74, 17, file);
+            output.Write(record);
+        }
     }
 
-    /// <summary>
-    /// The PQ sheet: where each track starts, in minutes, seconds and CD frames from the start of
-    /// the programme, plus its catalogue and flag information.
-    /// </summary>
-    private static string BuildPqSheet(int[] starts, int totalFrames,
+    private static byte[] BuildPqDescriptors(int[] starts, int totalFrames,
         IReadOnlyList<DdpTrackInfo> info, DdpDiscInfo disc)
     {
-        var text = new StringBuilder();
-        // Hyphen rather than an em dash on purpose: this file is written as ASCII, which maps
-        // anything above 0x7F to a question mark, so the wording has to stay inside it. Same trap
-        // the AIFF text chunks were fixed for.
-        text.AppendLine($"# PQ descriptor - {info.Count} track{(info.Count == 1 ? "" : "s")}");
-        if (disc.NormalisedUpc.Length > 0) text.AppendLine($"UPC/EAN  {disc.NormalisedUpc}");
-        text.AppendLine("TRK  INDEX  START         LENGTH        ISRC          EMPH  TITLE");
-
+        using var output = new MemoryStream();
+        if (disc.NormalisedUpc.Length > 0) WritePq("00", 0, 0, false, "", disc.NormalisedUpc);
         for (int t = 0; t < info.Count; t++)
         {
-            // Offsets are stated from the start of the programme, with the two-second lead-in added:
-            // that is where the plant's timeline begins, not where the audio does.
-            int start = starts[t] + LeadInFrames;
-            int end = (t + 1 < starts.Length ? starts[t + 1] : totalFrames) + LeadInFrames;
-
-            // A pregap is stated as an index of its own: INDEX 00 where the silence begins and
-            // INDEX 01 where the music does. Without the first row the plant reads the gap as the
-            // opening of the track, and a player would neither count it down nor skip it.
-            int pregap = Math.Clamp(info[t].PregapFrames, 0, Math.Max(0, end - start));
-            if (pregap > 0)
-                text.AppendLine(
-                    $"{t + 1,3:D2}  00     {Timecode(start)}  {Timecode(pregap)}  " +
-                    $"{Fixed(string.Empty, 12)}  {(info[t].PreEmphasis ? "ON " : "OFF")}   (pregap)");
-
-            text.AppendLine(
-                $"{t + 1,3:D2}  01     {Timecode(start + pregap)}  {Timecode(end - start - pregap)}  " +
-                $"{Fixed(info[t].NormalisedIsrc, 12)}  {(info[t].PreEmphasis ? "ON " : "OFF")}   {info[t].Title}");
+            string track = (t + 1).ToString("D2", CultureInfo.InvariantCulture);
+            int pregap = info[t].PregapFrames;
+            bool hasIndexZero = t == 0 || pregap > 0;
+            if (hasIndexZero)
+                WritePq(track, 0, t == 0 ? 0 : starts[t], info[t].PreEmphasis, info[t].NormalisedIsrc, "");
+            WritePq(track, 1, starts[t] + pregap, info[t].PreEmphasis,
+                hasIndexZero ? "" : info[t].NormalisedIsrc, "");
         }
+        WritePq("AA", 1, totalFrames, false, "", "");
+        return output.ToArray();
 
-        text.AppendLine($"LEAD-OUT      {Timecode(totalFrames + LeadInFrames)}");
-        return text.ToString();
+        void WritePq(string track, int index, int at, bool emphasis, string isrc, string upc)
+        {
+            byte[] record = BlankRecord(64);
+            Field(record, 0, 4, "VVVS");
+            Field(record, 4, 2, track);
+            Field(record, 6, 2, index.ToString("D2", CultureInfo.InvariantCulture));
+            Field(record, 10, 6, string.Create(CultureInfo.InvariantCulture,
+                $"{at / (60 * FramesPerSecond):D2}{at / FramesPerSecond % 60:D2}{at % FramesPerSecond:D2}"));
+            Field(record, 16, 2, emphasis ? "11" : "01");
+            Field(record, 20, 12, isrc);
+            Field(record, 32, 13, upc);
+            output.Write(record);
+        }
     }
 
-    /// <summary>
-    /// CD-TEXT as pack-sized records: the disc's own title and performer first, then each track's.
-    /// </summary>
+    private static byte[] BlankRecord(int length)
+    {
+        var record = new byte[length];
+        Array.Fill(record, (byte)' ');
+        return record;
+    }
+
+    private static void Field(byte[] record, int offset, int width, string value)
+    {
+        if (value.Length > width) throw new InvalidDataException("A DDP field exceeds its fixed width.");
+        // Control characters cannot be allowed to break a machine record. CD-TEXT below keeps
+        // its supported non-ASCII text; this field is the ASCII master identifier only.
+        for (int i = 0; i < value.Length; i++)
+            record[offset + i] = value[i] is >= ' ' and <= '~' ? (byte)value[i] : (byte)' ';
+    }
+
     private static byte[] BuildCdText(IReadOnlyList<DdpTrackInfo> info, DdpDiscInfo disc)
     {
-        using var memory = new MemoryStream();
+        var packs = new List<byte[]>();
+        var counts = new byte[16];
+        var latin1 = Encoding.GetEncoding(28591, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+        AddText(0x80, disc.Title, info.Select(i => i.Title));
+        AddText(0x81, disc.Performer, info.Select(i => i.Performer));
+        AddText(0x82, "", info.Select(i => i.Songwriter));
+        if (packs.Count == 0) return [];
 
-        AppendPacks(memory, 0x80, disc.Title, info.Select(i => i.Title));
-        AppendPacks(memory, 0x81, disc.Performer, info.Select(i => i.Performer));
-        AppendPacks(memory, 0x82, string.Empty, info.Select(i => i.Songwriter));
-
-        return memory.ToArray();
-
-        static void AppendPacks(Stream stream, byte type, string disc, IEnumerable<string> tracks)
+        // Three size-information packs describe the character set, track limits, per-type pack
+        // counts, final sequence numbers, and languages for all eight possible blocks.
+        byte[] sizes = new byte[36];
+        sizes[0] = 0; // ISO 8859-1
+        sizes[1] = 1;
+        sizes[2] = (byte)info.Count;
+        counts[15] = 3;
+        counts.CopyTo(sizes, 4);
+        sizes[20] = (byte)(packs.Count + 2);
+        sizes[28] = 9; // English block
+        for (byte i = 0; i < 3; i++)
         {
-            var all = new List<string> { disc ?? string.Empty };
-            all.AddRange(tracks.Select(t => t ?? string.Empty));
-            if (all.TrueForAll(string.IsNullOrEmpty)) return;
+            var pack = NewPack(0x8f, i, 0);
+            Array.Copy(sizes, i * 12, pack, 4, 12);
+            FinishPack(pack);
+        }
+        return packs.SelectMany(p => p).ToArray();
 
-            for (int number = 0; number < all.Count; number++)
+        byte[] NewPack(byte type, byte track, byte position)
+        {
+            if (packs.Count >= 256) throw new ArgumentException("The CD-TEXT exceeds one language block's 256-pack limit.");
+            var pack = new byte[18];
+            pack[0] = type; pack[1] = track; pack[2] = (byte)packs.Count; pack[3] = position;
+            return pack;
+        }
+        void FinishPack(byte[] pack)
+        {
+            ushort crc = Crc16(pack, 0, 16);
+            pack[16] = (byte)(crc >> 8); pack[17] = (byte)crc;
+            packs.Add(pack);
+        }
+        void AddText(byte type, string? discText, IEnumerable<string> trackText)
+        {
+            string[] text = [discText ?? "", .. trackText.Select(t => t ?? "")];
+            if (text.All(string.IsNullOrEmpty)) return;
+            byte[][] strings;
+            try
             {
-                byte[] text = Encoding.ASCII.GetBytes(all[number]);
-                for (int offset = 0; offset < Math.Max(1, text.Length); offset += 12)
+                if (text.Any(s => s.Any(char.IsControl)))
+                    throw new ArgumentException("CD-TEXT cannot contain line breaks or control characters.");
+                strings = text.Select(s => latin1.GetBytes(s + '\0')).ToArray();
+            }
+            catch (EncoderFallbackException ex)
+            {
+                throw new ArgumentException("DDP CD-TEXT supports Latin-1 characters. Change unsupported titles or export WAV + CUE instead.", ex);
+            }
+            int track = 0, offset = 0;
+            while (track < strings.Length)
+            {
+                if (packs.Count >= 253) throw new ArgumentException("The CD-TEXT exceeds one language block's 256-pack limit.");
+                var pack = NewPack(type, (byte)track, (byte)Math.Min(offset, 15));
+                for (int i = 0; i < 12 && track < strings.Length; i++)
                 {
-                    var pack = new byte[18];
-                    pack[0] = type;
-                    pack[1] = (byte)number;
-                    pack[2] = (byte)(offset / 12);
-                    pack[3] = 0;
-                    for (int i = 0; i < 12 && offset + i < text.Length; i++) pack[4 + i] = text[offset + i];
-
-                    // CRC over the pack, as the format requires, so a damaged pack is detectable.
-                    ushort crc = Crc16(pack, 0, 16);
-                    pack[16] = (byte)(crc >> 8);
-                    pack[17] = (byte)crc;
-                    stream.Write(pack, 0, pack.Length);
+                    pack[4 + i] = strings[track][offset++];
+                    if (offset == strings[track].Length) { track++; offset = 0; }
                 }
+                counts[type - 0x80]++;
+                FinishPack(pack);
             }
         }
     }
@@ -409,7 +500,7 @@ public static class DdpImage
             for (int bit = 0; bit < 8; bit++)
                 crc = (ushort)((crc & 0x8000) != 0 ? (crc << 1) ^ 0x1021 : crc << 1);
         }
-        return crc;
+        return (ushort)~crc; // CD-TEXT stores the complemented CRC.
     }
 
     // ── helpers ──────────────────────────────────────────────────

@@ -55,6 +55,9 @@ public sealed unsafe class Vst3Plugin : IDisposable
 
     private int _channels;
     private int _blockSize;
+    private int _sampleRate;
+    private int _processMode;
+    private int _inputBusCount, _outputBusCount;
     private bool _active;
 
     /// <summary>
@@ -70,6 +73,8 @@ public sealed unsafe class Vst3Plugin : IDisposable
     /// </remarks>
     private readonly object _lifetimeGate = new();
     private bool _processing;
+    private bool _reconfiguring;
+    private int _flushRequested;
     private bool _disposed;
 
     private Vst3Plugin(Vst3Module module, Vst3ClassInfo info)
@@ -81,6 +86,8 @@ public sealed unsafe class Vst3Plugin : IDisposable
     public Vst3ClassInfo Class { get; }
     public IReadOnlyList<Vst3Parameter> Parameters { get; private set; } = [];
     public int LatencySamples { get; private set; }
+    public int TailSamples { get; private set; }
+    public bool IsProcessing => !_disposed && Volatile.Read(ref _processing);
     public int InputChannels { get; private set; }
     public int OutputChannels { get; private set; }
 
@@ -205,10 +212,26 @@ public sealed unsafe class Vst3Plugin : IDisposable
         return ((delegate* unmanaged[Stdcall]<void*, int, int>)vtable[5])(_processor, size);
     }
 
+    private bool GetBusArrangement(int direction, int index, out ulong arrangement)
+    {
+        ulong value = 0;
+        void** vtable = *(void***)_processor;
+        bool ok = Vst3Abi.Ok(((delegate* unmanaged[Stdcall]<void*, int, int, ulong*, int>)vtable[4])(
+            _processor, direction, index, &value));
+        arrangement = value;
+        return ok;
+    }
+
     private uint GetLatencySamples()
     {
         void** vtable = *(void***)_processor;
         return ((delegate* unmanaged[Stdcall]<void*, uint>)vtable[6])(_processor);
+    }
+
+    private uint GetTailSamples()
+    {
+        void** vtable = *(void***)_processor;
+        return ((delegate* unmanaged[Stdcall]<void*, uint>)vtable[10])(_processor);
     }
 
     private int SetupProcessing(Vst3Abi.ProcessSetup* setup)
@@ -338,19 +361,56 @@ public sealed unsafe class Vst3Plugin : IDisposable
 
         _handler = new Vst3ComponentHandler();
         _handler.ParameterEdited += edit => ParameterEdited?.Invoke(edit);
-        _handler.RestartRequested += flags =>
-        {
-            // A plugin that changes its own latency has to be believed: the host is compensating for
-            // a delay it no longer has until it reads the new one.
-            if ((flags & Vst3ComponentHandler.RestartLatencyChanged) != 0 && _processor != null)
-                LatencySamples = (int)Math.Min(GetLatencySamples(), int.MaxValue);
-            RestartRequested?.Invoke(flags);
-        };
+        _handler.RestartRequested += HandleRestart;
 
         void** vtable = *(void***)_controller;
         var setComponentHandler = (delegate* unmanaged[Stdcall]<void*, void*, int>)vtable[16];
         int result = setComponentHandler(_controller, _handler.Pointer);
         HandlerAccepted = Vst3Abi.Ok(result);
+    }
+
+    private void HandleRestart(int flags)
+    {
+        // The SDK delivers this on the control thread. Exclude process/free while restarting,
+        // and never publish new latency until the required deactivate/reactivate has completed.
+        lock (_lifetimeGate)
+        {
+            if (_disposed || _processor == null || _reconfiguring) return;
+            _reconfiguring = true;
+            try
+            {
+                if ((flags & Vst3ComponentHandler.RestartIoChanged) != 0)
+                {
+                    Deactivate(); // A changed graph must be negotiated again before it can process.
+                    LatencySamples = TailSamples = 0;
+                }
+                else if ((flags & Vst3ComponentHandler.RestartLatencyChanged) != 0 && _active)
+                {
+                    bool resume = _processing;
+                    Deactivate();
+                    LatencySamples = TailSamples = 0;
+                    if (Vst3Abi.Ok(SetActive(true)))
+                    {
+                        _active = true;
+                        if (CurrentLayoutMatchesBuffers())
+                        {
+                            RefreshProcessingInfo();
+                            _processing = resume && Vst3Abi.Ok(SetProcessing(true));
+                        }
+                        if (resume && !_processing) Deactivate();
+                    }
+                }
+            }
+            finally { _reconfiguring = false; }
+        }
+        RestartRequested?.Invoke(flags);
+    }
+
+    private void RefreshProcessingInfo()
+    {
+        LatencySamples = (int)Math.Min(GetLatencySamples(), int.MaxValue);
+        // uint.MaxValue means infinite. Use the same finite ceiling as the master renderer.
+        TailSamples = (int)Math.Min(GetTailSamples(), Math.Min(int.MaxValue, (long)_sampleRate * 120));
     }
 
     /// <summary>Whether the controller took the host's edit handler.</summary>
@@ -546,20 +606,40 @@ public sealed unsafe class Vst3Plugin : IDisposable
         if (_disposed || _processor == null || _component == null) return false;
         if (channels is < 1 or > 8 || sampleRate <= 0 || maxBlockSize <= 0) return false;
 
-        lock (_lifetimeGate) return ConfigureCore(sampleRate, channels, maxBlockSize, offline);
+        lock (_lifetimeGate)
+        {
+            if (_disposed || _reconfiguring) return false;
+            _reconfiguring = true;
+            try { return ConfigureCore(sampleRate, channels, maxBlockSize, offline); }
+            finally { _reconfiguring = false; }
+        }
     }
 
     private bool ConfigureCore(int sampleRate, int channels, int maxBlockSize, bool offline)
     {
         Deactivate();
+        ArrangementAccepted = false;
+        LatencySamples = TailSamples = 0;
+        Interlocked.Exchange(ref _flushRequested, 0);
+        // This host has no surround speaker-mask routing. Never advertise stereo then pass
+        // a wider document's buffers as though the plug-in had negotiated those channels.
+        if (channels is not (1 or 2)) return false;
 
         // 32-bit float only. A plugin that cannot take it is rare enough that converting the whole
         // path to double for its sake would be paying for it everywhere.
         if (!Vst3Abi.Ok(CanProcessSampleSize(Vst3Abi.SampleSize32))) return false;
 
         ulong arrangement = channels == 1 ? Vst3Abi.SpeakerMono : Vst3Abi.SpeakerStereo;
-        ulong input = arrangement, output = arrangement;
-        ArrangementAccepted = Vst3Abi.Ok(SetBusArrangements(&input, 1, &output, 1));
+        var inputs = RequestedArrangements(Vst3Abi.BusDirectionInput, arrangement);
+        var outputs = RequestedArrangements(Vst3Abi.BusDirectionOutput, arrangement);
+        if (inputs == null || outputs == null) return false;
+        fixed (ulong* input = inputs, output = outputs)
+            ArrangementAccepted = Vst3Abi.Ok(SetBusArrangements(input, inputs.Length, output, outputs.Length));
+        if (!ArrangementAccepted) return false;
+        var inputLayout = ReadLayout(Vst3Abi.BusDirectionInput, arrangement, channels);
+        var outputLayout = ReadLayout(Vst3Abi.BusDirectionOutput, arrangement, channels);
+        if (inputLayout == null || outputLayout == null ||
+            inputLayout.Length != inputs.Length || outputLayout.Length != outputs.Length) return false;
 
         var setup = new Vst3Abi.ProcessSetup
         {
@@ -570,24 +650,74 @@ public sealed unsafe class Vst3Plugin : IDisposable
         };
         if (!Vst3Abi.Ok(SetupProcessing(&setup))) return false;
 
-        ActivateBus(Vst3Abi.MediaTypeAudio, Vst3Abi.BusDirectionInput, 0, true);
-        ActivateBus(Vst3Abi.MediaTypeAudio, Vst3Abi.BusDirectionOutput, 0, true);
+        for (int i = 0; i < inputLayout.Length; i++)
+            if (!Vst3Abi.Ok(ActivateBus(Vst3Abi.MediaTypeAudio, Vst3Abi.BusDirectionInput, i, i == 0))) return false;
+        for (int i = 0; i < outputLayout.Length; i++)
+            if (!Vst3Abi.Ok(ActivateBus(Vst3Abi.MediaTypeAudio, Vst3Abi.BusDirectionOutput, i, i == 0))) return false;
 
-        AllocateBuffers(channels, maxBlockSize);
+        AllocateBuffers(channels, maxBlockSize, inputLayout, outputLayout);
+        _sampleRate = sampleRate;
+        _processMode = setup.ProcessMode;
         if (!Vst3Abi.Ok(SetActive(true))) return false;
         _active = true;
+        // Activation may itself publish a bus-change callback. Re-read the layout while the
+        // reconfiguration guard suppresses nested restarts, before exposing any buffer to process.
+        if (!CurrentLayoutMatchesBuffers()) { Deactivate(); return false; }
 
-        if (!Vst3Abi.Ok(SetProcessing(true))) return false;
+        if (!Vst3Abi.Ok(SetProcessing(true))) { Deactivate(); return false; }
         _processing = true;
 
         // Read after setup, not before: latency depends on the block size and rate for anything that
         // works in frames, and a figure read too early is the plugin's default rather than its own.
-        LatencySamples = (int)Math.Min(GetLatencySamples(), int.MaxValue);
+        RefreshProcessingInfo();
         ReadBusCounts();
         return true;
     }
 
-    private void AllocateBuffers(int channels, int blockSize)
+    private ulong[]? RequestedArrangements(int direction, ulong mainArrangement)
+    {
+        int count = GetBusCount(Vst3Abi.MediaTypeAudio, direction);
+        if (count is < 1 or > 64) return null;
+        var result = new ulong[count];
+        result[0] = mainArrangement;
+        for (int i = 1; i < count; i++)
+            if (!GetBusArrangement(direction, i, out result[i])) return null;
+        return result;
+    }
+
+    private Vst3Abi.BusInfo[]? ReadLayout(int direction, ulong mainArrangement, int channels)
+    {
+        int count = GetBusCount(Vst3Abi.MediaTypeAudio, direction);
+        if (count is < 1 or > 64) return null;
+        var result = new Vst3Abi.BusInfo[count];
+        for (int i = 0; i < count; i++)
+        {
+            if (!GetBusInfo(Vst3Abi.MediaTypeAudio, direction, i, out result[i]) ||
+                result[i].ChannelCount is < 0 or > 64 ||
+                result[i].BusType != (i == 0 ? Vst3Abi.BusTypeMain : Vst3Abi.BusTypeAux)) return null;
+        }
+        if (result[0].ChannelCount != channels || !GetBusArrangement(direction, 0, out ulong actual) ||
+            actual != mainArrangement) return null;
+        return result;
+    }
+
+    private static bool LayoutMatchesBuffers(Vst3Abi.BusInfo[] layout, Vst3Abi.AudioBusBuffers* buffers, int count)
+    {
+        if (layout.Length != count || buffers == null) return false;
+        for (int i = 0; i < count; i++) if (layout[i].ChannelCount != buffers[i].ChannelCount) return false;
+        return true;
+    }
+
+    private bool CurrentLayoutMatchesBuffers()
+    {
+        ulong arrangement = _channels == 1 ? Vst3Abi.SpeakerMono : Vst3Abi.SpeakerStereo;
+        return ReadLayout(Vst3Abi.BusDirectionInput, arrangement, _channels) is { } inputs &&
+               ReadLayout(Vst3Abi.BusDirectionOutput, arrangement, _channels) is { } outputs &&
+               LayoutMatchesBuffers(inputs, _inputBus, _inputBusCount) &&
+               LayoutMatchesBuffers(outputs, _outputBus, _outputBusCount);
+    }
+
+    private void AllocateBuffers(int channels, int blockSize, Vst3Abi.BusInfo[] inputs, Vst3Abi.BusInfo[] outputs)
     {
         FreeBuffers();
         _channels = channels;
@@ -607,15 +737,26 @@ public sealed unsafe class Vst3Plugin : IDisposable
         NativeMemory.Clear(_inputPlane, (nuint)(channels * blockSize * sizeof(float)));
         NativeMemory.Clear(_outputPlane, (nuint)(channels * blockSize * sizeof(float)));
 
-        _inputBus = (Vst3Abi.AudioBusBuffers*)NativeMemory.AllocZeroed(
-            (nuint)sizeof(Vst3Abi.AudioBusBuffers));
-        _outputBus = (Vst3Abi.AudioBusBuffers*)NativeMemory.AllocZeroed(
-            (nuint)sizeof(Vst3Abi.AudioBusBuffers));
+        _inputBusCount = inputs.Length;
+        _outputBusCount = outputs.Length;
+        _inputBus = AllocateBuses(inputs, _inputPointers);
+        _outputBus = AllocateBuses(outputs, _outputPointers);
+    }
 
-        _inputBus->ChannelCount = channels;
-        _inputBus->ChannelBuffers = _inputPointers;
-        _outputBus->ChannelCount = channels;
-        _outputBus->ChannelBuffers = _outputPointers;
+    private static Vst3Abi.AudioBusBuffers* AllocateBuses(Vst3Abi.BusInfo[] layout, float** mainPointers)
+    {
+        var buses = (Vst3Abi.AudioBusBuffers*)NativeMemory.AllocZeroed((nuint)layout.Length,
+            (nuint)sizeof(Vst3Abi.AudioBusBuffers));
+        for (int i = 0; i < layout.Length; i++)
+        {
+            int count = layout[i].ChannelCount;
+            buses[i].ChannelCount = count;
+            // Inactive auxiliary buses still have an entry and a channel-pointer array. Their
+            // sample addresses may be null, as required by the SDK's AudioBusBuffers contract.
+            buses[i].ChannelBuffers = i == 0 ? mainPointers : (float**)NativeMemory.AllocZeroed((nuint)count, (nuint)sizeof(float*));
+            buses[i].SilenceFlags = i == 0 ? 0 : count == 64 ? ulong.MaxValue : (1UL << count) - 1;
+        }
+        return buses;
     }
 
     private void FreeBuffers()
@@ -624,8 +765,17 @@ public sealed unsafe class Vst3Plugin : IDisposable
         if (_outputPlane != null) { NativeMemory.AlignedFree(_outputPlane); _outputPlane = null; }
         if (_inputPointers != null) { NativeMemory.Free(_inputPointers); _inputPointers = null; }
         if (_outputPointers != null) { NativeMemory.Free(_outputPointers); _outputPointers = null; }
-        if (_inputBus != null) { NativeMemory.Free(_inputBus); _inputBus = null; }
-        if (_outputBus != null) { NativeMemory.Free(_outputBus); _outputBus = null; }
+        if (_inputBus != null)
+        {
+            for (int i = 1; i < _inputBusCount; i++) NativeMemory.Free(_inputBus[i].ChannelBuffers);
+            NativeMemory.Free(_inputBus); _inputBus = null;
+        }
+        if (_outputBus != null)
+        {
+            for (int i = 1; i < _outputBusCount; i++) NativeMemory.Free(_outputBus[i].ChannelBuffers);
+            NativeMemory.Free(_outputBus); _outputBus = null;
+        }
+        _inputBusCount = _outputBusCount = 0;
     }
 
     // ── processing ───────────────────────────────────────────────
@@ -652,6 +802,21 @@ public sealed unsafe class Vst3Plugin : IDisposable
         try
         {
             if (_disposed || !_processing || _channels <= 0) return false;
+            if (Interlocked.Exchange(ref _flushRequested, 0) != 0)
+            {
+                // Reset requests may arrive while the control thread restarts the component.
+                // Run the native calls only here, under the same gate as process/configure.
+                _reconfiguring = true;
+                try
+                {
+                    if (!Vst3Abi.Ok(SetProcessing(false)) || !Vst3Abi.Ok(SetProcessing(true)))
+                    {
+                        _processing = false;
+                        return false;
+                    }
+                }
+                finally { _reconfiguring = false; }
+            }
             int frames = count / _channels;
             if (frames <= 0) return false;
 
@@ -682,11 +847,11 @@ public sealed unsafe class Vst3Plugin : IDisposable
 
         var data = new Vst3Abi.ProcessData
         {
-            ProcessMode = Vst3Abi.ProcessModeRealtime,
+            ProcessMode = _processMode,
             SymbolicSampleSize = Vst3Abi.SampleSize32,
             NumSamples = frames,
-            NumInputs = 1,
-            NumOutputs = 1,
+            NumInputs = _inputBusCount,
+            NumOutputs = _outputBusCount,
             Inputs = _inputBus,
             Outputs = _outputBus,
 
@@ -778,12 +943,7 @@ public sealed unsafe class Vst3Plugin : IDisposable
     public void FlushProcessingState()
     {
         if (_disposed || _processor == null || !_processing) return;
-        try
-        {
-            SetProcessing(false);
-            SetProcessing(true);
-        }
-        catch { }
+        Interlocked.Exchange(ref _flushRequested, 1);
     }
 
     private void Deactivate()

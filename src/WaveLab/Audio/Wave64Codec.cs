@@ -207,10 +207,11 @@ public static class Wave64Codec
         int sourceBits = format == FormatIeeeFloat ? 32 : Math.Min(bits, 32);
         return new AudioDocument(output, sampleRate, sourceBits)
         {
-            // Set for the same reason the other two codecs set them: without a path the
-            // file opened as "Untitled" and Save silently became Save As.
+            // Keep the source identity for markers and session restore. Ordinary Save must
+            // offer a supported editable container: Wave64 ancillary chunks are not retained.
             FilePath = path,
             Title = Path.GetFileName(path),
+            RequiresSaveAs = true,
             DiscSignalState = discSignalState,
         };
     }

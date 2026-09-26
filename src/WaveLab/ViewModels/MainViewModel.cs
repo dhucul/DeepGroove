@@ -1357,6 +1357,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IReadOnlyList<Marker>? markers = null)
     {
         bool useAiff = writeAiff ?? IsClassicAiffPath(path);
+        if (doc.RequiresSaveAs && doc.FilePath is { } sourcePath &&
+            Path.GetFullPath(sourcePath).Equals(Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "This imported file must be saved to a different path so its original metadata is preserved.");
         string extension = Path.GetExtension(path);
         if (useAiff && !IsClassicAiffPath(path))
             throw new NotSupportedException(
@@ -1908,7 +1912,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         finally { SetEditOperationRunning(false); }
         if (!Documents.Contains(d)) return;
         PrepareForDocumentEdit(d);
-        d.Doc.ReplaceRange(0, d.Doc.Length, kept, "Trim");
+        d.Doc.TrimRangeOwned(selStart, kept);
         d.SetCursor(0, clearSelection: true);
         d.ZoomFull();
     }

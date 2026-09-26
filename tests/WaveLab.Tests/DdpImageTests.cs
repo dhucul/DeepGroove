@@ -79,28 +79,17 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
         Assert.Contains("IMAGE.DAT", sidecar);
     }
 
-    /// <summary>
-    /// A DDP image is CD-DA byte order, which is the opposite of a WAV's. Getting it backwards
-    /// produces a file of exactly the right length full of noise, which no length or checksum test
-    /// would catch.
-    /// </summary>
     [Fact]
-    public void TheImageIsBigEndian()
+    public void TheImageIncludesTheInitialPauseAndUsesLittleEndianAudio()
     {
-        // A known ramp, so the byte order is unambiguous in the file.
-        var track = new float[2][];
-        for (int c = 0; c < 2; c++) track[c] = new float[DdpImage.SamplesPerFrame];
-        track[0][0] = 0.5f;      // +16384 = 0x4000
-        track[1][0] = -0.5f;     // -16384 = 0xC000
-
+        float[][] track = [new float[588], new float[588]];
+        track[0][0] = .5f;
+        track[1][0] = -.5f;
         DdpImage.Write(_directory, [track], [new DdpTrackInfo("One")], new DdpDiscInfo("Disc"), Rate);
         byte[] image = File.ReadAllBytes(Path.Combine(_directory, "IMAGE.DAT"));
-
-        output.WriteLine($"first four bytes: {image[0]:X2} {image[1]:X2} {image[2]:X2} {image[3]:X2}");
-        Assert.Equal(0x40, image[0]);     // high byte first
-        Assert.Equal(0x00, image[1]);
-        Assert.Equal(0xC0, image[2]);
-        Assert.Equal(0x00, image[3]);
+        int pauseBytes = 150 * 2352;
+        Assert.All(image.Take(pauseBytes), b => Assert.Equal(0, b));
+        Assert.Equal(new byte[] { 0, 0x40, 0, 0xc0 }, image.AsSpan(pauseBytes, 4).ToArray());
     }
 
     [Fact]
@@ -116,7 +105,7 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
 
         var leftWords = new HashSet<short>();
         for (int offset = 0; offset < image.Length; offset += 4)
-            leftWords.Add((short)(image[offset] << 8 | image[offset + 1]));
+            leftWords.Add((short)(image[offset] | image[offset + 1] << 8));
         Assert.Contains((short)0, leftWords);
         Assert.Contains(leftWords, word => word != 0);
     }
@@ -144,30 +133,21 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
     public void ThePqSheetStatesEveryTrackWithItsCatalogueInformation()
     {
         WriteThree(Rate * 3, Rate * 2, Rate * 4);
-        string sheet = File.ReadAllText(Path.Combine(_directory, "PQDESCR"));
-        output.WriteLine(sheet);
-
-        Assert.Contains("UPC/EAN  5012345678900", sheet);
-        Assert.Contains("GBAAA2400000", sheet);
-        Assert.Contains("LEAD-OUT", sheet);
-
-        // The second track was marked as pre-emphasised and no other was.
-        string[] lines = sheet.Split('\n');
-        Assert.Single(lines, l => l.Contains(" ON ", StringComparison.Ordinal));
+        var pq = DdpTestReader.ReadPq(Path.Combine(_directory, "PQDESCR"));
+        Assert.Equal("5012345678900", Assert.Single(pq, p => p.Track == "00").Upc);
+        Assert.Contains(pq, p => p.Isrc == "GBAAA2400000");
+        Assert.Contains(pq, p => p.Track == "AA");
+        Assert.All(pq.Where(p => p.PreEmphasis), p => Assert.Equal("02", p.Track));
+        Assert.True(Assert.Single(pq, p => p.Track == "02" && p.Index == 1).PreEmphasis);
     }
 
-    /// <summary>
-    /// Offsets start from the two-second lead-in, not from zero: that is where the plant's timeline
-    /// begins, and a sheet that starts at 00:00:00 puts every track two seconds early.
-    /// </summary>
     [Fact]
     public void TrackOneStartsAfterTheStandardTwoSecondPause()
     {
         WriteThree(Rate * 3, Rate * 2);
-        string sheet = File.ReadAllText(Path.Combine(_directory, "PQDESCR"));
-
-        Assert.Contains("00:02:00", sheet);
-        Assert.DoesNotContain(" 00:00:00 ", sheet);
+        var pq = DdpTestReader.ReadPq(Path.Combine(_directory, "PQDESCR"));
+        Assert.Equal(0, Assert.Single(pq, p => p.Track == "01" && p.Index == 0).Sector);
+        Assert.Equal(150, Assert.Single(pq, p => p.Track == "01" && p.Index == 1).Sector);
     }
 
     [Theory]
@@ -313,8 +293,8 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
         Assert.Empty(Directory.EnumerateDirectories(folder));
         Assert.Equal(result.Files.Count, Directory.EnumerateFiles(folder).Count());
 
-        // Fifteen seconds of audio at CD rate, to the frame.
-        Assert.Equal(Rate * 15L * 4, result.ImageBytes);
+        // Fifteen seconds of programme plus the explicitly stored two-second initial pause.
+        Assert.Equal(Rate * 17L * 4, result.ImageBytes);
     }
 
     [Fact]
@@ -409,22 +389,12 @@ public sealed class DdpImageTests(ITestOutputHelper output) : IDisposable
         string ddpFolder = Path.Combine(_directory, "ddp");
         DdpResult image = await CdTransfer.ExportDdpAsync(
             document, plan, ddpFolder, new DdpDiscInfo("Side A"));
-        string pq = File.ReadAllText(image.Files.First(f => f.EndsWith("PQDESCR", StringComparison.Ordinal)));
-        output.WriteLine(pq);
-
-        // Two tracks gained a row of their own for the gap, and the music row moved two seconds on.
-        Assert.Equal(2, pq.Split("  00     ").Length - 1);
-        Assert.Contains("(pregap)", pq, StringComparison.Ordinal);
-        // Track 02: lead-in 2 s + track 01's 5 s = 00:07:00 for the pregap, music at 00:09:00.
-        Assert.Contains("02  00     00:07:00  00:02:00", pq, StringComparison.Ordinal);
-        Assert.Contains("02  01     00:09:00", pq, StringComparison.Ordinal);
-        // The image is four seconds longer than the audio, which is the two gaps.
-        Assert.Equal((Rate * 15L + 4L * Rate) * 4, image.ImageBytes);
-
-        // The sheet is written as ASCII, which turns anything above 0x7F into a question mark - so
-        // nothing this app writes into it may be outside ASCII. The header carried an em dash and
-        // shipped as "# PQ descriptor ? 3 tracks".
-        Assert.DoesNotContain('?', pq);
+        var pq = DdpTestReader.ReadPq(Path.Combine(ddpFolder, "PQDESCR"));
+        Assert.Equal(3, pq.Count(p => p.Index == 0)); // includes the mandatory first pause
+        Assert.Equal(525, Assert.Single(pq, p => p.Track == "02" && p.Index == 0).Sector);
+        Assert.Equal(675, Assert.Single(pq, p => p.Track == "02" && p.Index == 1).Sector);
+        Assert.Equal(1575, Assert.Single(pq, p => p.Track == "AA").Sector);
+        Assert.Equal(Rate * 21L * 4, image.ImageBytes); // 15s audio + 4s gaps + 2s initial pause
     }
 
     [Fact]
