@@ -57,21 +57,36 @@
                         <TextBlock Grid.Column="2" Text="START" Style="{StaticResource UpperLabel}"/>
                         <TextBlock Grid.Column="3" Text="DURATION" TextAlignment="Right" Style="{StaticResource UpperLabel}"/>
                     </Grid>
-                    <ListBox x:Name="trackList" Grid.Row="1" Background="Transparent" BorderThickness="0"
+                    <ListBox x:Name="trackList" Grid.Row="1" Background="{StaticResource Panel}" Foreground="{StaticResource Text}" BorderThickness="0"
                              AutomationProperties.Name="CD tracks"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.Template>
+                            <ControlTemplate TargetType="ListBox">
+                                <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                        BorderThickness="{TemplateBinding BorderThickness}">
+                                    <ScrollViewer x:Name="PART_ScrollViewer" Focusable="False" CanContentScroll="True"
+                                                  HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </ControlTemplate>
+                        </ListBox.Template>
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
+                                <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                                <Setter Property="Background" Value="Transparent"/>
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                                 <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}"/>
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBoxItem">
-                                            <Border x:Name="row" Padding="14,8" BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0">
-                                                <ContentPresenter/>
+                                            <Border x:Name="row" Background="{TemplateBinding Background}" Padding="14,8"
+                                                    BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0">
+                                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="row" Property="Background" Value="{StaticResource Panel3}"/></Trigger>
+                                                <Trigger Property="IsSelected" Value="True"><Setter TargetName="row" Property="Background" Value="{StaticResource AccentWell}"/></Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
                                     </Setter.Value>

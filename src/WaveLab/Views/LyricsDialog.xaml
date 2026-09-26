@@ -161,11 +161,17 @@
                     </StackPanel>
                 </DockPanel>
             </StackPanel>
-            <StackPanel Grid.Row="5" Margin="0,12,0,0">
-                <ProgressBar x:Name="progressBar" Height="3" Minimum="0" Maximum="1"/>
-                <TextBlock x:Name="statusLabel" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="11"
-                           Text="Edits are kept with this open tab. Export a copy before closing the audio file."/>
-            </StackPanel>
+            <Grid Grid.Row="5" Margin="0,12,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <ProgressBar x:Name="progressBar" Height="3" Minimum="0" Maximum="1"/>
+                    <TextBlock x:Name="statusLabel" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="11"
+                               Text="Edits are kept with this open tab. Export a copy before closing the audio file."/>
+                </StackPanel>
+                <Button x:Name="closeButton" Grid.Column="1" Content="Close" Style="{StaticResource Action}"
+                        MinWidth="88" Margin="16,0,0,0" VerticalAlignment="Center" IsCancel="True" Click="OnClose"
+                        AutomationProperties.Name="Close lyrics dialog"/>
+            </Grid>
         </Grid>
     </Border>
 </Window>
