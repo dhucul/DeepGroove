@@ -13,6 +13,11 @@ A later, separately evaluated [pause-aware retry update](PHRASE-BOUNDARIES.md)
 improved error rates modestly and was applied to the existing Release scripts.
 It uses the original model; neither fine-tuned model described here was installed.
 
+The subsequent [second-opinion prototype](SECOND-OPINION.md) was tested separately
+and was not enabled. Its final guard produced one helpful suggestion on five unused
+songs, but zero helpful and two harmful suggestions on development songs. All main
+transcripts stayed unchanged; the installed pause-aware retry version remains active.
+
 ## First pilot
 
 - Base: `openai/whisper-large-v3`, revision

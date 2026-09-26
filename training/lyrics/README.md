@@ -10,6 +10,10 @@ The corrected run completed the fixed [acceptance protocol](ACCEPTANCE.md), but
 did not demonstrate a meaningful lyric-recognition upgrade on fresh complete songs.
 Neither pilot was promoted to Release; the existing application model is retained.
 
+The later [second-opinion experiment](SECOND-OPINION.md) also remains research-only.
+It preserves the main transcript, but its suggestions were too sparse and inconsistent
+to justify adding the trained model or a new review interface to Release.
+
 ## Data and evaluation
 
 - Audio: [MUSDB18-HQ](https://zenodo.org/records/3338373).

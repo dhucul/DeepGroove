@@ -56,6 +56,9 @@ def music(args):
         excluded = json.loads(args.exclude_selection.read_text(encoding="utf-8"))["songs"]
         seen.update(artist(row if isinstance(row, str) else row["song"]) for row in excluded)
     names = sorted(name for name in songs if artist(name) not in seen)
+    if args.full_references:
+        available = {json.loads(line)["name"] for line in args.full_references.read_text(encoding="utf-8").splitlines() if line.strip()}
+        names = [name for name in names if name in available]
     random.Random(args.seed).shuffle(names)
     selected, artists = [], set()
     for name in names:
@@ -184,6 +187,7 @@ def main():
     parser.add_argument("--training-manifest", type=Path)
     parser.add_argument("--exclude-selection", type=Path)
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--full-references", type=Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     if args.kind == "music" and not args.training_manifest:
