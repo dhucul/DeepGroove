@@ -1,8 +1,10 @@
 <# Builds the transcription payload as part of a Release build. End users run no setup. #>
 [CmdletBinding()]
-param([string] $BundleDirectory)
+param([string] $BundleDirectory, [string] $ExistingBundleDirectory)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 # MSBuild can inherit PowerShell 7's module path before launching Windows PowerShell.
 # Resolve the built-in modules from this interpreter, not the inherited search path.
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
@@ -12,8 +14,15 @@ if (-not $BundleDirectory) { $BundleDirectory = Join-Path $repository 'artifacts
 $BundleDirectory = [IO.Path]::GetFullPath($BundleDirectory)
 $requirements = Join-Path $repository 'src\WaveLab\Transcription\requirements.txt'
 $fingerprint = (Get-FileHash -LiteralPath $requirements -Algorithm SHA256).Hash
-$buildFingerprint = $fingerprint + ':' + (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash + ':' +
-    (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'prepare_bundle.py') -Algorithm SHA256).Hash
+function Get-SourceHash([string] $Path) {
+    # Git's Windows checkout can change LF to CRLF without changing the recipe.
+    $text = [IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))).Replace('-', '') }
+    finally { $sha.Dispose() }
+}
+$buildFingerprint = $fingerprint + ':' + (Get-SourceHash $PSCommandPath) + ':' +
+    (Get-SourceHash (Join-Path $PSScriptRoot 'prepare_bundle.py'))
 $manifest = Join-Path $BundleDirectory 'bundle.json'
 if (Test-Path -LiteralPath $manifest) {
     try {
@@ -30,7 +39,8 @@ if (Test-Path -LiteralPath $manifest) {
 
 $toolsDirectory = Join-Path $repository 'artifacts\lyrics-build-tools'
 New-Item -ItemType Directory -Path $toolsDirectory,$BundleDirectory -Force | Out-Null
-if (Test-Path -LiteralPath $manifest) { Remove-Item -LiteralPath $manifest -Force }
+# Keep the old manifest as a receipt for reusable model files. The Python builder
+# replaces it atomically only after all files have been prepared successfully.
 $uv = Join-Path $toolsDirectory 'uv-0.12.3.exe'
 if (-not (Test-Path -LiteralPath $uv)) {
     $archive = Join-Path $toolsDirectory 'uv.zip'
@@ -49,8 +59,9 @@ if (-not $env:UV_CACHE_DIR) { $env:UV_CACHE_DIR = Join-Path $toolsDirectory 'cac
 if (-not $env:UV_PYTHON_INSTALL_DIR) { $env:UV_PYTHON_INSTALL_DIR = Join-Path $toolsDirectory 'python' }
 if (-not $env:HF_HOME) { $env:HF_HOME = Join-Path $toolsDirectory 'model-cache' }
 $env:HF_HUB_DISABLE_TELEMETRY = '1'
+$env:HF_HUB_DISABLE_PROGRESS_BARS = '1'
 $env:UV_NO_PROGRESS = '1'
-& $uv python install 3.11.15
+& $uv python install --no-bin --no-registry 3.11.15
 if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the bundled Python runtime.' }
 $sourcePython = (& $uv python find --managed-python 3.11.15).Trim()
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sourcePython)) { throw 'The bundled Python runtime was not found.' }
@@ -72,7 +83,12 @@ Get-ChildItem -LiteralPath (Join-Path $sitePackages 'torch') -Recurse -File -Fil
     if (-not $_.FullName.StartsWith($BundleDirectory + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid library cleanup path.' }
     Remove-Item -LiteralPath $_.FullName -Force
 }
-& $python -I -B -X utf8 (Join-Path $repository 'installer\prepare_bundle.py') --bundle $BundleDirectory --requirements $requirements --build-fingerprint $buildFingerprint
+$reuseArguments = @()
+if ($ExistingBundleDirectory) {
+    $existingManifest = Join-Path $ExistingBundleDirectory 'bundle.json'
+    if (Test-Path -LiteralPath $existingManifest) { $reuseArguments = @('--reuse-manifest', $existingManifest) }
+}
+& $python -I -B -X utf8 (Join-Path $repository 'installer\prepare_bundle.py') --bundle $BundleDirectory --requirements $requirements --build-fingerprint $buildFingerprint @reuseArguments
 if ($LASTEXITCODE -ne 0) { throw 'Could not bundle the transcription models.' }
 $env:HF_HOME = Join-Path $BundleDirectory 'models'
 $env:HF_HUB_OFFLINE = '1'

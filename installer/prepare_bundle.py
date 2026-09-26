@@ -12,33 +12,77 @@ MODELS = {
 }
 
 
+def read_manifest(path):
+    if path is None:
+        return {}
+    try:
+        result = json.loads(path.read_text(encoding="utf-8"))
+        return result if isinstance(result, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def cached_model_files(bundle, state, repository, revision):
+    """Reuse only a recorded pinned snapshot whose complete assets still match."""
+    if (state.get("schema_version") != 1 or not isinstance(state.get("models"), dict)
+            or state["models"].get(repository) != revision
+            or not isinstance(state.get("required_files"), dict)):
+        return None
+    prefix = f"models/hub/models--{repository.replace('/', '--')}/snapshots/{revision}/"
+    files = {name: size for name, size in state["required_files"].items()
+             if isinstance(name, str) and name.startswith(prefix)}
+    names = {name[len(prefix):] for name in files}
+    if repository.startswith("adefossez/"):
+        if "htdemucs_ft.yaml" not in names or sum(name.endswith(".safetensors") for name in names) != 4:
+            return None
+    elif not {"config.json", "model.bin", "tokenizer.json"}.issubset(names) or not any(name.startswith("vocabulary.") for name in names):
+        return None
+    for name, size in files.items():
+        path = bundle / name
+        if (type(size) is not int or size <= 0 or not path.resolve().is_relative_to(bundle.resolve())
+                or path.is_symlink() or not path.is_file() or path.stat().st_size != size):
+            return None
+    return files
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--requirements", type=Path, required=True)
     parser.add_argument("--build-fingerprint", required=True)
+    parser.add_argument("--reuse-manifest", type=Path)
     args = parser.parse_args()
-    from huggingface_hub import snapshot_download
+    receipts = [read_manifest(args.bundle / "bundle.json"), read_manifest(args.reuse_manifest)]
 
     required = {}
     for repository, revision in MODELS.items():
-        print(f"Bundling {repository} at {revision}…", flush=True)
-        patterns = (["*.safetensors", "htdemucs_ft.yaml", "README.md", "LICENSE*"]
-                    if repository.startswith("adefossez/") else
-                    ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*", "README.md", "LICENSE*"])
-        source = Path(snapshot_download(repository, revision=revision, allow_patterns=patterns))
+        cached = next((files for state in receipts
+                       if (files := cached_model_files(args.bundle, state, repository, revision))), None)
         destination = args.bundle / "models/hub" / ("models--" + repository.replace("/", "--"))
-        snapshot = destination / "snapshots" / revision
-        snapshot.mkdir(parents=True, exist_ok=True)
-        for file in source.iterdir():
-            if not file.is_file():
-                continue
-            output = snapshot / file.name
-            # Dereference the download cache's links: the shipped program must not depend
-            # on a developer cache, a junction, or an absolute path on this machine.
-            if not output.exists() or output.stat().st_size != file.stat().st_size:
-                shutil.copy2(file, output, follow_symlinks=True)
-            required[output.relative_to(args.bundle).as_posix()] = output.stat().st_size
+        if cached:
+            print(f"Reusing verified local model: {repository}", flush=True)
+            required.update(cached)
+        else:
+            print(f"Downloading public model {repository} at {revision} (no account required)...", flush=True)
+            from huggingface_hub import snapshot_download
+            patterns = (["*.safetensors", "htdemucs_ft.yaml", "README.md", "LICENSE*"]
+                        if repository.startswith("adefossez/") else
+                        ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*", "README.md", "LICENSE*"])
+            source = Path(snapshot_download(repository, revision=revision, allow_patterns=patterns))
+            snapshot = destination / "snapshots" / revision
+            snapshot.mkdir(parents=True, exist_ok=True)
+            for file in source.iterdir():
+                if not file.is_file():
+                    continue
+                output = snapshot / file.name
+                # The shipped program must not depend on developer-cache links.
+                if output.is_symlink():
+                    output.unlink()
+                if not output.exists() or output.stat().st_size != file.stat().st_size:
+                    shutil.copy2(file, output, follow_symlinks=True)
+                required[output.relative_to(args.bundle).as_posix()] = output.stat().st_size
+        if cached_model_files(args.bundle, {"schema_version": 1, "models": MODELS, "required_files": required}, repository, revision) is None:
+            raise RuntimeError(f"The prepared model is incomplete: {repository}")
         (destination / "refs").mkdir(exist_ok=True)
         reference = destination / "refs/main"
         reference.write_text(revision, encoding="utf-8")
@@ -62,7 +106,9 @@ def main():
                 "build_fingerprint": args.build_fingerprint,
                 "requirements_sha256": hashlib.sha256(args.requirements.read_bytes()).hexdigest().upper(),
                 "models": MODELS, "required_files": required}
-    (args.bundle / "bundle.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    temporary = args.bundle / "bundle.json.partial"
+    temporary.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    temporary.replace(args.bundle / "bundle.json")
     print("Bundled transcription runtime and all models are ready.", flush=True)
 
 

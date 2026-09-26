@@ -4,7 +4,8 @@
   </PropertyGroup>
   <Target Name="PrepareLyricsBundle" BeforeTargets="PrepareForBuild"
           Condition="'$(MSBuildProjectName)' == 'WaveLab' and '$(Configuration)' == 'Release' and '$(DesignTimeBuild)' != 'true' and '$(SkipLyricsBundle)' != 'true'">
-    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\installer\Prepare-LyricsBundle.ps1&quot; -BundleDirectory &quot;$(LyricsBundleDirectory)&quot;" />
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\installer\Prepare-LyricsBundle.ps1&quot; -BundleDirectory &quot;$(LyricsBundleDirectory)&quot; -ExistingBundleDirectory &quot;$(TargetDir)Transcription\Engine&quot;"
+          StdOutEncoding="utf-8" StdErrEncoding="utf-8" />
   </Target>
   <!-- Copy only into the application, not transitively into every referencing test project. -->
   <Target Name="CopyLyricsBundle" AfterTargets="Build" DependsOnTargets="PrepareLyricsBundle"
