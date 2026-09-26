@@ -76,6 +76,19 @@ def capped_excerpt_ids(previous):
     return {excerpt_id(row) for rows in previous.values() for row in rows if row["truncated"]}
 
 
+def validate_reused_base(rows, predictions, prior, manifest_hash, metadata, generation_cap):
+    if (prior["manifest_sha256"] != manifest_hash or prior["base_model"] != metadata["base_model"]
+            or prior["base_revision"] != metadata["base_revision"] or prior["generation_cap"] != generation_cap):
+        raise ValueError("Cached baseline must use the same data, base model, and decoding cap")
+    if len(rows) != len(predictions):
+        raise ValueError("Cached baseline has a different number of examples")
+    for row, prediction in zip(rows, predictions):
+        if any(prediction.get(key) != value for key, value in row.items()):
+            raise ValueError("Cached baseline examples or reference labels differ")
+        if not isinstance(prediction.get("prediction"), str) or not isinstance(prediction.get("truncated"), bool):
+            raise ValueError("Cached baseline is incomplete")
+
+
 def wait_for_training(path, update, timeout):
     import psutil
     started = time.monotonic()
@@ -106,6 +119,16 @@ def run(args, update):
     rows = select_validation([json.loads(line) for line in args.manifest.read_text(encoding="utf-8").splitlines()
                               if line.strip()], selection)
     previous_predictions = None
+    reused_base = None
+    if args.reuse_base_from:
+        prior = json.loads((args.reuse_base_from / "comparison.json").read_text(encoding="utf-8"))
+        prior_status = json.loads((args.reuse_base_from / "status.json").read_text(encoding="utf-8"))
+        if prior_status["phase"] != "completed":
+            raise ValueError("Cached baseline run has not completed")
+        prior["generation_cap"] = prior.get("generation_cap", prior_status.get("max_new_tokens"))
+        reused_base = json.loads((args.reuse_base_from / "base-predictions.json")
+                                .read_text(encoding="utf-8"))["predictions"]
+        validate_reused_base(rows, reused_base, prior, manifest_hash, meta, args.max_new_tokens)
     if args.only_capped_from:
         prior = json.loads((args.only_capped_from / "comparison.json").read_text(encoding="utf-8"))
         if prior["manifest_sha256"] != manifest_hash or Path(prior["checkpoint"]).resolve() != checkpoint:
@@ -144,6 +167,10 @@ def run(args, update):
         path = cache / (key + ".pt")
         if path.exists():
             return torch.load(path, map_location="cpu", weights_only=True)
+        if args.reuse_base_from:
+            previous_feature = args.reuse_base_from / "features" / (key + ".pt")
+            if previous_feature.exists():
+                return torch.load(previous_feature, map_location="cpu", weights_only=True)
         with sf.SoundFile(row["audio"]) as audio:
             start, end = audio_interval(row["start"], row["end"], audio.samplerate, len(audio))
             rate = audio.samplerate
@@ -165,6 +192,12 @@ def run(args, update):
 
     summaries = {}
     for name in ("base", "adapted"):
+        if name == "base" and reused_base is not None:
+            atomic_json(args.output / "base-predictions.json", {"predictions": reused_base})
+            summaries[name] = summarize(reused_base, processor.tokenizer.normalize)
+            atomic_json(args.output / "base-metrics.json", summaries[name])
+            update(phase="reused_baseline", baseline_source=str(args.reuse_base_from), completed=len(rows), total=len(rows))
+            continue
         predictions = []
         # The disabled-adapter context uses exactly the same frozen base weights.
         with (model.disable_adapter() if name == "base" else nullcontext()), torch.inference_mode():
@@ -195,6 +228,7 @@ def run(args, update):
         "scope": "All reserved short excerpts; same artists as development validation. Not an independent final test or the full application pipeline.",
         "generation_cap": args.max_new_tokens,
         "cap_recheck_of": str(args.only_capped_from) if args.only_capped_from else None,
+        "reused_base_from": str(args.reuse_base_from) if args.reuse_base_from else None,
         "results": summaries})
     update(phase="completed", results=summaries, deployment="Research evaluation only; Release model unchanged")
 
@@ -208,7 +242,10 @@ def main():
     parser.add_argument("--wait-seconds", type=int, default=3600)
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--only-capped-from", type=Path)
+    parser.add_argument("--reuse-base-from", type=Path)
     args = parser.parse_args()
+    if args.only_capped_from and args.reuse_base_from:
+        parser.error("Baseline reuse and a cap recheck cannot be combined")
     if not 1 <= args.max_new_tokens <= 440:
         parser.error("Generation cap must be between 1 and 440")
     args.output.mkdir(parents=True, exist_ok=True)

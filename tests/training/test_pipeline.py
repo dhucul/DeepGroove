@@ -20,10 +20,42 @@ def module(name):
 prepare = module("prepare_musdb")
 train = module("train_adapter")
 sys.modules["train_adapter"] = train
+sys.modules["prepare_musdb"] = prepare
 evaluate = module("evaluate_adapter")
+acceptance = module("prepare_acceptance")
+scoring = module("score_acceptance")
 
 
 class PipelineTests(unittest.TestCase):
+    def test_fresh_song_scoring_drops_overlapping_reference_intervals(self):
+        rows = [dict(start=0, end=4, annotation_line=1), dict(start=3, end=7, annotation_line=2),
+                dict(start=8, end=12, annotation_line=3)]
+        self.assertEqual(acceptance.trusted_nonoverlapping(rows, [(1, 0, 4), (2, 3, 7), (3, 8, 12)]), [rows[2]])
+
+    def test_full_song_word_scoring_uses_half_open_intervals_and_deduplicates(self):
+        line = {"text": "alpha beta", "words": [dict(start=.4, end=.6, word=" alpha"),
+                                                  dict(start=.9, end=1.1, word=" beta")]}
+        self.assertEqual(scoring.words_in_interval([line, line], 0, 1), "alpha")
+        self.assertEqual(scoring.words_in_interval([line, line], 1, 2), "beta")
+        with self.assertRaisesRegex(ValueError, "no word timing"):
+            scoring.words_in_interval([dict(text="untimed words", words=[])], 0, 1)
+
+    def test_joined_song_score_separates_boundary_timing_from_word_accuracy(self):
+        rows = [dict(song="Song", start=0, text="alpha", prediction="alpha beta"),
+                dict(song="Song", start=1, text="beta", prediction="")]
+        self.assertGreater(scoring.score(rows, str.strip)["wer"], 0)
+        self.assertEqual(scoring.score(scoring.joined_song_rows(rows), str.strip)["wer"], 0)
+
+    def test_cached_baseline_rejects_different_references_or_model(self):
+        row = dict(song="Song", source="mixture", start=0, end=4, text="reference")
+        prediction = {**row, "prediction": "words", "truncated": False}
+        prior = dict(manifest_sha256="hash", base_model="model", base_revision="revision", generation_cap=128)
+        evaluate.validate_reused_base([row], [prediction], prior, "hash", prior, 128)
+        with self.assertRaisesRegex(ValueError, "reference labels"):
+            evaluate.validate_reused_base([{**row, "text": "changed"}], [prediction], prior, "hash", prior, 128)
+        with self.assertRaisesRegex(ValueError, "same data"):
+            evaluate.validate_reused_base([row], [prediction], prior, "hash", {**prior, "base_revision": "changed"}, 128)
+
     def test_uncertain_and_incompatible_annotations_cannot_enter_training(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "annotations.zip"

@@ -5,8 +5,10 @@ singing recordings. Training runs locally on an NVIDIA GPU, requires no API key,
 and never modifies the application or its bundled Release engine. All downloads,
 features, logs, checkpoints, and transcript reports stay under ignored `artifacts/`.
 
-See [RESULTS.md](RESULTS.md) for the first pilot's measured gains and regressions.
-It was not promoted to Release. A corrected training run was started after evaluation.
+See [RESULTS.md](RESULTS.md) for both pilots' measured gains and regressions.
+The corrected run completed the fixed [acceptance protocol](ACCEPTANCE.md), but
+did not demonstrate a meaningful lyric-recognition upgrade on fresh complete songs.
+Neither pilot was promoted to Release; the existing application model is retained.
 
 ## Data and evaluation
 
