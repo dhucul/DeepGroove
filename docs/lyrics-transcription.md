@@ -19,8 +19,10 @@ unsaved edits, without changing the recording or applying the master rack.
 - **Review** flags uncertain recognition, not a calibrated accuracy percentage. Even
   high-confidence text can be wrong. Listen while reviewing the result.
 - **Check for missed words (slower)** compares the whole original recording with the
-  separated-vocal transcript, then retries uncovered or unclear passages in short overlapping
-  windows. Added phrases are marked **Recovered** and need a listening check. If a pass adds
+  separated-vocal transcript, then retries uncovered or unclear passages. With vocal isolation,
+  longer recordings use pauses in the singing to choose overlapping phrase windows with
+  surrounding context. Quiet openings are kept. Short selections and original-mix mode keep
+  their existing retry behavior. Added phrases are marked **Recovered** and need a listening check. If a pass adds
   words to an existing line, its earlier reading is kept as an alternative. Conflicting readings
   also remain available with **Use alternate reading**; there is no lyric-completion language model.
 - **Cancel** stops the worker and keeps the previous transcript. Closing the window also
@@ -63,6 +65,9 @@ Vocal-isolation shifts and decoder sampling use fixed random seeds so identical 
 the same model/device do not deliberately choose different random processing paths. Opening
 retries include the following phrase for context instead of ending at the first recognized
 word. Conflicting later readings remain alternatives and do not replace the primary text.
+Pause-aware retries keep both whole-recording passes and the existing opening-context check.
+Voice level chooses window boundaries; it does not remove quiet audio. The original bundled
+model remains in use. The evaluated fine-tuned models are not included in the application.
 Previous-text conditioning is disabled to reduce repetition loops; actual repeated choruses
 are retained. When stereo channels strongly cancel, the analysis uses the stronger channel
 for both recognition and separation. The source recording is unchanged.
@@ -81,6 +86,9 @@ damaged payload reports an incomplete installation rather than offering a runtim
 Choirs, overlapping voices, harsh vocals, reverb and instrumental music can still produce
 omissions or invented words. This is a transcription assistant, not a verified lyrics
 database; we do not claim best-in-class song accuracy without a representative benchmark.
+The pause-aware retry change showed a modest error reduction on a small independent English
+song test, mainly fewer extra wrong words. It does not guarantee recovery of every omitted
+word. See [the evaluation](../training/lyrics/PHRASE-BOUNDARIES.md) for the measured scope.
 
 ## Building and testing
 

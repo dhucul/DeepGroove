@@ -260,18 +260,115 @@ def recovery_windows(lines, duration):
     return result
 
 
-def transcribe(model, audio, original, language, speech, compare, isolated, hints, report):
+def phrase_windows(audio):
+    """Choose quiet boundaries, with context overlap and complete audio coverage.
+
+    RMS guides cuts only: a quiet opening or backing singer is never removed by
+    a voice threshold. Cores partition the recording; padded views provide context.
+    """
+    import numpy as np
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.ndim != 1 or not np.isfinite(samples).all():
+        raise ValueError("Phrase detection requires finite mono audio")
+    duration = len(samples) / RATE
+    if not len(samples):
+        return []
+    if duration <= 30:
+        return [dict(start=0.0, end=duration, core_start=0.0, core_end=duration)]
+    hop = RATE // 50  # 20 ms; avoid allocating a full double-precision waveform.
+    count = len(samples) // hop
+    frames = samples[:count * hop].reshape(count, hop)
+    power = np.einsum("ij,ij->i", frames, frames, dtype=np.float64) / hop
+    if len(samples) % hop:
+        tail = samples[count * hop:]
+        power = np.append(power, np.dot(tail.astype(np.float64), tail) / len(tail))
+    # A 60-ms envelope avoids selecting waveform zero crossings as pauses.
+    envelope = np.sqrt(np.convolve(power, np.ones(3) / 3, mode="same"))
+    quiet = envelope <= max(1e-8, float(envelope.max()) * .06)
+    edges = np.diff(np.r_[False, quiet, False].astype(np.int8))
+    pauses = [(start / 50, min(duration, end / 50))
+              for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))
+              if end - start >= 30]  # at least 600 ms, not a gap between syllables
+    result, cursor = [], 0.0
+    while cursor < duration:
+        remaining = duration - cursor
+        if remaining <= 28:
+            end = duration
+        else:
+            # Balance the final pair instead of leaving a tiny context-free tail.
+            target = cursor + (remaining / 2 if remaining < 36 else 26)
+            earliest = cursor + max(8, target - cursor - 8)
+            candidates = [min(target, stop - .12) for start, stop in pauses
+                          if max(earliest, start + .12) <= min(target, stop - .12)]
+            end = max(candidates) if candidates else target
+        start_view, end_view = max(0, cursor - 2), min(duration, end + 2)
+        if end_view - start_view < min(20, duration):
+            start_view = max(0, end_view - 20)
+            end_view = min(duration, start_view + 20)
+        result.append(dict(start=start_view, end=end_view, core_start=cursor, core_end=end))
+        cursor = end
+    return result
+
+
+def phrase_line(line, window, previous):
+    """Own each word once, without deleting a real repeated word after a pause."""
+    words = [copy.deepcopy(word) for word in line["words"]
+             if word["end"] > word["start"]
+             and window["core_start"] <= (word["start"] + word["end"]) / 2 < window["core_end"]]
+    if not line["words"]:
+        return line if window["core_start"] <= (line["start"] + line["end"]) / 2 < window["core_end"] else None
+    if words and previous and previous[-1]["words"]:
+        old, new = previous[-1]["words"][-1], words[0]
+        overlap = min(old["end"], new["end"]) - max(old["start"], new["start"])
+        if (normalized_words(old["word"]) == normalized_words(new["word"])
+                and overlap > .5 * min(old["end"] - old["start"], new["end"] - new["start"])):
+            words.pop(0)
+    if not words:
+        return None
+    trimmed = copy.deepcopy(line)
+    text = "".join(word["word"] for word in words).strip()
+    trimmed.update(start=words[0]["start"], end=words[-1]["end"], words=words, text=text, model_text=text)
+    return trimmed
+
+
+def transcribe_phrases(model, audio, windows, language, options, report, lower, upper):
+    lines = []
+    duration = len(audio) / RATE
+    for window in windows:
+        start, end = window["start"], window["end"]
+        excerpt = audio[round(start * RATE):round(end * RATE)]
+        if not has_audio(excerpt):
+            continue
+        segments, info = model.transcribe(prepare_audio(excerpt), language=language, task="transcribe", **options)
+        language = language or info.language
+        for segment in segments:
+            line = line_from_segment(segment, duration, offset=start)
+            if line and line["end"] <= end + .05:
+                line = phrase_line(line, window, lines)
+                if line:
+                    lines.append(line)
+        report("Transcribing complete singing phrases…", lower + (upper - lower) * window["core_end"] / duration)
+    return lines
+
+
+def transcribe(model, audio, original, language, speech, compare, isolated, hints, report, *, phrase_mode="off"):
     """Return a transcript and detected language, with music-specific coverage checks."""
     duration = len(audio) / RATE
     options = music_options(speech, hints)
     prepared = prepare_audio(audio)
     segments, info = model.transcribe(prepared, language=language, task="transcribe", **options)
-    lines = []
-    for segment in segments:
-        line = line_from_segment(segment, duration)
-        if line and has_audio(prepared[int(line["start"] * RATE):int(line["end"] * RATE)]):
-            lines.append(line)
-        report("Transcribing words and timing…", .50 + .23 * min(1, segment.end / duration))
+    if phrase_mode not in ("off", "primary", "retry"):
+        raise ValueError("Unknown phrase strategy")
+    boundaries = phrase_windows(audio) if isolated and not speech and phrase_mode != "off" else []
+    if phrase_mode == "primary" and len(boundaries) > 1:
+        lines = transcribe_phrases(model, audio, boundaries, info.language, options, report, .50, .73)
+    else:
+        lines = []
+        for segment in segments:
+            line = line_from_segment(segment, duration)
+            if line and has_audio(prepared[int(line["start"] * RATE):int(line["end"] * RATE)]):
+                lines.append(line)
+            report("Transcribing words and timing…", .50 + .23 * min(1, segment.end / duration))
     if not compare or speech:
         return lines, info.language
     if isolated:
@@ -285,6 +382,13 @@ def transcribe(model, audio, original, language, speech, compare, isolated, hint
             report("Checking the whole original recording for missed words…", .74 + .11 * min(1, segment.end / duration))
         lines = merge_passes(lines, candidates, "the original mix")
     windows = recovery_windows(lines, duration)
+    if phrase_mode == "retry" and len(boundaries) > 1:
+        needed = windows
+        windows = [(item["start"], item["end"]) for item in boundaries
+                   if any(min(item["core_end"], end) > max(item["core_start"], start) for start, end in needed)]
+        # Retain the successful opening-context check alongside the new pauses.
+        if lines and min(line["start"] for line in lines) > .75 and needed and needed[0] not in windows:
+            windows.insert(0, needed[0])
     for index, (start, end) in enumerate(windows):
         excerpt = audio[int(start * RATE):int(end * RATE)]
         if not has_audio(excerpt):

@@ -170,7 +170,8 @@ def run(args):
     model = WhisperModel(args.model, device=device, compute_type=compute, local_files_only=True,
                          cpu_threads=max(1, min(8, os.cpu_count() or 1)))
     result["lines"], result["language"] = recovery.transcribe(
-        model, audio, original, args.language, args.speech, args.compare, args.isolate, args.hints, emit)
+        model, audio, original, args.language, args.speech, args.compare, args.isolate, args.hints, emit,
+        phrase_mode="retry" if args.isolate and args.compare and not args.speech else "off")
     save_result(args.output, result)
     emit("Transcription complete. Replay lines marked Review or Recovered.", 1)
 

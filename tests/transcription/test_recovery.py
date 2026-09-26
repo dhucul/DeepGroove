@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import numpy as np
 
 source = Path(__file__).resolve().parents[2] / "src/WaveLab/Transcription/lyrics_recovery.py"
@@ -20,6 +21,104 @@ def line(start, end, text, probability=.9, logprob=-.1):
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_phrase_windows_cover_quiet_openings_and_the_complete_recording(self):
+        samples = np.full(round(132.5 * 16000), .1, dtype=np.float32)
+        samples[:9 * 16000] = .00001
+        samples[22 * 16000:24 * 16000] = 0
+        windows = recovery.phrase_windows(samples)
+        self.assertEqual(windows[0]["core_start"], 0)
+        self.assertEqual(windows[-1]["core_end"], 132.5)
+        self.assertTrue(22 < windows[0]["core_end"] < 24)
+        for left, right in zip(windows, windows[1:]):
+            self.assertAlmostEqual(left["core_end"], right["core_start"])
+        for item in windows:
+            self.assertTrue(0 <= item["start"] <= item["core_start"] < item["core_end"] <= item["end"] <= 132.5)
+            self.assertLessEqual(round(item["end"] * 16000) - round(item["start"] * 16000), 30 * 16000)
+            self.assertGreaterEqual(item["end"] - item["start"], 20 - 1e-8)
+
+    def test_phrase_splits_use_pauses_rather_than_short_syllable_gaps(self):
+        samples = np.full(80 * 16000, .1, dtype=np.float32)
+        samples[20 * 16000:round(20.2 * 16000)] = 0
+        samples[23 * 16000:24 * 16000] = 0
+        boundary = recovery.phrase_windows(samples)[0]["core_end"]
+        self.assertTrue(23 < boundary < 24)
+
+    def test_phrase_boundaries_do_not_change_when_the_whole_song_is_quieter(self):
+        samples = np.full(70 * 16000, .1, dtype=np.float32)
+        samples[24 * 16000:25 * 16000] = 0
+        self.assertEqual(recovery.phrase_windows(samples), recovery.phrase_windows(samples * .001))
+
+    def test_phrase_windows_handle_silence_continuous_voice_and_short_inputs(self):
+        for duration in (0, .02, 8, 29, 30, 30.02, 35, 60, 97):
+            for value in (0, .05):
+                with self.subTest(duration=duration, value=value):
+                    windows = recovery.phrase_windows(np.full(round(duration * 16000), value, dtype=np.float32))
+                    if not duration:
+                        self.assertEqual(windows, [])
+                    else:
+                        self.assertEqual(windows[0]["core_start"], 0)
+                        self.assertAlmostEqual(windows[-1]["core_end"], duration)
+                        self.assertTrue(all(w["end"] - w["start"] <= 30 + 1e-8 for w in windows))
+                        self.assertTrue(all(a["core_end"] == b["core_start"] for a, b in zip(windows, windows[1:])))
+        with self.assertRaises(ValueError):
+            recovery.phrase_windows(np.array([np.nan], dtype=np.float32))
+
+    def test_phrase_overlap_owns_words_once_and_preserves_true_repetition(self):
+        window = dict(start=24, end=52, core_start=26, core_end=50)
+        previous = [line(25.6, 26.2, "again")]
+        duplicate = recovery.phrase_line(line(25.8, 27.8, "again now"), window, previous)
+        self.assertEqual(duplicate["text"], "now")
+        repeated = recovery.phrase_line(line(26.3, 26.9, "again"), window, previous)
+        self.assertEqual(repeated["text"], "again")
+        centered = recovery.phrase_line(line(22, 28, "left middle right"),
+            dict(start=22, end=28, core_start=24, core_end=26), [])
+        self.assertEqual(centered["text"], "middle")
+        self.assertEqual((centered["start"], centered["end"]), (24, 26))
+
+    def test_phrase_transcription_offsets_are_global(self):
+        class Model:
+            def transcribe(self, audio, **options):
+                segment = SimpleNamespace(start=2, end=3, text="word",
+                    words=[SimpleNamespace(start=2, end=3, word=" word", probability=.9)],
+                    avg_logprob=-.1, no_speech_prob=.01, compression_ratio=1)
+                return iter([segment]), SimpleNamespace(language="en")
+        windows = [dict(start=0, end=22, core_start=0, core_end=20),
+                   dict(start=18, end=40, core_start=20, core_end=40)]
+        result = recovery.transcribe_phrases(Model(), np.full(40 * 16000, .1, dtype=np.float32),
+            windows, "en", recovery.music_options(), lambda *_: None, .5, .73)
+        self.assertEqual([(r["start"], r["end"]) for r in result], [(2, 3), (20, 21)])
+
+    def test_phrase_strategy_does_not_change_speech_or_unseparated_music(self):
+        class Model:
+            def transcribe(self, audio, **options):
+                return iter([]), SimpleNamespace(language="en")
+        audio = np.full(40 * 16000, .1, dtype=np.float32)
+        with patch.object(recovery, "phrase_windows", side_effect=AssertionError("not applicable")):
+            for speech, isolated in ((True, True), (True, False), (False, False)):
+                recovery.transcribe(Model(), audio, audio, "en", speech, False, isolated, "", lambda *_: None,
+                                    phrase_mode="primary")
+
+    def test_pause_retries_keep_both_main_passes_and_use_longer_context(self):
+        class Model:
+            def __init__(self):
+                self.lengths = []
+            def transcribe(self, audio, **options):
+                self.lengths.append(len(audio))
+                main = SimpleNamespace(start=10, end=12, text="known words",
+                    words=[SimpleNamespace(start=10, end=11, word=" known", probability=.9),
+                           SimpleNamespace(start=11, end=12, word=" words", probability=.9)],
+                    avg_logprob=-.1, no_speech_prob=.01, compression_ratio=1)
+                return iter([main] if len(self.lengths) <= 2 else []), SimpleNamespace(language="en")
+        model = Model()
+        samples = np.full(70 * 16000, .02, dtype=np.float32)
+        result, language = recovery.transcribe(model, samples, samples, "en", False, True, True, "", lambda *_: None,
+                                               phrase_mode="retry")
+        self.assertEqual(model.lengths[:2], [len(samples), len(samples)])
+        self.assertEqual([r["text"] for r in result], ["known words"])
+        self.assertEqual(language, "en")
+        self.assertTrue(all(length <= 30 * 16000 for length in model.lengths[2:]))
+        self.assertTrue(any(length > 14 * 16000 for length in model.lengths[2:]))
+
     def test_a_whole_missing_phrase_is_inserted_and_marked_for_review(self):
         primary = [line(0, 2, "first phrase"), line(8, 10, "last phrase")]
         result = recovery.merge_passes(primary, [line(4, 6, "previously missed words")], "the original mix")

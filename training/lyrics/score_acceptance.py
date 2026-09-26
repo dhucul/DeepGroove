@@ -47,13 +47,16 @@ def main():
     parser.add_argument("--base-model", type=Path, required=True)
     parser.add_argument("--music-data", type=Path, required=True)
     parser.add_argument("--runs", type=Path, required=True)
+    parser.add_argument("--variants", nargs="+", default=["base", "adapted"])
+    parser.add_argument("--skip-speech", action="store_true")
     args = parser.parse_args()
     from transformers import WhisperProcessor
     processor = WhisperProcessor.from_pretrained(args.base_model, local_files_only=True)
     normalize = processor.tokenizer.normalize
     songs = json.loads(args.music_data.read_text(encoding="utf-8"))["songs"]
-    report = {"scope": "Five complete fresh songs scored on trusted nonoverlapping annotation intervals; 24 read-speech clips.", "results": {}}
-    for name in ("base", "adapted"):
+    report = {"scope": "Complete songs scored on trusted nonoverlapping annotation intervals."
+              + (" Speech comparison also included." if not args.skip_speech else ""), "results": {}}
+    for name in args.variants:
         all_rows, per_song = [], {}
         for index, song in enumerate(songs, 1):
             path = args.runs / f"song-{index:02d}" / f"{name}.json"
@@ -62,11 +65,13 @@ def main():
                     for row in song["intervals"]]
             all_rows.extend(rows)
             per_song[song["song"]] = score(rows, normalize)
-        speech = json.loads((args.runs / "speech" / f"{name}.json").read_text(encoding="utf-8"))["predictions"]
         report["results"][name] = {"music": score(all_rows, normalize),
             "music_joined": score(joined_song_rows(all_rows), normalize),
             "music_positive": score([r for r in all_rows if r["kind"] != "d"], normalize),
-            "per_song": per_song, "speech": score(speech, normalize)}
+            "per_song": per_song}
+        if not args.skip_speech:
+            speech = json.loads((args.runs / "speech" / f"{name}.json").read_text(encoding="utf-8"))["predictions"]
+            report["results"][name]["speech"] = score(speech, normalize)
         atomic_json(args.runs / f"{name}-scored-intervals.json", {"rows": all_rows})
     atomic_json(args.runs / "acceptance.json", report)
     print(json.dumps(report, indent=2), flush=True)

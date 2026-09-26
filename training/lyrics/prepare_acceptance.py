@@ -52,8 +52,11 @@ def music(args):
              "1fadfcc287a0cbd319f7ddf6e09b78bb")
     songs, filters = parse_annotations(archive)
     seen = {artist(json.loads(line)["song"]) for line in args.training_manifest.read_text(encoding="utf-8").splitlines()}
+    if args.exclude_selection:
+        excluded = json.loads(args.exclude_selection.read_text(encoding="utf-8"))["songs"]
+        seen.update(artist(row if isinstance(row, str) else row["song"]) for row in excluded)
     names = sorted(name for name in songs if artist(name) not in seen)
-    random.Random(SEED).shuffle(names)
+    random.Random(args.seed).shuffle(names)
     selected, artists = [], set()
     for name in names:
         if artist(name) not in artists:
@@ -63,7 +66,12 @@ def music(args):
             break
     if len(selected) != 5:
         raise ValueError("Five fresh artists are required")
-    atomic_json(args.output / "selection.json", {"seed": SEED, "songs": selected,
+    selection_path = args.output / "selection.json"
+    if selection_path.exists():
+        previous = json.loads(selection_path.read_text(encoding="utf-8"))
+        if previous["songs"] != selected or previous["seed"] != args.seed:
+            raise ValueError("Preserve the existing selection and use a new output directory")
+    atomic_json(selection_path, {"seed": args.seed, "songs": selected,
         "selected_before_model_evaluation": True, "filters": filters,
         "source": "https://zenodo.org/records/3989267", "usage": "Noncommercial research evaluation only"})
     references = {}
@@ -99,7 +107,7 @@ def music(args):
         return {"song": song, "audio": str(destination.resolve()), "intervals": references[song]}
     with ThreadPoolExecutor(max_workers=3) as executor:
         result = list(executor.map(fetch, selected))
-    atomic_json(args.output / "music.json", {"seed": SEED, "songs": result})
+    atomic_json(args.output / "music.json", {"seed": args.seed, "songs": result})
 
 
 def speech(args):
@@ -174,6 +182,8 @@ def main():
     parser.add_argument("kind", choices=("music", "speech"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--training-manifest", type=Path)
+    parser.add_argument("--exclude-selection", type=Path)
+    parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     if args.kind == "music" and not args.training_manifest:

@@ -9,6 +9,10 @@ and no reduction in omissions. Speech and instrumental handling improve, but the
 main lyric-recovery goal is not met. The existing single Release app and model
 remain in place. Both completed evaluations are documented below.
 
+A later, separately evaluated [pause-aware retry update](PHRASE-BOUNDARIES.md)
+improved error rates modestly and was applied to the existing Release scripts.
+It uses the original model; neither fine-tuned model described here was installed.
+
 ## First pilot
 
 - Base: `openai/whisper-large-v3`, revision
@@ -156,8 +160,8 @@ The user's regression song still retains all four confirmed chorus endings, but
 the uncertain opening is not resolved. No complete verified reference exists for
 that local song, so it is not included in the numerical benchmark.
 
-**Decision:** retain the current bundled model. No experimental model, extra app
-copy, or changed inference default was installed in Release. All trained weights
+**Fine-tuning decision:** retain the original bundled model. No experimental model
+or extra app copy was installed in Release. All trained weights
 remain research artifacts. Fifteen tool/metric tests passed, and all real GPU
 comparisons completed. The measured regression is a model-quality result, not a
 failure to run the pipeline. Further model changes need a new evaluation before
