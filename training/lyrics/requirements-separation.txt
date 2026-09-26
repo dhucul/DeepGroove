@@ -1,0 +1,6 @@
+# Research environment only; do not install into the bundled application runtime.
+-r requirements-evaluation.txt
+librosa==0.11.0
+einops==0.6.1
+beartype==0.14.1
+rotary-embedding-torch==0.3.5
