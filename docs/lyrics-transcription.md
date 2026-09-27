@@ -13,9 +13,23 @@ unsaved edits, without changing the recording or applying the master rack.
 - Start with **Music · isolate vocals** and **Accuracy · large-v3**. Choose the language if
   known, and optionally supply names or unusual words as spelling hints. Select a verse for
   a quicker first test. **Speed · turbo** uses the included faster speech model.
-- Double-click a line to correct it. Select a line and click **Replay line** to hear the
-  original mix. **Loop** repeats it with a little context at either edge. **Stop** also
-  stops song playback that was running before you opened this window.
+- **Play whole audio** plays the complete open recording from the beginning, even when
+  **Selected audio only** is checked or no transcript exists. You can listen while reading
+  and correcting lyrics. Playback can also continue while transcription, retries or isolation
+  runs. **Stop** pauses whole-recording playback in place; the play button becomes **Continue audio**
+  and resumes from that position. Extra Play or Continue clicks leave active playback running.
+  **Restart audio** automatically waits for the previous playback to release its device, then
+  starts the recording again from zero. The window stays responsive while waiting; repeated
+  restart clicks do not queue extra starts. **Stop**, **Clear everything** or closing the dialog
+  cancels a pending restart. Other playback attempts can report a temporary device delay in
+  the status line without interrupting the lyrics window.
+- Double-click a line, or right-click it and choose **Edit line**, to correct its words.
+  The menu edits the row you clicked, including when you clicked its time or review column.
+  Select a line and click **Replay line** to hear the
+  original mix with a little context at either edge. **Loop** repeats the whole recording or
+  the line when you next start playback. **Replay line** starts a separate passage from its beginning.
+  **Stop** ends line replay and stops song playback that was running before you opened this window.
+  **Clear everything** or closing the dialog releases playback, including any paused recording.
 - **Review** flags uncertain recognition, not a calibrated accuracy percentage. Even
   high-confidence text can be wrong. Listen while reviewing the result.
 - **Retry unclear passages** rechecks gaps and uncertain lines in the audio being transcribed.
@@ -44,6 +58,10 @@ unsaved edits, without changing the recording or applying the master rack.
   not saved in the audio file or restored after closing the tab or app.
 - **Cancel** stops the worker and keeps the previous transcript. Closing the window also
   cancels, waits for the worker, and removes temporary audio.
+- **Clear everything** clears this tab's transcript, corrections, alternate and retry readings,
+  spelling hints, and cached vocals. It stops playback and resets the options to their starting
+  values. Export first if you want to keep the words. The source audio, waveform selection,
+  exported files and other tabs are kept. Clearing is available when no lyrics operation is running.
 - Corrections remain with the open audio tab, but are not included in audio saves or
   autosave recovery. **Export before closing the audio tab or app**. Audio edits retain the
   old text for export but disable replay and line retries until its timings are regenerated.

@@ -8,6 +8,40 @@ namespace WaveLab.Tests;
 public sealed class PlaybackEngineTests
 {
     [Fact]
+    public async Task AsynchronousCleanupWaitKeepsPendingTasksAfterCancellationAndDrainsThemWhenReady()
+    {
+        using var engine = new PlaybackEngine();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        PendingCleanups(engine).Add(gate.Task);
+        using var cancellation = new CancellationTokenSource();
+        Task waiting = engine.WaitForOutputReleaseAsync(cancellation.Token);
+        Assert.False(waiting.IsCompleted);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        Assert.Contains(gate.Task, PendingCleanups(engine));
+        gate.TrySetResult();
+        await engine.WaitForOutputReleaseAsync(default);
+        Assert.Empty(PendingCleanups(engine));
+    }
+
+    [Fact]
+    public async Task AsynchronousCleanupWaitIncludesNewlyQueuedWorkAndToleratesCleanupFaults()
+    {
+        using var engine = new PlaybackEngine();
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        PendingCleanups(engine).Add(first.Task);
+        Task waiting = engine.WaitForOutputReleaseAsync(default);
+        PendingCleanups(engine).Add(second.Task);
+        first.SetException(new IOException("Cleanup failed"));
+        await Task.Delay(30);
+        Assert.False(waiting.IsCompleted);
+        second.TrySetResult();
+        await waiting;
+        Assert.Empty(PendingCleanups(engine));
+    }
+
+    [Fact]
     public void PlaybackDoesNotOpenAnotherStreamWhenCleanupTimesOut()
     {
         using var engine = new PlaybackEngine();
@@ -19,7 +53,7 @@ public sealed class PlaybackEngineTests
         try
         {
             var watch = Stopwatch.StartNew();
-            var error = Assert.Throws<InvalidOperationException>(
+            var error = Assert.Throws<PlaybackDeviceBusyException>(
                 () => engine.Play(document, 0, document.Length));
             watch.Stop();
 

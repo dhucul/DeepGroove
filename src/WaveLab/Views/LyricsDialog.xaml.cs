@@ -18,6 +18,13 @@ public partial class LyricsDialog : Window
     private readonly LyricsEngine _engine;
     private readonly Func<AudioDocument, bool, bool>? _play;
     private readonly Action? _stop;
+    private readonly Func<AudioDocument, bool>? _pause;
+    private readonly Func<AudioDocument, bool, bool>? _resume;
+    private readonly Func<AudioDocument, bool, CancellationToken, Task<bool>>? _restart;
+    private CancellationTokenSource? _playbackCancellation;
+    private bool PlaybackPending => _playbackCancellation != null;
+    private AudioDocument? _wholeAudio;
+    private bool _wholePaused;
     private CancellationTokenSource? _cancellation;
     private bool _closeWhenFinished;
     private bool Busy => _cancellation != null;
@@ -26,7 +33,9 @@ public partial class LyricsDialog : Window
     private sealed record LanguageChoice(string Name, string? Code);
 
     public LyricsDialog(DocumentViewModel document, Func<AudioDocument, bool, bool>? play = null,
-        Action? stop = null, LyricsEngine? engine = null)
+        Action? stop = null, LyricsEngine? engine = null,
+        Func<AudioDocument, bool>? pause = null, Func<AudioDocument, bool, bool>? resume = null,
+        Func<AudioDocument, bool, CancellationToken, Task<bool>>? restart = null)
     {
         _document = document;
         _snapshot = document.Doc.Channels.ToArray();
@@ -36,6 +45,9 @@ public partial class LyricsDialog : Window
         _selectionCount = document.HasSelection ? document.SelEnd - document.SelStart : 0;
         _play = play;
         _stop = stop;
+        _pause = pause;
+        _resume = resume;
+        _restart = restart;
         _engine = engine ?? new LyricsEngine();
         InitializeComponent();
         sourceLabel.Text = document.Title;
@@ -62,7 +74,7 @@ public partial class LyricsDialog : Window
         }
         RefreshTranscript();
         RefreshControls();
-        Closed += (_, _) => _stop?.Invoke();
+        Closed += (_, _) => { _playbackCancellation?.Cancel(); _stop?.Invoke(); };
     }
 
     private void RefreshControls()
@@ -73,8 +85,12 @@ public partial class LyricsDialog : Window
         optionsPanel.IsEnabled = hintsPanel.IsEnabled = !Busy;
         transcribeButton.IsEnabled = vocalsButton.IsEnabled = ready && !Busy;
         cancelButton.IsEnabled = Busy;
+        clearButton.IsEnabled = !Busy;
         linesGrid.IsReadOnly = Busy;
         copyButton.IsEnabled = exportButton.IsEnabled = !Busy && Transcript?.Lines.Count > 0;
+        playAllButton.IsEnabled = !PlaybackPending && _play != null && _snapshot.Length > 0 && _snapshot[0].Length > 0;
+        restartAudioButton.IsEnabled = playAllButton.IsEnabled;
+        RefreshPlayback();
         RefreshOptions();
         RefreshLine();
     }
@@ -90,13 +106,14 @@ public partial class LyricsDialog : Window
             if (result.SourceEditVersion != _version)
                 statusLabel.Text = "The audio has changed since this transcript. Export your edits, then transcribe again to restore matching timings.";
         }
+        else summaryLabel.Text = "Singing can be ambiguous. Review the result while listening.";
     }
 
     private void RefreshLine()
     {
         if (playButton == null) return; // SelectionChanged can fire during InitializeComponent.
         var line = linesGrid.SelectedItem as LyricsLine;
-        playButton.IsEnabled = !Busy && line != null && _play != null && Transcript?.SourceEditVersion == _version;
+        playButton.IsEnabled = !Busy && !PlaybackPending && line != null && _play != null && Transcript?.SourceEditVersion == _version;
         alternativeButton.IsEnabled = !Busy && !string.IsNullOrWhiteSpace(line?.AlternativeText);
         retryButton.IsEnabled = !Busy && _engine.IsReady && line != null
             && Transcript?.SourceEditVersion == _version && _document.Doc.EditVersion == _version;
@@ -117,7 +134,7 @@ public partial class LyricsDialog : Window
     private async Task RunAsync(Func<IProgress<LyricsProgress>, CancellationToken, Task> action)
     {
         if (Busy) return;
-        _stop?.Invoke();
+        // Recognition reads the stable snapshot; listening does not change its input.
         _cancellation = new CancellationTokenSource();
         progressBar.Value = 0;
         progressBar.IsIndeterminate = true;
@@ -253,9 +270,100 @@ public partial class LyricsDialog : Window
         statusLabel.Text = "This line's previous wording was restored. Any new retry suggestion is still available.";
     }
 
+    private void OnPlayAll(object sender, RoutedEventArgs e)
+    {
+        if (PlaybackPending || _play == null || _snapshot.Length == 0 || _snapshot[0].Length == 0) return;
+        try
+        {
+            // Document edits replace channel arrays. Reuse this window's immutable snapshot
+            // rather than allocating a second full recording for playback.
+            _wholeAudio ??= new AudioDocument(_snapshot, _rate, 32) { Title = _document.Title };
+            bool continuing = _wholePaused;
+            bool played = continuing ? _resume?.Invoke(_wholeAudio, loopCheck.IsChecked == true) == true
+                : _play(_wholeAudio, loopCheck.IsChecked == true);
+            if (!played)
+            {
+                statusLabel.Text = continuing
+                    ? "The previous playback is no longer available. Choose Restart audio to start from the beginning."
+                    : "Playback is unavailable. Stop recording or check your output device.";
+                return;
+            }
+            _wholePaused = false;
+            RefreshPlayback();
+            if (!Busy)
+                statusLabel.Text = continuing ? "Continuing the recording from where you stopped."
+                    : "Playing the whole recording. You can read and edit the lyrics while listening.";
+        }
+        catch (PlaybackDeviceBusyException) { ShowPlaybackBusy(); }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Play whole audio", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+
+    private async void OnRestartAudio(object sender, RoutedEventArgs e)
+    {
+        if (PlaybackPending || _play == null || _snapshot.Length == 0 || _snapshot[0].Length == 0) return;
+        var audio = new AudioDocument(_snapshot, _rate, 32) { Title = _document.Title };
+        _wholeAudio = audio;
+        _wholePaused = false;
+        using var cancellation = new CancellationTokenSource();
+        _playbackCancellation = cancellation;
+        RefreshControls();
+        if (!Busy) statusLabel.Text = "Restarting audio… waiting for the audio device. Stop cancels the restart.";
+        try
+        {
+            bool played = _restart != null
+                ? await _restart(audio, loopCheck.IsChecked == true, cancellation.Token)
+                : _play(audio, loopCheck.IsChecked == true);
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (!Busy) statusLabel.Text = played ? "Playing the whole recording from the beginning."
+                : "Playback is unavailable. Stop recording or check your output device.";
+        }
+        catch (Exception) when (cancellation.IsCancellationRequested) { /* Stop, Clear or Close owns the final status. */ }
+        catch (PlaybackDeviceBusyException) { ShowPlaybackBusy(); }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Restart audio", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        finally
+        {
+            _playbackCancellation = null;
+            RefreshControls();
+        }
+    }
+
+    private void RefreshPlayback()
+        => playAllButton.Content = _wholePaused ? "Continue audio" : "Play whole audio";
+
+    private void ShowPlaybackBusy()
+        => statusLabel.Text = "The audio device is finishing the previous playback. Try again shortly.";
+
+    private void OnStop(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (PlaybackPending)
+            {
+                _playbackCancellation!.Cancel();
+                _stop?.Invoke();
+                _wholePaused = false;
+                RefreshPlayback();
+                if (!Busy) statusLabel.Text = "Playback stopped. The pending restart was cancelled.";
+                return;
+            }
+            if (_wholeAudio != null && _resume != null && _pause?.Invoke(_wholeAudio) == true)
+            {
+                _wholePaused = true;
+                if (!Busy) statusLabel.Text = "Stopped at the current position. Continue audio resumes here; Restart audio starts over.";
+            }
+            else
+            {
+                _stop?.Invoke();
+                _wholePaused = false;
+            }
+            RefreshPlayback();
+        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Stop audio", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+
     private void OnReplay(object sender, RoutedEventArgs e)
     {
-        if (linesGrid.SelectedItem is not LyricsLine line || Transcript?.SourceEditVersion != _version || Busy) return;
+        if (PlaybackPending || linesGrid.SelectedItem is not LyricsLine line || Transcript?.SourceEditVersion != _version || Busy) return;
         try
         {
             int start = Math.Clamp((int)Math.Floor((line.Start - 0.15) * _rate), 0, _snapshot[0].Length);
@@ -263,7 +371,14 @@ public partial class LyricsDialog : Window
             var channels = _snapshot.Select(c => c.AsSpan(start, end - start).ToArray()).ToArray();
             if (_play?.Invoke(new AudioDocument(channels, _rate, 32), loopCheck.IsChecked == true) != true)
                 statusLabel.Text = "Playback is unavailable. Stop recording or check your output device.";
+            else
+            {
+                _wholePaused = false;
+                RefreshPlayback();
+                statusLabel.Text = "Playing the selected line.";
+            }
         }
+        catch (PlaybackDeviceBusyException) { ShowPlaybackBusy(); }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "Replay line", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
 
@@ -306,8 +421,81 @@ public partial class LyricsDialog : Window
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "Export transcript", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
 
+    private void OnClearEverything(object sender, RoutedEventArgs e)
+    {
+        if (Busy) return;
+        CommitEdits();
+        _playbackCancellation?.Cancel();
+        _stop?.Invoke();
+        _wholePaused = false;
+        _wholeAudio = null;
+        _document.LyricsTranscript = null;
+        _document.LyricsSettings = null;
+        _document.LyricsSelectionOnly = null;
+        _document.LyricsVocals.Clear();
+        IsolatedVocals = null;
+        linesGrid.SelectedItem = null;
+        modeCombo.SelectedIndex = 0;
+        qualityCombo.SelectedIndex = 0;
+        languageCombo.SelectedIndex = 0;
+        deviceCombo.SelectedIndex = 0;
+        hintsText.Clear();
+        selectionCheck.IsChecked = _selectionCount > 0;
+        retryCheck.IsChecked = compareCheck.IsChecked = true;
+        loopCheck.IsChecked = false;
+        progressBar.IsIndeterminate = false;
+        progressBar.Value = 0;
+        RefreshTranscript();
+        RefreshControls();
+        statusLabel.Text = "Lyrics, hints and suggestions cleared. Options reset. Your audio is unchanged.";
+    }
+
+    private void OnLyricsRowLoading(object sender, DataGridRowEventArgs e)
+    {
+        if (e.Row.ContextMenu != null) return;
+        var edit = new MenuItem { Header = "Edit line" };
+        edit.Click += OnEditLine;
+        var menu = new ContextMenu();
+        menu.Items.Add(edit);
+        menu.Opened += OnLineMenuOpened;
+        e.Row.ContextMenu = menu;
+    }
+
+    private void OnLineMenuOpened(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ContextMenu menu) return;
+        var line = (menu.PlacementTarget as DataGridRow)?.Item as LyricsLine;
+        bool canEdit = !Busy && line != null && Transcript?.Lines.Contains(line) == true;
+        foreach (var item in menu.Items.OfType<MenuItem>()) item.IsEnabled = canEdit;
+        if (canEdit)
+        {
+            CommitEdits();
+            linesGrid.SelectedItem = line;
+        }
+    }
+
+    private void OnEditLine(object sender, RoutedEventArgs e)
+    {
+        if (Busy || sender is not MenuItem item
+            || ItemsControl.ItemsControlFromItemContainer(item) is not ContextMenu menu
+            || menu.PlacementTarget is not DataGridRow { Item: LyricsLine line }
+            || Transcript?.Lines.Contains(line) != true) return;
+        menu.IsOpen = false;
+        // Let the popup release keyboard focus before focusing the words cell.
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, new Action(() =>
+        {
+            if (Busy || !IsVisible || Transcript?.Lines.Contains(line) != true) return;
+            CommitEdits();
+            linesGrid.SelectedItem = line;
+            linesGrid.ScrollIntoView(line, wordsColumn);
+            linesGrid.UpdateLayout();
+            linesGrid.CurrentCell = new DataGridCellInfo(line, wordsColumn);
+            linesGrid.Focus();
+            linesGrid.BeginEdit();
+        }));
+    }
+
     private void OnLineChanged(object sender, SelectionChangedEventArgs e) => RefreshLine();
-    private void OnStop(object sender, RoutedEventArgs e) => _stop?.Invoke();
     private void OnCancel(object sender, RoutedEventArgs e) { _cancellation?.Cancel(); cancelButton.IsEnabled = false; }
     private void OnClose(object sender, RoutedEventArgs e) => Close();
     private void OnDragMove(object sender, MouseButtonEventArgs e) { if (e.ButtonState == MouseButtonState.Pressed) DragMove(); }
@@ -315,6 +503,7 @@ public partial class LyricsDialog : Window
     {
         CommitEdits();
         SaveOptions();
+        _playbackCancellation?.Cancel();
         if (!Busy) return;
         _closeWhenFinished = true;
         _cancellation?.Cancel();

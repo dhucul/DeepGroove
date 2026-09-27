@@ -392,8 +392,9 @@ public partial class MainWindow : Window
         LongOperationRunning = true;
         try
         {
-            var dialog = new LyricsDialog(document, (audio, loop) => _vm.PlayPreview(audio, loop, bypassRack: true),
-                () => _vm.StopCommand.Execute(null)) { Owner = this };
+            var dialog = new LyricsDialog(document, (audio, loop) => _vm.PlayPreview(audio, loop, bypassRack: true, restartIfPlaying: false),
+                () => _vm.StopCommand.Execute(null), pause: _vm.PausePreview, resume: _vm.ResumePreview,
+                restart: _vm.RestartPreviewAsync) { Owner = this };
             dialog.ShowDialog();
             vocals = dialog.IsolatedVocals;
         }

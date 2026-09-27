@@ -213,8 +213,7 @@ public sealed class PlaybackEngine : IDisposable
             // same endpoint teardown.
             if (!DrainPendingCleanups())
             {
-                throw new InvalidOperationException(
-                    "The previous output stream is still releasing its device. Try Play again in a moment.");
+                throw new PlaybackDeviceBusyException();
             }
             lock (_stateLock) LastPlaybackError = null;
             long playbackSession = ++_nextPlaybackSession;
@@ -411,6 +410,27 @@ public sealed class PlaybackEngine : IDisposable
         if (output == null && device == null) return;
         Task cleanup = DisposeOutputAsync(output, device);
         lock (_cleanupLock) _pendingCleanupTasks.Add(cleanup);
+    }
+
+    /// <summary>Wait without blocking the UI or holding an audio lock. Cancellation stops waiting, not device cleanup.</summary>
+    internal async Task WaitForOutputReleaseAsync(CancellationToken token)
+    {
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            Task[] pending;
+            lock (_cleanupLock)
+            {
+                _pendingCleanupTasks.RemoveAll(task => task.IsCompleted);
+                pending = [.. _pendingCleanupTasks];
+            }
+            if (pending.Length == 0) return;
+            // Cleanup is best-effort, as in the synchronous playback barrier. Keep
+            // incomplete tasks registered so cancelling this wait cannot hide them.
+            try { await Task.WhenAll(pending).WaitAsync(token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch { }
+        }
     }
 
     private bool DrainPendingCleanups()

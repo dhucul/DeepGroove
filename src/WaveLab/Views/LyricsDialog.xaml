@@ -107,7 +107,7 @@
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <StackPanel Margin="0,0,16,0">
                         <TextBlock Text="SPELLING HINTS (OPTIONAL)" Style="{StaticResource UpperLabel}"/>
-                        <TextBox x:Name="hintsText" MaxLength="500" Height="30" Margin="0,6,0,0" VerticalContentAlignment="Center"
+                        <TextBox x:Name="hintsText" MaxLength="500" Height="30" Padding="10,2" Margin="0,6,0,0" VerticalContentAlignment="Center"
                                  ToolTip="Names or unusual words you expect to hear. Do not paste instructions or complete lyrics."
                                  AutomationProperties.Name="Names and spelling hints"/>
                     </StackPanel>
@@ -124,6 +124,8 @@
                     <Button x:Name="vocalsButton" Content="Vocals to new tab" Style="{StaticResource Action}" Click="OnIsolateVocals" DockPanel.Dock="Left"
                             ToolTip="Isolate the singing into a new audio tab, ready for Save As. Uses the whole file or the selected audio only; does not replace your transcript."/>
                     <Button x:Name="cancelButton" Content="Cancel" Style="{StaticResource Action}" Click="OnCancel" IsEnabled="False" DockPanel.Dock="Left"/>
+                    <Button x:Name="clearButton" Content="Clear everything" Style="{StaticResource Action}" Click="OnClearEverything" DockPanel.Dock="Right" Margin="12,0,0,0"
+                            ToolTip="Clear this tab's transcript, corrections, suggestions and spelling hints, reset the options, and release cached vocals. Export first to keep the words. Your audio and other tabs are kept."/>
                     <TextBlock x:Name="summaryLabel" VerticalAlignment="Center" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="8,0,0,0"
                                Text="Singing can be ambiguous. Review the result while listening."/>
                 </DockPanel>
@@ -133,12 +135,12 @@
                           CanUserReorderColumns="False" CanUserSortColumns="False" HeadersVisibility="Column"
                           SelectionMode="Single" SelectionUnit="FullRow" Background="{StaticResource Panel2}"
                           BorderBrush="{StaticResource LineSoft}" BorderThickness="1" GridLinesVisibility="Horizontal"
-                          HorizontalGridLinesBrush="{StaticResource LineSoft}" RowHeaderWidth="0" SelectionChanged="OnLineChanged"
+                          HorizontalGridLinesBrush="{StaticResource LineSoft}" RowHeaderWidth="0" SelectionChanged="OnLineChanged" LoadingRow="OnLyricsRowLoading"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                           AutomationProperties.Name="Timed transcript; double-click text to correct it">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="TIME" Binding="{Binding TimeLabel}" IsReadOnly="True" Width="122"/>
-                        <DataGridTextColumn Header="WORDS · double-click to edit" Binding="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Width="*">
+                        <DataGridTextColumn x:Name="wordsColumn" Header="WORDS · double-click to edit" Binding="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Width="*">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
                             </DataGridTextColumn.ElementStyle>
@@ -159,12 +161,18 @@
                             ToolTip="Transcribe this line again with surrounding audio. Offers a reading without replacing your text or other lines."/>
                     <Button x:Name="acceptRetryButton" Content="Use retry reading" Style="{StaticResource Action}" Click="OnAcceptRetry" IsEnabled="False"/>
                     <Button x:Name="restoreRetryButton" Content="Restore previous text" Style="{StaticResource Action}" Click="OnRestoreRetry" IsEnabled="False"/>
+                    <Button x:Name="alternativeButton" Content="Use alternate reading" Style="{StaticResource Action}" Click="OnUseAlternative" IsEnabled="False"/>
                 </StackPanel>
                 <DockPanel Margin="0,8,0,0">
+                    <Button x:Name="playAllButton" Content="Play whole audio" Style="{StaticResource Action}" Click="OnPlayAll" DockPanel.Dock="Left"
+                            ToolTip="Play the whole recording, or continue from where Stop paused it. Available before and during transcription."/>
+                    <Button x:Name="restartAudioButton" Content="Restart audio" Style="{StaticResource Action}" Click="OnRestartAudio" DockPanel.Dock="Left"
+                            ToolTip="Start the complete recording again from the beginning."/>
                     <Button x:Name="playButton" Content="Replay line" Style="{StaticResource Action}" Click="OnReplay" IsEnabled="False" DockPanel.Dock="Left"/>
-                    <Button x:Name="stopButton" Content="Stop" Style="{StaticResource Action}" Click="OnStop" DockPanel.Dock="Left"/>
-                    <CheckBox x:Name="loopCheck" Content="Loop" VerticalAlignment="Center" Margin="4,0,16,0" DockPanel.Dock="Left"/>
-                    <Button x:Name="alternativeButton" Content="Use alternate reading" Style="{StaticResource Action}" Click="OnUseAlternative" IsEnabled="False" DockPanel.Dock="Left"/>
+                    <Button x:Name="stopButton" Content="Stop" Style="{StaticResource Action}" Click="OnStop" DockPanel.Dock="Left"
+                            ToolTip="Pause the whole recording here; Continue audio resumes from this position. Stops line replay."/>
+                    <CheckBox x:Name="loopCheck" Content="Loop" VerticalAlignment="Center" Margin="4,0,16,0" DockPanel.Dock="Left"
+                              ToolTip="Repeat the whole recording or the selected line when you next start playback."/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="copyButton" Content="Copy text" Style="{StaticResource Action}" Click="OnCopy" IsEnabled="False"/>
                         <Button x:Name="exportButton" Content="Export…" Style="{StaticResource Action}" Click="OnExport" IsEnabled="False"/>

@@ -342,6 +342,8 @@ public sealed class LyricsBundleTests : IDisposable
         Wpf.Run(() =>
         {
             bool started = false;
+            bool playing = false;
+            int playCalls = 0;
             var engine = new LyricsEngine(Path.Combine(_directory, "cancel-retry"), Assets, async (args, token) =>
             {
                 started = true;
@@ -354,12 +356,44 @@ public sealed class LyricsBundleTests : IDisposable
                 LyricsTranscript = new LyricsTranscript { RangeEnd = 10, Language = "en", Lines = [target] },
                 LyricsSettings = new LyricsOptions(false, false, false, "large-v3", "en", "", false, false),
             };
-            Wpf.Show(new LyricsDialog(doc, engine: engine), window =>
+            Wpf.Show(new LyricsDialog(doc, (audio, loop) =>
+            {
+                Assert.Equal(10 * 44100, audio.Length);
+                playCalls++;
+                playing = true;
+                return true;
+            }, () => playing = false, engine), window =>
             {
                 ((DataGrid)window.FindName("linesGrid")).SelectedItem = target;
+                var playAll = (Button)window.FindName("playAllButton");
+                playAll.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.True(playing);
                 ((Button)window.FindName("retryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 PumpUntil(() => started);
+                Assert.True(playing); // Starting a worker must not interrupt the recording.
+                Assert.True(playAll.IsEnabled);
+                ((Button)window.FindName("stopButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.False(playing);
+                playAll.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.True(playing); // Full playback also starts while the worker is busy.
+                Assert.Equal(2, playCalls);
                 Assert.False(((Button)window.FindName("restoreRetryButton")).IsEnabled);
+                var grid = (DataGrid)window.FindName("linesGrid");
+                grid.ScrollIntoView(target);
+                grid.UpdateLayout();
+                var row = Assert.IsType<DataGridRow>(grid.ItemContainerGenerator.ContainerFromItem(target));
+                var menu = Assert.IsType<ContextMenu>(row.ContextMenu);
+                menu.PlacementTarget = row;
+                menu.RaiseEvent(new RoutedEventArgs(ContextMenu.OpenedEvent));
+                var edit = Assert.IsType<MenuItem>(Assert.Single(menu.Items));
+                Assert.False(edit.IsEnabled);
+                edit.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                Wpf.Pump();
+                Assert.IsType<TextBlock>(((DataGridTextColumn)window.FindName("wordsColumn")).GetCellContent(target));
+                var clear = (Button)window.FindName("clearButton");
+                Assert.False(clear.IsEnabled);
+                clear.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Same(target, Assert.Single(doc.LyricsTranscript!.Lines));
                 ((Button)window.FindName("cancelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 PumpUntil(() => ((Button)window.FindName("retryButton")).IsEnabled);
                 Assert.Equal("accepted wording", target.Text);
@@ -368,7 +402,10 @@ public sealed class LyricsBundleTests : IDisposable
                 Assert.True(((Button)window.FindName("acceptRetryButton")).IsEnabled);
                 Assert.True(((Button)window.FindName("restoreRetryButton")).IsEnabled);
                 Assert.Contains("Cancelled", ((TextBlock)window.FindName("statusLabel")).Text);
+                Assert.True(clear.IsEnabled);
+                Assert.True(playing); // Cancelling inference does not stop audio playback.
             });
+            Assert.False(playing);
             doc.Unhook();
         });
     }

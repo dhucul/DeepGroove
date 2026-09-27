@@ -2357,11 +2357,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Play a transient document without adding it to the tab collection.</summary>
-    public bool PlayPreview(AudioDocument preview, bool loop = true, bool bypassRack = false)
+    public bool PlayPreview(AudioDocument preview, bool loop = true, bool bypassRack = false, bool restartIfPlaying = true)
     {
         ArgumentNullException.ThrowIfNull(preview);
         if (preview.Length == 0 || IsTransportRecording || IsFinalizingRecording || HasPendingTransportRecording)
             return false;
+        if (!restartIfPlaying && Engine.IsPlaying && ReferenceEquals(_previewDocument, preview)
+            && ReferenceEquals(Engine.SourceDocument, preview) && _previewRackRestoreState.HasValue == bypassRack)
+        {
+            Engine.Loop = loop;
+            return true;
+        }
         if (Engine.IsPlaying || Engine.IsPaused || _previewDocument != null || _previewRackRestoreState.HasValue)
             ReleasePlayback();
 
@@ -2390,6 +2396,44 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             RestorePreviewRackOverride();
             throw;
         }
+    }
+
+    public async Task<bool> RestartPreviewAsync(AudioDocument preview, bool loop, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+        token.ThrowIfCancellationRequested();
+        if (preview.Length == 0 || IsTransportRecording || IsFinalizingRecording || HasPendingTransportRecording)
+            return false;
+        ReleasePlayback();
+        await Engine.WaitForOutputReleaseAsync(token);
+        token.ThrowIfCancellationRequested();
+        return PlayPreview(preview, loop, bypassRack: true);
+    }
+
+    public bool PausePreview(AudioDocument preview)
+    {
+        if (!ReferenceEquals(_previewDocument, preview) || !ReferenceEquals(Engine.SourceDocument, preview)) return false;
+        try
+        {
+            if (Engine.IsPlaying) Engine.Pause();
+            IsPlaying = Engine.IsPlaying;
+            return Engine.IsPaused;
+        }
+        catch { ReleasePlayback(updatePosition: false); throw; }
+    }
+
+    public bool ResumePreview(AudioDocument preview, bool loop)
+    {
+        if (!ReferenceEquals(_previewDocument, preview) || !ReferenceEquals(Engine.SourceDocument, preview)
+            || !Engine.IsPaused) return false;
+        try
+        {
+            Engine.Loop = loop;
+            Engine.Resume();
+            IsPlaying = Engine.IsPlaying;
+            return IsPlaying;
+        }
+        catch { ReleasePlayback(updatePosition: false); throw; }
     }
 
     public void StopPreview()
