@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace WaveLab.Audio.Transcription;
 
 public sealed record LyricsOptions(bool IsolateVocals, bool Speech, bool CompareOriginal,
-    string Model, string? Language, string Hints, bool CpuOnly);
+    string Model, string? Language, string Hints, bool CpuOnly, bool RetryUnclear = true);
 public sealed record LyricsProgress(string Message, double? Fraction = null);
 
 /// <summary>A cancellable, isolated inference process. No audio leaves this computer.</summary>
@@ -15,6 +15,7 @@ public sealed class LyricsEngine
     private readonly string _root;
     private readonly string _assets;
     private readonly string _bundle;
+    private readonly Func<IReadOnlyList<string>, CancellationToken, Task>? _runWorker;
     private string Python => Path.Combine(_bundle, "python", "python.exe");
 
     public LyricsEngine(string? root = null, string? assets = null)
@@ -24,10 +25,15 @@ public sealed class LyricsEngine
         _bundle = Path.Combine(_assets, "Engine");
     }
 
+    internal LyricsEngine(string root, string assets, Func<IReadOnlyList<string>, CancellationToken, Task> runWorker)
+        : this(root, assets) => _runWorker = runWorker;
+
     public bool IsReady => LyricsBundle.IsReady(_assets);
+    private string CacheIdentity => $"{Path.GetFullPath(_bundle)}|{File.GetLastWriteTimeUtc(Path.Combine(_bundle, "bundle.json")).Ticks}|htdemucs_ft-2-0.5-7-v1";
 
     public async Task<LyricsTranscript> TranscribeAsync(float[][] channels, int rate, int start, int count,
-        string title, int editVersion, LyricsOptions options, IProgress<LyricsProgress> progress, CancellationToken token)
+        string title, int editVersion, LyricsOptions options, IProgress<LyricsProgress> progress, CancellationToken token,
+        LyricsVocalCache? vocalCache = null)
     {
         if (!IsReady) throw new InvalidOperationException("This installation is missing its built-in transcription files. Reinstall Deep Groove or rebuild the complete Release application.");
         if (options.Model is not ("large-v3" or "turbo")) throw new ArgumentException("Choose one of the supported speech models.");
@@ -41,9 +47,20 @@ public sealed class LyricsEngine
             await Task.Run(() => LyricsAudio.Write(channels, rate, start, count, input, token), token);
             var arguments = new List<string> { "-I", "-B", "-X", "utf8", "-u", Path.Combine(_assets, "lyrics_worker.py"), "--input", input,
                 "--output", output, "--model", options.Model, "--device", options.CpuOnly ? "cpu" : "auto" };
+            var cached = options.IsolateVocals
+                ? vocalCache?.Find(channels, rate, editVersion, start, count, options.CpuOnly, CacheIdentity) : null;
             if (options.IsolateVocals) arguments.Add("--isolate");
+            if (cached != null)
+            {
+                progress.Report(new("Reusing the extracted vocals…"));
+                string cachedInput = Path.Combine(working, "cached-vocals.wav");
+                await Task.Run(() => LyricsAudio.Write(cached.Channels, LyricsAudio.AnalysisRate,
+                    cached.Start, cached.Count, cachedInput, token), token);
+                arguments.AddRange(["--vocals-input", cachedInput]);
+            }
             if (options.Speech) arguments.Add("--speech");
-            if (options.CompareOriginal) arguments.Add("--compare");
+            if (options.CompareOriginal && options.IsolateVocals && !options.Speech) arguments.Add("--compare");
+            arguments.Add(options.RetryUnclear && !options.Speech ? "--retry-unclear" : "--no-retry-unclear");
             if (!string.IsNullOrWhiteSpace(options.Language)) { arguments.Add("--language"); arguments.Add(options.Language); }
             if (!string.IsNullOrWhiteSpace(options.Hints)) { arguments.Add("--hints"); arguments.Add(options.Hints); }
             await RunWorkerAsync(arguments, options.CpuOnly, progress, token);
@@ -53,6 +70,13 @@ public sealed class LyricsEngine
             result.MapToSource((double)start / rate, (double)count / rate);
             result.SourceTitle = title;
             result.SourceEditVersion = editVersion;
+            if (vocalCache != null && cached == null && result.IsolatedVocals)
+            {
+                var vocals = await Task.Run(() => ReadVocals(Path.Combine(working, "vocals.wav"), title,
+                    (double)count / rate, start != 0 || count != channels[0].Length, token), token);
+                token.ThrowIfCancellationRequested();
+                vocalCache.Store(channels, rate, editVersion, start, count, options.CpuOnly, CacheIdentity, vocals);
+            }
             return result;
         }
         finally
@@ -66,9 +90,19 @@ public sealed class LyricsEngine
 
     /// <summary>Extract a new float audio document, without running speech recognition or changing the source.</summary>
     public async Task<AudioDocument> IsolateVocalsAsync(float[][] channels, int rate, int start, int count,
-        string title, bool cpuOnly, IProgress<LyricsProgress> progress, CancellationToken token)
+        string title, bool cpuOnly, IProgress<LyricsProgress> progress, CancellationToken token,
+        LyricsVocalCache? vocalCache = null, int editVersion = 0)
     {
         if (!IsReady) throw new InvalidOperationException("This installation is missing its built-in transcription files. Reinstall Deep Groove or rebuild the complete Release application.");
+        var cached = vocalCache?.Find(channels, rate, editVersion, start, count, cpuOnly, CacheIdentity);
+        if (cached != null)
+        {
+            token.ThrowIfCancellationRequested();
+            progress.Report(new("Reusing the extracted vocals…", 1));
+            var copy = await Task.Run(() => cached.ToDocument(title, start != 0 || count != channels[0].Length), token);
+            token.ThrowIfCancellationRequested();
+            return copy;
+        }
         string working = Path.Combine(_root, "jobs", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(working);
         try
@@ -82,6 +116,7 @@ public sealed class LyricsEngine
             var vocals = await Task.Run(() => ReadVocals(Path.Combine(working, "vocals.wav"), title,
                 (double)count / rate, start != 0 || count != channels[0].Length, token), token);
             token.ThrowIfCancellationRequested();
+            vocalCache?.Store(channels, rate, editVersion, start, count, cpuOnly, CacheIdentity, vocals);
             return vocals;
         }
         finally
@@ -119,6 +154,12 @@ public sealed class LyricsEngine
     private async Task RunWorkerAsync(List<string> arguments, bool cpuOnly, IProgress<LyricsProgress> progress,
         CancellationToken token)
     {
+        if (_runWorker != null)
+        {
+            token.ThrowIfCancellationRequested();
+            await _runWorker(arguments, token);
+            return;
+        }
         try
         {
             await RunProcessAsync(Python, arguments, EnvironmentVariables(), progress, token, jsonProgress: true);

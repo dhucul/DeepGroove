@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using WaveLab.Audio;
 using WaveLab.Util;
 
@@ -66,6 +66,9 @@ public sealed class DocumentViewModel : TabViewModel, IDocumentEditState
     public AudioDocument Doc { get; }
     /// <summary>Corrections remain with this tab. The source version guards replay after audio edits.</summary>
     public Audio.Transcription.LyricsTranscript? LyricsTranscript { get; set; }
+    public Audio.Transcription.LyricsOptions? LyricsSettings { get; set; }
+    public bool? LyricsSelectionOnly { get; set; }
+    public Audio.Transcription.LyricsVocalCache LyricsVocals { get; } = new();
     public PeakStore Peaks { get; }
     public int PeaksVersion => Peaks.Version;
 
@@ -608,6 +611,7 @@ public sealed class DocumentViewModel : TabViewModel, IDocumentEditState
 
     private void OnDocChanged(int start, int removed, int inserted)
     {
+        LyricsVocals.Clear();
         if (_anchorsChanged)
         {
             _anchorsChanged = false;
@@ -641,6 +645,7 @@ public sealed class DocumentViewModel : TabViewModel, IDocumentEditState
     /// </remarks>
     public void Unhook()
     {
+        LyricsVocals.Clear();
         Doc.Changed -= OnDocChanged;
         Doc.TimelineChanged -= OnTimelineChanged;
         if (ReferenceEquals(Doc.EditState, this)) Doc.EditState = null;

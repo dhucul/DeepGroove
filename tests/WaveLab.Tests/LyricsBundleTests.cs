@@ -101,4 +101,293 @@ public sealed class LyricsBundleTests : IDisposable
         Assert.Empty(Directory.EnumerateDirectories(Path.Combine(cache, "jobs")));
     }
 
+    private static void WriteWorkerResult(IReadOnlyList<string> arguments, LyricsTranscript? transcript = null)
+    {
+        var args = arguments.ToList();
+        string input = args[args.IndexOf("--input") + 1];
+        string output = args[args.IndexOf("--output") + 1];
+        bool isolated = args.Contains("--isolate") || args.Contains("--vocals-only");
+        if (isolated && !args.Contains("--vocals-input"))
+        {
+            var audio = WavCodec.Load(input);
+            var stem = new AudioDocument([Enumerable.Repeat(.25f, audio.Length).ToArray(), new float[audio.Length]], 44100, 32);
+            WavCodec.Save(stem, Path.Combine(Path.GetDirectoryName(output)!, "vocals.wav"), 32);
+        }
+        File.WriteAllText(output, JsonSerializer.Serialize(transcript ?? new LyricsTranscript
+            { IsolatedVocals = isolated, Language = "en" }, LyricsTranscript.JsonOptions));
+    }
+
+    [Fact]
+    public async Task TranscriptionReusesVocalsAcrossSettingsAndPassageRetriesButNotEdits()
+    {
+        var jobs = new List<List<string>>();
+        var engine = new LyricsEngine(Path.Combine(_directory, "cache-test"), Assets, (args, token) =>
+        {
+            jobs.Add(args.ToList());
+            WriteWorkerResult(args);
+            if (args.Contains("--vocals-input"))
+            {
+                var list = args.ToList();
+                var input = WavCodec.Load(list[list.IndexOf("--input") + 1]);
+                var cached = WavCodec.Load(list[list.IndexOf("--vocals-input") + 1]);
+                Assert.Equal(input.Length, cached.Length);
+                Assert.Equal(.25f, cached.Channels[0][0]);
+            }
+            return Task.CompletedTask;
+        });
+        float[][] source = [new float[4 * 44100]];
+        var cache = new LyricsVocalCache();
+        var options = new LyricsOptions(true, false, false, "large-v3", "en", "", false, true);
+        var progress = new Progress<LyricsProgress>();
+        await engine.TranscribeAsync(source, 44100, 0, source[0].Length, "song", 0, options, progress, default, cache);
+        Assert.Contains("--retry-unclear", jobs[0]);
+        Assert.DoesNotContain("--compare", jobs[0]);
+        await engine.TranscribeAsync(source, 44100, 44100, 44100, "song", 0,
+            options with { Language = "fr", Hints = "name", Model = "turbo", RetryUnclear = false, CompareOriginal = true },
+            progress, default, cache);
+        Assert.Contains("--vocals-input", jobs[1]);
+        Assert.Contains("--compare", jobs[1]);
+        Assert.Contains("--no-retry-unclear", jobs[1]);
+        var exported = await engine.IsolateVocalsAsync(source, 44100, 0, source[0].Length, "song", false,
+            progress, default, cache, 0);
+        Assert.Equal(2, jobs.Count); // Opening the cached audio does not launch a worker.
+        Assert.Equal(source[0].Length, exported.Length);
+        await engine.TranscribeAsync(source, 44100, 0, source[0].Length, "song", 1, options, progress, default, cache);
+        Assert.DoesNotContain("--vocals-input", jobs[2]);
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(_directory, "cache-test", "jobs")));
+    }
+
+    [Fact]
+    public async Task CancellationAfterWorkerOutputDoesNotPublishAVocalCache()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var cache = new LyricsVocalCache();
+        var jobs = new List<List<string>>();
+        var engine = new LyricsEngine(Path.Combine(_directory, "cancel-cache"), Assets, (args, token) =>
+        {
+            jobs.Add(args.ToList());
+            WriteWorkerResult(args);
+            if (jobs.Count == 1) cancellation.Cancel();
+            return Task.CompletedTask;
+        });
+        float[][] source = [new float[44100]];
+        var options = new LyricsOptions(true, false, false, "large-v3", "en", "", false);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.TranscribeAsync(source, 44100, 0, 44100,
+            "song", 0, options, new Progress<LyricsProgress>(), cancellation.Token, cache));
+        await engine.TranscribeAsync(source, 44100, 0, 44100, "song", 0, options, new Progress<LyricsProgress>(), default, cache);
+        Assert.All(jobs, job => Assert.DoesNotContain("--vocals-input", job));
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(_directory, "cancel-cache", "jobs")));
+    }
+
+    [Fact]
+    public void LineRetryRunsWithContextAndLeavesEditsUntouchedUntilAccepted()
+    {
+        Wpf.Run(() =>
+        {
+            var jobs = new List<List<string>>();
+            var engine = new LyricsEngine(Path.Combine(_directory, "retry"), Assets, (args, token) =>
+            {
+                jobs.Add(args.ToList());
+                WriteWorkerResult(args, new LyricsTranscript { Language = "en", Lines = [new LyricsLine
+                {
+                    Start = 1, End = 6, Text = "context better words neighbor", ModelText = "context better words neighbor",
+                    Words = [new(1, 2, " context", .9), new(3, 4, " better", .9),
+                        new(4, 5, " words", .9), new(5, 6, " neighbor", .9)]
+                }] });
+                return Task.CompletedTask;
+            });
+            var target = new LyricsLine { Start = 5, End = 7, Text = "my correction" };
+            var next = new LyricsLine { Start = 7, End = 9, Text = "other correction" };
+            var transcript = new LyricsTranscript { RangeEnd = 10, Language = "en", Lines = [target, next] };
+            var doc = new DocumentViewModel(new AudioDocument([new float[10 * 44100]], 44100, 32))
+            {
+                LyricsTranscript = transcript,
+                LyricsSettings = new LyricsOptions(false, false, true, "large-v3", null, "", false, true),
+            };
+            Wpf.Show(new LyricsDialog(doc, engine: engine), window =>
+            {
+                ((DataGrid)window.FindName("linesGrid")).SelectedItem = target;
+                ((Button)window.FindName("retryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var deadline = Environment.TickCount64 + 5000;
+                while (((Button)window.FindName("cancelButton")).IsEnabled && Environment.TickCount64 < deadline)
+                {
+                    Wpf.Pump();
+                    Thread.Sleep(5);
+                }
+                Assert.False(((Button)window.FindName("cancelButton")).IsEnabled);
+                Assert.Same(transcript, doc.LyricsTranscript);
+                Assert.Equal("my correction", target.Text);
+                Assert.Equal("other correction", next.Text);
+                Assert.Equal("better words", target.RetryText);
+                window.Width = 920;
+                window.Height = 740;
+                window.UpdateLayout();
+                Assert.True(((DataGrid)window.FindName("linesGrid")).ActualHeight > 80);
+                string? renderPath = Environment.GetEnvironmentVariable("WAVELAB_RETRY_RENDER");
+                if (!string.IsNullOrEmpty(renderPath))
+                {
+                    var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(920, 740, 96, 96,
+                        System.Windows.Media.PixelFormats.Pbgra32);
+                    bitmap.Render(window);
+                    var png = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    png.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                    using var stream = File.Create(renderPath);
+                    png.Save(stream);
+                }
+                Assert.Contains("--no-retry-unclear", Assert.Single(jobs));
+                Assert.DoesNotContain("--compare", jobs[0]);
+                Assert.Equal("en", jobs[0][jobs[0].IndexOf("--language") + 1]);
+                Assert.True(doc.LyricsSettings!.RetryUnclear); // Temporary retry choices are not saved.
+                ((Button)window.FindName("acceptRetryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Equal("better words", target.Text);
+                Assert.Equal("other correction", next.Text);
+            });
+            doc.Unhook();
+        });
+    }
+
+    [Theory]
+    [InlineData("new suggestion")]
+    [InlineData("accepted wording")]
+    [InlineData("")]
+    public void FurtherRetriesPreserveRestorationAndReplaceOrClearOnlyPendingSuggestions(string nextReading)
+    {
+        Wpf.Run(() =>
+        {
+            int requests = 0;
+            var engine = new LyricsEngine(Path.Combine(_directory, "retry-history"), Assets, (args, token) =>
+            {
+                string reading = ++requests == 1 ? "accepted wording" : nextReading;
+                var result = new LyricsTranscript { Language = "en" };
+                if (reading.Length > 0)
+                    result.Lines.Add(new LyricsLine { Start = 3, End = 5, Text = reading,
+                        Words = [new(3, 5, " " + reading, .9)] });
+                WriteWorkerResult(args, result);
+                return Task.CompletedTask;
+            });
+            var target = new LyricsLine { Start = 5, End = 7, Text = "my original correction" };
+            var neighbor = new LyricsLine { Start = 7, End = 9, Text = "another correction" };
+            var transcript = new LyricsTranscript { RangeEnd = 10, Language = "en", Lines = [target, neighbor] };
+            var doc = new DocumentViewModel(new AudioDocument([new float[10 * 44100]], 44100, 32))
+            {
+                LyricsTranscript = transcript,
+                LyricsSettings = new LyricsOptions(false, false, false, "large-v3", "en", "", false, false),
+            };
+            Wpf.Show(new LyricsDialog(doc, engine: engine), window =>
+            {
+                ((DataGrid)window.FindName("linesGrid")).SelectedItem = target;
+                var accept = (Button)window.FindName("acceptRetryButton");
+                var restore = (Button)window.FindName("restoreRetryButton");
+                RetryAndWait(window);
+                accept.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Equal("accepted wording", target.Text);
+                Assert.Equal("my original correction", target.PreviousRetryText);
+                // A second, unaccepted suggestion must not erase the first restore point.
+                target.RetryText = "outdated suggestion";
+                RetryAndWait(window);
+                Assert.Same(transcript, doc.LyricsTranscript);
+                Assert.Equal("accepted wording", target.Text);
+                Assert.Equal("my original correction", target.PreviousRetryText);
+                bool hasSuggestion = nextReading == "new suggestion";
+                Assert.Equal(hasSuggestion ? nextReading : "", target.RetryText);
+                Assert.Equal(hasSuggestion, accept.IsEnabled);
+                Assert.True(restore.IsEnabled);
+                window.Width = 920;
+                window.Height = 740;
+                window.UpdateLayout();
+                Assert.True(((DataGrid)window.FindName("linesGrid")).ActualHeight > 80);
+                Assert.True(restore.TransformToAncestor(window).Transform(new Point(restore.ActualWidth, 0)).X < window.ActualWidth);
+                string? renderPath = Environment.GetEnvironmentVariable("WAVELAB_RETRY_FIX_RENDER");
+                if (hasSuggestion && !string.IsNullOrEmpty(renderPath))
+                {
+                    var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(920, 740, 96, 96,
+                        System.Windows.Media.PixelFormats.Pbgra32);
+                    bitmap.Render(window);
+                    var png = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    png.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                    using var stream = File.Create(renderPath);
+                    png.Save(stream);
+                }
+                Assert.Equal("another correction", neighbor.Text);
+                Assert.DoesNotContain("retry_text", transcript.Export(".json"));
+                Assert.DoesNotContain("outdated suggestion", ((TextBlock)window.FindName("retryLabel")).Text);
+            });
+            // Both independent states must survive closing and reopening the dialog.
+            Wpf.Show(new LyricsDialog(doc, engine: engine), window =>
+            {
+                ((DataGrid)window.FindName("linesGrid")).SelectedItem = target;
+                var restore = (Button)window.FindName("restoreRetryButton");
+                Assert.True(restore.IsEnabled);
+                restore.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Equal("my original correction", target.Text);
+                Assert.Null(target.PreviousRetryText);
+                Assert.Equal(nextReading == "new suggestion" ? nextReading : "", target.RetryText);
+                Assert.Equal("another correction", neighbor.Text);
+                if (nextReading == "new suggestion")
+                {
+                    ((Button)window.FindName("acceptRetryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Equal("new suggestion", target.Text);
+                    Assert.Equal("my original correction", target.PreviousRetryText);
+                    Assert.Empty(target.RetryText);
+                }
+            });
+            Assert.Equal(2, requests);
+            doc.Unhook();
+        });
+    }
+
+    [Fact]
+    public void CancellingAFurtherRetryKeepsThePendingSuggestionAndRestorePoint()
+    {
+        Wpf.Run(() =>
+        {
+            bool started = false;
+            var engine = new LyricsEngine(Path.Combine(_directory, "cancel-retry"), Assets, async (args, token) =>
+            {
+                started = true;
+                await Task.Delay(Timeout.Infinite, token);
+            });
+            var target = new LyricsLine { Start = 5, End = 7, Text = "accepted wording",
+                RetryText = "pending suggestion", PreviousRetryText = "my correction" };
+            var doc = new DocumentViewModel(new AudioDocument([new float[10 * 44100]], 44100, 32))
+            {
+                LyricsTranscript = new LyricsTranscript { RangeEnd = 10, Language = "en", Lines = [target] },
+                LyricsSettings = new LyricsOptions(false, false, false, "large-v3", "en", "", false, false),
+            };
+            Wpf.Show(new LyricsDialog(doc, engine: engine), window =>
+            {
+                ((DataGrid)window.FindName("linesGrid")).SelectedItem = target;
+                ((Button)window.FindName("retryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => started);
+                Assert.False(((Button)window.FindName("restoreRetryButton")).IsEnabled);
+                ((Button)window.FindName("cancelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                PumpUntil(() => ((Button)window.FindName("retryButton")).IsEnabled);
+                Assert.Equal("accepted wording", target.Text);
+                Assert.Equal("pending suggestion", target.RetryText);
+                Assert.Equal("my correction", target.PreviousRetryText);
+                Assert.True(((Button)window.FindName("acceptRetryButton")).IsEnabled);
+                Assert.True(((Button)window.FindName("restoreRetryButton")).IsEnabled);
+                Assert.Contains("Cancelled", ((TextBlock)window.FindName("statusLabel")).Text);
+            });
+            doc.Unhook();
+        });
+    }
+
+    private static void RetryAndWait(Window window)
+    {
+        ((Button)window.FindName("retryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        PumpUntil(() => !((Button)window.FindName("cancelButton")).IsEnabled);
+    }
+
+    private static void PumpUntil(Func<bool> complete)
+    {
+        var deadline = Environment.TickCount64 + 5000;
+        while (!complete() && Environment.TickCount64 < deadline)
+        {
+            Wpf.Pump();
+            Thread.Sleep(5);
+        }
+        Assert.True(complete(), "The lyrics operation must finish without blocking the dialog.");
+    }
+
 }

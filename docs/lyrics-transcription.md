@@ -18,18 +18,35 @@ unsaved edits, without changing the recording or applying the master rack.
   stops song playback that was running before you opened this window.
 - **Review** flags uncertain recognition, not a calibrated accuracy percentage. Even
   high-confidence text can be wrong. Listen while reviewing the result.
-- **Check for missed words (slower)** compares the whole original recording with the
-  separated-vocal transcript, then retries uncovered or unclear passages. With vocal isolation,
-  longer recordings use pauses in the singing to choose overlapping phrase windows with
-  surrounding context. Quiet openings are kept. Short selections and original-mix mode keep
-  their existing retry behavior. Added phrases are marked **Recovered** and need a listening check. If a pass adds
-  words to an existing line, its earlier reading is kept as an alternative. Conflicting readings
-  also remain available with **Use alternate reading**; there is no lyric-completion language model.
+- **Retry unclear passages** rechecks gaps and uncertain lines in the audio being transcribed.
+  **Compare original song** independently checks the full original mix after vocal isolation.
+  Both start enabled. Comparison is available only in **Music · isolate vocals**; music retries
+  are unavailable in **Speech**. Choices are retained when you switch modes.
+  To use only the separated vocals, turn off **Compare original song**. With that option off,
+  direct isolation and transcription uses the same recognition and retry strategy as opening
+  the extracted vocals and choosing **Music · original mix**, with matching settings and audio range.
+  With comparison enabled, longer isolated recordings retain the existing pause-aware retries.
+  Quiet openings are kept. Added phrases are marked **Recovered** and need a listening check.
+  Earlier and conflicting readings remain available with **Use alternate reading**.
+- Select a line and click **Retry this line** to transcribe it again with three seconds of
+  surrounding context on each side, within the original transcript's audio range. This uses
+  the current model, language, hints and audio mode; it skips automatic comparison and further
+  retries. Only words timed inside the selected line are offered. Neighbouring lines and your
+  corrections are unchanged. Choose **Use retry reading** to accept the suggestion, or ignore it.
+  **Restore previous text** is a separate action that restores the wording from before the last
+  accepted retry, including a previously empty line. Further retries preserve that saved wording
+  until you accept another reading or restore it. A retry that finds no different reading clears
+  the old pending suggestion. Cancelling a retry preserves both the saved wording and any earlier
+  suggestion. Line timings and original
+  recognition evidence remain unchanged; no lyric-completion language model is used.
+- Audio mode, quality, language, hints, processor, both recovery options and the selection
+  preference stay with each open audio tab when the dialog closes. They are session settings,
+  not saved in the audio file or restored after closing the tab or app.
 - **Cancel** stops the worker and keeps the previous transcript. Closing the window also
   cancels, waits for the worker, and removes temporary audio.
 - Corrections remain with the open audio tab, but are not included in audio saves or
   autosave recovery. **Export before closing the audio tab or app**. Audio edits retain the
-  old text for export but disable replay until its timings are regenerated.
+  old text for export but disable replay and line retries until its timings are regenerated.
 
 ## Vocals-only audio
 
@@ -40,6 +57,17 @@ the original audio are preserved. On completion the dialog closes and a new, uns
 **song - vocals.wav** tab opens. Use **File > Save As** or **Export** to choose the file location
 and format. The result is stereo, 44.1 kHz, 32-bit float working audio; a selected passage starts
 at zero in its new file. Cancellation opens no new tab and removes temporary output.
+
+A new vocals tab inherits the language, quality and other transcription settings, with
+**Music · original mix** selected so its vocals are not separated again by default.
+
+The open source tab keeps one temporary vocal stem in memory. Transcription, line retries and
+**Vocals to new tab** can reuse it for the same range or a contained passage. Changing language,
+hints or transcription quality does not require separation again. Audio edits, closing the
+source tab, a different processor choice, or a range outside the cached stem prevent reuse.
+A new separation replaces the previous cached range. The cache uses roughly 20 MB per minute
+of stereo vocals, up to the existing 30-minute request limit; it is not saved to the audio file.
+Cancelling a job does not replace the cache with unfinished output.
 
 Separation can leave backing music or introduce artifacts; listen before saving a final copy.
 

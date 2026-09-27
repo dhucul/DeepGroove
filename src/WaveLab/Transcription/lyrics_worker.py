@@ -72,6 +72,9 @@ def seed_inference(numpy, torch, ctranslate2):
 
 
 def run(args):
+    args.vocals_input = getattr(args, "vocals_input", None)
+    if getattr(args, "retry_unclear", None) is None:
+        args.retry_unclear = args.compare
     emit("Loading the local transcription engine…")
     # PyTorch's CUDA wheels contain cuBLAS/cuDNN. Make them visible to CTranslate2 on Windows.
     import torch
@@ -121,7 +124,13 @@ def run(args):
         emit("Stereo cancellation detected; using the stronger channel for analysis…")
 
     audio = original
-    if args.isolate:
+    if args.vocals_input:
+        emit("Using the saved vocal separation…", 0.45)
+        audio, _, _ = decode_for_transcription(args.vocals_input)
+        if abs(len(audio) - len(original)) > 800:
+            raise ValueError("Cached vocals do not match the selected audio duration.")
+        result["isolated_vocals"] = True
+    elif args.isolate:
         from demucs.api import Separator
         emit("Loading the built-in vocal isolation model…", 0.03)
 
@@ -165,13 +174,16 @@ def run(args):
         if use_cuda:
             torch.cuda.empty_cache()
 
+    # Recognition starts from the same random state whether separation was reused or just run.
+    seed_inference(np, torch, ctranslate2)
     emit("Loading the built-in speech model…", 0.48)
     compute = "float16" if use_cuda else "int8"
     model = WhisperModel(args.model, device=device, compute_type=compute, local_files_only=True,
                          cpu_threads=max(1, min(8, os.cpu_count() or 1)))
     result["lines"], result["language"] = recovery.transcribe(
         model, audio, original, args.language, args.speech, args.compare, args.isolate, args.hints, emit,
-        phrase_mode="retry" if args.isolate and args.compare and not args.speech else "off")
+        phrase_mode="retry" if args.isolate and args.compare and args.retry_unclear and not args.speech else "off",
+        retry_unclear=args.retry_unclear)
     save_result(args.output, result)
     emit("Transcription complete. Replay lines marked Review or Recovered.", 1)
 
@@ -189,7 +201,13 @@ def main():
     parser.add_argument("--vocals-only", action="store_true")
     parser.add_argument("--speech", action="store_true")
     parser.add_argument("--compare", action="store_true")
+    parser.add_argument("--retry-unclear", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--vocals-input", type=Path)
     args = parser.parse_args()
+    if args.retry_unclear is None:
+        args.retry_unclear = args.compare
+    if args.vocals_input and (not args.isolate or args.vocals_only):
+        parser.error("--vocals-input requires --isolate and cannot be used with --vocals-only")
     if args.vocals_only:
         args.isolate = True
     if not args.check and (not args.input or not args.output):

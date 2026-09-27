@@ -48,7 +48,18 @@ public partial class LyricsDialog : Window
         };
         languageCombo.SelectedIndex = 0;
         selectionCheck.IsEnabled = _selectionCount > 0;
-        selectionCheck.IsChecked = _selectionCount > 0;
+        selectionCheck.IsChecked = _selectionCount > 0 && (_document.LyricsSelectionOnly ?? true);
+        if (_document.LyricsSettings is { } saved)
+        {
+            modeCombo.SelectedIndex = saved.Speech ? 2 : saved.IsolateVocals ? 0 : 1;
+            qualityCombo.SelectedIndex = saved.Model == "turbo" ? 1 : 0;
+            languageCombo.SelectedValue = saved.Language;
+            if (languageCombo.SelectedIndex < 0) languageCombo.SelectedIndex = 0;
+            hintsText.Text = saved.Hints;
+            deviceCombo.SelectedIndex = saved.CpuOnly ? 1 : 0;
+            retryCheck.IsChecked = saved.RetryUnclear;
+            compareCheck.IsChecked = saved.CompareOriginal;
+        }
         RefreshTranscript();
         RefreshControls();
         Closed += (_, _) => _stop?.Invoke();
@@ -64,6 +75,7 @@ public partial class LyricsDialog : Window
         cancelButton.IsEnabled = Busy;
         linesGrid.IsReadOnly = Busy;
         copyButton.IsEnabled = exportButton.IsEnabled = !Busy && Transcript?.Lines.Count > 0;
+        RefreshOptions();
         RefreshLine();
     }
 
@@ -86,6 +98,16 @@ public partial class LyricsDialog : Window
         var line = linesGrid.SelectedItem as LyricsLine;
         playButton.IsEnabled = !Busy && line != null && _play != null && Transcript?.SourceEditVersion == _version;
         alternativeButton.IsEnabled = !Busy && !string.IsNullOrWhiteSpace(line?.AlternativeText);
+        retryButton.IsEnabled = !Busy && _engine.IsReady && line != null
+            && Transcript?.SourceEditVersion == _version && _document.Doc.EditVersion == _version;
+        acceptRetryButton.IsEnabled = !Busy && !string.IsNullOrWhiteSpace(line?.RetryText);
+        restoreRetryButton.IsEnabled = !Busy && line?.PreviousRetryText != null;
+        restoreRetryButton.ToolTip = line?.PreviousRetryText is { } previous
+            ? string.IsNullOrEmpty(previous) ? "Restore the previous empty line." : "Previous text: " + previous
+            : "Restore the wording from before the last accepted retry.";
+        retryLabel.Text = string.IsNullOrWhiteSpace(line?.RetryText) ? ""
+            : "Retry suggestion: " + line.RetryText;
+        retryLabel.Visibility = string.IsNullOrWhiteSpace(line?.RetryText) ? Visibility.Collapsed : Visibility.Visible;
         string note = line?.Recovered == true ? line.RecoveryNote : "";
         alternativeLabel.Text = string.IsNullOrWhiteSpace(line?.AlternativeText)
             ? string.IsNullOrWhiteSpace(note) ? "Select a line to replay it. Review and Recovered lines need a listening check." : note
@@ -132,12 +154,10 @@ public partial class LyricsDialog : Window
             "Transcribe again", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
         int start = selectionCheck.IsChecked == true ? _selectionStart : 0;
         int count = selectionCheck.IsChecked == true ? _selectionCount : _snapshot[0].Length;
-        var options = new LyricsOptions(modeCombo.SelectedIndex == 0, modeCombo.SelectedIndex == 2,
-            compareCheck.IsChecked == true, qualityCombo.SelectedIndex == 0 ? "large-v3" : "turbo",
-            ((LanguageChoice)languageCombo.SelectedItem).Code, hintsText.Text.Trim(), deviceCombo.SelectedIndex == 1);
+        var options = SaveOptions();
         await RunAsync(async (progress, token) =>
         {
-            var result = await _engine.TranscribeAsync(_snapshot, _rate, start, count, _document.Title, _version, options, progress, token);
+            var result = await _engine.TranscribeAsync(_snapshot, _rate, start, count, _document.Title, _version, options, progress, token, _document.LyricsVocals);
             _document.LyricsTranscript = result;
             RefreshTranscript();
             statusLabel.Text = result.Lines.Count == 0 ? "No words detected. Try the original mix, a shorter selection, or the song's language."
@@ -150,15 +170,87 @@ public partial class LyricsDialog : Window
         CommitEdits();
         int start = selectionCheck.IsChecked == true ? _selectionStart : 0;
         int count = selectionCheck.IsChecked == true ? _selectionCount : _snapshot[0].Length;
-        bool cpuOnly = deviceCombo.SelectedIndex == 1;
+        bool cpuOnly = SaveOptions().CpuOnly;
         await RunAsync(async (progress, token) =>
         {
             var vocals = await _engine.IsolateVocalsAsync(_snapshot, _rate, start, count,
-                _document.Title, cpuOnly, progress, token);
+                _document.Title, cpuOnly, progress, token, _document.LyricsVocals, _version);
             token.ThrowIfCancellationRequested();
             IsolatedVocals = vocals;
             _closeWhenFinished = true;
         });
+    }
+
+    private LyricsOptions SaveOptions()
+    {
+        var options = new LyricsOptions(modeCombo.SelectedIndex == 0, modeCombo.SelectedIndex == 2,
+            compareCheck.IsChecked == true, qualityCombo.SelectedIndex == 0 ? "large-v3" : "turbo",
+            (languageCombo.SelectedItem as LanguageChoice)?.Code, hintsText.Text.Trim(),
+            deviceCombo.SelectedIndex == 1, retryCheck.IsChecked == true);
+        _document.LyricsSettings = options;
+        // Opening with no selection must not erase a previous selection preference.
+        if (_selectionCount > 0) _document.LyricsSelectionOnly = selectionCheck.IsChecked == true;
+        return options;
+    }
+
+    private void RefreshOptions()
+    {
+        if (retryCheck == null || compareCheck == null) return;
+        retryCheck.IsEnabled = !Busy && modeCombo.SelectedIndex != 2;
+        compareCheck.IsEnabled = !Busy && modeCombo.SelectedIndex == 0;
+    }
+
+    private void OnModeChanged(object sender, SelectionChangedEventArgs e) => RefreshOptions();
+
+    private async void OnRetryLine(object sender, RoutedEventArgs e)
+    {
+        if (Busy || linesGrid.SelectedItem is not LyricsLine line || Transcript is not { } transcript
+            || transcript.SourceEditVersion != _version || _document.Doc.EditVersion != _version) return;
+        CommitEdits();
+        var (start, count) = LyricsLineRetry.Range(line, transcript, _rate, _snapshot[0].Length);
+        if (count <= 0) return;
+        var options = SaveOptions();
+        options = options with { CompareOriginal = false, RetryUnclear = false,
+            Language = options.Language ?? (string.IsNullOrWhiteSpace(transcript.Language) ? null : transcript.Language) };
+        await RunAsync(async (progress, token) =>
+        {
+            var result = await _engine.TranscribeAsync(_snapshot, _rate, start, count, _document.Title,
+                _version, options, progress, token, _document.LyricsVocals);
+            token.ThrowIfCancellationRequested();
+            string suggestion = LyricsLineRetry.Suggestion(line, result, transcript.Lines);
+            if (string.IsNullOrWhiteSpace(suggestion) || suggestion == line.Text.Trim())
+            {
+                line.RetryText = "";
+                RefreshLine();
+                statusLabel.Text = "The retry found no different reading for this line. Your text has been kept.";
+                return;
+            }
+            line.RetryText = suggestion;
+            linesGrid.SelectedItem = line;
+            RefreshLine();
+            statusLabel.Text = "Retry ready. Listen to the line, then choose Use retry reading if it is better. Your text has been kept.";
+        });
+    }
+
+    private void OnAcceptRetry(object sender, RoutedEventArgs e)
+    {
+        if (Busy || linesGrid.SelectedItem is not LyricsLine line || string.IsNullOrWhiteSpace(line.RetryText)) return;
+        CommitEdits();
+        line.PreviousRetryText = line.Text;
+        line.Text = line.RetryText;
+        line.RetryText = "";
+        RefreshLine();
+        statusLabel.Text = "Only this line's text was changed. Its timings and the other lines were kept.";
+    }
+
+    private void OnRestoreRetry(object sender, RoutedEventArgs e)
+    {
+        if (Busy || linesGrid.SelectedItem is not LyricsLine line || line.PreviousRetryText == null) return;
+        CommitEdits();
+        line.Text = line.PreviousRetryText;
+        line.PreviousRetryText = null;
+        RefreshLine();
+        statusLabel.Text = "This line's previous wording was restored. Any new retry suggestion is still available.";
     }
 
     private void OnReplay(object sender, RoutedEventArgs e)
@@ -177,7 +269,7 @@ public partial class LyricsDialog : Window
 
     private void OnUseAlternative(object sender, RoutedEventArgs e)
     {
-        if (linesGrid.SelectedItem is not LyricsLine line || string.IsNullOrWhiteSpace(line.AlternativeText)) return;
+        if (Busy || linesGrid.SelectedItem is not LyricsLine line || string.IsNullOrWhiteSpace(line.AlternativeText)) return;
         (line.Text, line.AlternativeText) = (line.AlternativeText, line.Text);
         RefreshLine();
     }
@@ -222,6 +314,7 @@ public partial class LyricsDialog : Window
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         CommitEdits();
+        SaveOptions();
         if (!Busy) return;
         _closeWhenFinished = true;
         _cancellation?.Cancel();

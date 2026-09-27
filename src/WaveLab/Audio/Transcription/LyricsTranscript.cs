@@ -19,6 +19,11 @@ public sealed class LyricsLine : ObservableObject
     public string RecoveryNote { get; set; } = "";
     public string ModelText { get; set; } = "";
     public string AlternativeText { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string RetryText { get; set; } = "";
+    // Null means no accepted retry to restore; an empty string is valid previous wording.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? PreviousRetryText { get; set; }
     public List<LyricsWord> Words { get; set; } = [];
     public string TimeLabel => TimeSpan.FromSeconds(Start).ToString(@"hh\:mm\:ss\.ff", CultureInfo.InvariantCulture);
     public string ReviewLabel => Recovered ? "Recovered" : NeedsReview ? "Review" : "";

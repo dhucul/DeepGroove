@@ -351,8 +351,11 @@ def transcribe_phrases(model, audio, windows, language, options, report, lower, 
     return lines
 
 
-def transcribe(model, audio, original, language, speech, compare, isolated, hints, report, *, phrase_mode="off"):
+def transcribe(model, audio, original, language, speech, compare, isolated, hints, report, *, phrase_mode="off", retry_unclear=None):
     """Return a transcript and detected language, with music-specific coverage checks."""
+    # Preserve the combined switch for research callers; the app passes both choices explicitly.
+    if retry_unclear is None:
+        retry_unclear = compare
     duration = len(audio) / RATE
     options = music_options(speech, hints)
     prepared = prepare_audio(audio)
@@ -369,9 +372,9 @@ def transcribe(model, audio, original, language, speech, compare, isolated, hint
             if line and has_audio(prepared[int(line["start"] * RATE):int(line["end"] * RATE)]):
                 lines.append(line)
             report("Transcribing words and timing…", .50 + .23 * min(1, segment.end / duration))
-    if not compare or speech:
+    if speech or not (compare or retry_unclear):
         return lines, info.language
-    if isolated:
+    if isolated and compare:
         report("Checking the whole original recording for missed words…", .74)
         other, _ = model.transcribe(prepare_audio(original), language=info.language, task="transcribe", **options)
         candidates = []
@@ -381,6 +384,8 @@ def transcribe(model, audio, original, language, speech, compare, isolated, hint
                 candidates.append(line)
             report("Checking the whole original recording for missed words…", .74 + .11 * min(1, segment.end / duration))
         lines = merge_passes(lines, candidates, "the original mix")
+    if not retry_unclear:
+        return lines, info.language
     windows = recovery_windows(lines, duration)
     if phrase_mode == "retry" and len(boundaries) > 1:
         needed = windows

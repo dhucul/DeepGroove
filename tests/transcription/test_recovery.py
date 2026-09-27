@@ -21,6 +21,54 @@ def line(start, end, text, probability=.9, logprob=-.1):
 
 
 class RecoveryTests(unittest.TestCase):
+
+    def test_original_comparison_and_vocal_retries_are_independent(self):
+        audio = np.full(10 * 16000, .25, dtype=np.float32)
+        original = np.full_like(audio, .5)
+        for compare in (False, True):
+            for retry in (False, True):
+                with self.subTest(compare=compare, retry=retry):
+                    class Model:
+                        def __init__(self):
+                            self.calls = []
+                        def transcribe(self, samples, **options):
+                            self.calls.append((len(samples), float(samples[0])))
+                            return iter([]), SimpleNamespace(language="en")
+                    model = Model()
+                    with patch.object(recovery, "recovery_windows", return_value=[(0, 4)]) as windows:
+                        recovery.transcribe(model, audio, original, "en", False, compare, True,
+                                            "", lambda *_: None, retry_unclear=retry)
+                    expected = [(len(audio), .25)]
+                    if compare:
+                        expected.append((len(original), .5))
+                    if retry:
+                        expected.append((4 * 16000, .25))
+                    self.assertEqual(model.calls, expected)
+                    self.assertEqual(windows.call_count, int(retry))
+
+    def test_vocals_only_workflows_have_identical_retries_without_original_comparison(self):
+        audio = np.full(45 * 16000, .25, dtype=np.float32)
+        calls = []
+        class Model:
+            def transcribe(self, samples, **options):
+                calls.append((len(samples), options))
+                return iter([]), SimpleNamespace(language="en")
+        recovery.transcribe(Model(), audio, audio * 2, "en", False, False, True,
+                            "", lambda *_: None, retry_unclear=True)
+        direct = list(calls)
+        calls.clear()
+        recovery.transcribe(Model(), audio, audio, "en", False, False, False,
+                            "", lambda *_: None, retry_unclear=True)
+        self.assertEqual(direct, calls)
+
+    def test_speech_does_not_run_music_recovery_even_when_choices_are_saved(self):
+        class Model:
+            def transcribe(self, audio, **options):
+                return iter([]), SimpleNamespace(language="en")
+        audio = np.ones(16000, dtype=np.float32)
+        with patch.object(recovery, "recovery_windows", side_effect=AssertionError("music retry")):
+            recovery.transcribe(Model(), audio, audio, "en", True, True, True,
+                                "", lambda *_: None, retry_unclear=True)
     def test_phrase_windows_cover_quiet_openings_and_the_complete_recording(self):
         samples = np.full(round(132.5 * 16000), .1, dtype=np.float32)
         samples[:9 * 16000] = .00001

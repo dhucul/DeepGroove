@@ -22,6 +22,24 @@ def segment(**changes):
 
 
 class WorkerTests(unittest.TestCase):
+
+    def test_recovery_switches_can_be_selected_independently(self):
+        for flags, compare, retry in ((["--retry-unclear"], False, True),
+                                      (["--compare", "--no-retry-unclear"], True, False),
+                                      (["--compare", "--retry-unclear"], True, True),
+                                      (["--no-retry-unclear"], False, False)):
+            with patch.object(worker.sys, "argv", ["worker", "--input", "song.wav", "--output", "result.json", *flags]):
+                with patch.object(worker, "run") as run:
+                    worker.main()
+            self.assertEqual(run.call_args.args[0].compare, compare)
+            self.assertEqual(run.call_args.args[0].retry_unclear, retry)
+
+    def test_cached_vocals_require_isolation_and_cannot_replace_an_extraction(self):
+        for flags in ([], ["--vocals-only"]):
+            with patch.object(worker.sys, "argv", ["worker", "--input", "song.wav", "--output", "result.json",
+                                                   "--vocals-input", "vocals.wav", *flags]):
+                with self.assertRaises(SystemExit):
+                    worker.main()
     def test_vocals_only_always_enables_separation_without_requiring_transcription_options(self):
         with patch.object(worker.sys, "argv", ["lyrics_worker", "--vocals-only", "--input", "song.wav", "--output", "result.json"]):
             with patch.object(worker, "run") as run:

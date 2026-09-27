@@ -78,7 +78,7 @@
                     <Grid.ColumnDefinitions><ColumnDefinition Width="1.2*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                     <StackPanel Margin="0,0,12,0">
                         <TextBlock Text="AUDIO" Style="{StaticResource UpperLabel}"/>
-                        <ComboBox x:Name="modeCombo" SelectedIndex="0" Margin="0,6,0,0" AutomationProperties.Name="Audio type">
+                        <ComboBox x:Name="modeCombo" SelectedIndex="0" Margin="0,6,0,0" AutomationProperties.Name="Audio type" SelectionChanged="OnModeChanged">
                             <ComboBoxItem Content="Music · isolate vocals"/>
                             <ComboBoxItem Content="Music · original mix"/>
                             <ComboBoxItem Content="Speech"/>
@@ -113,8 +113,10 @@
                     </StackPanel>
                     <StackPanel Grid.Column="1" VerticalAlignment="Bottom">
                         <CheckBox x:Name="selectionCheck" Content="Selected audio only" Margin="0,0,0,8"/>
-                        <CheckBox x:Name="compareCheck" Content="Check for missed words (slower)" IsChecked="True"
-                                  ToolTip="For music: compare the whole original recording and retry uncovered or unclear passages. Added words are marked Recovered for you to verify."/>
+                        <CheckBox x:Name="retryCheck" Content="Retry unclear passages" IsChecked="True" Margin="0,0,0,8"
+                                  ToolTip="Recheck gaps and uncertain passages in the audio being transcribed. Works independently of comparison with the original song."/>
+                        <CheckBox x:Name="compareCheck" Content="Compare original song" IsChecked="True"
+                                  ToolTip="After isolating vocals, also transcribe the original song to look for missing words. Turn off to use only the vocals. Recovered words need a listening check."/>
                     </StackPanel>
                 </Grid>
                 <DockPanel Margin="0,14,0,0">
@@ -150,6 +152,14 @@
             </Grid>
             <StackPanel Grid.Row="4" Margin="0,10,0,0">
                 <TextBlock x:Name="alternativeLabel" TextWrapping="Wrap" Foreground="{StaticResource Muted}" MaxHeight="52" TextTrimming="CharacterEllipsis"/>
+                <TextBlock x:Name="retryLabel" TextWrapping="Wrap" Foreground="{StaticResource Text}" MaxHeight="52"
+                           Visibility="Collapsed" Margin="0,6,0,0" TextTrimming="CharacterEllipsis"/>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <Button x:Name="retryButton" Content="Retry this line" Style="{StaticResource Action}" Click="OnRetryLine" IsEnabled="False"
+                            ToolTip="Transcribe this line again with surrounding audio. Offers a reading without replacing your text or other lines."/>
+                    <Button x:Name="acceptRetryButton" Content="Use retry reading" Style="{StaticResource Action}" Click="OnAcceptRetry" IsEnabled="False"/>
+                    <Button x:Name="restoreRetryButton" Content="Restore previous text" Style="{StaticResource Action}" Click="OnRestoreRetry" IsEnabled="False"/>
+                </StackPanel>
                 <DockPanel Margin="0,8,0,0">
                     <Button x:Name="playButton" Content="Replay line" Style="{StaticResource Action}" Click="OnReplay" IsEnabled="False" DockPanel.Dock="Left"/>
                     <Button x:Name="stopButton" Content="Stop" Style="{StaticResource Action}" Click="OnStop" DockPanel.Dock="Left"/>
