@@ -403,7 +403,10 @@ public partial class MainWindow : Window
         {
             _vm.AddGeneratedDocument(vocals, "Isolated vocals opened in a new tab. Use Save As or Export to keep an audio file.");
             if (_vm.ActiveDocument is { } vocalTab && document.LyricsSettings is { } settings)
+            {
                 vocalTab.LyricsSettings = settings with { IsolateVocals = false, Speech = false };
+                vocalTab.LyricsReplacementText = document.LyricsReplacementText;
+            }
         }
     }
 

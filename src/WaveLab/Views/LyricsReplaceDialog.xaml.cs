@@ -12,9 +12,10 @@ public partial class LyricsReplaceDialog : Window
     private readonly Stack<IReadOnlyList<LyricsTextReplacement.Change>> _history;
     private IReadOnlyList<LyricsTextReplacement.Change> _preview = [];
     private bool _ready;
+    internal string? AppliedReplacement { get; private set; }
 
     internal LyricsReplaceDialog(IReadOnlyList<LyricsLine> lines, LyricsLine? selected,
-        Stack<IReadOnlyList<LyricsTextReplacement.Change>> history)
+        Stack<IReadOnlyList<LyricsTextReplacement.Change>> history, string? initialReplacement = null)
     {
         _lines = lines;
         _selected = selected != null && lines.Contains(selected) ? selected : null;
@@ -22,7 +23,8 @@ public partial class LyricsReplaceDialog : Window
         InitializeComponent();
         selectedScope.IsEnabled = _selected != null;
         scopeCombo.SelectedIndex = _selected != null ? 0 : 1;
-        findText.Text = replacementText.Text = _selected?.Text ?? "";
+        findText.Text = _selected?.Text ?? "";
+        replacementText.Text = initialReplacement ?? findText.Text;
         _ready = true;
         RefreshPreview();
         Loaded += (_, _) =>
@@ -57,6 +59,7 @@ public partial class LyricsReplaceDialog : Window
             return;
         }
         int matches = _preview.Sum(c => c.Matches), lines = _preview.Count;
+        AppliedReplacement = replacementText.Text;
         _history.Push(_preview);
         RefreshPreview();
         statusLabel.Text = $"Replaced {matches} occurrence(s) in {lines} line(s). You can replace another phrase or undo this change.";

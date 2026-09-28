@@ -21,7 +21,7 @@ public sealed class LyricsLine : ObservableObject
     public string AlternativeText { get; set; } = "";
     [System.Text.Json.Serialization.JsonIgnore]
     public string RetryText { get; set; } = "";
-    // Restore the last correction, retry or spelling suggestion. Null means no saved wording;
+    // Restore the last correction or accepted retry. Null means no saved wording;
     // an empty string is a valid previous line.
     [System.Text.Json.Serialization.JsonIgnore]
     public string? PreviousRetryText { get; set; }

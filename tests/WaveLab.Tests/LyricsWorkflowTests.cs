@@ -407,6 +407,7 @@ public sealed class LyricsWorkflowTests
                         AlternativeText = "old alternative", RetryText = "pending suggestion", PreviousRetryText = "saved wording" }] },
                 LyricsSettings = new LyricsOptions(false, true, false, "turbo", "fr", "Élodie", true, false),
                 LyricsSelectionOnly = false,
+                LyricsReplacementText = "Élodie",
             };
             if (hasSelection) doc.SetSelection(44100, 88200);
             int selectionStart = doc.SelStart, selectionEnd = doc.SelEnd;
@@ -433,7 +434,7 @@ public sealed class LyricsWorkflowTests
                 Assert.Empty(grid.Items);
                 Assert.Null(grid.SelectedItem);
                 Assert.Equal(Visibility.Visible, ((TextBlock)window.FindName("emptyLabel")).Visibility);
-                Assert.Empty(((TextBox)window.FindName("hintsText")).Text);
+                Assert.Empty(((TextBox)window.FindName("replacementText")).Text);
                 foreach (string name in new[] { "modeCombo", "qualityCombo", "languageCombo", "deviceCombo" })
                     Assert.Equal(0, ((ComboBox)window.FindName(name)).SelectedIndex);
                 Assert.Equal(hasSelection, ((CheckBox)window.FindName("selectionCheck")).IsChecked);
@@ -468,7 +469,7 @@ public sealed class LyricsWorkflowTests
             {
                 Assert.Null(doc.LyricsTranscript);
                 Assert.Empty(((DataGrid)window.FindName("linesGrid")).Items);
-                Assert.Empty(((TextBox)window.FindName("hintsText")).Text);
+                Assert.Empty(((TextBox)window.FindName("replacementText")).Text);
                 Assert.Equal(0, ((ComboBox)window.FindName("modeCombo")).SelectedIndex);
                 Assert.Equal(hasSelection, ((CheckBox)window.FindName("selectionCheck")).IsChecked);
             });
@@ -489,7 +490,7 @@ public sealed class LyricsWorkflowTests
     [Theory]
     [InlineData(920, 740)]
     [InlineData(1080, 800)]
-    public void SpellingHintsAcceptKeyboardInputAndDisplayTheWholeTextLine(int width, int height)
+    public void ReplacementTextAcceptsKeyboardInputAndDisplaysTheWholeTextLine(int width, int height)
     {
         Wpf.Run(() =>
         {
@@ -499,7 +500,7 @@ public sealed class LyricsWorkflowTests
                 window.Width = width;
                 window.Height = height;
                 window.UpdateLayout();
-                var hints = (TextBox)window.FindName("hintsText");
+                var hints = (TextBox)window.FindName("replacementText");
                 Assert.True(hints.IsEnabled);
                 Assert.False(hints.IsReadOnly);
                 Assert.Same(hints, Keyboard.Focus(hints));
@@ -512,9 +513,9 @@ public sealed class LyricsWorkflowTests
                 var host = (ScrollViewer)hints.Template.FindName("PART_ContentHost", hints);
                 var caret = hints.GetRectFromCharacterIndex(0);
                 Assert.True(host.ViewportHeight >= caret.Height - .1,
-                    "The hints field must leave room to display its text, not merely store it.");
+                    "The replacement field must leave room to display its text, not merely store it.");
                 Assert.True(caret.Top >= 0 && caret.Bottom <= hints.ActualHeight);
-                string? renderPath = Environment.GetEnvironmentVariable("WAVELAB_HINTS_RENDER");
+                string? renderPath = Environment.GetEnvironmentVariable("WAVELAB_CORRECTION_RENDER");
                 if (!string.IsNullOrEmpty(renderPath))
                 {
                     var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(width, height, 96, 96,
@@ -526,7 +527,7 @@ public sealed class LyricsWorkflowTests
                     png.Save(stream);
                 }
             });
-            Assert.Equal("Élodie, Rhiannon", doc.LyricsSettings!.Hints);
+            Assert.Equal("Élodie, Rhiannon", doc.LyricsReplacementText);
             doc.Unhook();
         });
     }
@@ -542,7 +543,7 @@ public sealed class LyricsWorkflowTests
                 ((ComboBox)window.FindName("modeCombo")).SelectedIndex = 1;
                 ((ComboBox)window.FindName("qualityCombo")).SelectedIndex = 1;
                 ((ComboBox)window.FindName("languageCombo")).SelectedValue = "fr";
-                ((TextBox)window.FindName("hintsText")).Text = "Élodie";
+                ((TextBox)window.FindName("replacementText")).Text = "Élodie";
                 ((ComboBox)window.FindName("deviceCombo")).SelectedIndex = 1;
                 ((CheckBox)window.FindName("retryCheck")).IsChecked = false;
                 Assert.False(((CheckBox)window.FindName("compareCheck")).IsEnabled);
@@ -552,7 +553,7 @@ public sealed class LyricsWorkflowTests
                 Assert.Equal(1, ((ComboBox)window.FindName("modeCombo")).SelectedIndex);
                 Assert.Equal(1, ((ComboBox)window.FindName("qualityCombo")).SelectedIndex);
                 Assert.Equal("fr", ((ComboBox)window.FindName("languageCombo")).SelectedValue);
-                Assert.Equal("Élodie", ((TextBox)window.FindName("hintsText")).Text);
+                Assert.Equal("Élodie", ((TextBox)window.FindName("replacementText")).Text);
                 Assert.Equal(1, ((ComboBox)window.FindName("deviceCombo")).SelectedIndex);
                 Assert.False(((CheckBox)window.FindName("retryCheck")).IsChecked);
                 ((ComboBox)window.FindName("modeCombo")).SelectedIndex = 0;

@@ -180,6 +180,119 @@ public sealed class LyricsBundleTests : IDisposable
     }
 
     [Theory]
+    [InlineData(false, 920, 740, "Roanne")]
+    [InlineData(true, 1080, 800, "Come back to the river.")]
+    [InlineData(false, 920, 740, "  Roanne  ")]
+    public void CorrectionFieldSeedsTheSelectedPhraseAndKeepsAppliedEditsConnected(bool speech, int width, int height, string correction)
+    {
+        Wpf.Run(() =>
+        {
+            var target = new LyricsLine { Start = 0, End = 1, Text = "Oh, where", ModelText = "Oh, where",
+                Words = [new(0, 1, " Oh, where", .8)] };
+            var neighbor = new LyricsLine { Start = 1, End = 2, Text = "Oh, where" };
+            var words = target.Words;
+            var doc = new DocumentViewModel(new AudioDocument([new float[2 * 44100]], 44100, 32))
+            {
+                LyricsTranscript = new LyricsTranscript { RangeEnd = 2, Lines = [target, neighbor] },
+                LyricsSettings = new LyricsOptions(false, speech, false, "large-v3", "en", "old recognition hint", false),
+            };
+            var engine = new LyricsEngine(assets: Assets);
+            Wpf.Show(new LyricsDialog(doc, engine: engine), parent =>
+            {
+                parent.Width = width;
+                parent.Height = height;
+                Assert.Null(parent.FindName("hintsText"));
+                Assert.Null(parent.FindName("spellingSuggestionPanel"));
+                var draft = (TextBox)parent.FindName("replacementText");
+                var open = (Button)parent.FindName("replaceTextButton");
+                var grid = (DataGrid)parent.FindName("linesGrid");
+                Assert.Empty(draft.Text); // Legacy recognition hints are not replacement rules.
+                draft.Text = correction;
+                grid.SelectedItem = target;
+                parent.UpdateLayout();
+                Wpf.Pump();
+                Assert.True(grid.ActualHeight > 80);
+                var fieldCorner = draft.TransformToAncestor(parent).Transform(new Point(draft.ActualWidth, 0));
+                var buttonCorner = open.TransformToAncestor(parent).Transform(new Point());
+                Assert.True(buttonCorner.X >= fieldCorner.X);
+                Assert.True(buttonCorner.Y >= fieldCorner.Y && buttonCorner.Y < fieldCorner.Y + draft.ActualHeight);
+                Assert.True(open.TransformToAncestor(parent).Transform(new Point(open.ActualWidth, open.ActualHeight)).X < parent.ActualWidth);
+                if (correction == "Roanne") RenderConnectedCorrection(parent, "main", width, height);
+
+                // Opening or dismissing the preview must not change the transcript.
+                InspectCorrectionPreview(parent, open, dialog =>
+                {
+                    Assert.Equal("Oh, where", ((TextBox)dialog.FindName("findText")).Text);
+                    Assert.Equal(correction, ((TextBox)dialog.FindName("replacementText")).Text);
+                    Assert.Equal(0, ((ComboBox)dialog.FindName("scopeCombo")).SelectedIndex);
+                    Assert.True(((Button)dialog.FindName("applyButton")).IsEnabled);
+                    var change = Assert.IsType<LyricsTextReplacement.Change>(Assert.Single(((DataGrid)dialog.FindName("previewGrid")).Items));
+                    Assert.Equal(correction, change.After);
+                    Assert.Equal("Oh, where", target.Text);
+                    if (correction == "Roanne") RenderConnectedCorrection(dialog, "preview", 900, 660);
+                });
+                Assert.Equal("Oh, where", target.Text);
+                Assert.Equal(correction, doc.LyricsReplacementText);
+                Assert.Empty(doc.LyricsSettings!.Hints);
+                InspectCorrectionPreview(parent, open, dialog =>
+                    ((Button)dialog.FindName("applyButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
+                Assert.Equal(correction, target.Text);
+                Assert.Equal("Oh, where", neighbor.Text);
+                Assert.Equal(correction, draft.Text);
+                Assert.Same(words, target.Words);
+                Assert.Equal("Oh, where", target.ModelText);
+                Assert.Equal((0d, 1d), (target.Start, target.End));
+
+                // A correction edited in the preview also updates the main field after Apply.
+                InspectCorrectionPreview(parent, open, dialog =>
+                {
+                    Assert.False(((Button)dialog.FindName("applyButton")).IsEnabled);
+                    ((TextBox)dialog.FindName("replacementText")).Text = "A complete corrected phrase.";
+                    ((Button)dialog.FindName("applyButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                });
+                Assert.Equal("A complete corrected phrase.", target.Text);
+                Assert.Equal(target.Text, draft.Text);
+                Assert.Equal(target.Text, doc.LyricsReplacementText);
+                ((Button)parent.FindName("restoreRetryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Equal(correction, target.Text);
+            });
+            Wpf.Show(new LyricsDialog(doc, engine: engine), reopened =>
+                Assert.Equal("A complete corrected phrase.", ((TextBox)reopened.FindName("replacementText")).Text));
+            doc.Unhook();
+        });
+    }
+
+    private static void InspectCorrectionPreview(Window parent, Button open, Action<LyricsReplaceDialog> inspect)
+    {
+        bool inspected = false;
+        Exception? failure = null;
+        parent.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() =>
+        {
+            var dialog = parent.OwnedWindows.OfType<LyricsReplaceDialog>().Single();
+            dialog.Left = dialog.Top = -10_000;
+            try { inspect(dialog); inspected = true; }
+            catch (Exception ex) { failure = ex; }
+            finally { dialog.Close(); }
+        }));
+        open.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        if (failure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+        Assert.True(inspected);
+    }
+
+    private static void RenderConnectedCorrection(Window window, string view, int width, int height)
+    {
+        string? path = Environment.GetEnvironmentVariable("WAVELAB_CONNECTED_CORRECTION_RENDER");
+        if (path == null) return;
+        window.UpdateLayout();
+        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(width, height, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+        bitmap.Render(window);
+        var png = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        png.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+        using var output = File.Create(path + $"-{view}-{width}.png");
+        png.Save(output);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void LineRetryRunsWithContextAndLeavesEditsUntouchedUntilAccepted(bool speech)
@@ -209,7 +322,7 @@ public sealed class LyricsBundleTests : IDisposable
             Wpf.Show(new LyricsDialog(doc, engine: engine), window =>
             {
                 ((DataGrid)window.FindName("linesGrid")).SelectedItem = target;
-                ((TextBox)window.FindName("hintsText")).Text = "Roanne, Élodie";
+                ((TextBox)window.FindName("replacementText")).Text = "Roanne, Élodie";
                 ((Button)window.FindName("retryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 var deadline = Environment.TickCount64 + 5000;
                 while (((Button)window.FindName("cancelButton")).IsEnabled && Environment.TickCount64 < deadline)
@@ -240,7 +353,9 @@ public sealed class LyricsBundleTests : IDisposable
                 Assert.Contains("--no-retry-unclear", Assert.Single(jobs));
                 Assert.DoesNotContain("--compare", jobs[0]);
                 Assert.Equal("en", jobs[0][jobs[0].IndexOf("--language") + 1]);
-                Assert.Equal("Roanne, Élodie", jobs[0][jobs[0].IndexOf("--hints") + 1]);
+                Assert.DoesNotContain("--hints", jobs[0]);
+                Assert.Equal("Roanne, Élodie", doc.LyricsReplacementText);
+                Assert.Empty(doc.LyricsSettings!.Hints);
                 Assert.Equal(speech, jobs[0].Contains("--speech"));
                 Assert.True(doc.LyricsSettings!.RetryUnclear); // Temporary retry choices are not saved.
                 ((Button)window.FindName("acceptRetryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

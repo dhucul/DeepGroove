@@ -235,6 +235,7 @@ public sealed class LyricsTransportTests : IDisposable
             var sourceTab = main.ActiveDocument!;
             var transcript = new WaveLab.Audio.Transcription.LyricsTranscript();
             sourceTab.LyricsTranscript = transcript;
+            sourceTab.LyricsReplacementText = "Roanne";
             var result = new AudioDocument([new float[44100], new float[44100]], 44100, 32)
                 { Title = "Original - vocals.wav", RequiresSaveAs = true };
             shell.Dispatcher.BeginInvoke(new Action(() =>
@@ -254,6 +255,7 @@ public sealed class LyricsTransportTests : IDisposable
             if (completed)
             {
                 Assert.Same(result, main.ActiveDocument!.Doc);
+                Assert.Equal("Roanne", main.ActiveDocument.LyricsReplacementText);
                 Assert.True(result.Dirty);
                 Assert.Null(result.FilePath);
                 result.MarkSaved(); // The test shell can close without prompting for this generated file.

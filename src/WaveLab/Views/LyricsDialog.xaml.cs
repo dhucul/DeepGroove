@@ -27,7 +27,6 @@ public partial class LyricsDialog : Window
     private bool _wholePaused;
     private CancellationTokenSource? _cancellation;
     private bool _closeWhenFinished;
-    private LyricsLine? _observedLine;
     private readonly Stack<IReadOnlyList<LyricsTextReplacement.Change>> _replacementHistory = new();
     private bool Busy => _cancellation != null;
     public AudioDocument? IsolatedVocals { get; private set; }
@@ -69,16 +68,15 @@ public partial class LyricsDialog : Window
             qualityCombo.SelectedIndex = saved.Model == "turbo" ? 1 : 0;
             languageCombo.SelectedValue = saved.Language;
             if (languageCombo.SelectedIndex < 0) languageCombo.SelectedIndex = 0;
-            hintsText.Text = saved.Hints;
             deviceCombo.SelectedIndex = saved.CpuOnly ? 1 : 0;
             retryCheck.IsChecked = saved.RetryUnclear;
             compareCheck.IsChecked = saved.CompareOriginal;
         }
+        replacementText.Text = _document.LyricsReplacementText;
         RefreshTranscript();
         RefreshControls();
         Closed += (_, _) =>
         {
-            if (_observedLine != null) _observedLine.PropertyChanged -= OnLineTextChanged;
             _playbackCancellation?.Cancel();
             _stop?.Invoke();
         };
@@ -89,7 +87,7 @@ public partial class LyricsDialog : Window
         bool ready = _engine.IsReady;
         engineLabel.Text = ready ? "Ready to transcribe · built into Deep Groove."
             : "Transcription files are missing from this installation. Reinstall Deep Groove or rebuild the complete Release app.";
-        optionsPanel.IsEnabled = hintsPanel.IsEnabled = !Busy;
+        optionsPanel.IsEnabled = correctionPanel.IsEnabled = !Busy;
         transcribeButton.IsEnabled = vocalsButton.IsEnabled = ready && !Busy;
         cancelButton.IsEnabled = Busy;
         clearButton.IsEnabled = !Busy;
@@ -121,7 +119,6 @@ public partial class LyricsDialog : Window
     {
         if (playButton == null) return; // SelectionChanged can fire during InitializeComponent.
         var line = linesGrid.SelectedItem as LyricsLine;
-        RefreshSpellingSuggestion();
         playButton.IsEnabled = !Busy && !PlaybackPending && line != null && _play != null && Transcript?.SourceEditVersion == _version;
         alternativeButton.IsEnabled = !Busy && !string.IsNullOrWhiteSpace(line?.AlternativeText);
         retryButton.IsEnabled = !Busy && _engine.IsReady && line != null
@@ -130,7 +127,7 @@ public partial class LyricsDialog : Window
         restoreRetryButton.IsEnabled = !Busy && line?.PreviousRetryText != null;
         restoreRetryButton.ToolTip = line?.PreviousRetryText is { } previous
             ? string.IsNullOrEmpty(previous) ? "Restore the previous empty line." : "Previous text: " + previous
-            : "Restore the wording from before the last correction, retry or spelling suggestion.";
+            : "Restore the wording from before the last correction or accepted retry.";
         retryLabel.Text = string.IsNullOrWhiteSpace(line?.RetryText) ? ""
             : "Retry suggestion: " + line.RetryText;
         retryLabel.Visibility = string.IsNullOrWhiteSpace(line?.RetryText) ? Visibility.Collapsed : Visibility.Visible;
@@ -210,9 +207,11 @@ public partial class LyricsDialog : Window
 
     private LyricsOptions SaveOptions()
     {
+        _document.LyricsReplacementText = replacementText.Text;
+        // This is a correction draft, not a prompt for recognition.
         var options = new LyricsOptions(modeCombo.SelectedIndex == 0, modeCombo.SelectedIndex == 2,
             compareCheck.IsChecked == true, qualityCombo.SelectedIndex == 0 ? "large-v3" : "turbo",
-            (languageCombo.SelectedItem as LanguageChoice)?.Code, hintsText.Text.Trim(),
+            (languageCombo.SelectedItem as LanguageChoice)?.Code, "",
             deviceCombo.SelectedIndex == 1, retryCheck.IsChecked == true);
         _document.LyricsSettings = options;
         // Opening with no selection must not erase a previous selection preference.
@@ -274,40 +273,16 @@ public partial class LyricsDialog : Window
     {
         if (Busy || Transcript is not { Lines.Count: > 0 } transcript) return;
         CommitEdits();
-        new LyricsReplaceDialog(transcript.Lines, linesGrid.SelectedItem as LyricsLine, _replacementHistory)
-            { Owner = this }.ShowDialog();
-        RefreshLine();
-    }
-
-    private void RefreshSpellingSuggestion()
-    {
-        if (spellingSuggestionPanel == null) return; // TextChanged fires during initialization.
-        string? suggestion = linesGrid.SelectedItem is LyricsLine line
-            ? LyricsSpellingHints.Suggest(line.Text, hintsText.Text) : null;
-        spellingSuggestionPanel.Visibility = suggestion == null ? Visibility.Collapsed : Visibility.Visible;
-        spellingSuggestionButton.IsEnabled = !Busy && suggestion != null;
-        spellingSuggestionLabel.Text = suggestion == null ? "" : "Spelling suggestion: " + suggestion;
-        spellingSuggestionLabel.ToolTip = suggestion;
-    }
-
-    private void OnHintsChanged(object sender, TextChangedEventArgs e) => RefreshSpellingSuggestion();
-
-    private void OnLineTextChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (e.PropertyName == nameof(LyricsLine.Text)) RefreshSpellingSuggestion();
-    }
-
-    private void OnUseHintedSpelling(object sender, RoutedEventArgs e)
-    {
-        if (Busy || linesGrid.SelectedItem is not LyricsLine line) return;
-        CommitEdits();
-        // Recompute after committing an in-progress edit; never apply a stale preview.
-        if (LyricsSpellingHints.Suggest(line.Text, hintsText.Text) is not { } suggestion) return;
-        line.PreviousRetryText = line.Text;
-        line.Text = suggestion;
         SaveOptions();
+        var dialog = new LyricsReplaceDialog(transcript.Lines, linesGrid.SelectedItem as LyricsLine,
+            _replacementHistory, replacementText.Text.Length == 0 ? null : replacementText.Text) { Owner = this };
+        dialog.ShowDialog();
+        if (dialog.AppliedReplacement is { } applied)
+        {
+            replacementText.Text = applied;
+            _document.LyricsReplacementText = applied;
+        }
         RefreshLine();
-        statusLabel.Text = "Hinted spelling applied to this line. Restore previous text can undo it. Timings and recognition evidence are kept.";
     }
 
     private void OnRestoreRetry(object sender, RoutedEventArgs e)
@@ -490,7 +465,8 @@ public partial class LyricsDialog : Window
         qualityCombo.SelectedIndex = 0;
         languageCombo.SelectedIndex = 0;
         deviceCombo.SelectedIndex = 0;
-        hintsText.Clear();
+        replacementText.Clear();
+        _document.LyricsReplacementText = "";
         selectionCheck.IsChecked = _selectionCount > 0;
         retryCheck.IsChecked = compareCheck.IsChecked = true;
         loopCheck.IsChecked = false;
@@ -498,7 +474,7 @@ public partial class LyricsDialog : Window
         progressBar.Value = 0;
         RefreshTranscript();
         RefreshControls();
-        statusLabel.Text = "Lyrics, hints and suggestions cleared. Options reset. Your audio is unchanged.";
+        statusLabel.Text = "Lyrics, replacement text and suggestions cleared. Options reset. Your audio is unchanged.";
     }
 
     private void OnLyricsRowLoading(object sender, DataGridRowEventArgs e)
@@ -546,13 +522,7 @@ public partial class LyricsDialog : Window
         }));
     }
 
-    private void OnLineChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_observedLine != null) _observedLine.PropertyChanged -= OnLineTextChanged;
-        _observedLine = linesGrid.SelectedItem as LyricsLine;
-        if (_observedLine != null) _observedLine.PropertyChanged += OnLineTextChanged;
-        RefreshLine();
-    }
+    private void OnLineChanged(object sender, SelectionChangedEventArgs e) => RefreshLine();
     private void OnCancel(object sender, RoutedEventArgs e) { _cancellation?.Cancel(); cancelButton.IsEnabled = false; }
     private void OnClose(object sender, RoutedEventArgs e) => Close();
     private void OnDragMove(object sender, MouseButtonEventArgs e) { if (e.ButtonState == MouseButtonState.Pressed) DragMove(); }

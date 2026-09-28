@@ -10,12 +10,17 @@ unsaved edits, without changing the recording or applying the master rack.
 
 ## Reading and correcting
 
-- Click **Replace text…** to correct any word, several words, or a whole phrase. Enter the
-  mistaken wording in **Find** and the desired wording in **Replace with**. The two do not
+- Enter the correct word or phrase in **Replace with** in Lyrics & Speech, select a transcript
+  line, and click **Replace text…** beside the field. The preview uses the selected line as
+  **Find** and carries your correction into **Replace with**. For example, entering **Roanne**
+  and selecting **Oh, where** opens a ready-to-apply correction. You can adjust **Find** to
+  target only part of the line. The old and new wording do not
   need to share letters or sound alike: for example, you can replace **go on** with **Roanne**.
   Choose **Selected line** or **Whole transcript**, review the before/after preview, and click
   **Apply replacement**. Repeat for a different mistaken reading if needed. With a line selected,
-  the fields start with that whole line so you can type an entirely corrected phrase directly.
+  if the main correction field is empty, both preview fields start with that whole line so you
+  can rewrite the phrase directly. Applying wording edited in the preview also updates the
+  main correction field. Closing without applying keeps the transcript and the original draft.
   Matching ignores case by default and tolerates different spacing between words. Spaces entered
   at either end of **Find** remain required context. **Whole words** prevents changing parts of
   longer words, contractions such as **can't**, and names such as **O’Connor**; quotation marks
@@ -25,18 +30,8 @@ unsaved edits, without changing the recording or applying the master rack.
   edit prevents that undo from overwriting newer wording. Timings and original recognition
   evidence stay unchanged; **Restore previous text** can also restore an individual line.
 - Start with **Music · isolate vocals** and **Accuracy · large-v3**. Choose the language if
-  known, and optionally supply names or unusual words as spelling hints. Select a verse for
+  known. Select a verse for
   a quicker first test. **Speed · turbo** uses the included faster speech model.
-- Spelling hints guide recognition but cannot force a name's spelling. Separate individual
-  names or words with commas, for example **Roanne, Élodie**. Select a transcribed line to
-  see a **Spelling suggestion** for a close match such as **rowan → Roanne**, then click
-  **Use hinted spelling** to accept it. Suggestions update when you edit the hints or line,
-  so another transcription is not required. Only the selected line's text changes;
-  its timing, original recognition evidence, and other lines are kept. **Restore previous
-  text** undoes the last accepted spelling or retry suggestion. Competing hints and words
-  without a close spelling match can be corrected with **Replace text…**. Similar spellings
-  may start with different letters. Multiword hints still guide
-  recognition but are not used for these single-word spelling suggestions.
 - **Play whole audio** plays the complete open recording from the beginning, even when
   **Selected audio only** is checked or no transcript exists. You can listen while reading
   and correcting lyrics. Playback can also continue while transcription, retries or isolation
@@ -68,22 +63,23 @@ unsaved edits, without changing the recording or applying the master rack.
   Earlier and conflicting readings remain available with **Use alternate reading**.
 - Select a line and click **Retry this line** to transcribe it again with three seconds of
   surrounding context on each side, within the original transcript's audio range. This uses
-  the current model, language, hints and audio mode; it skips automatic comparison and further
+  the current model, language and audio mode; it skips automatic comparison and further
   retries. Only words timed inside the selected line are offered. Neighbouring lines and your
   corrections are unchanged. Choose **Use retry reading** to accept the suggestion, or ignore it.
   **Restore previous text** is a separate action that restores the wording from before the last
-  correction, retry or spelling suggestion, including a previously empty line. Further retries preserve that saved wording
+  correction or accepted retry, including a previously empty line. Further retries preserve that saved wording
   until you accept another reading or restore it. A retry that finds no different reading clears
   the old pending suggestion. Cancelling a retry preserves both the saved wording and any earlier
   suggestion. Line timings and original
   recognition evidence remain unchanged; no lyric-completion language model is used.
-- Audio mode, quality, language, hints, processor, both recovery options and the selection
+- Audio mode, quality, language, processor, both recovery options and the selection
   preference stay with each open audio tab when the dialog closes. They are session settings,
-  not saved in the audio file or restored after closing the tab or app.
+  not saved in the audio file or restored after closing the tab or app. Replacement text also
+  stays with its own audio tab. It is used only for text correction, not for recognition.
 - **Cancel** stops the worker and keeps the previous transcript. Closing the window also
   cancels, waits for the worker, and removes temporary audio.
 - **Clear everything** clears this tab's transcript, corrections, alternate and retry readings,
-  spelling hints, and cached vocals. It stops playback and resets the options to their starting
+  replacement text, and cached vocals. It stops playback and resets the options to their starting
   values. Export first if you want to keep the words. The source audio, waveform selection,
   exported files and other tabs are kept. Clearing is available when no lyrics operation is running.
 - Corrections remain with the open audio tab, but are not included in audio saves or
@@ -100,12 +96,12 @@ the original audio are preserved. On completion the dialog closes and a new, uns
 and format. The result is stereo, 44.1 kHz, 32-bit float working audio; a selected passage starts
 at zero in its new file. Cancellation opens no new tab and removes temporary output.
 
-A new vocals tab inherits the language, quality and other transcription settings, with
+A new vocals tab inherits the language, quality, replacement text and other settings, with
 **Music · original mix** selected so its vocals are not separated again by default.
 
 The open source tab keeps one temporary vocal stem in memory. Transcription, line retries and
-**Vocals to new tab** can reuse it for the same range or a contained passage. Changing language,
-hints or transcription quality does not require separation again. Audio edits, closing the
+**Vocals to new tab** can reuse it for the same range or a contained passage. Changing language
+or transcription quality does not require separation again. Audio edits, closing the
 source tab, a different processor choice, or a range outside the cached stem prevent reuse.
 A new separation replaces the previous cached range. The cache uses roughly 20 MB per minute
 of stereo vocals, up to the existing 30-minute request limit; it is not saved to the audio file.

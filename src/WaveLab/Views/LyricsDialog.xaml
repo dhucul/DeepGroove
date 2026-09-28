@@ -103,14 +103,21 @@
                         </ComboBox>
                     </StackPanel>
                 </Grid>
-                <Grid x:Name="hintsPanel" Margin="0,12,0,0">
+                <Grid x:Name="correctionPanel" Margin="0,12,0,0">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <StackPanel Margin="0,0,16,0">
-                        <TextBlock Text="SPELLING HINTS (OPTIONAL)" Style="{StaticResource UpperLabel}"/>
-                        <TextBox x:Name="hintsText" MaxLength="500" Height="30" Padding="10,2" Margin="0,6,0,0" VerticalContentAlignment="Center"
-                                 TextChanged="OnHintsChanged"
-                                 ToolTip="Separate names or unusual words with commas. Hints guide recognition and offer similar spellings. Use Replace text to correct any word or whole phrase, even when it sounds or looks completely different."
-                                 AutomationProperties.Name="Names and spelling hints"/>
+                        <TextBlock Text="REPLACE WITH — CORRECT WORD OR PHRASE" Style="{StaticResource UpperLabel}"/>
+                        <DockPanel Margin="0,6,0,0">
+                            <Button x:Name="replaceTextButton" Content="Replace text…" Style="{StaticResource Action}" Click="OnReplaceText" IsEnabled="False"
+                                    DockPanel.Dock="Right" Margin="8,0,0,0" VerticalAlignment="Center"
+                                    ToolTip="Open a preview using the selected line as Find and these words as Replace with. Nothing changes until you apply the replacement."/>
+                            <TextBox x:Name="replacementText" Height="44" Padding="10,3" TextWrapping="Wrap" AcceptsReturn="True"
+                                     VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center"
+                                     ToolTip="Enter the exact corrected word or phrase, then select a transcript line and click Replace text. This field corrects the transcript; it is not a recognition hint."
+                                     AutomationProperties.Name="Corrected word or phrase"/>
+                        </DockPanel>
+                        <TextBlock Text="Select a transcript line, then preview and apply this correction." FontSize="11"
+                                   Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" VerticalAlignment="Bottom">
                         <CheckBox x:Name="selectionCheck" Content="Selected audio only" Margin="0,0,0,8"/>
@@ -126,7 +133,7 @@
                             ToolTip="Isolate the singing into a new audio tab, ready for Save As. Uses the whole file or the selected audio only; does not replace your transcript."/>
                     <Button x:Name="cancelButton" Content="Cancel" Style="{StaticResource Action}" Click="OnCancel" IsEnabled="False" DockPanel.Dock="Left"/>
                     <Button x:Name="clearButton" Content="Clear everything" Style="{StaticResource Action}" Click="OnClearEverything" DockPanel.Dock="Right" Margin="12,0,0,0"
-                            ToolTip="Clear this tab's transcript, corrections, suggestions and spelling hints, reset the options, and release cached vocals. Export first to keep the words. Your audio and other tabs are kept."/>
+                            ToolTip="Clear this tab's transcript, corrections, suggestions and replacement text, reset the options, and release cached vocals. Export first to keep the words. Your audio and other tabs are kept."/>
                     <TextBlock x:Name="summaryLabel" VerticalAlignment="Center" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="8,0,0,0"
                                Text="Singing can be ambiguous. Review the result while listening."/>
                 </DockPanel>
@@ -157,15 +164,7 @@
                 <TextBlock x:Name="alternativeLabel" TextWrapping="Wrap" Foreground="{StaticResource Muted}" MaxHeight="52" TextTrimming="CharacterEllipsis"/>
                 <TextBlock x:Name="retryLabel" TextWrapping="Wrap" Foreground="{StaticResource Text}" MaxHeight="52"
                            Visibility="Collapsed" Margin="0,6,0,0" TextTrimming="CharacterEllipsis"/>
-                <DockPanel x:Name="spellingSuggestionPanel" Visibility="Collapsed" Margin="0,6,0,0">
-                    <Button x:Name="spellingSuggestionButton" Content="Use hinted spelling" Style="{StaticResource Action}" Click="OnUseHintedSpelling" DockPanel.Dock="Right"
-                            ToolTip="Apply the spelling suggestion to this line. Restore previous text can undo it. Recognition evidence and timings are kept."/>
-                    <TextBlock x:Name="spellingSuggestionLabel" TextWrapping="Wrap" Foreground="{StaticResource Text}" MaxHeight="52"
-                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                </DockPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                    <Button x:Name="replaceTextButton" Content="Replace text…" Style="{StaticResource Action}" Click="OnReplaceText" IsEnabled="False"
-                            ToolTip="Replace any word or phrase in the selected line or whole transcript. Preview changes and undo replacements."/>
                     <Button x:Name="retryButton" Content="Retry this line" Style="{StaticResource Action}" Click="OnRetryLine" IsEnabled="False"
                             ToolTip="Transcribe this line again with surrounding audio. Offers a reading without replacing your text or other lines."/>
                     <Button x:Name="acceptRetryButton" Content="Use retry reading" Style="{StaticResource Action}" Click="OnAcceptRetry" IsEnabled="False"/>
