@@ -13,6 +13,15 @@ unsaved edits, without changing the recording or applying the master rack.
 - Start with **Music · isolate vocals** and **Accuracy · large-v3**. Choose the language if
   known, and optionally supply names or unusual words as spelling hints. Select a verse for
   a quicker first test. **Speed · turbo** uses the included faster speech model.
+- Spelling hints guide recognition but cannot force a name's spelling. Separate individual
+  names or words with commas, for example **Roanne, Élodie**. Select a transcribed line to
+  see a **Spelling suggestion** for a close match such as **rowan → Roanne**, then click
+  **Use hinted spelling** to accept it. Suggestions update when you edit the hints or line,
+  so another transcription is not required. Only the selected line's text changes;
+  its timing, original recognition evidence, and other lines are kept. **Restore previous
+  text** undoes the last accepted spelling or retry suggestion. Competing hints and words
+  without a close spelling match are left for manual editing. Multiword hints still guide
+  recognition but are not used for these single-word spelling suggestions.
 - **Play whole audio** plays the complete open recording from the beginning, even when
   **Selected audio only** is checked or no transcript exists. You can listen while reading
   and correcting lyrics. Playback can also continue while transcription, retries or isolation
@@ -48,7 +57,7 @@ unsaved edits, without changing the recording or applying the master rack.
   retries. Only words timed inside the selected line are offered. Neighbouring lines and your
   corrections are unchanged. Choose **Use retry reading** to accept the suggestion, or ignore it.
   **Restore previous text** is a separate action that restores the wording from before the last
-  accepted retry, including a previously empty line. Further retries preserve that saved wording
+  accepted retry or spelling suggestion, including a previously empty line. Further retries preserve that saved wording
   until you accept another reading or restore it. A retry that finds no different reading clears
   the old pending suggestion. Cancelling a retry preserves both the saved wording and any earlier
   suggestion. Line timings and original

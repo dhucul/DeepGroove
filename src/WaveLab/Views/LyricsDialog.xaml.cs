@@ -27,6 +27,7 @@ public partial class LyricsDialog : Window
     private bool _wholePaused;
     private CancellationTokenSource? _cancellation;
     private bool _closeWhenFinished;
+    private LyricsLine? _observedLine;
     private bool Busy => _cancellation != null;
     public AudioDocument? IsolatedVocals { get; private set; }
     private LyricsTranscript? Transcript => _document.LyricsTranscript;
@@ -74,7 +75,12 @@ public partial class LyricsDialog : Window
         }
         RefreshTranscript();
         RefreshControls();
-        Closed += (_, _) => { _playbackCancellation?.Cancel(); _stop?.Invoke(); };
+        Closed += (_, _) =>
+        {
+            if (_observedLine != null) _observedLine.PropertyChanged -= OnLineTextChanged;
+            _playbackCancellation?.Cancel();
+            _stop?.Invoke();
+        };
     }
 
     private void RefreshControls()
@@ -113,6 +119,7 @@ public partial class LyricsDialog : Window
     {
         if (playButton == null) return; // SelectionChanged can fire during InitializeComponent.
         var line = linesGrid.SelectedItem as LyricsLine;
+        RefreshSpellingSuggestion();
         playButton.IsEnabled = !Busy && !PlaybackPending && line != null && _play != null && Transcript?.SourceEditVersion == _version;
         alternativeButton.IsEnabled = !Busy && !string.IsNullOrWhiteSpace(line?.AlternativeText);
         retryButton.IsEnabled = !Busy && _engine.IsReady && line != null
@@ -121,7 +128,7 @@ public partial class LyricsDialog : Window
         restoreRetryButton.IsEnabled = !Busy && line?.PreviousRetryText != null;
         restoreRetryButton.ToolTip = line?.PreviousRetryText is { } previous
             ? string.IsNullOrEmpty(previous) ? "Restore the previous empty line." : "Previous text: " + previous
-            : "Restore the wording from before the last accepted retry.";
+            : "Restore the wording from before the last accepted retry or spelling suggestion.";
         retryLabel.Text = string.IsNullOrWhiteSpace(line?.RetryText) ? ""
             : "Retry suggestion: " + line.RetryText;
         retryLabel.Visibility = string.IsNullOrWhiteSpace(line?.RetryText) ? Visibility.Collapsed : Visibility.Visible;
@@ -258,6 +265,37 @@ public partial class LyricsDialog : Window
         line.RetryText = "";
         RefreshLine();
         statusLabel.Text = "Only this line's text was changed. Its timings and the other lines were kept.";
+    }
+
+    private void RefreshSpellingSuggestion()
+    {
+        if (spellingSuggestionPanel == null) return; // TextChanged fires during initialization.
+        string? suggestion = linesGrid.SelectedItem is LyricsLine line
+            ? LyricsSpellingHints.Suggest(line.Text, hintsText.Text) : null;
+        spellingSuggestionPanel.Visibility = suggestion == null ? Visibility.Collapsed : Visibility.Visible;
+        spellingSuggestionButton.IsEnabled = !Busy && suggestion != null;
+        spellingSuggestionLabel.Text = suggestion == null ? "" : "Spelling suggestion: " + suggestion;
+        spellingSuggestionLabel.ToolTip = suggestion;
+    }
+
+    private void OnHintsChanged(object sender, TextChangedEventArgs e) => RefreshSpellingSuggestion();
+
+    private void OnLineTextChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(LyricsLine.Text)) RefreshSpellingSuggestion();
+    }
+
+    private void OnUseHintedSpelling(object sender, RoutedEventArgs e)
+    {
+        if (Busy || linesGrid.SelectedItem is not LyricsLine line) return;
+        CommitEdits();
+        // Recompute after committing an in-progress edit; never apply a stale preview.
+        if (LyricsSpellingHints.Suggest(line.Text, hintsText.Text) is not { } suggestion) return;
+        line.PreviousRetryText = line.Text;
+        line.Text = suggestion;
+        SaveOptions();
+        RefreshLine();
+        statusLabel.Text = "Hinted spelling applied to this line. Restore previous text can undo it. Timings and recognition evidence are kept.";
     }
 
     private void OnRestoreRetry(object sender, RoutedEventArgs e)
@@ -495,7 +533,13 @@ public partial class LyricsDialog : Window
         }));
     }
 
-    private void OnLineChanged(object sender, SelectionChangedEventArgs e) => RefreshLine();
+    private void OnLineChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_observedLine != null) _observedLine.PropertyChanged -= OnLineTextChanged;
+        _observedLine = linesGrid.SelectedItem as LyricsLine;
+        if (_observedLine != null) _observedLine.PropertyChanged += OnLineTextChanged;
+        RefreshLine();
+    }
     private void OnCancel(object sender, RoutedEventArgs e) { _cancellation?.Cancel(); cancelButton.IsEnabled = false; }
     private void OnClose(object sender, RoutedEventArgs e) => Close();
     private void OnDragMove(object sender, MouseButtonEventArgs e) { if (e.ButtonState == MouseButtonState.Pressed) DragMove(); }

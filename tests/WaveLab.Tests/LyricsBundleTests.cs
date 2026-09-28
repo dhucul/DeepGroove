@@ -179,8 +179,10 @@ public sealed class LyricsBundleTests : IDisposable
         Assert.Empty(Directory.EnumerateDirectories(Path.Combine(_directory, "cancel-cache", "jobs")));
     }
 
-    [Fact]
-    public void LineRetryRunsWithContextAndLeavesEditsUntouchedUntilAccepted()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LineRetryRunsWithContextAndLeavesEditsUntouchedUntilAccepted(bool speech)
     {
         Wpf.Run(() =>
         {
@@ -202,11 +204,12 @@ public sealed class LyricsBundleTests : IDisposable
             var doc = new DocumentViewModel(new AudioDocument([new float[10 * 44100]], 44100, 32))
             {
                 LyricsTranscript = transcript,
-                LyricsSettings = new LyricsOptions(false, false, true, "large-v3", null, "", false, true),
+                LyricsSettings = new LyricsOptions(false, speech, true, "large-v3", null, "old hint", false, true),
             };
             Wpf.Show(new LyricsDialog(doc, engine: engine), window =>
             {
                 ((DataGrid)window.FindName("linesGrid")).SelectedItem = target;
+                ((TextBox)window.FindName("hintsText")).Text = "Roanne, Élodie";
                 ((Button)window.FindName("retryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 var deadline = Environment.TickCount64 + 5000;
                 while (((Button)window.FindName("cancelButton")).IsEnabled && Environment.TickCount64 < deadline)
@@ -237,6 +240,8 @@ public sealed class LyricsBundleTests : IDisposable
                 Assert.Contains("--no-retry-unclear", Assert.Single(jobs));
                 Assert.DoesNotContain("--compare", jobs[0]);
                 Assert.Equal("en", jobs[0][jobs[0].IndexOf("--language") + 1]);
+                Assert.Equal("Roanne, Élodie", jobs[0][jobs[0].IndexOf("--hints") + 1]);
+                Assert.Equal(speech, jobs[0].Contains("--speech"));
                 Assert.True(doc.LyricsSettings!.RetryUnclear); // Temporary retry choices are not saved.
                 ((Button)window.FindName("acceptRetryButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Assert.Equal("better words", target.Text);

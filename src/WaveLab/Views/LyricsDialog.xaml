@@ -108,7 +108,8 @@
                     <StackPanel Margin="0,0,16,0">
                         <TextBlock Text="SPELLING HINTS (OPTIONAL)" Style="{StaticResource UpperLabel}"/>
                         <TextBox x:Name="hintsText" MaxLength="500" Height="30" Padding="10,2" Margin="0,6,0,0" VerticalContentAlignment="Center"
-                                 ToolTip="Names or unusual words you expect to hear. Do not paste instructions or complete lyrics."
+                                 TextChanged="OnHintsChanged"
+                                 ToolTip="Separate names or unusual words with commas. Hints guide the next transcription or retry; they do not force recognition. Select a line to review a suggested spelling. Do not paste instructions or complete lyrics."
                                  AutomationProperties.Name="Names and spelling hints"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" VerticalAlignment="Bottom">
@@ -156,6 +157,12 @@
                 <TextBlock x:Name="alternativeLabel" TextWrapping="Wrap" Foreground="{StaticResource Muted}" MaxHeight="52" TextTrimming="CharacterEllipsis"/>
                 <TextBlock x:Name="retryLabel" TextWrapping="Wrap" Foreground="{StaticResource Text}" MaxHeight="52"
                            Visibility="Collapsed" Margin="0,6,0,0" TextTrimming="CharacterEllipsis"/>
+                <DockPanel x:Name="spellingSuggestionPanel" Visibility="Collapsed" Margin="0,6,0,0">
+                    <Button x:Name="spellingSuggestionButton" Content="Use hinted spelling" Style="{StaticResource Action}" Click="OnUseHintedSpelling" DockPanel.Dock="Right"
+                            ToolTip="Apply the spelling suggestion to this line. Restore previous text can undo it. Recognition evidence and timings are kept."/>
+                    <TextBlock x:Name="spellingSuggestionLabel" TextWrapping="Wrap" Foreground="{StaticResource Text}" MaxHeight="52"
+                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                </DockPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                     <Button x:Name="retryButton" Content="Retry this line" Style="{StaticResource Action}" Click="OnRetryLine" IsEnabled="False"
                             ToolTip="Transcribe this line again with surrounding audio. Offers a reading without replacing your text or other lines."/>
