@@ -10,6 +10,20 @@ unsaved edits, without changing the recording or applying the master rack.
 
 ## Reading and correcting
 
+- Click **Replace text…** to correct any word, several words, or a whole phrase. Enter the
+  mistaken wording in **Find** and the desired wording in **Replace with**. The two do not
+  need to share letters or sound alike: for example, you can replace **go on** with **Roanne**.
+  Choose **Selected line** or **Whole transcript**, review the before/after preview, and click
+  **Apply replacement**. Repeat for a different mistaken reading if needed. With a line selected,
+  the fields start with that whole line so you can type an entirely corrected phrase directly.
+  Matching ignores case by default and tolerates different spacing between words. Spaces entered
+  at either end of **Find** remain required context. **Whole words** prevents changing parts of
+  longer words, contractions such as **can't**, and names such as **O’Connor**; quotation marks
+  around a word do not prevent a match. Turn it off for a substring. Phrases are matched within
+  each timed line. **Undo last replacement** reverses the last replacement across every affected
+  line, including after reopening Replace text in the same Lyrics & Speech window. A later manual
+  edit prevents that undo from overwriting newer wording. Timings and original recognition
+  evidence stay unchanged; **Restore previous text** can also restore an individual line.
 - Start with **Music · isolate vocals** and **Accuracy · large-v3**. Choose the language if
   known, and optionally supply names or unusual words as spelling hints. Select a verse for
   a quicker first test. **Speed · turbo** uses the included faster speech model.
@@ -20,7 +34,8 @@ unsaved edits, without changing the recording or applying the master rack.
   so another transcription is not required. Only the selected line's text changes;
   its timing, original recognition evidence, and other lines are kept. **Restore previous
   text** undoes the last accepted spelling or retry suggestion. Competing hints and words
-  without a close spelling match are left for manual editing. Multiword hints still guide
+  without a close spelling match can be corrected with **Replace text…**. Similar spellings
+  may start with different letters. Multiword hints still guide
   recognition but are not used for these single-word spelling suggestions.
 - **Play whole audio** plays the complete open recording from the beginning, even when
   **Selected audio only** is checked or no transcript exists. You can listen while reading
@@ -57,7 +72,7 @@ unsaved edits, without changing the recording or applying the master rack.
   retries. Only words timed inside the selected line are offered. Neighbouring lines and your
   corrections are unchanged. Choose **Use retry reading** to accept the suggestion, or ignore it.
   **Restore previous text** is a separate action that restores the wording from before the last
-  accepted retry or spelling suggestion, including a previously empty line. Further retries preserve that saved wording
+  correction, retry or spelling suggestion, including a previously empty line. Further retries preserve that saved wording
   until you accept another reading or restore it. A retry that finds no different reading clears
   the old pending suggestion. Cancelling a retry preserves both the saved wording and any earlier
   suggestion. Line timings and original

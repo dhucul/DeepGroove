@@ -28,6 +28,7 @@ public partial class LyricsDialog : Window
     private CancellationTokenSource? _cancellation;
     private bool _closeWhenFinished;
     private LyricsLine? _observedLine;
+    private readonly Stack<IReadOnlyList<LyricsTextReplacement.Change>> _replacementHistory = new();
     private bool Busy => _cancellation != null;
     public AudioDocument? IsolatedVocals { get; private set; }
     private LyricsTranscript? Transcript => _document.LyricsTranscript;
@@ -94,6 +95,7 @@ public partial class LyricsDialog : Window
         clearButton.IsEnabled = !Busy;
         linesGrid.IsReadOnly = Busy;
         copyButton.IsEnabled = exportButton.IsEnabled = !Busy && Transcript?.Lines.Count > 0;
+        replaceTextButton.IsEnabled = !Busy && Transcript?.Lines.Count > 0;
         playAllButton.IsEnabled = !PlaybackPending && _play != null && _snapshot.Length > 0 && _snapshot[0].Length > 0;
         restartAudioButton.IsEnabled = playAllButton.IsEnabled;
         RefreshPlayback();
@@ -128,7 +130,7 @@ public partial class LyricsDialog : Window
         restoreRetryButton.IsEnabled = !Busy && line?.PreviousRetryText != null;
         restoreRetryButton.ToolTip = line?.PreviousRetryText is { } previous
             ? string.IsNullOrEmpty(previous) ? "Restore the previous empty line." : "Previous text: " + previous
-            : "Restore the wording from before the last accepted retry or spelling suggestion.";
+            : "Restore the wording from before the last correction, retry or spelling suggestion.";
         retryLabel.Text = string.IsNullOrWhiteSpace(line?.RetryText) ? ""
             : "Retry suggestion: " + line.RetryText;
         retryLabel.Visibility = string.IsNullOrWhiteSpace(line?.RetryText) ? Visibility.Collapsed : Visibility.Visible;
@@ -183,6 +185,7 @@ public partial class LyricsDialog : Window
         {
             var result = await _engine.TranscribeAsync(_snapshot, _rate, start, count, _document.Title, _version, options, progress, token, _document.LyricsVocals);
             _document.LyricsTranscript = result;
+            _replacementHistory.Clear();
             RefreshTranscript();
             statusLabel.Text = result.Lines.Count == 0 ? "No words detected. Try the original mix, a shorter selection, or the song's language."
                 : "Ready. Replay Review and Recovered lines, then export to keep your corrections.";
@@ -265,6 +268,15 @@ public partial class LyricsDialog : Window
         line.RetryText = "";
         RefreshLine();
         statusLabel.Text = "Only this line's text was changed. Its timings and the other lines were kept.";
+    }
+
+    private void OnReplaceText(object sender, RoutedEventArgs e)
+    {
+        if (Busy || Transcript is not { Lines.Count: > 0 } transcript) return;
+        CommitEdits();
+        new LyricsReplaceDialog(transcript.Lines, linesGrid.SelectedItem as LyricsLine, _replacementHistory)
+            { Owner = this }.ShowDialog();
+        RefreshLine();
     }
 
     private void RefreshSpellingSuggestion()
@@ -468,6 +480,7 @@ public partial class LyricsDialog : Window
         _wholePaused = false;
         _wholeAudio = null;
         _document.LyricsTranscript = null;
+        _replacementHistory.Clear();
         _document.LyricsSettings = null;
         _document.LyricsSelectionOnly = null;
         _document.LyricsVocals.Clear();

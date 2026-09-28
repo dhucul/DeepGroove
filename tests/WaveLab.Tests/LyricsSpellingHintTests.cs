@@ -21,6 +21,8 @@ public sealed class LyricsSpellingHintTests
     [InlineData("roanne", "Roanne", "Roanne")]
     [InlineData("rowan", "Rowan, Roanne", "Rowan")]
     [InlineData("o’connor", "O'Connor", "O'Connor")]
+    [InlineData("Joanne", "Roanne", "Roanne")]
+    [InlineData("Xlodie", "Élodie", "Élodie")]
     public void OffersHintedSpellingWithoutChangingSurroundingText(string text, string hints, string expected)
         => Assert.Equal(expected, LyricsSpellingHints.Suggest(text, hints));
 

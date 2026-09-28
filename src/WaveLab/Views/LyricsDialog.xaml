@@ -109,7 +109,7 @@
                         <TextBlock Text="SPELLING HINTS (OPTIONAL)" Style="{StaticResource UpperLabel}"/>
                         <TextBox x:Name="hintsText" MaxLength="500" Height="30" Padding="10,2" Margin="0,6,0,0" VerticalContentAlignment="Center"
                                  TextChanged="OnHintsChanged"
-                                 ToolTip="Separate names or unusual words with commas. Hints guide the next transcription or retry; they do not force recognition. Select a line to review a suggested spelling. Do not paste instructions or complete lyrics."
+                                 ToolTip="Separate names or unusual words with commas. Hints guide recognition and offer similar spellings. Use Replace text to correct any word or whole phrase, even when it sounds or looks completely different."
                                  AutomationProperties.Name="Names and spelling hints"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" VerticalAlignment="Bottom">
@@ -164,6 +164,8 @@
                                TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                 </DockPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <Button x:Name="replaceTextButton" Content="Replace text…" Style="{StaticResource Action}" Click="OnReplaceText" IsEnabled="False"
+                            ToolTip="Replace any word or phrase in the selected line or whole transcript. Preview changes and undo replacements."/>
                     <Button x:Name="retryButton" Content="Retry this line" Style="{StaticResource Action}" Click="OnRetryLine" IsEnabled="False"
                             ToolTip="Transcribe this line again with surrounding audio. Offers a reading without replacing your text or other lines."/>
                     <Button x:Name="acceptRetryButton" Content="Use retry reading" Style="{StaticResource Action}" Click="OnAcceptRetry" IsEnabled="False"/>

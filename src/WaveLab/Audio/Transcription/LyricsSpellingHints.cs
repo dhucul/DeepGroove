@@ -41,9 +41,8 @@ internal static class LyricsSpellingHints
 
     private static bool Similar(string word, string hint)
     {
-        if (word.Length < 4 || hint.Length < 4 || Math.Abs(word.Length - hint.Length) > 2
-            || !word.AsSpan(0, 2).SequenceEqual(hint.AsSpan(0, 2))) return false;
-        // Require substantial shared spelling, including the opening letters.
+        if (word.Length < 4 || hint.Length < 4 || Math.Abs(word.Length - hint.Length) > 2) return false;
+        // Require substantial shared spelling; the opening letters may differ.
         // This deliberately offers candidates for review, not automatic corrections:
         // audio alone cannot distinguish a name such as Roanne from the word rowan.
         var common = new int[hint.Length + 1];
